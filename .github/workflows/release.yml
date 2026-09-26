@@ -55,6 +55,11 @@ jobs:
         $gameRoot = Join-Path $releaseRoot "game"
         $pluginRoot = Join-Path $gameRoot "plugin"
         New-Item -ItemType Directory -Force -Path $pluginRoot | Out-Null
+        # ZIP tools may omit empty directories. Keep the install target present
+        # so a fresh install always has plugin\mods ready for the user's Mods.
+        $modsRoot = Join-Path $pluginRoot "mods"
+        New-Item -ItemType Directory -Force -Path $modsRoot | Out-Null
+        New-Item -ItemType File -Force -Path (Join-Path $modsRoot ".keep") | Out-Null
 
         Copy-Item bin\d3dcompiler_47.dll, bin\vulkan-1.dll, LICENSE, THIRD_PARTY_NOTICES, bin\LUA-LICENSE.txt -Destination $gameRoot
         Copy-Item bin\eiem.dll, bin\eiem.ini -Destination $pluginRoot
