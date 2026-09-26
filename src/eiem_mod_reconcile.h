@@ -146,10 +146,7 @@ static void EiemRunModReconcile() {
   }
   const bool nativeSkinOnly =
       requests == (uint32_t)EiemModUpdate::SkinRefresh;
-  std::vector<EiemModelInstanceState> instances;
-  AcquireSRWLockShared(&s_eiemModelInstanceLock);
-  instances = s_eiemModelInstances;
-  ReleaseSRWLockShared(&s_eiemModelInstanceLock);
+  const auto instances = EiemSnapshotModelInstances();
   if (reload)
     Log("[MOD-RELOAD-TRACE] phase=replay begin models=%zu", instances.size());
    EiemRenderReplayLedger replayLedger;
@@ -198,8 +195,6 @@ static void EiemRunModReconcile() {
     Log("[MOD-RELOAD-TRACE] end tick=%llu elapsed=%llums",
         (unsigned long long)GetTickCount64(),
         GetTickCount64() - reconcileStarted);
-  if (reload)
-    EiemLogReplacementNativeMeshSnapshot("after-replay");
   EiemRegistrationTraceReconcile(
       "end", requests,
       InterlockedCompareExchange(&s_eiemModGeneration, 0, 0), inputs.size(),

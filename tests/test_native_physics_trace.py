@@ -474,7 +474,7 @@ class NativePhysicsTrace(unittest.TestCase):
         self.assertIn('EiemFinishPhysicsManualCaptureOnUnityThread(hwnd,"bounded-window-complete");', trojan)
         self.assertIn('EiemStartPhysicsTrace(error,kEiemPhysicsManualCaptureMs)', diagnostic)
         timer = skin_timing[skin_timing.index('static void EiemRunSkinTimingProbe()'):]
-        timer = timer[:timer.index('static void EiemCopySkinnedRendererState(')]
+        timer = timer[:timer.index('static bool EiemRendererEligibleForRule(')]
         self.assertNotIn('EiemPhysicsStopTrace()', timer)
         # The former post-FinalIK chest probe hooked every SolverManager
         # LateUpdate and synchronously traversed Transforms/wrote TSV data on

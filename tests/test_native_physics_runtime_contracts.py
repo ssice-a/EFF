@@ -165,13 +165,9 @@ class NativePhysicsRuntimeContracts(unittest.TestCase):
         self.assertIn("paletteHits", self.runtime)
         self.assertIn("palette=%zu selected=%zu paletteHits=%zu boundaryIgnores=%zu", self.runtime)
         self.assertIn("boundaryIgnores += group.boundaryIgnores.size()", self.runtime)
-        self.assertIn("instance=%p skeleton=%p anchor=%p", self.runtime)
-        self.assertIn("firstSelectedPath=%s", self.runtime)
 
     def test_runtime_observes_visible_palette_and_move_node_writeback(self):
-        self.assertIn("EiemPhysicsRuntimeLogPartnerBinding", self.runtime)
-        self.assertIn("visible-binding generation=", self.runtime)
-        self.assertIn("partner.skeleton == instance.skeleton", self.runtime)
+        self.assertNotIn("EiemPhysicsRuntimeLogPartnerBinding", self.runtime)
         self.assertNotIn("EiemPhysicsRuntimeObserveMotion", self.runtime)
         self.assertNotIn("maxLocalPositionDeltaSq", self.runtime)
         self.assertNotIn("instance.motionSamples", self.runtime)

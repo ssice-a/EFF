@@ -30,7 +30,7 @@ int main(int argc, char **argv) {
   CHECK(p.standaloneRules.size() == 1);
   const auto &r = p.rules[p.standaloneRules[0]];
   CHECK(r.hasMesh && EiemModEquals(r.mesh, "MeshSource_MERGED"));
-  CHECK(!EiemModEquals(r.handling, "skip") && r.partnerCount == 0);
+  CHECK(!EiemModEquals(r.handling, "skip"));
   CHECK(mask(p) == (1u << 3)); // default accessory + top, variant hidden
   EiemKeyChord top, accessory, increase, decrease;
   CHECK(EiemParseKeyChord("Ctrl+Alt+Numpad7", &top));
@@ -80,11 +80,11 @@ class BlenderSwitchTests(unittest.TestCase):
             exe = folder / "native.exe"
             build = subprocess.run(["cl", "/nologo", "/EHsc", "/std:c++17", "/utf-8",
                                     f"/I{ROOT / 'src'}", str(source), f"/Fe{exe}"],
-                                   cwd=folder, capture_output=True, text=True)
+                                   cwd=folder, capture_output=True, text=True, encoding="utf-8", errors="replace")
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             result = subprocess.run([str(exe), str(folder / "package/mod.ini"),
                                      str(folder / "default-off/mod.ini")],
-                                    capture_output=True, text=True)
+                                    capture_output=True, text=True, encoding="utf-8", errors="replace")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 

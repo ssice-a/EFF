@@ -44,15 +44,15 @@ struct EiemPhysicsAuthorGroup {
   std::vector<EiemPhysicsAuthorNode> nodes;
   // gravity, stablizationTimeAfterReset, gravityFalloff, blendWeight, animationPoseRatio
   float parameters[5] = {};
-  // Present on author formats v3+. Version 2 is reserved for the native source graph.
+  // Author format v5. Native source graph v2 is a separate resource kind.
   EiemPhysicsAuthorRadius radius;
-  // V4+ primitive ClothSerializeData edits. Topology and runtime-result fields
+  // Primitive ClothSerializeData edits. Topology and runtime-result fields
   // are forbidden by the wire validator.
   std::vector<EiemPhysicsAuthorParameter> nativeParameters;
   std::vector<std::string> colliders;
 };
 struct EiemPhysicsDocument {
-  uint32_t version=1;
+  uint32_t version=5;
   std::string id, skeleton;
   std::vector<EiemPhysicsAuthorCollider> colliders;
   std::vector<EiemPhysicsAuthorGroup> groups;
@@ -105,7 +105,7 @@ static bool EiemPhysicsNativeParameterPath(const std::string &s) {
 }
 static bool EiemValidatePhysicsAuthor(const EiemPhysicsDocument &d, std::string &error) {
   auto fail=[&](const char *why) { error=why; return false; };
-  if ((d.version!=1 && d.version!=3 && d.version!=4 && d.version!=5) || !EiemPhysicsAuthorId(d.id) || !EiemPhysicsAuthorPath(d.skeleton) ||
+  if (d.version!=5 || !EiemPhysicsAuthorId(d.id) || !EiemPhysicsAuthorPath(d.skeleton) ||
       d.skeleton.size()<9 || d.skeleton.substr(d.skeleton.size()-9)!=".skeleton" ||
       d.groups.empty() || d.groups.size()>1024 || d.colliders.size()>4096)
     return fail("Invalid Physics authoring header/dependencies");
@@ -116,10 +116,10 @@ static bool EiemValidatePhysicsAuthor(const EiemPhysicsDocument &d, std::string 
   for (const auto &c:d.colliders) {
     if (!unique(c.id,c.name) || !EiemPhysicsAuthorPath(c.bone,true) || c.shape>1 ||
         !std::isfinite(c.radius) || c.radius<=0 ||
-        (d.version>=5 && (!std::isfinite(c.endRadius) || c.endRadius<=0)) ||
+        (!std::isfinite(c.endRadius) || c.endRadius<=0) ||
         !std::isfinite(c.span) || c.span<0 || c.alignedOnCenter>1 ||
-        (c.shape==0 && (c.span!=0 || (d.version>=5 && c.endRadius!=c.radius))) ||
-        (d.version>=5 && c.shape==1 && c.alignedOnCenter &&
+        (c.shape==0 && (c.span!=0 || c.endRadius!=c.radius)) ||
+        (c.shape==1 && c.alignedOnCenter &&
          c.span<std::abs(c.radius-c.endRadius)))
       return fail("Invalid Physics collider");
     for (float f:c.position) if (!std::isfinite(f)) return fail("Non-finite Physics position");
@@ -150,34 +150,33 @@ static bool EiemValidatePhysicsAuthor(const EiemPhysicsDocument &d, std::string 
     for (size_t i=0;i<5;++i)
       if (!std::isfinite(g.parameters[i]) || g.parameters[i]<0 || (i>=2 && g.parameters[i]>1))
         return fail("Invalid Physics scalar");
-    if (d.version>=3) {
-      if (!std::isfinite(g.radius.value) || g.radius.value<=0 || g.radius.useCurve>1 ||
-          g.radius.keys.size()<2 || g.radius.keys.size()>64 ||
-          g.radius.rotationOrder<0 || g.radius.rotationOrder>5)
-        return fail("Invalid Physics node radius");
-      float previous=-1;
-      for (const auto &key:g.radius.keys) {
-        if (!std::isfinite(key.time) || !std::isfinite(key.value) ||
-            !std::isfinite(key.inSlope) || !std::isfinite(key.outSlope) ||
-            !std::isfinite(key.inWeight) || !std::isfinite(key.outWeight) ||
-            key.time<0 || key.time>1 || key.time<=previous || key.value<0 ||
-            key.weightedMode>3 || key.inWeight<0 || key.inWeight>1 ||
-            key.outWeight<0 || key.outWeight>1)
-          return fail("Invalid Physics node radius curve");
-        previous=key.time;
-      }
+
+    if (!std::isfinite(g.radius.value) || g.radius.value<=0 || g.radius.useCurve>1 ||
+        g.radius.keys.size()<2 || g.radius.keys.size()>64 ||
+        g.radius.rotationOrder<0 || g.radius.rotationOrder>5)
+      return fail("Invalid Physics node radius");
+    float previous=-1;
+    for (const auto &key:g.radius.keys) {
+      if (!std::isfinite(key.time) || !std::isfinite(key.value) ||
+          !std::isfinite(key.inSlope) || !std::isfinite(key.outSlope) ||
+          !std::isfinite(key.inWeight) || !std::isfinite(key.outWeight) ||
+          key.time<0 || key.time>1 || key.time<=previous || key.value<0 ||
+          key.weightedMode>3 || key.inWeight<0 || key.inWeight>1 ||
+          key.outWeight<0 || key.outWeight>1)
+        return fail("Invalid Physics node radius curve");
+      previous=key.time;
     }
-    if (d.version>=4) {
-      if (g.nativeParameters.size()>4096) return fail("Invalid native Physics parameter count");
-      std::set<std::string> paths;
-      for (const auto &parameter:g.nativeParameters) {
-        if (!EiemPhysicsNativeParameterPath(parameter.path) || parameter.floating>1 ||
-            !paths.insert(parameter.path).second ||
-            (parameter.floating && !std::isfinite(parameter.floatingValue)) ||
-            (!parameter.floating && (parameter.integerValue<INT32_MIN || parameter.integerValue>INT32_MAX)))
-          return fail("Invalid native Physics parameter");
-      }
+
+    if (g.nativeParameters.size()>4096) return fail("Invalid native Physics parameter count");
+    std::set<std::string> paths;
+    for (const auto &parameter:g.nativeParameters) {
+      if (!EiemPhysicsNativeParameterPath(parameter.path) || parameter.floating>1 ||
+          !paths.insert(parameter.path).second ||
+          (parameter.floating && !std::isfinite(parameter.floatingValue)) ||
+          (!parameter.floating && (parameter.integerValue<INT32_MIN || parameter.integerValue>INT32_MAX)))
+        return fail("Invalid native Physics parameter");
     }
+
     for (const auto &ref:g.colliders) {
       if (!colliders.count(ref) || !refs.insert(ref).second) return fail("Invalid Physics collider reference");
       used.insert(ref);
@@ -233,16 +232,15 @@ static bool EiemReadPhysicsAuthor(Reader &source,EiemPhysicsDocument &out,std::s
     if (!EiemValidatePhysicsNative(*tree,next.id,next.skeleton,next.nativeComponents,error)) return false;
     next.version=2; next.native=std::move(tree); out=std::move(next); error.clear(); return true;
   }
-  if ((version!=1 && version!=3 && version!=4 && version!=5) || !r.String(purpose) || purpose!="authoring" || !r.String(coordinate) || coordinate!="unity-y-up-left-handed" ||
+  if (version!=5 || !r.String(purpose) || purpose!="authoring" || !r.String(coordinate) || coordinate!="unity-y-up-left-handed" ||
       !r.String(backend) || backend!="BeyondDynamicBone" || !r.String(next.id) || !r.String(next.skeleton) ||
       !r.Count(count,4096)) return invalid();
   next.version=version; next.colliders.resize(count);
   for (auto &c:next.colliders) {
     if (!r.String(c.id) || !r.String(c.name) || !r.String(c.bone) || !r.Value(c.shape) ||
         !r.Bytes(c.position,sizeof(c.position)) || !r.Bytes(c.rotation,sizeof(c.rotation)) ||
-        !r.Value(c.radius) || (version>=5 && !r.Value(c.endRadius)) ||
-        !r.Value(c.span) || (version>=5 && !r.Value(c.alignedOnCenter))) return invalid();
-    if (version<5) c.endRadius=c.radius;
+        !r.Value(c.radius) || !r.Value(c.endRadius) ||
+        !r.Value(c.span) || !r.Value(c.alignedOnCenter)) return invalid();
   }
   if (!r.Count(count,1024)) return invalid();
   next.groups.resize(count);
@@ -251,26 +249,25 @@ static bool EiemReadPhysicsAuthor(Reader &source,EiemPhysicsDocument &out,std::s
     g.nodes.resize(count);
     for (auto &n:g.nodes) if (!r.String(n.bone) || !r.Value(n.role)) return invalid();
     if (!r.Bytes(g.parameters,sizeof(g.parameters))) return invalid();
-    if (version>=3) {
-      if (!r.Value(g.radius.value) || !r.Value(g.radius.useCurve) || !r.Count(count,64)) return invalid();
-      g.radius.keys.resize(count);
-      for (auto &key:g.radius.keys)
-        if (!r.Value(key.time) || !r.Value(key.value) || !r.Value(key.inSlope) ||
-            !r.Value(key.outSlope) || !r.Value(key.weightedMode) ||
-            !r.Value(key.inWeight) || !r.Value(key.outWeight)) return invalid();
-      if (!r.Value(g.radius.preInfinity) || !r.Value(g.radius.postInfinity) ||
-          !r.Value(g.radius.rotationOrder)) return invalid();
+
+    if (!r.Value(g.radius.value) || !r.Value(g.radius.useCurve) || !r.Count(count,64)) return invalid();
+    g.radius.keys.resize(count);
+    for (auto &key:g.radius.keys)
+      if (!r.Value(key.time) || !r.Value(key.value) || !r.Value(key.inSlope) ||
+          !r.Value(key.outSlope) || !r.Value(key.weightedMode) ||
+          !r.Value(key.inWeight) || !r.Value(key.outWeight)) return invalid();
+    if (!r.Value(g.radius.preInfinity) || !r.Value(g.radius.postInfinity) ||
+        !r.Value(g.radius.rotationOrder)) return invalid();
+
+    if (!r.Count(count,4096)) return invalid();
+    g.nativeParameters.resize(count);
+    for (auto &parameter:g.nativeParameters) {
+      if (!r.String(parameter.path) || !r.Value(parameter.floating) || parameter.floating>1) return invalid();
+      if (parameter.floating) {
+        if (!r.Value(parameter.floatingValue)) return invalid();
+      } else if (!r.Value(parameter.integerValue)) return invalid();
     }
-    if (version>=4) {
-      if (!r.Count(count,4096)) return invalid();
-      g.nativeParameters.resize(count);
-      for (auto &parameter:g.nativeParameters) {
-        if (!r.String(parameter.path) || !r.Value(parameter.floating) || parameter.floating>1) return invalid();
-        if (parameter.floating) {
-          if (!r.Value(parameter.floatingValue)) return invalid();
-        } else if (!r.Value(parameter.integerValue)) return invalid();
-      }
-    }
+
     if (!r.Count(count,4096)) return invalid();
     g.colliders.resize(count);
     for (auto &ref:g.colliders) if (!r.String(ref)) return invalid();

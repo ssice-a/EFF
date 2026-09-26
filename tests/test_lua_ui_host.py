@@ -25,6 +25,12 @@ static void ReturnCursorToGame() {}
 #include "eiem_config.h"
 #include "eiem_mods.h"
 static void EiemQueueModInput(EiemModInputEvent) {}
+// External update service is inert in this window-lifecycle fixture.
+#define EIEM_VERSION "test"
+struct UpdateSnapshot { bool available=false, checking=false, failed=false, latest=false; std::string version,url; };
+static UpdateSnapshot EiemGetUpdateSnapshot() { return {}; }
+static bool EiemRequestUpdateCheck(bool=false) { return false; }
+static bool EiemIgnoreRelease(const std::string &) { return true; }
 #include "eiem_ui_host.h"
 int main() {
   auto *mainContext=ImGui::CreateContext();

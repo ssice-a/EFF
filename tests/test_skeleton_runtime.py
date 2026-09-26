@@ -175,11 +175,11 @@ int main(int argc,char **argv) {
  assert(!s_eiemSkeletonInstances[0]->ready);
  EiemCollectSkeletonInstances(); assert(s_eiemSkeletonInstances.empty()); failPosition=false;
  assert(EiemAcquireSkeleton(rule,&renderer,a,message,sizeof(message)));
- Node partner{"Partner"}; assert(EiemWatchSkeletonPartner(*a,&partner));
+ Node consumer{"RetiringRenderer"}; EiemRetainSkeletonConsumer(*a,EiemUnityRef::Capture(&consumer));
  auto pending=(Node *)a->nodes[4].Target();
  a.reset(); EiemCollectSkeletonInstances(); assert(pending->alive); // native Destroy has not completed yet
  assert(EiemAcquireSkeleton(rule,&renderer,b,message,sizeof(message)) && b->nodes[4].Target()!=pending);
- partner.alive=false; EiemCollectSkeletonInstances(); assert(!pending->alive);
+ consumer.alive=false; EiemCollectSkeletonInstances(); assert(!pending->alive);
  b.reset(); EiemCollectSkeletonInstances();
  // Teardown retention performs no Unity calls and is safe off the Unity thread.
  assert(EiemAcquireSkeleton(rule,&renderer,a,message,sizeof(message)));
@@ -191,7 +191,7 @@ int main(int argc,char **argv) {
  // Missing original nodes must not be silently fabricated.
  unused.name="Missing"; int before=creates;
  assert(!EiemAcquireSkeleton(rule,&renderer,a,message,sizeof(message)) && creates==before); unused.name="Unused";
- disk=argv[2]; // V1 marks all nodes as source, including absent Extra.
+ disk=argv[2]; // Obsolete V1 format is rejected before building any nodes.
  assert(!EiemAcquireSkeleton(rule,&renderer,a,message,sizeof(message)) && creates==before);
  disk=argv[3]; // Named-root Skeleton from author/test packages.
  assert(EiemAcquireSkeleton(rule,&renderer,a,message,sizeof(message)) && a->anchor.Target()==&rig);

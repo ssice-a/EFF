@@ -81,7 +81,7 @@ struct EiemNativeMeshDocument {
   // Transform child indices relative to the shared skeleton root. Unlike a
   // name path, it remains valid when equivalent prefabs rename a bone.
   std::vector<std::string> boneIndexPaths;
-  // EIEMESH v5 compatibility: immutable first origin for every local palette slot.
+  // EIEMESH v6 first source identity retained in the authoring record.
   struct BoneSlotSource {
     std::string meshPath;
     std::string meshAsset;
@@ -257,8 +257,7 @@ static bool EiemReadNativeMesh(const char *path, EiemNativeMeshDocument *out,
   int32_t version = 0;
   if (!reader.Good() || !reader.Bytes(magic, sizeof(magic)) ||
       memcmp(magic, "EIEMESH\0", sizeof(magic)) != 0 || !reader.Value(&version) ||
-      (version != 2 && version != 3 && version != 4 && version != 5 &&
-       version != 6) ||
+      version != 6 ||
       !reader.String(&out->coordinateSpace) ||
       !reader.String(&out->source) || !reader.String(&out->name) ||
       !reader.Value(&out->vertexCount) || out->vertexCount < 0 ||
@@ -267,7 +266,7 @@ static bool EiemReadNativeMesh(const char *path, EiemNativeMeshDocument *out,
       !EiemReadTypedFloatArray(reader, &out->normals, 3, out->vertexCount) ||
       !EiemReadTypedFloatArray(reader, &out->tangents, 4, out->vertexCount) ||
       !EiemReadTypedFloatArray(reader, &out->colors, 4, out->vertexCount)) {
-    if (error) strncpy_s(error, errorSize, "Invalid EIEM mesh header or vertex channel", _TRUNCATE);
+    if (error) strncpy_s(error, errorSize, "Expected EIEMESH v6; re-export with current EIEM tools, or check vertex channels", _TRUNCATE);
     return false;
   }
   for (size_t channel = 0; channel < _countof(out->uvs); ++channel) {
@@ -300,52 +299,49 @@ static bool EiemReadNativeMesh(const char *path, EiemNativeMeshDocument *out,
   if (!reader.Count(&count, 10000000)) goto invalid;
   out->boneHashes.resize(count);
   if (count && !reader.Bytes(out->boneHashes.data(), (size_t)count * sizeof(uint32_t))) goto invalid;
-  if (version >= 3) {
-    if (!reader.Count(&count, 1000000)) goto invalid;
-    out->bonePaths.resize(count);
-    for (auto &path : out->bonePaths) {
-      if (!reader.String(&path)) goto invalid;
-    }
-    if (!out->bonePaths.empty() &&
-        out->bonePaths.size() != out->bindPoses.size())
-      goto invalid;
+
+  if (!reader.Count(&count, 1000000)) goto invalid;
+  out->bonePaths.resize(count);
+  for (auto &path : out->bonePaths) {
+    if (!reader.String(&path)) goto invalid;
   }
-  if (version >= 4) {
-    if (!reader.Count(&count, 1000000)) goto invalid;
-    out->boneIndexPaths.resize(count);
-    for (auto &path : out->boneIndexPaths) {
-      if (!reader.String(&path)) goto invalid;
-    }
-    if (!out->boneIndexPaths.empty() &&
-        out->boneIndexPaths.size() != out->bindPoses.size())
-      goto invalid;
+  if (!out->bonePaths.empty() &&
+      out->bonePaths.size() != out->bindPoses.size())
+    goto invalid;
+
+  if (!reader.Count(&count, 1000000)) goto invalid;
+  out->boneIndexPaths.resize(count);
+  for (auto &path : out->boneIndexPaths) {
+    if (!reader.String(&path)) goto invalid;
   }
-  if (version >= 5) {
-    if (!reader.Count(&count, 1000000)) goto invalid;
-    out->boneSources.resize(count);
-    for (auto &source : out->boneSources) {
-      if (!reader.String(&source.meshPath) || !reader.String(&source.meshAsset) ||
-          !reader.Value(&source.slot)) goto invalid;
-    }
-    if (!out->boneSources.empty() &&
-        out->boneSources.size() != out->bindPoses.size()) goto invalid;
+  if (!out->boneIndexPaths.empty() &&
+      out->boneIndexPaths.size() != out->bindPoses.size())
+    goto invalid;
+
+  if (!reader.Count(&count, 1000000)) goto invalid;
+  out->boneSources.resize(count);
+  for (auto &source : out->boneSources) {
+    if (!reader.String(&source.meshPath) || !reader.String(&source.meshAsset) ||
+        !reader.Value(&source.slot)) goto invalid;
   }
-  if (version >= 6) {
-    if (!reader.Count(&count, 1000000) || count != out->bindPoses.size())
+  if (!out->boneSources.empty() &&
+      out->boneSources.size() != out->bindPoses.size()) goto invalid;
+
+  if (!reader.Count(&count, 1000000) || count != out->bindPoses.size())
+    goto invalid;
+  out->boneSourceCandidates.resize(count);
+  for (auto &candidates : out->boneSourceCandidates) {
+    uint32_t candidateCount = 0;
+    if (!reader.Count(&candidateCount, 1024) || !candidateCount)
       goto invalid;
-    out->boneSourceCandidates.resize(count);
-    for (auto &candidates : out->boneSourceCandidates) {
-      uint32_t candidateCount = 0;
-      if (!reader.Count(&candidateCount, 1024) || !candidateCount)
+    candidates.resize(candidateCount);
+    for (auto &source : candidates) {
+      if (!reader.String(&source.meshPath) ||
+          !reader.String(&source.meshAsset) || !reader.Value(&source.slot))
         goto invalid;
-      candidates.resize(candidateCount);
-      for (auto &source : candidates) {
-        if (!reader.String(&source.meshPath) ||
-            !reader.String(&source.meshAsset) || !reader.Value(&source.slot))
-          goto invalid;
-      }
     }
   }
+
   if (!EiemReadBlendShapes(reader, out) || !reader.End()) goto invalid;
   if (out->vertices.size() != (size_t)out->vertexCount || out->subMeshes.empty()) goto invalid;
   return true;
@@ -365,9 +361,7 @@ static void *s_eiemMatrix4x4Class = nullptr;
 static void *s_eiemInt32Class = nullptr;
 static void *s_eiemObjectClass = nullptr;
 static void *s_eiemObjectSetName = nullptr;
-static void *s_eiemObjectInstantiate = nullptr;
 static void *s_eiemMeshCtor = nullptr;
-static void *s_eiemMeshClear = nullptr;
 static void *s_eiemMeshSetIndexFormat = nullptr;
 static void *s_eiemMeshSetVertices = nullptr;
 static void *s_eiemMeshGetVertices = nullptr;
@@ -380,7 +374,6 @@ static void *s_eiemMeshSetUVs3 = nullptr;
 static void *s_eiemMeshSetUVs4 = nullptr;
 static void *s_eiemMeshSetSubMeshCount = nullptr;
 static void *s_eiemMeshSetTriangles = nullptr;
-static void *s_eiemMeshSetBoneWeights = nullptr;
 // Endfield's Unity fork consumes the variable-count skinning representation
 // (bones-per-vertex + flattened BoneWeight1 records).  The legacy
 // set_boneWeights(BoneWeight[]) setter can leave the native per-vertex count
@@ -396,85 +389,6 @@ static void *s_eiemMeshGetBonesPerVertexValue = nullptr;
 static void *s_eiemMeshGetAllBoneWeightsArraySize = nullptr;
 static void *s_eiemMeshAddBlendShapeFrame = nullptr;
 static void *s_eiemMeshGetBlendShapeFrameCount = nullptr;
-// Native Mesh pointers captured at the exact replacement commit.  The
-// low-frequency Unity skin-validation probe uses this allow-list instead of
-// a broad native pointer/field heuristic, so unrelated game meshes cannot
-// flood the diagnostic log.
-static SRWLOCK s_eiemReplacementNativeMeshLock = SRWLOCK_INIT;
-static uintptr_t s_eiemReplacementNativeMeshes[64] = {};
-static size_t s_eiemReplacementNativeMeshCount = 0;
-// Implemented by the disposable native write-trace in il2cpp_trace.h.  The
-// resource backend only publishes the address; production builds compile this
-// as a no-op and never install a debugger or write watch.
-static void EiemArmNativeMesh1c8WriteWatch(uintptr_t native);
-// Disposable EF230 acceptance-chain watch. Production builds compile this as
-// a no-op; the backend only publishes replacement native Mesh addresses.
-static void EiemArmNativeSkinAcceptanceWriteWatch(uintptr_t native);
-// Managed Mesh objects are remembered as soon as EIEM allocates them.  The
-// native pointer is not available until HGGetPtrUnchecked succeeds, so a
-// setter trace must filter on this list while the replacement is being built.
-static SRWLOCK s_eiemReplacementManagedMeshLock = SRWLOCK_INIT;
-static void *s_eiemReplacementManagedMeshes[64] = {};
-static size_t s_eiemReplacementManagedMeshCount = 0;
-static void EiemRememberReplacementManagedMesh(void *mesh) {
-  if (!mesh) return;
-  AcquireSRWLockExclusive(&s_eiemReplacementManagedMeshLock);
-  for (size_t i = 0; i < s_eiemReplacementManagedMeshCount; ++i) {
-    if (s_eiemReplacementManagedMeshes[i] == mesh) {
-      ReleaseSRWLockExclusive(&s_eiemReplacementManagedMeshLock);
-      return;
-    }
-  }
-  if (s_eiemReplacementManagedMeshCount <
-      _countof(s_eiemReplacementManagedMeshes))
-    s_eiemReplacementManagedMeshes[s_eiemReplacementManagedMeshCount++] = mesh;
-  ReleaseSRWLockExclusive(&s_eiemReplacementManagedMeshLock);
-}
-static bool EiemIsReplacementManagedMesh(void *mesh) {
-  if (!mesh) return false;
-  bool found = false;
-  AcquireSRWLockShared(&s_eiemReplacementManagedMeshLock);
-  for (size_t i = 0; i < s_eiemReplacementManagedMeshCount; ++i) {
-    if (s_eiemReplacementManagedMeshes[i] == mesh) {
-      found = true;
-      break;
-    }
-  }
-  ReleaseSRWLockShared(&s_eiemReplacementManagedMeshLock);
-  return found;
-}
-static void EiemRememberReplacementNativeMesh(uintptr_t native) {
-  if (!native) return;
-  AcquireSRWLockExclusive(&s_eiemReplacementNativeMeshLock);
-  for (size_t i = 0; i < s_eiemReplacementNativeMeshCount; ++i) {
-    if (s_eiemReplacementNativeMeshes[i] == native) {
-      ReleaseSRWLockExclusive(&s_eiemReplacementNativeMeshLock);
-      // Re-arm the bounded diagnostic window on every F10/replay even when
-      // the Mesh object is reused from the cache.
-      EiemArmNativeMesh1c8WriteWatch(native);
-      EiemArmNativeSkinAcceptanceWriteWatch(native);
-      return;
-    }
-  }
-  if (s_eiemReplacementNativeMeshCount < _countof(s_eiemReplacementNativeMeshes))
-    s_eiemReplacementNativeMeshes[s_eiemReplacementNativeMeshCount++] = native;
-  ReleaseSRWLockExclusive(&s_eiemReplacementNativeMeshLock);
-  EiemArmNativeMesh1c8WriteWatch(native);
-  EiemArmNativeSkinAcceptanceWriteWatch(native);
-}
-static bool EiemIsReplacementNativeMesh(uintptr_t native) {
-  if (!native) return false;
-  bool found = false;
-  AcquireSRWLockShared(&s_eiemReplacementNativeMeshLock);
-  for (size_t i = 0; i < s_eiemReplacementNativeMeshCount; ++i) {
-    if (s_eiemReplacementNativeMeshes[i] == native) {
-      found = true;
-      break;
-    }
-  }
-  ReleaseSRWLockShared(&s_eiemReplacementNativeMeshLock);
-  return found;
-}
 static void *s_eiemMaterialClass = nullptr;
 static void *s_eiemShaderClass = nullptr;
 static void *s_eiemRendererClass = nullptr;
@@ -744,13 +658,11 @@ static void EiemResolveResourceBackend(void **assemblies, size_t assemblyCount) 
   if (s_eiemObjectClass) {
     s_eiemObjectSetName = FindMethod(s_eiemObjectClass, "set_name", 1);
     static const char *const instantiateTypes[] = {"UnityEngine.Object"};
-    s_eiemObjectInstantiate = EiemFindMethodWithParamTypes(
-        s_eiemObjectClass, "Instantiate", instantiateTypes,
-        _countof(instantiateTypes));
+
   }
   if (s_eiemMeshClass) {
     s_eiemMeshCtor = FindMethod(s_eiemMeshClass, ".ctor", 0);
-    s_eiemMeshClear = FindMethod(s_eiemMeshClass, "Clear", 1);
+
     s_eiemMeshSetIndexFormat = FindMethod(s_eiemMeshClass, "set_indexFormat", 1);
     s_eiemMeshSetVertices = FindMethod(s_eiemMeshClass, "set_vertices", 1);
     s_eiemMeshGetVertices = FindMethod(s_eiemMeshClass, "get_vertices", 0);
@@ -776,7 +688,6 @@ static void EiemResolveResourceBackend(void **assemblies, size_t assemblyCount) 
     s_eiemMeshSetTriangles = EiemFindMethodWithParamTypes(
         s_eiemMeshClass, "SetTriangles", setTrianglesTypes,
         _countof(setTrianglesTypes));
-    s_eiemMeshSetBoneWeights = FindMethod(s_eiemMeshClass, "set_boneWeights", 1);
     s_eiemMeshInternalSetBoneWeights =
         FindMethod(s_eiemMeshClass, "InternalSetBoneWeights", 4);
     s_eiemMeshSetBindPoses = FindMethod(s_eiemMeshClass, "set_bindposes", 1);
@@ -878,12 +789,12 @@ static void EiemResolveResourceBackend(void **assemblies, size_t assemblyCount) 
         s_eiemImageConversionClass, "LoadImage", loadImageTypes,
         _countof(loadImageTypes));
   }
-  Log("[MOD] Mesh backend: setName=%p instantiate=%p ctor=%p clear=%p vertices=%p/%p normals=%p tangents=%p uv=%p triangles=%p bonesLegacy=%p bonesVariable=%p/%p bindposes=%p/%p upload=%p blendShapes=%p bounds=%p/%p",
-      s_eiemObjectSetName, s_eiemObjectInstantiate, s_eiemMeshCtor,
-      s_eiemMeshClear, s_eiemMeshSetVertices,
+  Log("[MOD] Mesh backend: setName=%p ctor=%p vertices=%p/%p normals=%p tangents=%p uv=%p triangles=%p bonesVariable=%p/%p bindposes=%p/%p upload=%p blendShapes=%p bounds=%p/%p",
+      s_eiemObjectSetName, s_eiemMeshCtor,
+      s_eiemMeshSetVertices,
       s_eiemMeshGetVertices, s_eiemMeshSetNormals, s_eiemMeshSetTangents,
       s_eiemMeshSetUVs2, s_eiemMeshSetTriangles,
-      s_eiemMeshSetBoneWeights, s_eiemMeshInternalSetBoneWeights,
+      s_eiemMeshInternalSetBoneWeights,
       s_eiemMeshGetBoneWeights,
       s_eiemMeshSetBindPoses, s_eiemMeshGetBindPoses,
       s_eiemMeshUploadMeshData,
@@ -1290,7 +1201,6 @@ static void EiemCollectBonePathHashes(void *transform,
   }
 }
 
-
 static bool EiemWriteMeshShapes(void *mesh, const EiemNativeMeshDocument &document,
                                 char *error, size_t errorSize) {
   if (document.blendShapeChannels.empty()) return true;
@@ -1347,20 +1257,16 @@ static bool EiemWriteMeshShapes(void *mesh, const EiemNativeMeshDocument &docume
 
 struct EiemNativeBoneWeight1;
 static void *EiemGetNativeMeshPointer(void *mesh);
-static bool EiemWriteLegacyBoneWeights(void *mesh,
-                                       const EiemNativeMeshDocument &document,
-                                       char *error, size_t errorSize);
+
 static bool EiemWriteVariableBoneWeights(
     void *mesh, const EiemNativeMeshDocument &document, char *error,
     size_t errorSize);
-static bool EiemProbeNativeMesh1c8Normalizer(void *mesh, const char *stage);
+
 static bool EiemInitializeNativeMeshBoneSlots(
     void *mesh, void *templateMesh, const EiemNativeMeshDocument &document,
     const char *path, char *error, size_t errorSize);
 static bool EiemValidateNativeMeshBoneSlots(void *mesh, const char *stage,
                                                char *error, size_t errorSize);
-static void EiemLogNativeMeshFlagState(const char *stage, void *renderer,
-                                       void *mesh);
 
 static void *EiemBuildNativeMesh(const char *path, void *templateMesh,
                                  char *error, size_t errorSize,
@@ -1381,10 +1287,6 @@ static void *EiemBuildNativeMesh(const char *path, void *templateMesh,
       auto identity = std::make_shared<EiemSkinIdentity>();
       identity->paths = document.bonePaths;
       identity->hashes = document.boneHashes;
-      identity->indexPaths = document.boneIndexPaths;
-      identity->sources.reserve(document.boneSources.size());
-      for (const auto &source : document.boneSources)
-        identity->sources.push_back({source.meshPath, source.meshAsset, source.slot});
       identity->sourceCandidates.resize(document.boneSourceCandidates.size());
       for (size_t slot = 0; slot < document.boneSourceCandidates.size(); ++slot) {
         auto &outCandidates = identity->sourceCandidates[slot];
@@ -1407,62 +1309,12 @@ static void *EiemBuildNativeMesh(const char *path, void *templateMesh,
     if (error) strncpy_s(error, errorSize, "Unity Mesh write APIs are unavailable", _TRUNCATE);
     return nullptr;
   }
-  // The evidence builds can either use the source Mesh in place or start from
-  // a Unity-native clone of the source
-  // Mesh.  This preserves hidden native metadata (including the field read by
-  // the game's skin path) without hardcoding a flag value; normal builds use
-  // a fresh Mesh until one of these paths is accepted.
-  void *mesh = nullptr;
-  const char *construction = "fresh";
-  if (kEiemEnableNativeMeshInplace && templateMesh) {
-    mesh = templateMesh;
-    construction = "source-inplace";
-  } else if (kEiemEnableNativeMeshClone && templateMesh && s_eiemObjectInstantiate) {
-    void *cloneParams[] = {templateMesh};
-    void *cloneResult = nullptr;
-    const bool cloneCallOk =
-        InvokeChecked(s_eiemObjectInstantiate, nullptr, cloneParams,
-                      &cloneResult);
-    mesh = cloneResult;
-    if (mesh) construction = "source-clone";
-    else
-      Log("[DEBUG-mesh] source clone failed template=%p callOk=%d; "
-          "falling back to fresh",
-          templateMesh, cloneCallOk ? 1 : 0);
-  }
-  if (!mesh) mesh = il2cpp_object_new(s_eiemMeshClass);
+  void *mesh = il2cpp_object_new(s_eiemMeshClass);
   if (!mesh) {
     if (error) strncpy_s(error, errorSize, "Unable to allocate Unity Mesh", _TRUNCATE);
     return nullptr;
   }
-  if (strcmp(construction, "source-clone") == 0 && s_eiemMeshClear &&
-      !kEiemEnableNativeMeshCloneNoClear) {
-    // Clear the copied vertex/index layout while retaining the native Mesh
-    // metadata copied by Instantiate.  The false argument requests a full
-    // layout reset; setter tracing verifies whether +0x1C8 survives it.
-    bool keepVertexLayout = false;
-    void *clearParams[] = {&keepVertexLayout};
-    Invoke(s_eiemMeshClear, mesh, clearParams);
-    Log("[DEBUG-mesh] source clone cleared mesh=%p keepVertexLayout=0", mesh);
-  }
-  if (strcmp(construction, "fresh") == 0) {
-    Invoke(s_eiemMeshCtor, mesh);
-    // The write-trace build must arm immediately after the native Mesh
-    // constructor returns.  Arming only at the later renderer commit misses
-    // the import/registration calls that populate private native metadata.
-    // Keep this observation-only and diagnostic-only; production builds make
-    // EiemArmNativeMesh1c8WriteWatch a no-op.
-    if (kEiemEnableNativeMesh1c8WriteTrace && !document.skin.empty()) {
-      void *earlyNative = EiemGetNativeMeshPointer(mesh);
-      if (earlyNative) {
-        EiemArmNativeMesh1c8WriteWatch(
-            reinterpret_cast<uintptr_t>(earlyNative));
-        Log("[NATIVE-MESH-1C8-WATCH-EARLY] mesh=%p native=%p path=%s",
-            mesh, earlyNative, path ? path : "<null>");
-      }
-    }
-  }
-  EiemRememberReplacementManagedMesh(mesh);
+  Invoke(s_eiemMeshCtor, mesh);
   // Preserve the logical sub-asset name on generated Mesh objects.  The game
   // uses this name in a few post-model paths when the serialized SubMeshInfo
   // meshName field is absent; without it the replacement can be rebound to
@@ -1474,8 +1326,8 @@ static void *EiemBuildNativeMesh(const char *path, void *templateMesh,
       Invoke(s_eiemObjectSetName, mesh, nameParams);
     }
   }
-  if (kEiemEnableSkinDiagnostics) Log("[DEBUG-mesh] replacement mesh=%p sourceTemplate=%p construction=%s", mesh,
-      templateMesh, construction);
+  if (kEiemEnableSkinDiagnostics) Log("[DEBUG-mesh] replacement mesh=%p sourceTemplate=%p construction=fresh", mesh,
+      templateMesh);
   if (document.vertices.size() > 65535 && s_eiemMeshSetIndexFormat) {
     int32_t indexFormat = 1;  // UnityEngine.Rendering.IndexFormat.UInt32
     void *params[] = {&indexFormat};
@@ -1554,24 +1406,11 @@ static void *EiemBuildNativeMesh(const char *path, void *templateMesh,
     if (error) strncpy_s(error, errorSize, "Unity Mesh skinning APIs are unavailable", _TRUNCATE);
     return nullptr;
   }
-  // Endfield's fork exposes both Unity skinning entry points.  The variable
-  // path is required for the actual per-vertex counts, but the legacy setter
-  // may also perform a native registration side effect that is not reflected
-  // by the managed getters.  In the bounded compatibility probe call the
-  // legacy path first, snapshot the native state, then write the variable
-  // representation and snapshot again.  No native flag is written here.
-  bool legacySkinWritten = false;
-  if (kEiemMeshBoneWeightDualPathProbe && !document.skin.empty())
-    legacySkinWritten = EiemWriteLegacyBoneWeights(mesh, document, error,
-                                                   errorSize);
-  bool skinWritten = s_eiemMeshInternalSetBoneWeights
-                         ? EiemWriteVariableBoneWeights(mesh, document, error,
-                                                        errorSize)
-                         : legacySkinWritten ||
-                               setRequired(s_eiemMeshSetBoneWeights,
-                                           s_eiemBoneWeightClass,
-                                           document.skin);
-  EiemLogNativeMeshFlagState("skin-final", nullptr, mesh);
+  // Current Unity entry point; a missing API is an explicit load failure.
+  const bool skinWritten = document.skin.empty() ||
+      (s_eiemMeshInternalSetBoneWeights &&
+       EiemWriteVariableBoneWeights(mesh, document, error, errorSize));
+
   if (!skinWritten) {
     if (error && !error[0])
       strncpy_s(error, errorSize, "Unity Mesh skinning APIs are unavailable",
@@ -1594,7 +1433,6 @@ static void *EiemBuildNativeMesh(const char *path, void *templateMesh,
   // The diagnostic build calls the game's own native Mesh normalizer only
   // after every managed channel has been submitted. Normal builds leave this
   // call compiled out, so the replacement path remains unchanged.
-  EiemProbeNativeMesh1c8Normalizer(mesh, "post-upload");
   if (g_mesh_get_vertexCount && g_mesh_get_subMeshCount && g_mesh_GetIndexCount) {
     auto unboxInt = [](void *boxed) -> int32_t {
       __try { return boxed ? *(int32_t *)((char *)boxed + 16) : -1; }
@@ -1699,35 +1537,12 @@ struct EiemNativeBoneWeight1 {
 static_assert(sizeof(EiemNativeBoneWeight1) == 8,
               "UnityEngine.BoneWeight1 must remain an 8-byte value type");
 
-static bool EiemWriteLegacyBoneWeights(
-    void *mesh, const EiemNativeMeshDocument &document, char *error,
-    size_t errorSize) {
-  (void)error;
-  (void)errorSize;
-  if (!mesh || document.skin.empty() || !s_eiemMeshSetBoneWeights ||
-      !s_eiemBoneWeightClass)
-    return false;
-  void *array = EiemMakeValueArray(s_eiemBoneWeightClass, document.skin);
-  if (!array) {
-    Log("[MOD-SKIN-LEGACY] mesh=%p allocation=failed", mesh);
-    return false;
-  }
-  void *params[] = {array};
-  void *result = nullptr;
-  const bool ok = InvokeChecked(s_eiemMeshSetBoneWeights, mesh, params, &result);
-  Log("[MOD-SKIN-LEGACY] mesh=%p vertices=%d ok=%d", mesh,
-      document.vertexCount, ok ? 1 : 0);
-  if (ok) EiemLogNativeMeshFlagState("skin-legacy", nullptr, mesh);
-  return ok;
-}
-
 static bool EiemWriteVariableBoneWeights(
     void *mesh, const EiemNativeMeshDocument &document, char *error,
     size_t errorSize) {
   if (!mesh || document.skin.empty()) return true;
   if (!s_eiemMeshInternalSetBoneWeights) {
-    // Older Unity players may not expose the variable-count entry point. The
-    // caller will use the legacy setter in that case.
+    if (error) strncpy_s(error, errorSize, "Unity InternalSetBoneWeights unavailable", _TRUNCATE);
     return false;
   }
   if (document.vertexCount <= 0 ||
@@ -1796,7 +1611,7 @@ static bool EiemWriteVariableBoneWeights(
   }
   Log("[MOD-SKIN-VARIABLE] mesh=%p vertices=%d bonesPerVertex=%d allWeights=%d",
       mesh, document.vertexCount, bonesSize, weightsSize);
-  EiemLogNativeMeshFlagState("skin-variable", nullptr, mesh);
+
   return true;
 }
 
@@ -1819,50 +1634,6 @@ static int64_t EiemReadNativeMeshScalar(void *method, void *mesh,
   }
   __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
   return result;
-}
-
-// The native skin builder validates the highest bone index in the actual
-// Mesh buffer against the native bindpose/bone count.  The public
-// GetBonesPerVertexValue()/GetAllBoneWeightsArraySize() probes tell us only
-// that the variable representation exists; this readback gives us the
-// equivalent max-index check for the legacy view when the fork exposes it.
-static int32_t EiemReadLegacyMaxBoneIndex(void *weights,
-                                          int32_t *negativeIndexCount) {
-  if (negativeIndexCount) *negativeIndexCount = 0;
-  const int32_t count = EiemBackendManagedArrayLength(weights);
-  if (count < 0 || count > 1000000) return -1;
-  const BoneWeight *items = count
-                                ? reinterpret_cast<const BoneWeight *>(
-                                      (char *)weights + IL2CPP_ARRAY_DATA)
-                                : nullptr;
-  int32_t maximum = -1;
-  __try {
-    for (int32_t vertex = 0; vertex < count; ++vertex) {
-      const int indices[4] = {items[vertex].boneIndex0,
-                              items[vertex].boneIndex1,
-                              items[vertex].boneIndex2,
-                              items[vertex].boneIndex3};
-      const float weights4[4] = {items[vertex].weight0,
-                                 items[vertex].weight1,
-                                 items[vertex].weight2,
-                                 items[vertex].weight3};
-      for (int slot = 0; slot < 4; ++slot) {
-        // Match the variable writer: zero-weight slots are not active
-        // influences, so they must not determine the native max index.
-        if (!std::isfinite(weights4[slot]) || weights4[slot] <= 0.0f)
-          continue;
-        if (indices[slot] < 0) {
-          if (negativeIndexCount) ++*negativeIndexCount;
-          continue;
-        }
-        maximum = (std::max)(maximum, indices[slot]);
-      }
-    }
-  }
-  __except (EXCEPTION_EXECUTE_HANDLER) {
-    return -1;
-  }
-  return maximum;
 }
 
 static uintptr_t EiemReadNativePointerField(uintptr_t base, size_t offset) {
@@ -2066,182 +1837,11 @@ static bool EiemInitializeNativeMeshBoneSlots(
 // routine whose object layout matches Mesh and whose cold chunk writes native
 // Mesh +0x1C8 after validating the inner skin-data object. Do not write the
 // field directly: this probe calls the game's routine and records its effect.
-static bool EiemProbeNativeMesh1c8Normalizer(void *mesh, const char *stage) {
-  if (!kEiemEnableNativeMesh1c8NormalizeProbe || !mesh) return false;
-  void *nativeObject = EiemGetNativeMeshPointer(mesh);
-  if (!nativeObject) {
-    Log("[NATIVE-MESH-1C8-NORMALIZE-v1] stage=%s mesh=%p skip=no-native",
-        stage ? stage : "unknown", mesh);
-    return false;
-  }
-  HMODULE unity = GetModuleHandleW(L"UnityPlayer.dll");
-  const uintptr_t base = reinterpret_cast<uintptr_t>(unity);
-  constexpr uintptr_t kNormalizerRva = 0x4A90D0;
-  constexpr uintptr_t kMeshVtableRva = 0x19C8230;
-  if (!EiemUnityRvaIsMapped(unity, kNormalizerRva, 0x25) ||
-      !EiemUnityRvaIsMapped(unity, kMeshVtableRva, sizeof(void *))) {
-    Log("[NATIVE-MESH-1C8-NORMALIZE-v1] stage=%s mesh=%p native=%p "
-        "skip=unity-rva-unmapped base=%p",
-        stage ? stage : "unknown", mesh, nativeObject, unity);
-    return false;
-  }
-  const uintptr_t vtable = EiemReadNativePointerField(
-      reinterpret_cast<uintptr_t>(nativeObject), 0x0);
-  if (vtable != base + kMeshVtableRva) {
-    Log("[NATIVE-MESH-1C8-NORMALIZE-v1] stage=%s mesh=%p native=%p "
-        "skip=vtable vtable=%p expected=%p",
-        stage ? stage : "unknown", mesh, nativeObject,
-        reinterpret_cast<void *>(vtable),
-        reinterpret_cast<void *>(base + kMeshVtableRva));
-    return false;
-  }
-  using Normalizer = uint8_t(__fastcall *)(void *);
-  auto normalizer = reinterpret_cast<Normalizer>(base + kNormalizerRva);
-  const int64_t before = EiemReadNativeInt32Field(
-      reinterpret_cast<uintptr_t>(nativeObject), 0x1C8);
-  uint8_t result = 0;
-  DWORD exceptionCode = 0;
-  __try {
-    result = normalizer(nativeObject);
-  }
-  __except (exceptionCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
-  }
-  const int64_t after = EiemReadNativeInt32Field(
-      reinterpret_cast<uintptr_t>(nativeObject), 0x1C8);
-  Log("[NATIVE-MESH-1C8-NORMALIZE-v1] stage=%s mesh=%p native=%p "
-      "before=%lld after=%lld result=%u exception=0x%08lX nativeData=%p "
-      "meshField110=%lld meshField124=%lld",
-      stage ? stage : "unknown", mesh, nativeObject,
-      (long long)before, (long long)after, (unsigned)result,
-      (unsigned long)exceptionCode,
-      (void *)EiemReadNativePointerField(
-          reinterpret_cast<uintptr_t>(nativeObject), 0x38),
-      (long long)EiemReadNativeInt32Field(
-          reinterpret_cast<uintptr_t>(nativeObject), 0x110),
-      (long long)EiemReadNativeInt32Field(
-          reinterpret_cast<uintptr_t>(nativeObject), 0x124));
-  return exceptionCode == 0;
-}
-
-static void EiemLogNativeMeshFlagState(const char *stage, void *renderer,
-                                        void *mesh) {
-  if (!kEiemEnableNativeMeshFlagProbe || !mesh) return;
-  const uintptr_t native = reinterpret_cast<uintptr_t>(
-      EiemGetNativeMeshPointer(mesh));
-  void *weights = s_eiemMeshGetBoneWeights
-                      ? EiemBackendInvokeNoThrow(s_eiemMeshGetBoneWeights, mesh)
-                      : nullptr;
-  void *bindPoses = s_eiemMeshGetBindPoses
-                       ? EiemBackendInvokeNoThrow(s_eiemMeshGetBindPoses, mesh)
-                       : nullptr;
-  int32_t negativeIndexCount = 0;
-  const int32_t legacyMaxIndex = EiemReadLegacyMaxBoneIndex(
-      weights, &negativeIndexCount);
-  const int32_t rendererBoneCount =
-      renderer && g_smr_get_bones
-          ? EiemBackendManagedArrayLength(
-                EiemBackendInvokeNoThrow(g_smr_get_bones, renderer))
-          : -1;
-  const uintptr_t nativeData = EiemReadNativePointerField(native, 0x38);
-  // These are deliberately kept separate. UnityPlayer's skin-validation
-  // path reads Mesh+0x124 (and may populate it), while the native data block
-  // has its own independent fields. Mixing them made earlier logs look as if
-  // the game had changed one flag when it had actually changed a different
-  // cache.
-  const int64_t nativeDataBoneCount =
-      EiemReadNativeInt32Field(nativeData, 0x100);
-  const int64_t nativeDataField110 =
-      EiemReadNativeInt32Field(nativeData, 0x110);
-  const int64_t nativeDataField124 =
-      EiemReadNativeInt32Field(nativeData, 0x124);
-  const int64_t meshField110 = EiemReadNativeInt32Field(native, 0x110);
-  const int64_t meshField124 = EiemReadNativeInt32Field(native, 0x124);
-  const int64_t nativeWeightLayout = EiemReadNativeInt32Field(nativeData, 0x78);
-  // Read these only at the low-frequency Mesh construction/replacement
-  // boundary. The vtable identifies the concrete native Mesh object for
-  // static analysis. The renderer's native skin record stores this Mesh
-  // pointer at renderer+0x298, and C7 then reads the Mesh-private +0x1C8
-  // count. This probe must remain read-only.
-  const uintptr_t nativeVtable = EiemReadNativePointerField(native, 0x0);
-  const int64_t nativePrivateField1c8 =
-      EiemReadNativeInt32Field(native, 0x1C8);
-  const uintptr_t unityPlayerBase =
-      (uintptr_t)GetModuleHandleA("UnityPlayer.dll");
-  const uint64_t nativeVtableRva =
-      nativeVtable >= unityPlayerBase
-          ? (uint64_t)(nativeVtable - unityPlayerBase)
-          : 0;
-  Log("[NATIVE-MESH-FLAGS-v3] generation=%ld stage=%s renderer=%p mesh=%p "
-      "native=%p hasWeights=%lld bonesPerVertexValue=%lld allWeightCount=%lld "
-      "legacyWeightCount=%d bindposeCount=%d legacyMaxIndex=%d "
-      "negativeActiveIndices=%d rendererBoneCount=%d nativeData=%p "
-      "nativeDataBoneCount=%lld nativeDataField110=%lld "
-      "nativeDataField124=%lld meshField110=%lld meshField124=%lld "
-      "nativeWeightLayout=%lld nativeVtable=%p nativeVtableRva=0x%llX "
-      "nativePrivateField1c8=%lld",
-      InterlockedCompareExchange(&s_eiemModGeneration, 0, 0),
-      stage ? stage : "unknown", renderer, mesh, (void *)native,
-      (long long)EiemReadNativeMeshScalar(s_eiemMeshHasBoneWeights, mesh, true),
-      (long long)EiemReadNativeMeshScalar(s_eiemMeshGetBonesPerVertexValue, mesh),
-      (long long)EiemReadNativeMeshScalar(s_eiemMeshGetAllBoneWeightsArraySize, mesh),
-      EiemBackendManagedArrayLength(weights),
-      EiemBackendManagedArrayLength(bindPoses), legacyMaxIndex,
-      negativeIndexCount, rendererBoneCount, (void *)nativeData,
-      (long long)nativeDataBoneCount, (long long)nativeDataField110,
-      (long long)nativeDataField124, (long long)meshField110,
-      (long long)meshField124, (long long)nativeWeightLayout,
-      (void *)nativeVtable, (unsigned long long)nativeVtableRva,
-      (long long)nativePrivateField1c8);
-  // The disposable all-object writer trace arms on both source and
-  // replacement Meshes. Production remains a no-op; this closes the gap
-  // where a game-owned source object could be initialized on a later F10
-  // transaction while only replacements were being watched.
-  if (kEiemEnableNativeMesh1c8WriteTrace && native)
-    EiemArmNativeMesh1c8WriteWatch(native);
-  if (stage && strcmp(stage, "replacement") == 0)
-    EiemRememberReplacementNativeMesh(native);
-}
 
 // Snapshot the exact native Mesh objects already associated with replacement
 // renderers after a low-frequency replay boundary. This catches a late game
 // registration change that happens after the Mesh constructor/commit log,
 // without installing a hot native hook or writing any field.
-static void EiemLogReplacementNativeMeshSnapshot(const char *stage) {
-  if (!kEiemEnableNativeMeshFlagProbe) return;
-  uintptr_t natives[_countof(s_eiemReplacementNativeMeshes)] = {};
-  size_t count = 0;
-  AcquireSRWLockShared(&s_eiemReplacementNativeMeshLock);
-  count = s_eiemReplacementNativeMeshCount;
-  if (count > _countof(natives)) count = _countof(natives);
-  if (count) memcpy(natives, s_eiemReplacementNativeMeshes,
-                    count * sizeof(natives[0]));
-  ReleaseSRWLockShared(&s_eiemReplacementNativeMeshLock);
-  for (size_t index = 0; index < count; ++index) {
-    const uintptr_t native = natives[index];
-    const uintptr_t unityPlayerBase =
-        (uintptr_t)GetModuleHandleA("UnityPlayer.dll");
-    const uintptr_t nativeVtable =
-        EiemReadNativePointerField(native, 0x0);
-    const uint64_t nativeVtableRva =
-        nativeVtable >= unityPlayerBase
-            ? (uint64_t)(nativeVtable - unityPlayerBase)
-            : 0;
-    Log("[NATIVE-MESH-SNAPSHOT-v1] generation=%ld stage=%s ordinal=%zu "
-        "native=%p nativeVtable=%p nativeVtableRva=0x%llX "
-        "nativePrivateField1c8=%lld "
-        "nativeData=%p nativeDataBoneCount=%lld meshField110=%lld "
-        "meshField124=%lld",
-        InterlockedCompareExchange(&s_eiemModGeneration, 0, 0),
-        stage ? stage : "unknown", index, (void *)native,
-        (void *)nativeVtable, (unsigned long long)nativeVtableRva,
-        (long long)EiemReadNativeInt32Field(native, 0x1C8),
-        (void *)EiemReadNativePointerField(native, 0x38),
-        (long long)EiemReadNativeInt32Field(
-            EiemReadNativePointerField(native, 0x38), 0x100),
-        (long long)EiemReadNativeInt32Field(native, 0x110),
-        (long long)EiemReadNativeInt32Field(native, 0x124));
-  }
-}
 
 static uint64_t EiemMeshCacheStamp(uint64_t fileStamp) {
   // F10 is an explicit full resource rebuild. Keep ordinary lookups cached
@@ -2279,7 +1879,6 @@ static void EiemClearNativeMeshResourceCache() {
   if (count)
     Log("[MOD] Released %zu generated mesh resource(s)", count);
 }
-
 
 static bool EiemBuildMeshResource(const EiemModRule &rule, void **outMesh,
                                   char *error, size_t errorSize,

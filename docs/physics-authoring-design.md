@@ -1,6 +1,6 @@
 ﻿# 物理骨骼与碰撞体：三端设计契约
 
-状态：目标设计。当前实现范围以[文档索引](README.md)、[Physics 运行时重构边界](physics-runtime-redesign.md)、[Physics 作者 v1/v3/v4/v5](physics-authoring-v1.md)及[源作者 v2](physics-authoring-v2.md)为准。
+状态：目标设计。当前实现范围以[文档索引](README.md)、[Physics 运行时重构边界](physics-runtime-redesign.md)、[Physics 作者 v5](physics-authoring-v5.md)及[源作者 v2](physics-authoring-v2.md)为准。
 本文描述完整链路要求，不把设计目标、源码草稿或宿主测试当作游戏能力。
 沿用[资源替换职责](refactor-resource-replacement.md)、[共享骨架绑定](shared-skeleton-binding.md)和[作者状态](author-state-materials.md)。
 

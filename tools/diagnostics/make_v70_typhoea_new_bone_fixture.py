@@ -339,7 +339,7 @@ def identity(label):
 
 def physics_bytes(details):
     document = {
-        "version": 1, "purpose": "authoring", "coordinate": COORDINATE,
+        "version": 5, "purpose": "authoring", "coordinate": COORDINATE,
         "backend": "BeyondDynamicBone", "id": identity("v70-typhoea-new-bone-resource"),
         "skeleton": PHYSICS_SKELETON_RELATIVE,
         "groups": [{
@@ -356,6 +356,8 @@ def physics_bytes(details):
                 "gravityFalloff": 0.0, "blendWeight": 1.0,
                 "animationPoseRatio": 1.0,
             },
+            "radius": physics_document.default_radius(),
+            "nativeParameters": [],
             "colliders": [],
         }],
         "colliders": [],

@@ -48,11 +48,6 @@ struct EiemModRule {
   // buffer in the generated Mesh variant. The Renderer and its skinning stay
   // unchanged, so visibility changes do not create or destroy Unity objects.
   uint32_t hiddenSubmeshMask = 0;
-  // Retained temporarily as an ABI-local placeholder while the quarantined
-  // legacy implementation is physically removed. The parser no longer
-  // accepts partner.N and production execution never reads these fields.
-  char partners[16][96] = {};
-  uint32_t partnerCount = 0;
   char shapeNames[64][192] = {};
   float shapeWeights[64] = {}; // authoring units: 1 == Unity 100
   uint32_t shapeCount = 0;

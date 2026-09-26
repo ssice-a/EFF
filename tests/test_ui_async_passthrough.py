@@ -1,3 +1,4 @@
+from runtime_source import read_runtime_source
 """Execute the production async hook against a deterministic loader fixture.
 
 This tests our native boundary, not IL2CPP or GPU rendering. A callback must
@@ -17,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def production_async_hook():
-    source = (ROOT / "src/il2cpp_trace.h").read_text(encoding="utf-8")
+    source = read_runtime_source(ROOT)
     start = source.rindex("static int32_t TraceUIModelLoaderLoadModelAsync(")
     opening = source.index("{", start)
     depth = 1
@@ -113,7 +114,7 @@ class UIAsyncPassthrough(unittest.TestCase):
         build = subprocess.run(
             ["cl", "/nologo", "/EHsc", "/std:c++17", str(source),
              f"/Fe{cls.executable}"],
-            cwd=folder, capture_output=True, text=True,
+            cwd=folder, capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         if build.returncode:
             raise AssertionError(build.stdout + build.stderr)
@@ -122,7 +123,7 @@ class UIAsyncPassthrough(unittest.TestCase):
         for scenario in ("deferred", "inline", "null", "failed", "cancel", "unavailable"):
             with self.subTest(scenario=scenario):
                 result = subprocess.run(
-                    [str(self.executable), scenario], capture_output=True, text=True,
+                    [str(self.executable), scenario], capture_output=True, text=True, encoding="utf-8", errors="replace",
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

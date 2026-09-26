@@ -1,3 +1,4 @@
+from runtime_source import read_runtime_source
 """Executable tests of global config, state publication and instance registration."""
 from pathlib import Path
 import shutil
@@ -289,7 +290,7 @@ class ModControlsTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory(prefix="eiem-controls-")
         cls.addClassCleanup(cls.temp.cleanup)
         cls.folder = Path(cls.temp.name)
-        trace = (ROOT / "src/il2cpp_trace.h").read_text(encoding="utf-8")
+        trace = read_runtime_source(ROOT)
         signature = "static bool EiemRegisterAndApplyModelInstance("
         # Skip forward declaration; compile the actual runtime implementation.
         implementation = function(trace[trace.rindex(signature):], signature)

@@ -5,15 +5,15 @@ EIEM 的运行时、Blender 作者工具和资源解包器是三个独立产品�
 
 | 仓库 | 唯一职责 | 当前输出 |
 |---|---|---|
-| [ssice-a/EIEM](https://github.com/ssice-a/EIEM) | 游戏内 DLL、INI/Lua 运行时、EIEM 格式规范、跨端兼容测试 | DLL 发布包；读取 EIEMESH v2-v6 |
+| [ssice-a/EIEM](https://github.com/ssice-a/EIEM) | 游戏内 DLL、INI/Lua 运行时、EIEM 格式规范、跨端契约测试 | DLL 发布包；读取 EIEMESH v6 |
 | [ssice-a/EIEM-blender](https://github.com/ssice-a/EIEM-blender) | Blender 导入、编辑、LOD/材质/切换作者数据和 Mod 导出 | EIEMESH v6 与 `mod.ini` |
-| [ssice-a/AnimeStudio](https://github.com/ssice-a/AnimeStudio) | Endfield VFS 索引、原始资源与 PFB 关系提取、源作者数据导出 | EIEMESH v3 源包、Skeleton、Material、Texture、Physics 源图 |
+| [ssice-a/AnimeStudio](https://github.com/ssice-a/AnimeStudio) | Endfield VFS 索引、原始资源与 PFB 关系提取、源作者数据导出 | EIEMESH v6、EIESKEL v2、Material、Texture、Physics 源图 |
 
 ## 依赖方向
 
 ```text
 游戏 VFS
-  -> AnimeStudio 源包（v3）
+  -> AnimeStudio 源包（Mesh v6、Skeleton v2）
       -> Blender 编辑与 Mod 包（Mesh v6）
           -> EIEM DLL 解析并应用到当前游戏实例
 ```
@@ -26,7 +26,7 @@ PFB 实例。DLL 不重建作者数据；它只消费完整、已验证的资源
 规范和兼容矩阵放在 EIEM 的 `docs/`，C++ reader 与跨端集成测试也由 EIEM 维护。
 生产端实现分别留在各自仓库。格式变更按以下顺序完成：
 
-1. 在 EIEM 文档和 reader 测试中定义新版本、失败条件和旧版本兼容范围。
+1. 在 EIEM 文档和 reader 测试中定义当前版本与旧版拒绝条件。
 2. 在 AnimeStudio 或 EIEM-blender 实现对应 writer，并用真实 reader 回归。
 3. 先在工具仓库分别提交和验证，再更新 EIEM 中的 submodule 固定提交；需要发布时三仓库各自发布。
 
@@ -47,4 +47,4 @@ PFB 实例。DLL 不重建作者数据；它只消费完整、已验证的资源
 git submodule update --init --recursive
 ```
 
-提交顺序：AnimeStudio 和 EIEM-blender 各自提交；EIEM 更新两个 gitlink 并提交。任何一端仍有未提交修改时，父仓库的 gitlink 不能表达完整源码版本。三仓库的 Release 独立创建；EIEM 的 Release workflow 只发布 DLL，不把工具产物混入同一版本号。当前 Release 暂停，继续本地整理和验证。详见[本地项目管理状态](project-management-20260926.md)。
+提交顺序：AnimeStudio 和 EIEM-blender 各自提交；EIEM 更新两个 gitlink 并提交。任何一端仍有未提交修改时，父仓库的 gitlink 不能表达完整源码版本。三仓库的 Release 独立创建；EIEM 的 Release workflow 只发布 DLL，不把工具产物混入同一版本号。本轮清理仍在本地验证，没有新增发布。详见[本地项目管理状态](project-management-20260926.md)。

@@ -55,8 +55,7 @@ static bool EiemValidateSkeleton(const EiemSkeletonDocument &document, std::stri
   return true;
 }
 
-// V1 is AnimeStudio's source-only interchange. V2 appends explicit provenance
-// flags; a missing live source bone must NEVER be mistaken for a new bone.
+// EIESKEL v2 requires explicit provenance on every node.
 template <typename Reader>
 static bool EiemReadSkeleton(Reader &reader, EiemSkeletonDocument &out, std::string &error) {
   EiemSkeletonDocument next;
@@ -64,7 +63,7 @@ static bool EiemReadSkeleton(Reader &reader, EiemSkeletonDocument &out, std::str
   uint32_t count = 0, paletteCount = 0; std::string coordinate;
   auto invalid = [&] { error = "Invalid or truncated EIEM Skeleton resource"; return false; };
   if (!reader.Bytes(magic, 8) || std::string(magic,8) != std::string("EIESKEL\0",8) ||
-      !reader.Value(&version) || (version != 1 && version != 2) || !reader.String(&coordinate) ||
+      !reader.Value(&version) || version != 2 || !reader.String(&coordinate) ||
       coordinate != "unity-y-up-left-handed" || !reader.Count(&count,16384)) return invalid();
   next.nodes.resize(count);
   for (auto &node : next.nodes)
@@ -73,7 +72,7 @@ static bool EiemReadSkeleton(Reader &reader, EiemSkeletonDocument &out, std::str
         !reader.Bytes(node.scale,sizeof(node.scale))) return invalid();
   // Per-renderer palettes were removed from Skeleton; they live in Mesh.
   if (!reader.Count(&paletteCount,0) || !reader.Value(&root) || root != -1) return invalid();
-  if (version == 2) {
+
     uint32_t flags = 0;
     if (!reader.Count(&flags,16384) || flags != count) return invalid();
     for (auto &node : next.nodes) {
@@ -81,7 +80,7 @@ static bool EiemReadSkeleton(Reader &reader, EiemSkeletonDocument &out, std::str
       if (!reader.Value(&source) || source > 1) return invalid();
       node.source = source != 0;
     }
-  }
+
   if (!reader.End()) return invalid();
   if (!EiemValidateSkeleton(next,error)) return false;
   out = std::move(next); return true;

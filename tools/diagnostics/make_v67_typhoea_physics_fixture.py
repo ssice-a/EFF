@@ -62,19 +62,21 @@ def seven_bit_string(value):
 
 def skeleton_bytes():
     data = bytearray(b"EIESKEL\0")
-    data.extend(struct.pack("<i", 1))
+    data.extend(struct.pack("<i", 2))
     data.extend(seven_bit_string(COORDINATE))
     data.extend(struct.pack("<I", len(NODES)))
     for path, parent, transform in NODES:
         data.extend(seven_bit_string(path))
         data.extend(struct.pack("<i10f", parent, *transform))
     data.extend(struct.pack("<Ii", 0, -1))
+    data.extend(struct.pack("<I", len(NODES)))
+    data.extend(bytes([1] * len(NODES)))
     return bytes(data)
 
 
 def physics_bytes():
     payload = {
-        "version": 1,
+        "version": 5,
         "purpose": "authoring",
         "coordinate": COORDINATE,
         "backend": "BeyondDynamicBone",
@@ -95,6 +97,8 @@ def physics_bytes():
                 "blendWeight": 1.0,
                 "animationPoseRatio": 1.0,
             },
+            "radius": physics_document.default_radius(),
+            "nativeParameters": [],
             "colliders": [],
         }],
         "colliders": [],

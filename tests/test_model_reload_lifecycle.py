@@ -170,7 +170,7 @@ class ModelReloadLifecycle(unittest.TestCase):
         registration='static bool EiemRegisterAndApplyModelInstance('
         code=function(trace[trace.rindex(registration):],registration)
         for sig in ('static void EiemForgetModelOwner(', 'static void EiemForgetModelInstance(',
-                    'static void EiemPruneModelInstances(', 'static void EiemRunModReconcile()'):
+                    'static void EiemPruneModelInstances(', 'static std::vector<EiemModelInstanceState> EiemSnapshotModelInstances()', 'static void EiemRunModReconcile()'):
             code+='\n'+function(trace[trace.rindex(sig):],sig)
         with tempfile.TemporaryDirectory(prefix='eiem-model-reload-') as tmp:
             folder=Path(tmp); source=folder/'test.cpp'; exe=folder/'test.exe'

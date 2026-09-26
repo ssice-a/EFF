@@ -13,8 +13,6 @@ struct EiemSkinIdentity {
   };
   std::vector<std::string> paths;
   std::vector<uint32_t> hashes;
-  std::vector<std::string> indexPaths;
-  std::vector<Source> sources;
   // EIEMESH v6 records every valid source-Mesh/slot that can provide this
   // palette entry.  A candidate may be absent from one PFB (for example a
   // lower LOD or a UI model), so the runtime tries the candidates that exist

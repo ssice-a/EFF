@@ -96,33 +96,14 @@ class PhysicsDocumentTests(unittest.TestCase):
         self.assertEqual(actual["groups"][0]["radius"]["keys"][-1]["time"], .9974365234375)
         codec.validate(actual, {"Rig/Root", "Rig/Root/Tip"})
 
-    def test_legacy_v1_still_roundtrips_without_inventing_radius_bytes(self):
-        doc = fixture(); doc["version"] = codec.LEGACY_VERSION
-        for group in doc["groups"]: group.pop("radius"); group.pop("nativeParameters")
-        for collider in doc["colliders"]: collider.pop("endRadius"); collider.pop("alignedOnCenter")
-        encoded = codec.encode(doc)
-        decoded = codec.decode(encoded)
-        self.assertEqual(decoded["version"], 1)
-        self.assertNotIn("radius", decoded["groups"][0])
-        self.assertEqual(codec.encode(decoded), encoded)
-
-    def test_v3_still_roundtrips_without_v4_parameter_bytes(self):
-        doc = fixture(); doc["version"] = codec.RADIUS_VERSION
-        for group in doc["groups"]: group.pop("nativeParameters")
-        for collider in doc["colliders"]: collider.pop("endRadius"); collider.pop("alignedOnCenter")
-        encoded = codec.encode(doc); decoded = codec.decode(encoded)
-        self.assertEqual(decoded["version"], 3)
-        self.assertNotIn("nativeParameters", decoded["groups"][0])
-        self.assertEqual(codec.encode(decoded), encoded)
-
-    def test_v4_still_roundtrips_with_equal_radius_colliders(self):
-        doc = fixture(); doc["version"] = codec.NATIVE_PARAMETER_VERSION
-        for collider in doc["colliders"]:
-            collider.pop("endRadius"); collider.pop("alignedOnCenter")
-        encoded = codec.encode(doc); decoded = codec.decode(encoded)
-        self.assertEqual(decoded["version"], 4)
-        self.assertNotIn("endRadius", decoded["colliders"][0])
-        self.assertEqual(codec.encode(decoded), encoded)
+    def test_old_authoring_versions_are_rejected(self):
+        for version in (1, 3, 4):
+            with self.subTest(version=version):
+                doc = fixture(); doc["version"] = version
+                with self.assertRaises(ValueError): codec.encode(doc)
+                data = bytearray(codec.encode(fixture()))
+                data[8:12] = version.to_bytes(4, "little")
+                with self.assertRaises(ValueError): codec.decode(data)
 
     def test_invalid_schema_topology_references_and_numbers(self):
         changes = [lambda d: d.update(version=2), lambda d: d.update(runtime_handle=1),

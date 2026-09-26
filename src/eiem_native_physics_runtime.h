@@ -1162,61 +1162,7 @@ static void EiemPhysicsRuntimeDrainReleases() {
     EiemPhysicsRuntimeReleaseOnUnityThread(release.model, release.stage.c_str());
 }
 
-static void EiemPhysicsRuntimeLogPartnerBinding(
-    EiemPhysicsRuntimeInstance &instance) {
-  if (instance.bindingLogged) return;
-  instance.bindingLogged = true;
-  std::vector<void *> renderers;
-  void *firstPartnerSkeleton = nullptr;
-  AcquireSRWLockShared(&s_eiemPartnerLock);
-  for (const auto &partner : s_eiemPartners)
-    if (partner.controlVisible && partner.skeleton == instance.skeleton &&
-        partner.partnerRenderer) {
-      renderers.push_back(partner.partnerRenderer);
-      if (!firstPartnerSkeleton) firstPartnerSkeleton = partner.skeleton.get();
-    }
-  ReleaseSRWLockShared(&s_eiemPartnerLock);
 
-  std::set<void *> selected;
-  std::string firstSelectedPath;
-  void *firstSelected = nullptr;
-  for (const auto &group : instance.config.Groups())
-    for (size_t index = 0; index < group.transforms.size(); ++index) {
-      const auto &node = group.transforms[index];
-      if (!node.Target()) continue;
-      selected.insert(node.Target());
-      if (!firstSelected) {
-        firstSelected = node.Target();
-        if (index < group.authorNodes.size())
-          firstSelectedPath = group.authorNodes[index].bone;
-      }
-    }
-  std::set<void *> hits;
-  size_t paletteEntries = 0;
-  for (void *renderer : renderers) {
-    void *bones = nullptr;
-    if (!g_smr_get_bones ||
-        !EiemSkeletonCall(g_smr_get_bones, renderer, nullptr, &bones))
-      continue;
-    const size_t count = EiemManagedArrayLength(bones);
-    if (!bones || count > 16384) continue;
-    paletteEntries += count;
-    void **items = (void **)((char *)bones + IL2CPP_ARRAY_DATA);
-    for (size_t index = 0; index < count; ++index)
-      if (selected.find(items[index]) != selected.end()) hits.insert(items[index]);
-  }
-  Log("%s visible-binding generation=%llu instance=%p skeleton=%p anchor=%p "
-      "nodes=%zu added=%zu partners=%zu partnerSkeleton=%p paletteEntries=%zu "
-      "selected=%zu uniqueHits=%zu firstSelected=%p firstSelectedPath=%s",
-      EiemPhysicsRuntimeTag, (unsigned long long)instance.generation,
-      &instance, instance.skeleton.get(),
-      instance.skeleton ? instance.skeleton->anchor.Target() : nullptr,
-      instance.skeleton ? instance.skeleton->nodes.size() : 0,
-      instance.skeleton ? instance.skeleton->createdObjects.size() : 0,
-      renderers.size(), firstPartnerSkeleton, paletteEntries, selected.size(),
-      hits.size(), firstSelected, firstSelectedPath.empty()
-          ? "<unknown>" : firstSelectedPath.c_str());
-}
 
 // BuildAndRun is asynchronous. Check its accepted component once at the next
 // explicit lifecycle boundary (initial model attach, owner change, or F10),
@@ -1272,7 +1218,7 @@ static void EiemPhysicsRuntimeCheckReady() {
       continue;
     }
     instance->ready = true;
-    EiemPhysicsRuntimeLogPartnerBinding(*instance);
+
     std::string teams;
     for (const auto &component : instance->components) {
       if (!teams.empty()) teams += ',';

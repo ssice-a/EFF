@@ -208,7 +208,7 @@ int main(int argc,char **argv) {
   if(argc!=2)return 1; ConfigureHost();std::string error;
   EiemPhysicsConfigApi api;CHECK(api.Resolve(allAssemblies,3,error));
   EiemPhysicsDocument document;
-  document.version=4;
+  document.version=5;
   document.id=std::string(32,'a');document.skeleton="skeletons/test.skeleton";
   EiemPhysicsAuthorGroup group;
   group.id=std::string(32,'b');group.name="Minimal";
@@ -285,7 +285,7 @@ int main(int argc,char **argv) {
       CHECK(((Object *)oldData)->scalars[0]==9.8f && ((Object *)draft.Groups()[0].data.Target())->scalars[0]==3);
       CHECK(roots.size()==rooted);
     } else if(mode=="collider") {
-      EiemPhysicsAuthorCollider collider;collider.id=std::string(32,'c');collider.name="Sphere";collider.bone="Hair";collider.radius=.1f;
+      EiemPhysicsAuthorCollider collider;collider.id=std::string(32,'c');collider.name="Sphere";collider.bone="Hair";collider.radius=.1f;collider.endRadius=.1f;
       document.colliders.push_back(collider);document.groups[0].colliders.push_back(collider.id);
       CHECK(draft.Prepare(api,document,bindings,error));
       CHECK(error.empty() && draft.Groups().size()==1);
@@ -349,7 +349,7 @@ class NativePhysicsConfigTests(unittest.TestCase):
     def test_failed_allocation_or_ctor_preserves_previous_draft(self):self.run_case('allocation-failure','ctor-failure')
     def test_scalar_write_or_readback_failure_is_transactional(self):self.run_case('scalar-mismatch','scalar-exception')
     def test_radius_curve_write_or_readback_failure_is_transactional(self):self.run_case('radius-readback-mismatch','radius-set-exception')
-    def test_v4_nested_parameter_failure_is_transactional(self):self.run_case('native-object-missing','native-curve-readback-mismatch')
+    def test_native_parameter_failure_is_transactional(self):self.run_case('native-object-missing','native-curve-readback-mismatch')
     def test_constructor_owned_lists_are_populated_and_checked(self):self.run_case('add-exception','list-count-mismatch','list-item-mismatch','default-list-missing','default-list-alias','default-list-wrong-type')
     def test_node_expiring_during_preparation_does_not_publish_draft(self):self.run_case('node-dies')
     def test_later_group_failure_does_not_replace_any_previous_config(self):self.run_case('second-group-failure')

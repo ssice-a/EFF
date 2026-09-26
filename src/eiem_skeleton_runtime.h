@@ -495,12 +495,7 @@ static bool EiemAcquireSkeleton(const EiemModRule &rule, void *renderer,
       rule.hasPhysics ? &virtualPaths : nullptr);
 }
 
-static bool EiemWatchSkeletonPartner(EiemSkeletonInstance &instance, void *partner) {
-  auto reference=EiemUnityRef::Capture(partner);
-  if (!reference || reference.Status()!=1) return false;
-  EiemRetainSkeletonConsumer(instance,reference);
-  return true;
-}
+
 
 static bool EiemSkeletonMeshBones(const EiemSkinIdentity &skin, const EiemSkeletonInstance &instance,
                                    void **out, char *message, size_t size) {

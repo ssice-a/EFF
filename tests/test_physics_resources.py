@@ -239,8 +239,8 @@ class PhysicsResourceTests(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
-    def test_python_author_package_read_by_cpp_with_v1_v2_skeletons(self):
-        for version in (1, 2):
+    def test_python_author_package_read_by_cpp_with_current_skeleton(self):
+        for version in (2,):
             with self.subTest(version=version):
                 physics, _ = self.package(skeleton=skeleton_bytes(version, extra_path="Rig/" + "x" * 160))
                 self.run_case("asset", physics, "source" if version == 1 else "new")

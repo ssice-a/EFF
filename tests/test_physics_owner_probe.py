@@ -1,3 +1,4 @@
+from runtime_source import read_runtime_source
 from pathlib import Path
 import unittest
 
@@ -11,9 +12,7 @@ class PhysicsOwnerContracts(unittest.TestCase):
         cls.owner = (ROOT / "src" / "eiem_npc_model_owner.h").read_text(
             encoding="utf-8"
         )
-        cls.trace = (ROOT / "src" / "il2cpp_trace.h").read_text(
-            encoding="utf-8"
-        )
+        cls.trace = read_runtime_source(ROOT)
         cls.registration = (
             ROOT / "src" / "eiem_registration_trace.h"
         ).read_text(encoding="utf-8")
@@ -73,14 +72,14 @@ class PhysicsOwnerContracts(unittest.TestCase):
         self.assertIn("EiemRegistrationTraceModel", self.trace)
         self.assertIn("EiemRegistrationTraceRelease", self.trace)
         self.assertIn("EiemRegistrationTraceRenderer", self.trace)
-        self.assertIn("EiemTraceRendererOwnerCorrelation", self.trace)
+        self.assertNotIn("EiemTraceRendererOwnerCorrelation", self.trace)
         self.assertIn("ownerPrefabInstance", self.trace)
-        self.assertIn("EiemRegistrationTraceLod", self.trace)
-        self.assertIn("TraceLodGroupSetLODs", self.trace)
-        self.assertIn("EiemRegistrationTraceLodGroupSet", self.trace)
-        self.assertIn("EiemTraceLodGroupMembers", self.trace)
+        self.assertNotIn("EiemRegistrationTraceLod", self.trace)
+        self.assertNotIn("TraceLodGroupSetLODs", self.trace)
+        self.assertNotIn("EiemRegistrationTraceLodGroupSet", self.trace)
+        self.assertNotIn("EiemTraceLodGroupMembers", self.trace)
         self.assertIn("EiemReadLodRendererMesh", self.trace)
-        self.assertIn("EiemReconcilePartnerLodGroup", self.trace)
+        self.assertNotIn("EiemReconcilePartnerLodGroup", self.trace)
         self.assertIn("EiemRegistrationTraceEligibility", self.trace)
         self.assertIn('event=eligibility', self.registration)
         self.assertNotIn("EiemPhysicsOwnerProbeObserve", self.trace)

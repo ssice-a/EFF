@@ -110,7 +110,7 @@ class RuntimeHookContracts(unittest.TestCase):
         start = self.trace.index("static void EiemRunModReconcile")
         end = self.trace.index("\n}\n", start)
         body = self.trace[start:end]
-        self.assertIn("s_eiemModelInstances", body)
+        self.assertIn("EiemSnapshotModelInstances()", body)
         self.assertIn("EiemApplyStandaloneRenderRules", body)
         self.assertNotIn("find_objects_of_type", body.lower())
 
@@ -385,7 +385,7 @@ class RuntimeHookContracts(unittest.TestCase):
             self.assertIn("completed assembly boundaries", body)
 
         start = self.trace.rindex("static void TraceSkinnedMeshSetBones")
-        end = self.trace.index("static void *EiemFindSourceLodGroup", start)
+        end = self.trace.index("static bool EiemReadBoxedBool", start)
         bones = self.trace[start:end]
         self.assertIn("EiemRememberGameSourceBones", bones)
         self.assertIn("EiemQueueNativeSkinRefresh", bones)
@@ -502,16 +502,12 @@ class RuntimeHookContracts(unittest.TestCase):
         resolver_end = self.trace.index(
             "static bool EiemPreserveSourceSkinning", resolver_start)
         resolver = self.trace[resolver_start:resolver_end]
-        donor_palette = resolver.index(
-            "if (identity.sourceCandidates.size() == identity.paths.size()")
-        source_palette = resolver.index(
-            "if (identity.sources.size() == identity.paths.size())")
-        self.assertLess(donor_palette, source_palette)
+        self.assertIn("identity.sourceCandidates", resolver)
+        self.assertNotIn("identity.sources", resolver)
         self.assertIn("binding=instance-donor-candidates", resolver)
         self.assertIn("Replacement bone has no native Mesh donor", resolver)
-        self.assertIn("binding=instance-source", resolver)
         self.assertIn("s_eiemLiveSkinSources", resolver)
-        self.assertIn("Replacement bone source is ambiguous", resolver)
+        self.assertIn("Replacement bone source candidates disagree in model instance", resolver)
         self.assertIn("completed unified skeleton root", resolver)
         self.assertIn("mapDonorToTargetSkeleton", resolver)
         self.assertIn("childIndexPath", resolver)

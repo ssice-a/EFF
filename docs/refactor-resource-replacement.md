@@ -60,7 +60,7 @@ Blender 导出器必须为 EIEMESH v6 的每个局部槽保存来源 Mesh 身份
 1. 修改任何 Renderer 前，快照当前模型实例内所有原生 SkinnedMeshRenderer 的 Mesh 身份和原始 `bones[]`。
 2. replacement 的每个槽按“源 Mesh 身份 + 原始槽号”读取当前实例 Transform，不按目标 Renderer 的同序号猜测。
 3. 世界、UI、NPC 各自解析自己的实例 Transform，不跨模型实例共享数组。
-4. 完整 v6 供体表不依赖 Transform 名称或层级；路径和层级索引只作为旧格式兼容回退。
+4. 完整 v6 供体表不依赖 Transform 名称或层级；旧格式回退已删除。
 5. 缺失、越界或歧义时拒绝替换，不为角色、PFB 或骨骼名称增加特殊映射。
 
 这允许修改后的 Mesh 使用同一原生模型中其他源 Mesh 已装配的骨骼，也覆盖不同 PFB 对同一骨骼改名的情况。完整契约见[共享骨架绑定](shared-skeleton-binding.md)。

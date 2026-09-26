@@ -1,29 +1,21 @@
-﻿# EIEM DLL source map
+# EIEM DLL source map
 
-EIEM is still compiled as one translation unit from `eiem.cpp`. Several headers contain implementation and depend on declarations introduced earlier in the include order, so file moves require the full native test suite and DLL build.
+The DLL builds from `eiem.cpp` as one translation unit. Implementation headers depend on the include order in `il2cpp_trace.h`; extraction into separate `.cpp` files requires an explicit interface pass.
 
-The repository-level boundaries are documented in [`docs/repository-architecture.md`](../docs/repository-architecture.md); the runtime design is in [`docs/code-architecture.md`](../docs/code-architecture.md).
+| Responsibility | Files |
+|---|---|
+| Host, IL2CPP and hooks | `eiem.cpp`, `il2cpp_api.h`, `globals.h`, `init.h`, `il2cpp_trace.h` |
+| Mod parsing, input and persistence | `eiem_mod_document.h`, `eiem_mods.h`, `eiem_keys.h`, `eiem_persistent_state.h` |
+| Update transaction | `eiem_mod_update.h`, `eiem_mod_reconcile.h` |
+| Model ownership and world/UI/NPC adapters | `eiem_model_lifecycle.h`, `eiem_model_registry.h`, `eiem_world_ui_owner.h`, `eiem_npc_model_owner.h` |
+| Renderer transaction and restore | `eiem_render_executor.h`, `eiem_render_override.h`, `eiem_render_state.h`, `eiem_render_replay.h` |
+| Mesh donor resolution and game assembly | `eiem_skin_resolver.h`, `eiem_assembly_binding.h`, `eiem_skin_binding.h` |
+| Mesh, Material, Texture resources | `eiem_resource_backend.h` |
+| Optional authoring features | `eiem_shape_*`, `eiem_skeleton_*`, `eiem_physics_*`, `eiem_native_physics_*` |
+| UI and camera fade | `eiem_ui_host.h`, `eiem_lua_ui.h`, `gui.h`, `eiem_camera_fade.h` |
 
-| Module | Current files | Responsibility |
-|---|---|---|
-| Host and platform | `eiem.cpp`, `il2cpp_api.h`, `globals.h`, `init.h`, `applepie_mgr.h` | DLL entry, IL2CPP/Unity API resolution, hook installation and Unity-thread dispatch |
-| Mod frontend | `eiem_mod_document.h`, `eiem_expression.h`, `eiem_mods.h`, `eiem_keys.h`, `eiem_persistent_state.h`, `eiem_mod_dispatcher.h` | INI parsing, expressions, variables, keys, persistence and update requests |
-| Update coordinator | `eiem_mod_update.h` and the reconcile section of `il2cpp_trace.h` | Atomic Reconcile, Reapply and Reload transactions |
-| Model lifecycle | `eiem_model_lifecycle.h`, `eiem_npc_model_owner.h` and lifecycle adapters in `il2cpp_trace.h` | Track world, UI and NPC model owners and instances |
-| Render replacement | `eiem_resource_backend.h`, `eiem_skin_binding.h`, `eiem_render_state.h` and the executor in `il2cpp_trace.h` | Mesh, Material, Texture, bone palette, submesh visibility, restore and Unity ownership |
-| Shape/Skeleton/Physics | `eiem_shape_*`, `eiem_skeleton_*`, `eiem_native_physics_*`, `eiem_physics_*` | Optional authoring features; Skeleton and Physics are not yet fully accepted in game |
-| UI | `eiem_ui_host.h`, `eiem_lua_ui.h`, `gui.h` | Mod manager, Lua windows and legacy diagnostic pages |
-| Camera fade | `eiem_camera_fade.h` plus its hook adapter | Independent camera transparency override |
-| Diagnostics | `eiem_registration_trace.h`, `eiem_skin_probe.h`, `eiem_metadata_probe.h` | Bounded evidence only; never production state decisions |
+World, UI and NPC routes share the same renderer executor. Bone donors are resolved within one model instance. F10 rebuilds the resource generation on every press and restores previous renderer state transactionally. A failed binding leaves the original renderer intact.
 
-## Rules
+The current interchange contract is EIEMESH v6, EIESKEL v2 and author EIEPHYS v5. Native source graph EIEPHYS v2 is a separate document kind. Older author resources are rejected and must be re-exported. The generated skinned Mesh uses `InternalSetBoneWeights` and the validated native four-slot metadata correction; source Mesh objects are never patched.
 
-1. World, UI and NPC adapters call the same Render executor.
-2. Bone lookup is always local to the current model instance. EIEMESH v5 source Mesh/slot metadata handles renamed bones without character-specific tables.
-3. INI parsing cannot call Unity APIs. Unity mutation happens only in a verified lifecycle callback or an update transaction.
-4. `partner.N` is rejected. Multiple visible parts are submeshes of one exported Mesh.
-5. Diagnostics must have a bounded trigger and a removal condition.
-6. Keyboard input is scoped to the selected Mod; manager buttons additionally identify one Key section.
-7. Resource caches own generated Unity objects. Renderer override records own restoration responsibility.
-
-The legacy Partner implementation still present in `il2cpp_trace.h` has no parser, executor, hook-installation or lifecycle entry point. It is quarantined compile-only code and must be deleted as part of the Render executor extraction; new work must not call it.
+See [the architecture document](../docs/code-architecture.md) for ownership and verification boundaries.

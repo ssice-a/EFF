@@ -43,7 +43,7 @@ v1.0.0 是功能参照，不能替代当前 DLL 的稳定性证明。**历史姿
 | Mod UI | [Lua UI](lua-ui.md) | 脚本 API、窗口和变量事务 |
 | 相机 | [反虚化契约](camera-fade.md) | CameraMono 原评估后清理 |
 | 物理设计 | [三端物理契约](physics-authoring-design.md) | 解包、Blender、DLL 的完整链路要求 |
-| 物理文件 | [作者格式](physics-authoring-v1.md)、[源图格式](physics-authoring-v2.md) | 新增作者数据与原生源图的格式和限制 |
+| 物理文件 | [作者格式](physics-authoring-v5.md)、[源图格式](physics-authoring-v2.md) | 当前作者 v5 与独立的原生源图 v2 |
 | 物理运行时边界 | [Physics 运行时重构](physics-runtime-redesign.md) | 所有权边界、禁止操作、P0-P5 取证与实施计划 |
 | 工具运行 | [资源浏览器](../tools/README.md)、[Blender 插件](https://github.com/ssice-a/EIEM-blender/blob/main/README.md) | 启动、安装和开发操作 |
 

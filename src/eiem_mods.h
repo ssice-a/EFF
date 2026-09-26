@@ -532,39 +532,3 @@ static bool EiemFindRenderRuleBySection(const char *modIni, const char *section,
 // branches so the Unity adapter can construct each Renderer while the model is
 // still being assembled. The currently evaluated source rule decides which of
 // these prebuilt Renderers is visible.
-static void EiemFindPotentialPartnerRules(const char *modIni,
-                                          const char *sourceSection,
-                                          std::vector<EiemModRule> *out) {
-  if (!out) return;
-  out->clear();
-  if (!modIni || !sourceSection || !sourceSection[0]) return;
-
-  std::vector<std::string> sections;
-  AcquireSRWLockShared(&s_eiemModLock);
-  for (const auto &definition : s_eiemModProgram.definitions) {
-    if (!EiemModEquals(definition.selector.modPath, modIni) ||
-        _stricmp(definition.selector.section, sourceSection) != 0)
-      continue;
-    EiemVisitStatements(
-        definition.statements, [&](const EiemModStatement &statement) {
-          if (statement.key.compare(0, 8, "partner.") != 0 ||
-              statement.value.empty())
-            return;
-          for (const auto &section : sections)
-            if (_stricmp(section.c_str(), statement.value.c_str()) == 0)
-              return;
-          sections.push_back(statement.value);
-        });
-  }
-  for (const auto &section : sections) {
-    for (auto it = s_eiemModProgram.rules.rbegin();
-         it != s_eiemModProgram.rules.rend(); ++it) {
-      if (EiemModEquals(it->modPath, modIni) &&
-          _stricmp(it->section, section.c_str()) == 0) {
-        out->push_back(*it);
-        break;
-      }
-    }
-  }
-  ReleaseSRWLockShared(&s_eiemModLock);
-}

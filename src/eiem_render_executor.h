@@ -102,7 +102,8 @@ static bool EiemApplyResolvedRenderRule(void *renderer, void *drawRenderer,
     void *beforeRootBone = nullptr;
     size_t beforeBoneCount = 0;
     uint64_t beforeBoneRefs = 0;
-    if (EiemModEquals(rendererType, "SkinnedMeshRenderer")) {
+    if (kEiemEnableSkinBindingDiagnostics &&
+        EiemModEquals(rendererType, "SkinnedMeshRenderer")) {
       beforeBones = g_smr_get_bones ? Invoke(g_smr_get_bones, renderer) : nullptr;
       beforeRootBone = g_smr_get_rootBone ? Invoke(g_smr_get_rootBone, renderer) : nullptr;
       beforeBoneCount = EiemManagedArrayLength(beforeBones);
@@ -120,7 +121,7 @@ static bool EiemApplyResolvedRenderRule(void *renderer, void *drawRenderer,
     char meshError[256] = {};
     bool skinPaletteReady = false;
     const LONG64 meshBuildStarted = EiemPerfNow();
-    EiemReportNativeMeshDeserializeSource(mesh, source, asset, rule.section);
+
     const bool meshBuilt = EiemBuildMeshResource(
         rule, &assignedMesh, meshError, sizeof(meshError), mesh, &skin);
     meshBuildMs = EiemPerfMilliseconds(EiemPerfNow() - meshBuildStarted);
@@ -214,12 +215,7 @@ static bool EiemApplyResolvedRenderRule(void *renderer, void *drawRenderer,
           rendererType, source, asset, rule.mesh,
           meshError[0] ? meshError : "assignment failed");
     if (meshApplied) {
-      if (kEiemEnableNativeMeshFlagProbe &&
-          EiemModEquals(rendererType, "SkinnedMeshRenderer")) {
-        EiemLogNativeMeshFlagState("source", renderer, mesh);
-        EiemLogNativeMeshFlagState("replacement", renderer,
-                                   EiemReadSharedMesh(renderer, rendererType));
-      }
+
       if (kEiemEnableLifecycleDiagnostics)
       Log("[MOD] %s resource mesh replaced: source=%s asset=%s mesh=%s actual=%p",
           rendererType, source, asset, rule.mesh,
@@ -422,7 +418,7 @@ static bool EiemApplyRenderRuleSetToRenderer(
     strncpy_s(resolved.asset, sizeof(resolved.asset), asset, _TRUNCATE);
     return EiemApplyResolvedRenderRule(meshOwner, drawRenderer, identityMesh,
                                        rendererType, methodInfo, resolved,
-                                       !kEiemEnableUpstreamMeshBoundary);
+                                       true);
   }
   return false;
 }
