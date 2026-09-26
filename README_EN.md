@@ -4,14 +4,12 @@ English | [中文](README.md)
 
 EIEM is an in-game resource replacement plugin for *Arknights: Endfield*. It replaces meshes, materials, and textures by source resource identity. Mod authors can extract source assets with [AnimeStudio](https://github.com/ssice-a/AnimeStudio), then edit and export a Mod with the [EIEM Blender add-on](https://github.com/ssice-a/EIEM-blender). Players installing an existing Mod do not need either authoring tool.
 
-The development version may differ from a published build. Follow the notes for the Release you install.
-
 ## Features
 
 - Replace meshes, materials, textures, and declared material parameters. One mesh can contain multiple submeshes and material slots.
 - Apply the same resource rules to world characters, character UI, and NPCs, including authored LOD rules.
 - Keep each Mod's switch and shape state separate. The in-game manager provides key buttons and shape sliders.
-- Press F10 to reload Mod configuration and resources for registered instances. Invalid configuration leaves the previous valid version active.
+- Press F10 to reload Mod configuration and resources. An invalid configuration leaves the last working result in place.
 - Configure the manager and reload shortcuts, as well as camera fade behavior, in the global INI.
 - Check this repository's Releases when the Mod manager opens; defer or ignore a specific version.
 
@@ -39,7 +37,7 @@ To install a Mod, put the **folder containing `mod.ini`** directly inside `plugi
 ## Use in game
 
 1. Start the game and enter a scene containing the target character. Matching Mods apply automatically.
-2. Press **Insert** to open the Mod manager. Select a Mod to use its key buttons and shape sliders. Static Mods without controls can still apply automatically.
+2. Press **Insert** to open the Mod manager. Select a Mod to use its style buttons and shape sliders. Static Mods apply automatically.
 3. Press **F10** after editing or adding Mod files to reload them.
 
 Shortcuts can be changed in `plugin/eiem.ini`:
@@ -59,16 +57,17 @@ After editing a shortcut, press the **old reload shortcut once** to load the new
 
 1. Open the game's VFS in AnimeStudio, select a Prefab, and export an EIEM source package.
 2. Install and enable the EIEM Blender add-on, then import the source package's `mod.ini`.
-3. Edit meshes, materials, textures, switches, or shapes. Select the target meshes and export an EIEM Mod package.
+3. Edit meshes, materials, textures, styles, or shapes. Select the target meshes and export an EIEM Mod package. You can turn off key controls during export while keeping the default style and shape sliders.
 4. Place the exported folder in `plugin/mods/`, then press F10 in game to check the result.
 
 See the [AnimeStudio guide](tools/README.md) and [Blender add-on guide](https://github.com/ssice-a/EIEM-blender#readme) for detailed steps.
 
+Use current versions of all three tools when making a Mod. Older exported EIEM mesh, skeleton, and physics files need to be exported again.
+
 ## TODO
 
-- Complete cold-start and repeated hot-reload validation in world, character UI, and NPC contexts.
-- Complete native assembly of added bones, physics bones, and colliders.
-- Extend game-version compatibility checks and validation of all three release packages.
+- Improve support for added bones, physics bones, and colliders.
+- Expand character and game-version compatibility.
 
 ## Acknowledgements
 

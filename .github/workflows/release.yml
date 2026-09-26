@@ -66,6 +66,6 @@ jobs:
         tag_name: ${{ env.RELEASE_TAG }}
         files: |
           EIEM_${{ env.RELEASE_TAG }}_dll.zip
-        generate_release_notes: true
+        body_path: RELEASE_NOTES.md
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

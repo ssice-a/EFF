@@ -138,6 +138,8 @@ endif
 
 ## 使用与部署记录
 
+普通 Mod 包导出窗口的“导出按键切换”默认开启。关闭时，导出器使用每个切换组的默认款式，跳过款式与形态键快捷键；形态键数据及滑块声明仍导出。该选项不修改 `.blend` 作者状态。重新导出到已有生成包时，会清理不再引用的自动生成 `ui.lua`。
+
 开发插件目录：`E:\vscode\EIEM\tools\Blender`，用 VS Code 打开该目录后运行 **Blender: Start**。
 包入口 `__init__.py`、实现 `eiem_blender_addon.py` 和切换逻辑 `eiem_blender_controls.py`
 来自独立仓库 [EIEM-blender](https://github.com/ssice-a/EIEM-blender)；本仓库的
