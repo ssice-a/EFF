@@ -1846,7 +1846,9 @@ static bool EiemInitializeNativeMeshBoneSlots(
 static uint64_t EiemMeshCacheStamp(uint64_t fileStamp) {
   // F10 is an explicit full resource rebuild. Keep ordinary lookups cached
   // within one published generation, while a new generation receives fresh
-  // Unity Mesh objects even when the source file itself is unchanged.
+  // Unity Mesh objects even when the source file itself is unchanged. This is
+  // intentional: F10 must re-submit new Mesh/Material state rather than reuse
+  // the prior resource generation.
   const uint64_t generation = (uint64_t)(uint32_t)InterlockedCompareExchange(
       &s_eiemModGeneration, 0, 0);
   uint64_t stamp = fileStamp ^

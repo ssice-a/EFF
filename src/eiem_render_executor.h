@@ -362,6 +362,101 @@ static void *EiemFindMeshFilterDrawRenderer(void *meshFilter) {
   }
 }
 
+struct EiemLiveSkinCaptureContext {
+  void *model = nullptr;
+  const char *stage = nullptr;
+  const std::vector<void *> *renderers = nullptr;
+  std::vector<EiemLiveSkinSource> *output = nullptr;
+  bool captured = false;
+};
+
+// Bone donor capture is needed only for a matched mesh/skeleton rule.  The
+// previous implementation captured every SkinnedMeshRenderer in every model
+// before checking whether any rule matched, so a global F10 paid that cost for
+// hundreds of unrelated models. Keep the same model-local snapshot, but make
+// it lazy and invoke it immediately before the first replacement commit.
+static bool EiemEnsureLiveSkinSources(void *opaque) {
+  auto *context = static_cast<EiemLiveSkinCaptureContext *>(opaque);
+  if (!context || context->captured) return context != nullptr;
+  context->captured = true;
+  if (!context->output || !context->renderers || !g_smr_get_bones) return true;
+  context->output->reserve(context->renderers->size());
+  for (void *renderer : *context->renderers) {
+    if (!renderer) continue;
+    void *mesh = EiemReadSharedMesh(renderer, "SkinnedMeshRenderer");
+    if (!mesh) continue;
+    void *identityMesh = mesh;
+    EiemPrepareRenderInput(renderer, mesh, "SkinnedMeshRenderer",
+                           &identityMesh);
+    char source[768] = {};
+    char asset[192] = {};
+    if (!identityMesh ||
+        !EiemReadLiveMeshIdentity(identityMesh, source, sizeof(source),
+                                  asset, sizeof(asset))) {
+      if (kEiemEnableSkinBindingDiagnostics &&
+          InterlockedIncrement(&s_eiemSkinCaptureProbeCount) <= 96)
+        Log("[MOD-SKIN-CAPTURE-v1] model=%p renderer=%p mesh=%p "
+            "identity=unavailable stage=%s",
+            context->model, renderer, identityMesh,
+            context->stage ? context->stage : "unknown");
+      continue;
+    }
+    void *bones = EiemBackendInvokeNoThrow(g_smr_get_bones, renderer);
+    AcquireSRWLockShared(&s_eiemOverrideLock);
+    const size_t overrideIndex = EiemFindOverrideLocked(renderer);
+    if (overrideIndex != SIZE_MAX &&
+        s_eiemOverrides[overrideIndex].originalBonesHandle &&
+        il2cpp_gchandle_get_target) {
+      void *original = il2cpp_gchandle_get_target(
+          s_eiemOverrides[overrideIndex].originalBonesHandle);
+      if (original) bones = original;
+    }
+    ReleaseSRWLockShared(&s_eiemOverrideLock);
+    const size_t boneCount = EiemManagedArrayLength(bones);
+    if (!bones || !boneCount) {
+      if (kEiemEnableSkinBindingDiagnostics &&
+          InterlockedIncrement(&s_eiemSkinCaptureProbeCount) <= 96) {
+        void *rootBone = g_smr_get_rootBone
+                             ? EiemBackendInvokeNoThrow(
+                                   g_smr_get_rootBone, renderer)
+                             : nullptr;
+        void *skinningRoot = g_smr_get_skinningRoot
+                                 ? EiemBackendInvokeNoThrow(
+                                       g_smr_get_skinningRoot, renderer)
+                                 : nullptr;
+        Log("[MOD-SKIN-CAPTURE-v1] model=%p renderer=%p mesh=%p asset=%s "
+            "identity=ok bones=%p count=%zu rootBone=%p skinningRoot=%p "
+            "stage=%s",
+            context->model, renderer, identityMesh, asset, bones, boneCount,
+            rootBone, skinningRoot,
+            context->stage ? context->stage : "unknown");
+      }
+      continue;
+    }
+    if (kEiemEnableSkinBindingDiagnostics &&
+        InterlockedIncrement(&s_eiemSkinCaptureProbeCount) <= 96) {
+      void *rootBone = g_smr_get_rootBone
+                           ? EiemBackendInvokeNoThrow(g_smr_get_rootBone,
+                                                      renderer)
+                           : nullptr;
+      void *skinningRoot = g_smr_get_skinningRoot
+                               ? EiemBackendInvokeNoThrow(
+                                     g_smr_get_skinningRoot, renderer)
+                               : nullptr;
+      Log("[MOD-SKIN-CAPTURE-v1] model=%p renderer=%p mesh=%p asset=%s "
+          "identity=ok bones=%p count=%zu rootBone=%p skinningRoot=%p "
+          "stage=%s",
+          context->model, renderer, identityMesh, asset, bones, boneCount,
+          rootBone, skinningRoot,
+          context->stage ? context->stage : "unknown");
+    }
+    context->output->push_back({source, asset, renderer, bones});
+  }
+  return true;
+}
+
+using EiemEnsureLiveSkinSourcesFn = bool (*)(void *);
+
 static bool EiemApplyRenderRuleSetToRenderer(
     void *rootTransform, void *meshOwner, void *drawRenderer, void *mesh,
     const char *rendererType, void *methodInfo,
@@ -369,7 +464,9 @@ static bool EiemApplyRenderRuleSetToRenderer(
     bool *referenced = nullptr, bool *matched = nullptr,
     const std::vector<std::string> *affected = nullptr,
     std::vector<EiemPhysicsIntent> *physicsIntents = nullptr,
-    bool includeGameHidden = false) {
+    bool includeGameHidden = false,
+    EiemEnsureLiveSkinSourcesFn ensureLiveSkinSources = nullptr,
+    void *ensureLiveSkinSourcesContext = nullptr) {
   if (!meshOwner || !drawRenderer || !mesh || !rendererType) return false;
   if (!EiemRendererEligibleForRule(meshOwner, drawRenderer,
                                    includeGameHidden))
@@ -410,6 +507,9 @@ static bool EiemApplyRenderRuleSetToRenderer(
     // Preserve first-match precedence even during a mod-scoped key update.
     // Filtering the rule list before matching would promote a lower-priority mod.
     if (!EiemModAffected(rule.modPath, affected)) return false;
+    if ((rule.hasMesh || rule.hasSkeleton) && ensureLiveSkinSources &&
+        !ensureLiveSkinSources(ensureLiveSkinSourcesContext))
+      return false;
     EiemResolvedRenderRule resolved = {};
     resolved.rule = rule;
     strncpy_s(resolved.source, sizeof(resolved.source),
@@ -474,81 +574,8 @@ static bool EiemApplyRenderRuleSet(void *model,
   snapshotType(g_meshFilterClass, &meshFilters);
   EiemPerfRecord(s_eiemPerfComponentSnapshot, snapshotStarted);
 
-  // Capture every source palette as one model-local transaction before the
-  // first replacement changes sharedMesh or bones[]. Repeated lifecycle calls
-  // read the retained original palette from the override state.
-  if (g_smr_get_bones) {
-    liveSkinSources.reserve(skinnedRenderers.size());
-    for (void *renderer : skinnedRenderers) {
-      if (!renderer) continue;
-      void *mesh = EiemReadSharedMesh(renderer, "SkinnedMeshRenderer");
-      if (!mesh) continue;
-      void *identityMesh = mesh;
-      EiemPrepareRenderInput(renderer, mesh, "SkinnedMeshRenderer",
-                             &identityMesh);
-      char source[768] = {};
-      char asset[192] = {};
-      if (!identityMesh ||
-          !EiemReadLiveMeshIdentity(identityMesh, source, sizeof(source),
-                                    asset, sizeof(asset))) {
-        if (kEiemEnableSkinBindingDiagnostics &&
-            InterlockedIncrement(&s_eiemSkinCaptureProbeCount) <= 96)
-          Log("[MOD-SKIN-CAPTURE-v1] model=%p renderer=%p mesh=%p "
-              "identity=unavailable stage=%s",
-              model, renderer, identityMesh,
-              stage ? stage : "unknown");
-        continue;
-      }
-      void *bones = EiemBackendInvokeNoThrow(g_smr_get_bones, renderer);
-      AcquireSRWLockShared(&s_eiemOverrideLock);
-      const size_t overrideIndex = EiemFindOverrideLocked(renderer);
-      if (overrideIndex != SIZE_MAX &&
-          s_eiemOverrides[overrideIndex].originalBonesHandle &&
-          il2cpp_gchandle_get_target) {
-        void *original = il2cpp_gchandle_get_target(
-            s_eiemOverrides[overrideIndex].originalBonesHandle);
-        if (original) bones = original;
-      }
-      ReleaseSRWLockShared(&s_eiemOverrideLock);
-      const size_t boneCount = EiemManagedArrayLength(bones);
-      if (!bones || !boneCount) {
-        if (kEiemEnableSkinBindingDiagnostics &&
-            InterlockedIncrement(&s_eiemSkinCaptureProbeCount) <= 96) {
-          void *rootBone = g_smr_get_rootBone
-                               ? EiemBackendInvokeNoThrow(
-                                     g_smr_get_rootBone, renderer)
-                               : nullptr;
-          void *skinningRoot = g_smr_get_skinningRoot
-                                   ? EiemBackendInvokeNoThrow(
-                                         g_smr_get_skinningRoot, renderer)
-                                   : nullptr;
-          Log("[MOD-SKIN-CAPTURE-v1] model=%p renderer=%p mesh=%p asset=%s "
-              "identity=ok bones=%p count=%zu rootBone=%p skinningRoot=%p "
-              "stage=%s",
-              model, renderer, identityMesh, asset, bones, boneCount,
-              rootBone, skinningRoot, stage ? stage : "unknown");
-        }
-        continue;
-      }
-      if (kEiemEnableSkinBindingDiagnostics &&
-          InterlockedIncrement(&s_eiemSkinCaptureProbeCount) <= 96) {
-        void *rootBone = g_smr_get_rootBone
-                             ? EiemBackendInvokeNoThrow(g_smr_get_rootBone,
-                                                        renderer)
-                             : nullptr;
-        void *skinningRoot = g_smr_get_skinningRoot
-                                 ? EiemBackendInvokeNoThrow(
-                                       g_smr_get_skinningRoot, renderer)
-                                 : nullptr;
-        Log("[MOD-SKIN-CAPTURE-v1] model=%p renderer=%p mesh=%p asset=%s "
-            "identity=ok bones=%p count=%zu rootBone=%p skinningRoot=%p "
-            "stage=%s",
-            model, renderer, identityMesh, asset, bones, boneCount, rootBone,
-            skinningRoot, stage ? stage : "unknown");
-      }
-      liveSkinSources.push_back({source, asset, renderer, bones});
-    }
-  }
+  EiemLiveSkinCaptureContext liveSkinCapture = {
+      model, stage, &skinnedRenderers, &liveSkinSources, false};
   s_eiemLiveSkinSources = &liveSkinSources;
 
   auto visitType = [&](const std::vector<void *> &components,
@@ -573,7 +600,8 @@ static bool EiemApplyRenderRuleSet(void *model,
       if (mesh && EiemApplyRenderRuleSetToRenderer(
                       root, meshOwner, drawRenderer, mesh, rendererType,
                       nullptr, rules, sourceLabel, referenced, matched, affected,
-                      physicsIntents, true)) {
+                      physicsIntents, true, EiemEnsureLiveSkinSources,
+                      &liveSkinCapture)) {
         if (s_eiemActiveRenderReplay)
           s_eiemActiveRenderReplay->Commit(meshOwner);
         ++applied;

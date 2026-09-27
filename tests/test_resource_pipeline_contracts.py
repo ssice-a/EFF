@@ -522,11 +522,12 @@ class RuntimeHookContracts(unittest.TestCase):
         model_end = self.trace.index(
             "static bool EiemApplyStandaloneRenderRules(", model_start)
         model_pass = self.trace[model_start:model_end]
-        snapshot = model_pass.index("liveSkinSources.push_back")
+        snapshot = model_pass.index("EiemLiveSkinCaptureContext liveSkinCapture")
         mutation = model_pass.index(
             'visitType(skinnedRenderers, "SkinnedMeshRenderer")')
         self.assertLess(snapshot, mutation)
-        self.assertIn("originalBonesHandle", model_pass)
+        self.assertIn("context->output->push_back", self.trace)
+        self.assertIn("originalBonesHandle", self.trace)
         self.assertIn("s_eiemLiveSkinSources = previousLiveSkinSources", model_pass)
 
     def test_initial_mod_rules_load_before_resource_hooks_are_enabled(self):
