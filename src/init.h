@@ -507,10 +507,15 @@ static DWORD WINAPI InitThread(LPVOID) {
   // observed completion cannot commit an unmodified object due to startup
   // ordering. Later reload requests are dispatched on Unity's thread.
   LoadEiemConfig();
-  if (!kEiemStaticReplacementBaseline)
-    InitEiemCameraFade(asms, ac);
-  else
-    Log("[VALIDATION] CameraFade hook disabled");
+  // Camera fade is a user-facing runtime option.  It must not be tied to the
+  // static replacement validation switch: the latter controls diagnostic and
+  // experimental hooks, while anti-fade is safe to install independently.
+  if (EiemGetGlobalConfig().disableCameraFade) {
+    if (!InitEiemCameraFade(asms, ac))
+      Log("[CAMERA-FADE] enabled in config, but initialization was unavailable");
+  } else {
+    Log("[CAMERA-FADE] disabled by config");
+  }
   EiemReloadMods();
 
   Log("[RES-TRACE] Installing startup resource hooks before metadata dump");
