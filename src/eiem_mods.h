@@ -334,8 +334,8 @@ static void EiemPublishModState(EiemModProgram next) {
 }
 
 // Parse and validate a complete candidate before any live Renderer is changed.
-// A malformed mod rejects the whole generation so existing instances never
-// observe a partially loaded program.
+// Each discovered mod is its own transaction. A malformed mod is skipped and
+// reported, while valid sibling mods still publish in the same generation.
 static bool EiemPrepareModReload(EiemModProgram *prepared,
                                  std::string *failure = nullptr) {
   if (failure) failure->clear();
@@ -362,18 +362,28 @@ static bool EiemPrepareModReload(EiemModProgram *prepared,
     return _stricmp(a.c_str(), b.c_str()) < 0;
   });
   files.push_back("plugin\\mods\\mod.ini");
+  size_t accepted = 0, skipped = 0;
   for (const auto &file : files) {
     std::string error; EiemModProgram document;
     if (!EiemModParseFile(file.c_str(), document, &error)) {
       // A discovered folder does not have to contain a mod.ini. A present but
-      // invalid file supplies an error and rejects the candidate generation.
+      // invalid file is isolated so it cannot disable unrelated mods.
       if (!error.empty()) {
-        if (failure) *failure = file + ":" + error;
-        return false;
+        ++skipped;
+        Log("[MOD] Skipping invalid mod file=%s error=%s", file.c_str(), error.c_str());
       }
       continue;
     }
     EiemAppendModDocument(next,std::move(document));
+    ++accepted;
+  }
+  Log("[MOD] Prepared independent mods accepted=%zu skipped=%zu", accepted, skipped);
+  // If every discovered file is malformed, retain the last known-good
+  // generation. A newly broken Mod must not erase working state merely because
+  // no sibling happened to be valid during this scan.
+  if (accepted == 0 && skipped != 0) {
+    if (failure) *failure = "No valid Mod files in this reload";
+    return false;
   }
   s_eiemPersistentStates.Load(next);
   EiemCompileModProgram(next);

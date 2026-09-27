@@ -108,12 +108,20 @@ int main() {
     CHECK(invalid.states.empty());
   }
   for (const char *bad : {
-    "[Constants]\n$x=0\n[ShapeControlA]\nvariable=$x\nlabel=X\nmin=0\nmax=1\n",
     "[Constants]\n$x=0\n[ShapeControlA]\nvariable=$x\nlabel=X\nmin=1\nmax=0\n[RenderA]\nasset=A\nshape.X=$x\n",
     "[Constants]\n$x=0\n[ShapeControlA]\nvariable=$x\nlabel=X\nmin=0\nmax=1\n[ShapeControlB]\nvariable=$x\nlabel=Y\nmin=0\nmax=1\n[RenderA]\nasset=A\nshape.X=$x\n"}) {
     EiemModProgram invalid; std::istringstream stream(bad);
     CHECK(!EiemModParseStream(stream,"bad/mod.ini",invalid,&error));
   }
+  std::istringstream stale(
+    "[Constants]\n$x=0\n$old=0\n"
+    "[ShapeControlA]\nvariable=$x\nlabel=X\nmin=0\nmax=1\n"
+    "[ShapeControlOld]\nvariable=$old\nlabel=Old\nmin=0\nmax=1\n"
+    "[RenderA]\nasset=A\nshape.X=$x\n");
+  EiemModProgram staleProgram;
+  CHECK(EiemModParseStream(stale, "stale/mod.ini", staleProgram, &error));
+  CHECK(staleProgram.states[0].shapeControls.size() == 1);
+  CHECK(staleProgram.states[0].shapeControls[0].variable == "$x");
   std::istringstream conditional(R"ini([Constants]
 $x=0
 [UIX]

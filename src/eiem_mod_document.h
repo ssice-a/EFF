@@ -531,9 +531,16 @@ static bool EiemValidateModDocument(EiemModProgram &doc, std::string &error) {
         shapeVariables.insert(statement.number->variable);
     });
   std::unordered_set<std::string> declaredControls;
+  std::vector<EiemModShapeControl> activeControls;
+  activeControls.reserve(state.shapeControls.size());
   for (const auto &control : state.shapeControls) {
-    if (!state.defaults.count(control.variable) ||
-        !shapeVariables.count(control.variable) || control.label.empty() ||
+    // A stale authoring entry can survive after a Shape Key is removed or
+    // after sibling parts are merged. It cannot affect a Renderer when no
+    // shape.* statement references its variable, so discard that entry while
+    // keeping the rest of the Mod usable. Referenced controls still undergo
+    // the complete declaration validation below.
+    if (!shapeVariables.count(control.variable)) continue;
+    if (!state.defaults.count(control.variable) || control.label.empty() ||
         !std::isfinite((float)control.minimum) ||
         !std::isfinite((float)control.maximum) ||
         control.minimum >= control.maximum ||
@@ -543,7 +550,9 @@ static bool EiemValidateModDocument(EiemModProgram &doc, std::string &error) {
       error = "Invalid ShapeControl declaration: " + control.section;
       return false;
     }
+    activeControls.push_back(control);
   }
+  state.shapeControls = std::move(activeControls);
   state.variables = state.defaults;
   return true;
 }

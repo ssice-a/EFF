@@ -10,6 +10,8 @@ SOURCE = r'''
 #include <sstream>
 #include <string>
 #include <cstdio>
+#include <fstream>
+#include <filesystem>
 #include "eiem_mod_document.h"
 #include "eiem_mod_update.h"
 static void Log(const char *, ...) {}
@@ -119,6 +121,25 @@ int main(int argc, char **argv) {
     EiemFindStandaloneRenderRules(&rules);
     CHECK(rules.size() == 2);
     CHECK(EiemModEquals(rules[0].asset, "A") && EiemModEquals(rules[1].asset, "Z"));
+  } else if (scenario == "independent_invalid") {
+    namespace fs = std::filesystem;
+    fs::create_directories("plugin/mods/bad");
+    fs::create_directories("plugin/mods/good");
+    std::ofstream bad("plugin/mods/bad/mod.ini");
+    bad << "[RenderBad]\nasset=Bad\nunknown_field=1\n";
+    std::ofstream good("plugin/mods/good/mod.ini");
+    good << "[RenderGood]\nasset=Good\n";
+    bad.close();
+    good.close();
+    CHECK(EiemReloadMods());
+    std::vector<EiemModRule> rules;
+    EiemFindStandaloneRenderRules(&rules);
+    bool sawGood = false, sawBad = false;
+    for (const auto &rule : rules) {
+      sawGood = sawGood || EiemModEquals(rule.asset, "Good");
+      sawBad = sawBad || EiemModEquals(rule.asset, "Bad");
+    }
+    CHECK(sawGood && !sawBad);
   } else if (scenario == "conditions") {
     CHECK(parse("[Constants]\n$outfit=0\n$detail=1\n"
       "[KeyOutfit]\nkey=Ctrl+F6\ntype=cycle\n$outfit=0,1,2\n"
@@ -254,6 +275,9 @@ class ModProgramTests(unittest.TestCase):
             directory.mkdir(parents=True)
             (directory / "mod.ini").write_text(f"[RenderMain]\nasset={asset}\n", encoding="utf-8")
         self.run_case("publish")
+
+    def test_invalid_mod_does_not_block_valid_sibling(self):
+        self.run_case("independent_invalid")
 
 
 if __name__ == "__main__":

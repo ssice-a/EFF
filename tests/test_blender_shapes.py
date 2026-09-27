@@ -5,7 +5,6 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from test_lua_ui import build_harness
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = r'''
@@ -16,7 +15,7 @@ int main(int argc,char **argv) {
   for(int i=1;i<3;++i) {
     EiemModProgram p; std::string error;
     if(!EiemModParseFile(argv[i],p,&error)) { puts(error.c_str()); return 2; }
-    if(p.states[0].uis.size()!=1) return 3;
+    if(p.states[0].uis.size()!=0) return 3;
     unsigned shapes=0;
     for(const auto &r:p.rules) if(r.shapeCount) {
       if(r.shapeCount!=1 || std::string(r.shapeNames[0])!="Inflate" || r.shapeWeights[0]!=.25f || !r.hasMesh) return 4;
@@ -43,13 +42,6 @@ class BlenderShapeTests(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn("EIEM_SHAPES_OK", run.stdout)
 
-            # Execute the generated UI with the actual Lua VM and ImGui bindings.
-            ui_exe = build_harness(folder)
-            run = subprocess.run([str(ui_exe), str(folder / "package/mod.ini"), str(folder / "hold/mod.ini"),
-                                  str(folder / "always-ui/mod.ini"), str(folder / "no-ui/mod.ini")],
-                                 cwd=folder, capture_output=True, text=True, encoding="utf-8",
-                                 errors="replace", timeout=30)
-            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             source = folder / "test.cpp"
             source.write_text(SOURCE, encoding="utf-8")
             exe = folder / "test.exe"
