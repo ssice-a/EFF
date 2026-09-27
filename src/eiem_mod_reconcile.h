@@ -147,6 +147,11 @@ static void EiemRunModReconcile() {
   const bool nativeSkinOnly =
       requests == (uint32_t)EiemModUpdate::SkinRefresh;
   const auto instances = EiemSnapshotModelInstances();
+  // Rules are immutable for this Unity-thread transaction. Snapshot the
+  // large fixed-size declarations once instead of copying them for every
+  // registered PFB/UI/NPC model during the replay.
+  std::vector<EiemModRule> replayRules;
+  EiemFindStandaloneRenderRules(&replayRules);
   if (reload)
     Log("[MOD-RELOAD-TRACE] phase=replay begin models=%zu", instances.size());
    EiemRenderReplayLedger replayLedger;
@@ -175,7 +180,8 @@ static void EiemRunModReconcile() {
        // helper on already registered UI/NPC/world objects. All three owner
        // adapters feed the same Render executor and resource identity rules.
        applied = EiemApplyStandaloneRenderRules(
-           instance.model, stage, nullptr, affected, &physicsIntents);
+           instance.model, stage, nullptr, affected, &physicsIntents,
+           &replayRules);
        EiemStoreModelPhysicsIntents(instance.model, std::move(physicsIntents),
                                     stage);
        if (applied) ++matched;

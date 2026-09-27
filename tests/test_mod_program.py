@@ -77,6 +77,22 @@ int main(int argc, char **argv) {
     CHECK(p.standaloneRules.size() == 3);
     EiemCompileModProgram(p);
     CHECK(p.standaloneRules.size() == 3); // recompilation is idempotent
+  } else if (scenario == "assembly_identity") {
+    EiemModProgram parsed;
+    CHECK(parse("[RenderMain]\nasset=Body\n", parsed, error));
+    const EiemModRule original = parsed.rules[0];
+    EiemModRule candidate = original;
+    // A compiler-generated copy may not preserve EiemModRule padding bytes.
+    CHECK(EiemSameRenderAssembly(original, candidate));
+    candidate.shapeCount = 1;
+    std::strcpy(candidate.shapeNames[0], "Inflate");
+    CHECK(!EiemSameRenderAssembly(original, candidate));
+    EiemModRule shaped = original;
+    shaped.shapeCount = 1;
+    std::strcpy(shaped.shapeNames[0], "Inflate");
+    candidate = shaped;
+    candidate.shapeWeights[0] = 0.5f;
+    CHECK(EiemSameRenderAssembly(shaped, candidate));
   } else if (scenario == "reload") {
     EiemModUpdateQueue queue;
     std::string order;
@@ -217,6 +233,33 @@ int main(int argc, char **argv) {
     EiemKeyChord cycleChord; CHECK(EiemParseKeyChord("F7", &cycleChord));
     EiemApplyModKey(cycle, cycleChord, false, nullptr, nullptr, true, .25);
     CHECK(cycle.states[0].variables.at("$x") == 0);
+  } else if (scenario == "overlap") {
+    const char *text =
+      "[Constants]\n$showA=0\n$showB=0\n"
+      "[KeyA]\nkey=A\ntype=cycle\n$showA=0,1\n"
+      "[KeyB]\nkey=B\ntype=cycle\n$showB=0,1\n"
+      "[RenderOverlap]\nasset=Body\n"
+      "visibility.0.variable=$showA\nvisibility.0.values=0,1\n"
+      "visibility.0.masks=1,0\nvisibility.0.controlled=1\n"
+      "visibility.1.variable=$showB\nvisibility.1.values=0,1\n"
+      "visibility.1.masks=1,0\nvisibility.1.controlled=1\n";
+    CHECK(parse(text, p, error));
+    CHECK(p.rules.size() == 1 && p.rules[0].hiddenSubmeshMask == 0);
+    EiemKeyChord a, b;
+    CHECK(EiemParseKeyChord("A", &a) && EiemParseKeyChord("B", &b));
+    // B hides the shared submesh. A's first press reasserts its current
+    // value and takes precedence; its second press then cycles to hidden.
+    EiemApplyModKey(p, b);
+    CHECK(p.rules[0].hiddenSubmeshMask == 1u);
+    EiemApplyModKey(p, a);
+    CHECK(p.rules[0].hiddenSubmeshMask == 0u);
+    EiemApplyModKey(p, a);
+    CHECK(p.rules[0].hiddenSubmeshMask == 1u);
+    // B likewise reasserts first, then advances on the following press.
+    EiemApplyModKey(p, b);
+    CHECK(p.rules[0].hiddenSubmeshMask == 1u);
+    EiemApplyModKey(p, b);
+    CHECK(p.rules[0].hiddenSubmeshMask == 0u);
   } else if (scenario == "chords") {
     EiemKeyChord chord;
     CHECK(EiemParseKeyChord("Ctrl+Shift+F12", &chord));
@@ -261,12 +304,14 @@ class ModProgramTests(unittest.TestCase):
     def test_independent_actions_and_repeated_material_slot(self): self.run_case("semantics")
     def test_bad_file_cannot_publish_partial_or_broaden_match(self): self.run_case("invalid")
     def test_compiled_rule_scope_is_mod_local(self): self.run_case("compile")
+    def test_render_assembly_compare_ignores_padding(self): self.run_case("assembly_identity")
     def test_reload_and_state_reapply_order(self): self.run_case("reload")
     def test_default_off_nested_conditions_and_roundtrip_cycle(self): self.run_case("conditions")
     def test_expression_precedence_short_circuit_and_validation(self): self.run_case("expressions")
     def test_inactive_branch_errors_never_partially_publish(self): self.run_case("condition_errors")
     def test_ordered_fields_mod_local_variables_and_static_partner_scope(self): self.run_case("ordered_and_scope")
     def test_hold_key_moves_toward_target_without_cycle_repeat(self): self.run_case("hold")
+    def test_overlapping_switches_use_last_operated_group(self): self.run_case("overlap")
     def test_key_chords_are_explicit_and_strict(self): self.run_case("chords")
 
     def test_directory_loading_is_deterministic(self):

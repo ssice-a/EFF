@@ -93,6 +93,157 @@ static bool EiemResolveMeshBonesFromNativeInstance(
     }
     return true;
   };
+
+  // A replacement Mesh is often authored from LOD0 and then assigned to the
+  // LOD1/2/3 Renderers as well.  Those target Renderers legitimately expose a
+  // smaller local bones[] palette.  Resolve one complete donor palette for
+  // the replacement Mesh first, preferring the native LOD0 source, and reuse
+  // it for every target Renderer in this model transaction.  This prevents a
+  // lower LOD from competing with the full source palette one slot at a time.
+  auto allocateResolvedPalette = [&](const std::vector<void *> &bones) -> bool {
+    if (bones.empty() || !il2cpp_array_new || !g_transformClass) return false;
+    void *array = il2cpp_array_new(g_transformClass, bones.size());
+    if (!array) return false;
+    memcpy((char *)array + IL2CPP_ARRAY_DATA, bones.data(),
+           bones.size() * sizeof(void *));
+    if (out) *out = array;
+    return true;
+  };
+  auto tryPreferredFullPalette = [&](bool *handled) -> bool {
+    if (handled) *handled = false;
+    if (!s_eiemLiveSkinSources || identity.sourceCandidates.empty())
+      return false;
+
+    EiemSkinPaletteCacheEntry *cached = nullptr;
+    if (s_eiemActiveSkinPaletteCache) {
+      for (auto &entry : s_eiemActiveSkinPaletteCache->entries) {
+        if (entry.identity == &identity) {
+          cached = &entry;
+          break;
+        }
+      }
+      if (cached) {
+        if (handled) *handled = true;
+        if (cached->failed) return reject(cached->error);
+        if (!allocateResolvedPalette(cached->bones))
+          return reject("Unable to allocate cached replacement bone palette");
+        return true;
+      }
+    }
+
+    struct SlotProvider {
+      const EiemLiveSkinSource *source = nullptr;
+      void *bone = nullptr;
+      size_t boneCount = 0;
+      uint64_t score = 0;
+    };
+    std::vector<void *> resolved(identity.sourceCandidates.size());
+    void *providerRenderer = nullptr;
+    bool providerRendererShared = true;
+    bool allProvidersLod0 = true;
+    for (size_t slot = 0; slot < identity.sourceCandidates.size(); ++slot) {
+      std::vector<SlotProvider> candidates;
+      for (const auto &candidate : *s_eiemLiveSkinSources) {
+        if (!candidate.renderer || !candidate.bones ||
+            !sameSkeletonContext(candidate.renderer))
+          continue;
+        const size_t boneCount = EiemManagedArrayLength(candidate.bones);
+        if (!boneCount || boneCount > 16384) continue;
+        void **sourceBones =
+            (void **)((char *)candidate.bones + IL2CPP_ARRAY_DATA);
+        void *candidateBone = nullptr;
+        bool ambiguous = false;
+        for (const auto &source : identity.sourceCandidates[slot]) {
+          if (!sourceMatchesMeshIdentity(source, candidate.source.c_str(),
+                                         candidate.asset.c_str()) ||
+              source.slot >= boneCount)
+            continue;
+          void *bone = sourceBones[source.slot];
+          if (!bone || EiemNativeObjectStatus(bone) != 1) continue;
+          if (candidateBone && candidateBone != bone) {
+            ambiguous = true;
+            break;
+          }
+          candidateBone = bone;
+        }
+        if (ambiguous || !candidateBone) continue;
+        SlotProvider provider;
+        provider.source = &candidate;
+        provider.bone = candidateBone;
+        provider.boneCount = boneCount;
+        if (candidate.lod == 0) provider.score += uint64_t(1) << 60;
+        if (candidate.renderer == renderer) provider.score += uint64_t(1) << 48;
+        const size_t boundedBoneCount =
+            boneCount < (size_t)0xFFFFFF ? boneCount : (size_t)0xFFFFFF;
+        provider.score += (uint64_t)boundedBoneCount;
+        candidates.push_back(provider);
+      }
+      if (candidates.empty()) return false;
+
+      bool slotHasLod0 = false;
+      for (const auto &candidate : candidates)
+        slotHasLod0 |= candidate.source->lod == 0;
+      if (slotHasLod0) {
+        candidates.erase(
+            std::remove_if(candidates.begin(), candidates.end(),
+                           [](const SlotProvider &candidate) {
+                             return candidate.source->lod != 0;
+                           }),
+            candidates.end());
+      }
+      if (candidates.empty()) return false;
+      const SlotProvider *best = &candidates.front();
+      for (size_t index = 1; index < candidates.size(); ++index)
+        if (candidates[index].score > best->score) best = &candidates[index];
+      for (const auto &candidate : candidates) {
+        if (&candidate == best || candidate.score != best->score) continue;
+        if (candidate.bone == best->bone) continue;
+        const std::string message =
+            "Replacement bone LOD0 slot providers disagree for the same "
+            "replacement Mesh";
+        if (s_eiemActiveSkinPaletteCache) {
+          EiemSkinPaletteCacheEntry entry;
+          entry.identity = &identity;
+          entry.providerRenderer = best->source->renderer;
+          entry.providerLod = best->source->lod;
+          entry.failed = true;
+          entry.error = message;
+          s_eiemActiveSkinPaletteCache->entries.push_back(std::move(entry));
+        }
+        if (handled) *handled = true;
+        return reject(message);
+      }
+      resolved[slot] = best->bone;
+      if (!providerRenderer) providerRenderer = best->source->renderer;
+      else if (providerRenderer != best->source->renderer)
+        providerRendererShared = false;
+      allProvidersLod0 &= best->source->lod == 0;
+    }
+
+    if (s_eiemActiveSkinPaletteCache) {
+      EiemSkinPaletteCacheEntry entry;
+      entry.identity = &identity;
+      entry.bones = resolved;
+      entry.providerRenderer = providerRendererShared ? providerRenderer : nullptr;
+      entry.providerLod = allProvidersLod0 ? 0 : -1;
+      s_eiemActiveSkinPaletteCache->entries.push_back(std::move(entry));
+    }
+    if (handled) *handled = true;
+    if (!allocateResolvedPalette(resolved))
+      return reject("Unable to allocate preferred replacement bone palette");
+    if (kEiemEnableSkinBindingDiagnostics)
+      Log("[MOD-SKIN-PALETTE-v1] renderer=%p provider=%p lod=%d slots=%zu",
+          renderer, providerRendererShared ? providerRenderer : nullptr,
+          allProvidersLod0 ? 0 : -1, resolved.size());
+    return true;
+  };
+  bool preferredHandled = false;
+  if (tryPreferredFullPalette(&preferredHandled)) return true;
+  if (preferredHandled && error && !error[0])
+    strncpy_s(error, errorSize,
+              "Preferred full replacement Mesh bone palette failed", _TRUNCATE);
+  if (preferredHandled) return false;
+
   std::vector<const EiemLiveSkinSource *> targetBranchSources;
   if (s_eiemLiveSkinSources && targetNativeBones) {
     bool changed = true;
@@ -391,8 +542,9 @@ static bool EiemResolveMeshBonesFromNativeInstance(
     memcpy((char *)array + IL2CPP_ARRAY_DATA, resolved.data(),
            resolved.size() * sizeof(void *));
     if (out) *out = array;
-    Log("[MOD-SKIN-NATIVE] renderer=%p binding=%s slots=%zu", renderer,
-        binding, resolved.size());
+    if (kEiemEnableSkinBindingDiagnostics)
+      Log("[MOD-SKIN-NATIVE] renderer=%p binding=%s slots=%zu", renderer,
+          binding, resolved.size());
     return true;
   };
 
@@ -447,9 +599,10 @@ static bool EiemResolveMeshBonesFromNativeInstance(
     memcpy((char *)array + IL2CPP_ARRAY_DATA, sourceResolved.data(),
            sourceResolved.size() * sizeof(void *));
     if (out) *out = array;
-    Log("[MOD-SKIN-NATIVE] renderer=%p binding=instance-donor-candidates "
-        "slots=%zu sourceResolved=%zu",
-        renderer, sourceResolved.size(), sourceResolved.size());
+    if (kEiemEnableSkinBindingDiagnostics)
+      Log("[MOD-SKIN-NATIVE] renderer=%p binding=instance-donor-candidates "
+          "slots=%zu sourceResolved=%zu",
+          renderer, sourceResolved.size(), sourceResolved.size());
     return true;
   }
 
@@ -496,7 +649,9 @@ static bool EiemPreserveSourceSkinning(void *renderer, void *bones,
     if (error) strncpy_s(error,errorSize,"Replacement bone palette assignment failed",_TRUNCATE);
   }
   if (old) il2cpp_gchandle_free(old);
-  Log("[MOD-SKIN] renderer=%p slots=%zu changed=%d applied=%d",renderer,EiemManagedArrayLength(bones),!same,ok);
+  if (kEiemEnableSkinBindingDiagnostics)
+    Log("[MOD-SKIN] renderer=%p slots=%zu changed=%d applied=%d", renderer,
+        EiemManagedArrayLength(bones), !same, ok);
   return ok;
 }
 

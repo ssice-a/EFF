@@ -200,29 +200,56 @@ static std::vector<EiemUiSnapshot> EiemGetModUis(LONG *generation) {
   return result;
 }
 
-static bool EiemSameRenderAssembly(EiemModRule a, EiemModRule b) {
-  // New/removed channels may need to discover a previously match-only consumer.
+// Compare only the fields that determine which live Renderer can match a
+// Render rule.  Do not memcmp EiemModRule: it contains bools followed by
+// aligned fields, so compiler generated copies can leave different padding
+// bytes even when every authored value is identical.  Shape weights/speeds
+// and visibility bindings are runtime controls and are intentionally outside
+// this identity comparison.
+static bool EiemSameRenderIdentity(const EiemModRule &a, const EiemModRule &b,
+                                   bool ignoreHiddenSubmeshMask) {
+  if (strcmp(a.modPath, b.modPath) || strcmp(a.section, b.section) ||
+      strcmp(a.path, b.path) || strcmp(a.handling, b.handling) ||
+      strcmp(a.mesh, b.mesh) || strcmp(a.asset, b.asset) ||
+      a.matchVertices != b.matchVertices || a.matchIndices != b.matchIndices ||
+      a.matchSubMeshes != b.matchSubMeshes || strcmp(a.skeleton, b.skeleton) ||
+      strcmp(a.physics, b.physics) || a.hasMesh != b.hasMesh ||
+      a.hasSkeleton != b.hasSkeleton || a.hasPhysics != b.hasPhysics ||
+      a.materialCount != b.materialCount || a.submeshCount != b.submeshCount)
+    return false;
+  if (memcmp(a.materials, b.materials, sizeof(a.materials)) != 0 ||
+      memcmp(a.materialSlots, b.materialSlots, sizeof(a.materialSlots)) != 0 ||
+      memcmp(a.submeshSlots, b.submeshSlots, sizeof(a.submeshSlots)) != 0)
+    return false;
+  return ignoreHiddenSubmeshMask ||
+         a.hiddenSubmeshMask == b.hiddenSubmeshMask;
+}
+
+static bool EiemSameRenderAssembly(const EiemModRule &a,
+                                   const EiemModRule &b) {
+  // New/removed channels may need to discover a previously match-only
+  // consumer. A weight or speed edit itself does not change the match set.
   if (a.shapeCount != b.shapeCount) return false;
   for (uint32_t i = 0; i < a.shapeCount; ++i)
     if (strcmp(a.shapeNames[i], b.shapeNames[i])) return false;
-  memset(a.shapeNames, 0, sizeof(a.shapeNames)); memset(b.shapeNames, 0, sizeof(b.shapeNames));
-  memset(a.shapeWeights, 0, sizeof(a.shapeWeights)); memset(b.shapeWeights, 0, sizeof(b.shapeWeights));
-  a.shapeCount = b.shapeCount = 0;
-  memset(a.shapeSpeedNames, 0, sizeof(a.shapeSpeedNames));
-  memset(b.shapeSpeedNames, 0, sizeof(b.shapeSpeedNames));
-  memset(a.shapeSpeeds, 0, sizeof(a.shapeSpeeds));
-  memset(b.shapeSpeeds, 0, sizeof(b.shapeSpeeds));
-  a.shapeSpeedCount = b.shapeSpeedCount = 0;
-  return memcmp(&a, &b, sizeof(a)) == 0;
+  return EiemSameRenderIdentity(a, b, false);
 }
 
-static bool EiemSameRenderWithoutSubmeshVisibility(EiemModRule a,
-                                                   EiemModRule b) {
+static bool EiemSameRenderWithoutSubmeshVisibility(
+    const EiemModRule &a, const EiemModRule &b) {
   // A submesh visibility key changes only the generated index buffer. Keep
   // this separate from partner-link updates so the source Renderer is
   // refreshed without destroying any model-owned objects.
-  a.hiddenSubmeshMask = b.hiddenSubmeshMask = 0;
-  return memcmp(&a, &b, sizeof(a)) == 0;
+  if (!EiemSameRenderIdentity(a, b, true) || a.shapeCount != b.shapeCount ||
+      a.shapeSpeedCount != b.shapeSpeedCount)
+    return false;
+  if (memcmp(a.shapeNames, b.shapeNames, sizeof(a.shapeNames)) != 0 ||
+      memcmp(a.shapeWeights, b.shapeWeights, sizeof(a.shapeWeights)) != 0 ||
+      memcmp(a.shapeSpeedNames, b.shapeSpeedNames,
+             sizeof(a.shapeSpeedNames)) != 0 ||
+      memcmp(a.shapeSpeeds, b.shapeSpeeds, sizeof(a.shapeSpeeds)) != 0)
+    return false;
+  return true;
 }
 
 struct EiemSubmeshVisibilityChange {

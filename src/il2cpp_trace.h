@@ -554,7 +554,8 @@ static void EiemLogPerformanceSummary(LONG64 prefabCalls) {
 static bool EiemApplyStandaloneRenderRules(void *model, const char *stage,
                                            bool *matched = nullptr,
                                            const std::vector<std::string> *affected = nullptr,
-                                           std::vector<EiemPhysicsIntent> *physicsIntents = nullptr);
+                                           std::vector<EiemPhysicsIntent> *physicsIntents = nullptr,
+                                           const std::vector<EiemModRule> *preparedRules = nullptr);
 static bool EiemApplyStandaloneRenderRulesToRenderer(
     void *meshOwner, void *drawRenderer, void *mesh,
     const char *rendererType, void *methodInfo, const char *stage);
@@ -2236,6 +2237,11 @@ static void TraceDumpPrefabRenderers(const char *path, void *model) {
   }
 }
 
+// Render transactions need the LOD provenance captured by the native skin
+// assembly hook. The snapshot storage is declared later in this file, so keep
+// the lookup behind a forward declaration here.
+static int32_t EiemLookupRendererAssemblyLod(void *renderer);
+
 #include "eiem_render_executor.h"
 
 // The controller owns the game's RendererInfo cache.  This is observation only:
@@ -2515,6 +2521,20 @@ struct EiemRendererBoneSnapshot {
   int32_t lod = -1;
 };
 static std::vector<EiemRendererBoneSnapshot> s_eiemRendererBoneSnapshots;
+
+static int32_t EiemLookupRendererAssemblyLod(void *renderer) {
+  if (!renderer) return -1;
+  int32_t lod = -1;
+  AcquireSRWLockShared(&s_eiemAssemblyBoneLock);
+  for (const auto &snapshot : s_eiemRendererBoneSnapshots) {
+    if (snapshot.renderer == renderer) {
+      lod = snapshot.lod;
+      break;
+    }
+  }
+  ReleaseSRWLockShared(&s_eiemAssemblyBoneLock);
+  return lod;
+}
 
 #include "eiem_assembly_binding.h"
 

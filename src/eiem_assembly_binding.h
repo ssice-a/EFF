@@ -58,8 +58,9 @@ static void EiemRememberAssemblyBoneSnapshot(void *renderers, void *rootBones,
   if (s_eiemAssemblyBoneSnapshots.size() > 128)
     s_eiemAssemblyBoneSnapshots.erase(s_eiemAssemblyBoneSnapshots.begin());
   ReleaseSRWLockExclusive(&s_eiemAssemblyBoneLock);
-  Log("[MOD-SKIN-INSTANCE] array=%p rootBones=%p lod=%d bones=%zu generation=%ld",
-      renderers, rootBones, lod, count, generation);
+  if (kEiemEnableSkinBindingDiagnostics)
+    Log("[MOD-SKIN-INSTANCE] array=%p rootBones=%p lod=%d bones=%zu generation=%ld",
+        renderers, rootBones, lod, count, generation);
 
   if (g_smr_get_bones) {
     void **rendererItems = (void **)((char *)renderers + IL2CPP_ARRAY_DATA);
@@ -100,6 +101,25 @@ static bool EiemResolveMeshBonesFromAssembly(
     if (error) strncpy_s(error, errorSize, message, _TRUNCATE);
     return false;
   };
+  // A render transaction already captured every native source Renderer for
+  // this concrete model instance. Use the same preferred full-palette path
+  // for all creation routes, including those that also exposed an assembly
+  // snapshot. This makes lod1/lod2/lod3 reuse the LOD0 palette selected for
+  // the replacement Mesh instead of resolving their smaller local arrays
+  // independently.
+  if (s_eiemLiveSkinSources) {
+    char nativeError[256] = {};
+    if (EiemResolveMeshBonesFromNativeInstance(identity, renderer, out,
+                                               nativeError,
+                                               sizeof(nativeError)))
+      return true;
+    if (error)
+      strncpy_s(error, errorSize,
+                nativeError[0] ? nativeError
+                               : "No model-local native skeleton donor",
+                _TRUNCATE);
+    return false;
+  }
   auto sourceMatchesMeshIdentity =
       [](const EiemSkinIdentity::Source &source, const char *meshPath,
          const char *meshAsset) {
@@ -186,9 +206,9 @@ static bool EiemResolveMeshBonesFromAssembly(
       memcpy((char *)array + IL2CPP_ARRAY_DATA, resolved.data(),
              resolved.size() * sizeof(void *));
       if (out) *out = array;
-      Log("[MOD-SKIN-%s] renderer=%p binding=direct-renderer slots=%zu",
-          "V6",
-          renderer, resolved.size());
+      if (kEiemEnableSkinBindingDiagnostics)
+        Log("[MOD-SKIN-%s] renderer=%p binding=direct-renderer slots=%zu",
+            "V6", renderer, resolved.size());
       return true;
     }
   }
@@ -207,8 +227,9 @@ static bool EiemResolveMeshBonesFromAssembly(
     char liveError[256] = {};
     if (EiemResolveMeshBonesFromNativeInstance(identity, renderer, out,
                                                liveError, sizeof(liveError))) {
-      Log("[MOD-SKIN-ASSEMBLY] renderer=%p binding=model-transaction slots=%zu",
-          renderer, identity.sourceCandidates.size());
+      if (kEiemEnableSkinBindingDiagnostics)
+        Log("[MOD-SKIN-ASSEMBLY] renderer=%p binding=model-transaction slots=%zu",
+            renderer, identity.sourceCandidates.size());
       return true;
     }
     return reject(liveError[0] ? liveError
@@ -255,7 +276,8 @@ static bool EiemResolveMeshBonesFromAssembly(
   memcpy((char *)array + IL2CPP_ARRAY_DATA, resolved.data(),
          resolved.size() * sizeof(void *));
   if (out) *out = array;
-  Log("[MOD-SKIN-%s] renderer=%p binding=assembly-source slots=%zu",
-      "V6", renderer, resolved.size());
+  if (kEiemEnableSkinBindingDiagnostics)
+    Log("[MOD-SKIN-%s] renderer=%p binding=assembly-source slots=%zu",
+        "V6", renderer, resolved.size());
   return true;
 }

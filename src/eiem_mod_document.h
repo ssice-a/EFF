@@ -25,6 +25,8 @@
 // Authoring syntax -> typed resource declarations and Render actions. No
 // published configuration, Unity objects, hotkeys or lifecycle state live here.
 struct EiemModRule {
+  static constexpr uint32_t kMaxVisibilityBindings = 32;
+  static constexpr uint32_t kMaxVisibilityStates = 32;
   char modPath[MAX_PATH] = {};
   char section[96] = {};
   char path[768] = {};
@@ -48,6 +50,17 @@ struct EiemModRule {
   // buffer in the generated Mesh variant. The Renderer and its skinning stay
   // unchanged, so visibility changes do not create or destroy Unity objects.
   uint32_t hiddenSubmeshMask = 0;
+  // A Render may be controlled by several switch groups.  Each binding maps
+  // one group's variable values to the submesh visibility mask it owns.  The
+  // runtime resolves overlapping bindings by the most recently operated
+  // group; these fields are authoring metadata and never affect replacement
+  // assembly.
+  uint32_t visibilityBindingCount = 0;
+  char visibilityVariables[kMaxVisibilityBindings][96] = {};
+  uint32_t visibilityValueCounts[kMaxVisibilityBindings] = {};
+  int32_t visibilityValues[kMaxVisibilityBindings][kMaxVisibilityStates] = {};
+  uint32_t visibilityMasks[kMaxVisibilityBindings][kMaxVisibilityStates] = {};
+  uint32_t visibilityControlledMasks[kMaxVisibilityBindings] = {};
   char shapeNames[64][192] = {};
   float shapeWeights[64] = {}; // authoring units: 1 == Unity 100
   uint32_t shapeCount = 0;
@@ -136,6 +149,54 @@ static bool EiemModInteger(const std::string &text, int32_t *out,
   return true;
 }
 
+static bool EiemModUInt32(const std::string &text, uint32_t *out) {
+  if (text.empty() || !out) return false;
+  char *end = nullptr;
+  errno = 0;
+  const unsigned long long value = strtoull(text.c_str(), &end, 10);
+  if (errno || end == text.c_str() || *end || value > UINT32_MAX) return false;
+  *out = (uint32_t)value;
+  return true;
+}
+
+static bool EiemModIntegerList(const std::string &text, int32_t *out,
+                               uint32_t capacity, uint32_t *count) {
+  if (!out || !count || !capacity || text.empty()) return false;
+  uint32_t used = 0;
+  size_t start = 0;
+  for (;;) {
+    const size_t end = text.find(',', start);
+    std::string token = text.substr(
+        start, end == std::string::npos ? end : end - start);
+    EiemModTrim(token);
+    if (used >= capacity || !EiemModInteger(token, &out[used])) return false;
+    ++used;
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  *count = used;
+  return used != 0;
+}
+
+static bool EiemModUInt32List(const std::string &text, uint32_t *out,
+                              uint32_t capacity, uint32_t *count) {
+  if (!out || !count || !capacity || text.empty()) return false;
+  uint32_t used = 0;
+  size_t start = 0;
+  for (;;) {
+    const size_t end = text.find(',', start);
+    std::string token = text.substr(
+        start, end == std::string::npos ? end : end - start);
+    EiemModTrim(token);
+    if (used >= capacity || !EiemModUInt32(token, &out[used])) return false;
+    ++used;
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  *count = used;
+  return used != 0;
+}
+
 // A Render has immutable selectors and an ordered body. Evaluated rules remain
 // plain data, so existing hooks never need to interpret conditions.
 struct EiemModStatement {
@@ -190,11 +251,20 @@ struct EiemModProgram {
   std::vector<EiemModState> states;
   std::vector<EiemModRule> rules;
   std::vector<size_t> standaloneRules;
+  // Runtime-only precedence state for overlapping switch groups.  The values
+  // remain independent; this sequence only records which group was operated
+  // last so one key can temporarily take control from another.
+  uint64_t visibilitySequence = 0;
+  std::unordered_map<std::string, uint64_t> visibilityOrder;
 };
 
 static bool EiemRenderSelectorKey(const std::string &key) {
   return key == "path" || key == "asset" || key == "match.vertices" ||
          key == "match.indices" || key == "match.submeshes";
+}
+
+static bool EiemRenderVisibilityKey(const std::string &key) {
+  return key.compare(0, 11, "visibility.") == 0;
 }
 
 static bool EiemSetRenderField(EiemModRule &rule, const std::string &key,
@@ -286,6 +356,49 @@ static bool EiemSetRenderField(EiemModRule &rule, const std::string &key,
     rule.materialSlots[slot] = index;
     return true;
   }
+  if (key.compare(0, 11, "visibility.") == 0) {
+    const size_t dot = key.find('.', 11);
+    if (dot == std::string::npos) return fail();
+    int32_t index = -1;
+    if (!EiemModInteger(key.substr(11, dot - 11), &index, 0,
+                        (int32_t)EiemModRule::kMaxVisibilityBindings - 1))
+      return fail();
+    const std::string field = key.substr(dot + 1);
+    if ((uint32_t)index >= rule.visibilityBindingCount)
+      rule.visibilityBindingCount = (uint32_t)index + 1;
+    char *variable = rule.visibilityVariables[index];
+    if (field == "variable") {
+      if (!EiemVariableName(value) || value.size() >= sizeof(rule.visibilityVariables[0]))
+        return fail();
+      EiemModCopy(variable, sizeof(rule.visibilityVariables[0]), value);
+      return true;
+    }
+    if (field == "values") {
+      uint32_t count = 0;
+      if (!EiemModIntegerList(value, rule.visibilityValues[index],
+                              EiemModRule::kMaxVisibilityStates, &count))
+        return fail();
+      if (rule.visibilityValueCounts[index] &&
+          count != rule.visibilityValueCounts[index])
+        return fail();
+      rule.visibilityValueCounts[index] = count;
+      return true;
+    }
+    if (field == "masks") {
+      uint32_t count = 0;
+      if (!EiemModUInt32List(value, rule.visibilityMasks[index],
+                             EiemModRule::kMaxVisibilityStates, &count))
+        return fail();
+      if (rule.visibilityValueCounts[index] &&
+          count != rule.visibilityValueCounts[index])
+        return fail();
+      rule.visibilityValueCounts[index] = count;
+      return true;
+    }
+    if (field == "controlled")
+      return EiemModUInt32(value, &rule.visibilityControlledMasks[index]) || fail();
+    return fail();
+  }
   if (key.compare(0, 8, "submesh.") == 0) {
     int32_t slot = -1;
     if (!EiemModInteger(key.substr(8), &index, 0, _countof(rule.submeshSlots) - 1) ||
@@ -324,11 +437,122 @@ static void EiemEvaluateStatements(const std::vector<EiemModStatement> &statemen
   }
 }
 
+static void EiemEnsureVisibilityOrder(EiemModProgram &program) {
+  auto orderKey = [](const char *modPath, const char *variable) {
+    return std::string(modPath ? modPath : "") + "\n" +
+           std::string(variable ? variable : "");
+  };
+  for (const auto &definition : program.definitions) {
+    const auto &rule = definition.selector;
+    for (uint32_t binding = 0;
+         binding < rule.visibilityBindingCount; ++binding) {
+      const std::string key = orderKey(
+          rule.modPath, rule.visibilityVariables[binding]);
+      if (key == "\n" || program.visibilityOrder.count(key)) continue;
+      program.visibilityOrder.emplace(key, ++program.visibilitySequence);
+    }
+  }
+}
+
+static std::string EiemVisibilityOrderKey(const std::string &modPath,
+                                          const std::string &variable) {
+  return modPath + "\n" + variable;
+}
+
+static int EiemVisibilityStateIndex(const EiemModRule &rule, uint32_t binding,
+                                    double value) {
+  const uint32_t count = rule.visibilityValueCounts[binding];
+  for (uint32_t index = 0; index < count; ++index)
+    if (value == (double)rule.visibilityValues[binding][index])
+      return (int)index;
+  return -1;
+}
+
+static int EiemWinningVisibilityBinding(
+    const EiemModRule &rule, uint32_t submesh,
+    const EiemVariables &variables, const EiemModProgram &program) {
+  int winner = -1;
+  uint64_t winnerOrder = 0;
+  for (uint32_t binding = 0;
+       binding < rule.visibilityBindingCount; ++binding) {
+    if (!(rule.visibilityControlledMasks[binding] & (1u << submesh))) continue;
+    const auto value = variables.find(rule.visibilityVariables[binding]);
+    if (value == variables.end()) continue;
+    if (EiemVisibilityStateIndex(rule, binding, value->second) < 0) continue;
+    const auto orderKey = EiemVisibilityOrderKey(
+        rule.modPath, rule.visibilityVariables[binding]);
+    const auto order = program.visibilityOrder.count(orderKey)
+                           ? program.visibilityOrder.at(orderKey)
+                           : 0;
+    if (winner < 0 || order > winnerOrder ||
+        (order == winnerOrder && binding > (uint32_t)winner)) {
+      winner = (int)binding;
+      winnerOrder = order;
+    }
+  }
+  return winner;
+}
+
+static void EiemEvaluateVisibility(EiemModRule &rule,
+                                   const EiemVariables &variables,
+                                   const EiemModProgram &program) {
+  if (!rule.visibilityBindingCount) return;
+  for (uint32_t submesh = 0; submesh < 32; ++submesh) {
+    const int winner = EiemWinningVisibilityBinding(
+        rule, submesh, variables, program);
+    if (winner < 0) continue;
+    const int state = EiemVisibilityStateIndex(
+        rule, (uint32_t)winner, variables.at(
+            rule.visibilityVariables[winner]));
+    if (state < 0) continue;
+    const uint32_t bit = 1u << submesh;
+    if (rule.visibilityMasks[winner][state] & bit)
+      rule.hiddenSubmeshMask &= ~bit;
+    else
+      rule.hiddenSubmeshMask |= bit;
+  }
+}
+
+static bool EiemVisibilityVariableOwnsAny(
+    const EiemModProgram &program, const std::string &modPath,
+    const std::string &variable) {
+  for (size_t definitionIndex = 0;
+       definitionIndex < program.definitions.size() &&
+       definitionIndex < program.rules.size(); ++definitionIndex) {
+    const auto &rule = program.rules[definitionIndex];
+    const auto &variables =
+        program.states[program.definitions[definitionIndex].stateIndex].variables;
+    for (uint32_t submesh = 0; submesh < 32; ++submesh) {
+      int winner = EiemWinningVisibilityBinding(
+          rule, submesh, variables, program);
+      if (winner >= 0 && rule.modPath == modPath &&
+          variable == rule.visibilityVariables[(uint32_t)winner])
+        return true;
+    }
+  }
+  return false;
+}
+
+static bool EiemProgramHasVisibilityVariable(const EiemModProgram &program,
+                                             const std::string &modPath,
+                                             const std::string &variable) {
+  for (const auto &definition : program.definitions)
+    if (definition.selector.modPath == modPath)
+    for (uint32_t binding = 0;
+         binding < definition.selector.visibilityBindingCount; ++binding)
+      if (variable == definition.selector.visibilityVariables[binding])
+        return true;
+  return false;
+}
+
 static void EiemEvaluateModProgram(EiemModProgram &program) {
+  EiemEnsureVisibilityOrder(program);
   program.rules.clear();
   for (const auto &definition : program.definitions) {
     EiemModRule rule = definition.selector;
-    EiemEvaluateStatements(definition.statements, program.states[definition.stateIndex].variables, rule);
+    const auto &variables = program.states[definition.stateIndex].variables;
+    EiemEvaluateStatements(definition.statements, variables, rule);
+    EiemEvaluateVisibility(rule, variables, program);
     program.rules.push_back(rule);
   }
 }
@@ -458,6 +682,39 @@ static bool EiemValidateModDocument(EiemModProgram &doc, std::string &error) {
     renders[EiemModIdentifier("", doc.definitions[i].selector.section)] = i;
   for (size_t i = 0; i < doc.definitions.size(); ++i) {
     bool valid = true;
+    const auto &selector = doc.definitions[i].selector;
+    for (uint32_t binding = 0;
+         valid && binding < selector.visibilityBindingCount; ++binding) {
+      const char *variable = selector.visibilityVariables[binding];
+      const uint32_t count = selector.visibilityValueCounts[binding];
+      if (!variable[0] || !state.defaults.count(variable) || count < 2 ||
+          count > EiemModRule::kMaxVisibilityStates ||
+          !selector.visibilityControlledMasks[binding]) {
+        valid = false;
+        error = "Invalid visibility binding in Render: " +
+                std::string(selector.section);
+        break;
+      }
+      for (uint32_t value = 0; value < count; ++value) {
+        if (selector.visibilityMasks[binding][value] &
+            ~selector.visibilityControlledMasks[binding]) {
+          valid = false;
+          error = "Visibility mask exceeds controlled submeshes in Render: " +
+                  std::string(selector.section);
+          break;
+        }
+        for (uint32_t previous = 0; previous < value; ++previous)
+          if (selector.visibilityValues[binding][previous] ==
+              selector.visibilityValues[binding][value]) {
+            valid = false;
+            error = "Duplicate visibility state value in Render: " +
+                    std::string(selector.section);
+            break;
+          }
+        if (!valid) break;
+      }
+    }
+    if (!valid) return false;
     std::unordered_set<std::string> shapes, shapeSpeeds;
     EiemVisitStatements(doc.definitions[i].statements, [&](const EiemModStatement &s) {
       if (!valid) return;
@@ -788,7 +1045,7 @@ static bool EiemModParseStream(std::istream &input, const char *path,
         if (!number) return fail(detail);
       }
       if (!EiemSetRenderField(check, key, number ? "0" : value, detail)) return fail(detail);
-      if (EiemRenderSelectorKey(key)) {
+      if (EiemRenderSelectorKey(key) || EiemRenderVisibilityKey(key)) {
         if (!stack.empty()) return fail("Render selectors must be unconditional");
         EiemSetRenderField(doc.definitions.back().selector, key, value, detail);
       } else {
@@ -935,6 +1192,31 @@ static std::vector<std::string> EiemApplyModKey(
       if (keySection && (!keySection[0] || key.section != keySection))
         continue;
       if (!(key.chord == chord) || !EiemKeyInScope(key.scope,uiFocus)) continue;
+      bool reassert = false;
+      for (const auto &assignment : key.assignments) {
+        if (EiemProgramHasVisibilityVariable(
+                program, state.path, assignment.variable) &&
+            !EiemVisibilityVariableOwnsAny(
+                program, state.path, assignment.variable)) {
+          reassert = true;
+          break;
+        }
+      }
+      if (reassert) {
+        // The group was hidden by another overlapping group.  The first press
+        // restores this group's current state and gives it precedence; only a
+        // subsequent press advances its cycle.
+        for (const auto &assignment : key.assignments) {
+          if (!EiemProgramHasVisibilityVariable(
+                  program, state.path, assignment.variable))
+            continue;
+          program.visibilityOrder[EiemVisibilityOrderKey(
+              state.path, assignment.variable)] =
+              ++program.visibilitySequence;
+          dirty = true;
+        }
+        continue;
+      }
       if (key.behavior == EiemModKeyBehavior::Hold) {
         // A hold edge and every subsequent poll use the same target movement.
         // The target may be either side of the current value, so increase and
@@ -946,8 +1228,14 @@ static std::vector<std::string> EiemApplyModKey(
           const double next = value < target
               ? (std::min)(value + distance, target)
               : (std::max)(value - distance, target);
-          dirty = dirty || value != next;
+          const bool changedValue = value != next;
+          dirty = dirty || changedValue;
           value = next;
+          if (EiemProgramHasVisibilityVariable(
+                  program, state.path, a.variable) &&
+              changedValue)
+            program.visibilityOrder[EiemVisibilityOrderKey(
+                state.path, a.variable)] = ++program.visibilitySequence;
         }
       } else if (!holdTick) {
         size_t count = key.assignments.front().values.size(), selected = 0;
@@ -961,6 +1249,10 @@ static std::vector<std::string> EiemApplyModKey(
           double &value = state.variables.at(a.variable);
           dirty = dirty || value != a.values[selected];
           value = a.values[selected];
+          if (EiemProgramHasVisibilityVariable(
+                  program, state.path, a.variable))
+            program.visibilityOrder[EiemVisibilityOrderKey(
+                state.path, a.variable)] = ++program.visibilitySequence;
         }
       }
     }

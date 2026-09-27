@@ -26,7 +26,34 @@ struct EiemLiveSkinSource {
   std::string asset;
   void *renderer = nullptr;
   void *bones = nullptr;
+  // The native assembly hook records the LOD that produced this Renderer.
+  // -1 means that this creation path did not expose an LOD.  The value is
+  // only a preference when choosing a complete donor palette; it never lets
+  // a source cross the current skinningRoot instance boundary.
+  int32_t lod = -1;
 };
+
+// One replacement Mesh can be bound to several target LOD Renderers in the
+// same model transaction.  Keep one resolved Transform palette per generated
+// Mesh identity so lod1/lod2/lod3 reuse the complete source palette selected
+// for the replacement Mesh instead of resolving their smaller local palettes
+// independently.  The cache is transaction-scoped and never crosses model
+// instances or F10 replays.
+struct EiemSkinPaletteCacheEntry {
+  const EiemSkinIdentity *identity = nullptr;
+  std::vector<void *> bones;
+  void *providerRenderer = nullptr;
+  int32_t providerLod = -1;
+  bool failed = false;
+  std::string error;
+};
+
+struct EiemSkinPaletteCache {
+  void *model = nullptr;
+  std::vector<EiemSkinPaletteCacheEntry> entries;
+};
+
+static thread_local EiemSkinPaletteCache *s_eiemActiveSkinPaletteCache = nullptr;
 
 // A replacement slot is resolved by this resource identity, never by the
 // target LOD's local array index. A lower LOD may omit slots present in LOD0;

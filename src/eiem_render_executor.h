@@ -63,8 +63,9 @@ static bool EiemApplyResolvedRenderRule(void *renderer, void *drawRenderer,
   if (skipOriginal) {
     skipApplied = EiemCaptureEnabledForSkip(renderer, drawRenderer) &&
                   EiemSetRendererEnabled(drawRenderer, false);
-    Log("[MOD] %s resource skip applied: source=%s asset=%s", rendererType,
-        source, asset);
+    if (kEiemEnableLifecycleDiagnostics)
+      Log("[MOD] %s resource skip applied: source=%s asset=%s", rendererType,
+          source, asset);
   }
 
   // Build every declared material before changing sharedMesh. A generated
@@ -412,6 +413,11 @@ static bool EiemEnsureLiveSkinSources(void *opaque) {
       if (original) bones = original;
     }
     ReleaseSRWLockShared(&s_eiemOverrideLock);
+    // The assembly hook keeps the concrete Renderer-to-LOD association.  A
+    // missing association is expected on world/UI creation paths; the skin
+    // resolver then falls back to palette coverage instead of guessing from
+    // a name or a local bones[] index.
+    const int32_t sourceLod = EiemLookupRendererAssemblyLod(renderer);
     const size_t boneCount = EiemManagedArrayLength(bones);
     if (!bones || !boneCount) {
       if (kEiemEnableSkinBindingDiagnostics &&
@@ -450,7 +456,7 @@ static bool EiemEnsureLiveSkinSources(void *opaque) {
           rootBone, skinningRoot,
           context->stage ? context->stage : "unknown");
     }
-    context->output->push_back({source, asset, renderer, bones});
+    context->output->push_back({source, asset, renderer, bones, sourceLod});
   }
   return true;
 }
@@ -548,6 +554,11 @@ static bool EiemApplyRenderRuleSet(void *model,
   std::vector<void *> skinnedRenderers;
   std::vector<void *> meshFilters;
   s_eiemActivePrefabInstance = (uintptr_t)model;
+  EiemSkinPaletteCache skinPaletteCache;
+  skinPaletteCache.model = model;
+  EiemSkinPaletteCache *previousSkinPaletteCache =
+      s_eiemActiveSkinPaletteCache;
+  s_eiemActiveSkinPaletteCache = &skinPaletteCache;
 
   auto snapshotType = [&](void *componentClass,
                           std::vector<void *> *components) {
@@ -614,6 +625,7 @@ static bool EiemApplyRenderRuleSet(void *model,
   visitType(meshFilters, "MeshFilter");
   EiemPerfRecord(s_eiemPerfRendererVisit, visitStarted);
   s_eiemLiveSkinSources = previousLiveSkinSources;
+  s_eiemActiveSkinPaletteCache = previousSkinPaletteCache;
   s_eiemActivePrefabInstance = previousOwner;
   const double slowApplyMs =
       EiemPerfMilliseconds(EiemPerfNow() - slowApplyStarted);
@@ -625,7 +637,7 @@ static bool EiemApplyRenderRuleSet(void *model,
         skinnedRenderers.size(), meshFilters.size(), visited, applied,
         slowApplyMs);
   }
-  if (applied)
+  if (applied && kEiemEnableLifecycleDiagnostics)
     Log("[MOD-MESH] applied model=%p components=%zu actions=%u stage=%s",
         model, visited, applied, stage ? stage : "unknown");
   // Cold-start evidence is collected only after one model transaction has
@@ -637,11 +649,16 @@ static bool EiemApplyRenderRuleSet(void *model,
 
 static bool EiemApplyStandaloneRenderRules(void *model, const char *stage,
                                            bool *matched, const std::vector<std::string> *affected,
-                                           std::vector<EiemPhysicsIntent> *physicsIntents) {
+                                           std::vector<EiemPhysicsIntent> *physicsIntents,
+                                           const std::vector<EiemModRule> *preparedRules) {
   std::vector<EiemModRule> rules;
-  EiemFindStandaloneRenderRules(&rules);
+  const std::vector<EiemModRule> *ruleSet = preparedRules;
+  if (!ruleSet) {
+    EiemFindStandaloneRenderRules(&rules);
+    ruleSet = &rules;
+  }
   const bool applied = EiemApplyRenderRuleSet(
-      model, rules, "<mesh identity>", stage, nullptr, matched, affected,
+      model, *ruleSet, "<mesh identity>", stage, nullptr, matched, affected,
       physicsIntents);
   if (kEiemEnableNativePhysicsObservation && applied) {
     EiemPhysicsOrderProbeRememberRender(model);

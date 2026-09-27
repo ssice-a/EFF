@@ -67,6 +67,9 @@ static std::vector<State> s_eiemOverrides(1);
 static SRWLOCK s_eiemOverrideLock=SRWLOCK_INIT;
 static size_t EiemFindOverrideLocked(void *) { return 0; }
 static void Log(const char *,...) {}
+// The extracted resolver functions use the production diagnostic gate. Keep
+// this focused harness quiet while supplying the same compile-time contract.
+static constexpr bool kEiemEnableSkinBindingDiagnostics = false;
 static bool EiemModEquals(const char *a,const char *b) {
  return a && b && _stricmp(a,b)==0;
 }
@@ -148,6 +151,36 @@ int main() {
  assert(EiemResolveMeshBonesFromNativeInstance(merged,&other,&mergedOut,v6Error,sizeof(v6Error)));
  assert(((Array *)mergedOut)->items[0]==&otherChest &&
         ((Array *)mergedOut)->items[1]==&otherFoot); // same numeric slot, different source Mesh
+ // A lower LOD may expose only the first local slot while the replacement
+ // Mesh intentionally uses the complete LOD0 palette. The resolver must
+ // choose the complete LOD0 donor once and return both Transform entries for
+ // the lower-LOD target instead of resolving its local array independently.
+ Array lod1Storage; lod1Storage.count=1; lod1Storage.items[0]=&otherChest;
+ Renderer lod1Renderer{&lod1Storage,nullptr,&otherRoot};
+ Array lod0Storage; lod0Storage.count=2;
+ lod0Storage.items[0]=&otherChest; lod0Storage.items[1]=&otherFoot;
+ Renderer lod0Renderer{&lod0Storage,nullptr,&otherRoot};
+ EiemSkinIdentity lod0Replacement;
+ lod0Replacement.sourceCandidates={
+   {{"assets/character/chest.asset","MeshChest",0}},
+   {{"assets/character/chest.asset","MeshChest",1}}};
+ std::vector<EiemLiveSkinSource> lodLive={
+   {"assets/character/chest.asset","MeshChest",&lod1Renderer,&lod1Storage,1},
+   {"assets/character/chest.asset","MeshChest",&lod0Renderer,&lod0Storage,0}};
+ EiemSkinPaletteCache lodCache; lodCache.model=&otherActor;
+ auto *previousPaletteCache=s_eiemActiveSkinPaletteCache;
+ s_eiemActiveSkinPaletteCache=&lodCache;
+ s_eiemLiveSkinSources=&lodLive;
+ void *lodOut=nullptr;
+ assert(EiemResolveMeshBonesFromNativeInstance(
+     lod0Replacement,&lod1Renderer,&lodOut,v6Error,sizeof(v6Error)));
+ assert(((Array *)lodOut)->count==2 &&
+        ((Array *)lodOut)->items[0]==&otherChest &&
+        ((Array *)lodOut)->items[1]==&otherFoot);
+ assert(lodCache.entries.size()==1 && !lodCache.entries[0].failed &&
+        lodCache.entries[0].providerRenderer==&lod0Renderer &&
+        lodCache.entries[0].providerLod==0);
+ s_eiemActiveSkinPaletteCache=previousPaletteCache;
  // Two native renderers may expose the same source Mesh/slot while belonging
  // to different PFB instances. The donor with the wrong rootBone/skinningRoot
  // must be ignored even when it appears first in the live-source snapshot.
