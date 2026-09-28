@@ -365,10 +365,8 @@ class RuntimeHookContracts(unittest.TestCase):
             start = self.trace.index(f"static void {name}")
             body = self.trace[start : self.trace.index(
                 "static void TraceSetSmrRootBone", start)]
-            self.assertLess(
-                body.index("original(lod, renderers"),
-                body.index("EiemRememberAssemblyBoneSnapshot"),
-            )
+            self.assertIn("original(lod, renderers", body)
+            self.assertNotIn("EiemRememberAssemblyBoneSnapshot", body)
             self.assertNotIn("EiemApplyStandaloneRenderRulesToSkinArray", body)
 
     def test_mesh_commit_hides_every_changed_skin_transaction(self):
@@ -496,24 +494,15 @@ class RuntimeHookContracts(unittest.TestCase):
         self.assertIn("rendererEnabledBeforeCommit", body)
         self.assertIn("EiemReadRendererEnabled(drawRenderer, &actual)", body)
 
-    def test_cross_prefab_bone_rename_uses_model_local_source_slot(self):
+    def test_cross_prefab_bone_rename_uses_instance_canonical_index_table(self):
         resolver_start = self.trace.index(
             "static bool EiemResolveMeshBonesFromNativeInstance")
         resolver_end = self.trace.index(
             "static bool EiemPreserveSourceSkinning", resolver_start)
         resolver = self.trace[resolver_start:resolver_end]
-        self.assertIn("identity.sourceCandidates", resolver)
-        self.assertNotIn("identity.sources", resolver)
-        self.assertIn("binding=instance-donor-candidates", resolver)
-        self.assertIn("Replacement bone has no native Mesh donor", resolver)
-        self.assertIn("s_eiemLiveSkinSources", resolver)
-        self.assertIn("Replacement bone source candidates disagree in model instance", resolver)
-        self.assertIn("completed unified skeleton root", resolver)
-        self.assertIn("mapDonorToTargetSkeleton", resolver)
-        self.assertIn("childIndexPath", resolver)
-        self.assertIn("EIEMESH has no native source-Mesh slot records", resolver)
-        self.assertNotIn("EiemSkinRootPath", resolver)
-        self.assertNotIn("byPath.find(path)", resolver)
+        self.assertIn("EiemResolveMeshBonesFromIndexTable", resolver)
+        self.assertNotIn("sourceCandidates", resolver)
+        self.assertNotIn("EiemSkinAssetFamily", resolver)
         for character_specific in (
                 "typhoe", "cloth_", "body_", "skirt_", "actor_"):
             self.assertNotIn(character_specific, resolver.lower())
@@ -522,13 +511,9 @@ class RuntimeHookContracts(unittest.TestCase):
         model_end = self.trace.index(
             "static bool EiemApplyStandaloneRenderRules(", model_start)
         model_pass = self.trace[model_start:model_end]
-        snapshot = model_pass.index("EiemLiveSkinCaptureContext liveSkinCapture")
-        mutation = model_pass.index(
-            'visitType(skinnedRenderers, "SkinnedMeshRenderer")')
-        self.assertLess(snapshot, mutation)
-        self.assertIn("context->output->push_back", self.trace)
+        self.assertNotIn("EiemLiveSkinCaptureContext", model_pass)
+        self.assertNotIn("s_eiemLiveSkinSources", self.trace)
         self.assertIn("originalBonesHandle", self.trace)
-        self.assertIn("s_eiemLiveSkinSources = previousLiveSkinSources", model_pass)
 
     def test_initial_mod_rules_load_before_resource_hooks_are_enabled(self):
         start = self.init.index("static DWORD WINAPI InitThread")

@@ -505,19 +505,79 @@ static bool EiemSkeletonMeshBones(const EiemSkinIdentity &skin, const EiemSkelet
     if (message) strncpy_s(message,size,"Skeleton instance or Transform array API is unavailable",_TRUNCATE);
     return false;
   }
-  for (const auto &node:instance.document.nodes) paths.push_back(node.path);
-  std::vector<size_t> indices;
-  if (skin.paths.empty() || !EiemResolveSkinPathIndices(skin.paths,paths,indices,error)) {
-    if (message) strncpy_s(message,size,error.empty()?"Skeleton binding requires Mesh bone paths":error.c_str(),_TRUNCATE);
+  // Mesh paths are relative to the named armature root, while EIESKEL v2
+  // may contain an empty serialization root above that node. Build one
+  // child-index table per named root used by this Mesh so the same exported
+  // keys mean the same Transform for native and Mod-owned Skeleton nodes.
+  if (skin.boneIndexPaths.empty() || skin.boneIndexPaths.size() != skin.paths.size()) {
+    if (message) strncpy_s(message, size,
+                           "Skeleton binding requires a complete canonical bone index table",
+                           _TRUNCATE);
     return false;
   }
-  std::vector<void *> values;
-  for (auto i:indices) {
-    if (instance.nodes[i].Status()!=1) return false;
-    values.push_back(instance.nodes[i].Target());
+  std::unordered_map<std::string, size_t> byPath;
+  for (size_t index = 0; index < instance.document.nodes.size(); ++index)
+    byPath.emplace(instance.document.nodes[index].path, index);
+  std::vector<std::vector<size_t>> children(instance.document.nodes.size());
+  for (size_t index = 0; index < instance.document.nodes.size(); ++index) {
+    if (index == 0 && instance.document.nodes[index].parent < 0) continue;
+    const int32_t parent = instance.document.nodes[index].parent;
+    if (parent < 0 || (size_t)parent >= children.size()) {
+      if (message) strncpy_s(message, size, "Skeleton node parent is invalid", _TRUNCATE);
+      return false;
+    }
+    children[(size_t)parent].push_back(index);
   }
-  void *array=il2cpp_array_new(g_transformClass,values.size());
+  std::unordered_map<size_t, std::unordered_map<std::string, size_t>> tables;
+  auto tableForRoot = [&](size_t root) -> const std::unordered_map<std::string, size_t> * {
+    auto existing = tables.find(root);
+    if (existing != tables.end()) return &existing->second;
+    if (root >= children.size()) return nullptr;
+    std::unordered_map<std::string, size_t> table;
+    std::vector<std::pair<size_t, std::string>> pending;
+    pending.emplace_back(root, std::string());
+    while (!pending.empty()) {
+      auto current = std::move(pending.back());
+      pending.pop_back();
+      table.emplace(current.second, current.first);
+      for (size_t child = children[current.first].size(); child > 0; --child) {
+        const size_t local = child - 1;
+        const size_t node = children[current.first][local];
+        std::string key = current.second;
+        if (!key.empty()) key.push_back('/');
+        key += std::to_string(local);
+        pending.emplace_back(node, std::move(key));
+      }
+    }
+    auto inserted = tables.emplace(root, std::move(table));
+    return &inserted.first->second;
+  };
+  std::vector<void *> values;
+  values.reserve(skin.boneIndexPaths.size());
+  for (size_t slot = 0; slot < skin.boneIndexPaths.size(); ++slot) {
+    const std::string &authorPath = skin.paths[slot];
+    const size_t slash = authorPath.find('/');
+    const std::string rootPath = slash == std::string::npos
+                                     ? authorPath
+                                     : authorPath.substr(0, slash);
+    auto root = byPath.find(rootPath);
+    if (root == byPath.end() && rootPath.empty()) root = byPath.find("");
+    const auto *table = root == byPath.end() ? nullptr : tableForRoot(root->second);
+    const auto found = table ? table->find(skin.boneIndexPaths[slot])
+                             : std::unordered_map<std::string, size_t>::const_iterator{};
+    if (!table || found == table->end() || found->second >= instance.nodes.size() ||
+        instance.nodes[found->second].Status() != 1) {
+      if (message) strncpy_s(message, size,
+                             ("Skeleton canonical bone not found: " +
+                              skin.boneIndexPaths[slot]).c_str(), _TRUNCATE);
+      return false;
+    }
+    values.push_back(instance.nodes[found->second].Target());
+  }
+  void *array = il2cpp_array_new(g_transformClass, values.size());
   if (!array) return false;
-  memcpy((char *)array+IL2CPP_ARRAY_DATA,values.data(),values.size()*sizeof(void *));
-  *out=array; return true;
+  memcpy((char *)array + IL2CPP_ARRAY_DATA, values.data(),
+         values.size() * sizeof(void *));
+  *out = array;
+  return true;
 }

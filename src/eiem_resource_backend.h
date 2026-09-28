@@ -73,24 +73,23 @@ struct EiemNativeMeshDocument {
   std::vector<BoneWeight> skin;
   std::vector<Matrix4x4> bindPoses;
   std::vector<uint32_t> boneHashes;
-  // EIEMESH v3 authoring metadata. Each entry identifies the shared skeleton
-  // node addressed by each Mesh-local bone index. Each instance resolves
-  // these paths against its shared skeleton; no new skeleton is created.
+  // Authoring metadata retained for Blender round trips and diagnostics.
+  // Runtime binding uses boneIndexPaths below, never these names.
   std::vector<std::string> bonePaths;
-  // EIEMESH v4 stable identity. Each string is a slash-separated sequence of
-  // Transform child indices relative to the shared skeleton root. Unlike a
-  // name path, it remains valid when equivalent prefabs rename a bone.
+  // Canonical runtime identity: a slash-separated Transform child-index path
+  // relative to the exported armature root. Names and local LOD slots are not
+  // part of this identity.
   std::vector<std::string> boneIndexPaths;
-  // EIEMESH v6 first source identity retained in the authoring record.
+  // Source records remain in the package so Blender can preserve provenance;
+  // the DLL does not use them to resolve a replacement palette.
   struct BoneSlotSource {
     std::string meshPath;
     std::string meshAsset;
     uint32_t slot = 0;
   };
   std::vector<BoneSlotSource> boneSources;
-  // EIEMESH v6: all source Mesh/slot candidates for each replacement slot.
-  // Unlike a fabricated slot number on the replacement Mesh, every entry is
-  // an original Renderer palette slot that the game can assemble itself.
+  // Per-slot provenance candidates. Zero candidates are valid for a future
+  // Mod-owned Skeleton node; runtime resolution still uses boneIndexPaths.
   std::vector<std::vector<BoneSlotSource>> boneSourceCandidates;
   std::vector<EiemNativeBlendShapeVertex> blendShapeVertices;
   std::vector<EiemNativeBlendShapeFrame> blendShapeFrames;
@@ -332,7 +331,10 @@ static bool EiemReadNativeMesh(const char *path, EiemNativeMeshDocument *out,
   out->boneSourceCandidates.resize(count);
   for (auto &candidates : out->boneSourceCandidates) {
     uint32_t candidateCount = 0;
-    if (!reader.Count(&candidateCount, 1024) || !candidateCount)
+    // A zero-candidate slot is valid for a Mod-owned Skeleton bone. Native
+    // slots are resolved through the instance index table; Mod-owned slots
+    // are supplied by the optional Skeleton resource at bind time.
+    if (!reader.Count(&candidateCount, 1024))
       goto invalid;
     candidates.resize(candidateCount);
     for (auto &source : candidates) {
@@ -1280,19 +1282,18 @@ static void *EiemBuildNativeMesh(const char *path, void *templateMesh,
   if (skin) {
     skin->reset();
     if (!document.skin.empty()) {
-      if (document.bindPoses.size() != document.boneHashes.size()) {
-        if (error) strncpy_s(error, errorSize, "Mesh bindpose/hash counts differ", _TRUNCATE);
+      if (document.bindPoses.size() != document.boneHashes.size() ||
+          document.boneIndexPaths.empty() ||
+          document.boneIndexPaths.size() != document.bindPoses.size()) {
+        if (error) strncpy_s(error, errorSize,
+                             "Mesh has no complete canonical bone index table",
+                             _TRUNCATE);
         return nullptr;
       }
       auto identity = std::make_shared<EiemSkinIdentity>();
       identity->paths = document.bonePaths;
       identity->hashes = document.boneHashes;
-      identity->sourceCandidates.resize(document.boneSourceCandidates.size());
-      for (size_t slot = 0; slot < document.boneSourceCandidates.size(); ++slot) {
-        auto &outCandidates = identity->sourceCandidates[slot];
-        for (const auto &source : document.boneSourceCandidates[slot])
-          outCandidates.push_back({source.meshPath, source.meshAsset, source.slot});
-      }
+      identity->boneIndexPaths = document.boneIndexPaths;
       *skin = identity;
     }
   }

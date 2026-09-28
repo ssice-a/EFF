@@ -9,12 +9,12 @@ The DLL builds from `eiem.cpp` as one translation unit. Implementation headers d
 | Update transaction | `eiem_mod_update.h`, `eiem_mod_reconcile.h` |
 | Model ownership and world/UI/NPC adapters | `eiem_model_lifecycle.h`, `eiem_model_registry.h`, `eiem_world_ui_owner.h`, `eiem_npc_model_owner.h` |
 | Renderer transaction and restore | `eiem_render_executor.h`, `eiem_render_override.h`, `eiem_render_state.h`, `eiem_render_replay.h` |
-| Mesh donor resolution and game assembly | `eiem_skin_resolver.h`, `eiem_assembly_binding.h`, `eiem_skin_binding.h` |
+| Per-instance structural bone binding | `eiem_skin_resolver.h`, `eiem_assembly_binding.h`, `eiem_skin_binding.h` |
 | Mesh, Material, Texture resources | `eiem_resource_backend.h` |
 | Optional authoring features | `eiem_shape_*`, `eiem_skeleton_*`, `eiem_physics_*`, `eiem_native_physics_*` |
 | UI and camera fade | `eiem_ui_host.h`, `eiem_lua_ui.h`, `gui.h`, `eiem_camera_fade.h` |
 
-World, UI and NPC routes share the same renderer executor. Bone donors are resolved within one model instance. F10 rebuilds the resource generation on every press and restores previous renderer state transactionally. A failed binding leaves the original renderer intact.
+World, UI and NPC routes share the same renderer executor. Each model instance builds one child-index bone table, and every LOD resolves against that table. F10 rebuilds the resource generation on every press and restores previous renderer state transactionally. A failed binding leaves the original renderer intact.
 
 The current interchange contract is EIEMESH v6, EIESKEL v2 and author EIEPHYS v5. Native source graph EIEPHYS v2 is a separate document kind. Older author resources are rejected and must be re-exported. The generated skinned Mesh uses `InternalSetBoneWeights` and the validated native four-slot metadata correction; source Mesh objects are never patched.
 

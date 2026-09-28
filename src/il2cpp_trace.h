@@ -442,12 +442,6 @@ static size_t s_traceLoadedModelPathCount = 0;
 // hooks then forward to their original trampoline instead of recursively
 // resolving the replacement that is already being assigned.
 static thread_local bool s_eiemApplyingModMeshAssignment = false;
-// A model pass snapshots the game's completed source palettes before any
-// Renderer is mutated. EIEMESH v5 slots can then reuse the exact Transform
-// chosen by this concrete world/NPC/UI instance even when another prefab
-// spells that bone differently.
-static thread_local const std::vector<EiemLiveSkinSource>
-    *s_eiemLiveSkinSources = nullptr;
 static void TraceSkinnedMeshSetSharedMesh(void *self, void *mesh,
                                            void *methodInfo);
 static void TraceSkinnedMeshSetBones(void *self, void *bones,
@@ -1009,11 +1003,9 @@ static bool EiemExposeSourceMaterialsForInit(void *renderer) {
 
 
 // Resolve a replacement Mesh against the concrete native skeleton instance.
-// EIEMESH v5/v6 source records preserve the original Mesh-local slot selected
-// by the game.  The resolver runs only after native assembly has populated the
-// current model instance and maps every donor slot into that instance's one
-// skinningRoot.  Names, authored hierarchy paths and LOD-local slot order are
-// never used as a fallback.
+// EIEMESH structural child-index paths are authoritative.  The same path
+// table is used for world, UI and NPC renderers; names, source Mesh donors and
+// LOD-local slot order are not runtime inputs.
 #include "eiem_skin_resolver.h"
 
 static void EiemRememberGameSourceBones(void *renderer, void *bones,
@@ -2237,11 +2229,6 @@ static void TraceDumpPrefabRenderers(const char *path, void *model) {
   }
 }
 
-// Render transactions need the LOD provenance captured by the native skin
-// assembly hook. The snapshot storage is declared later in this file, so keep
-// the lookup behind a forward declaration here.
-static int32_t EiemLookupRendererAssemblyLod(void *renderer);
-
 #include "eiem_render_executor.h"
 
 // The controller owns the game's RendererInfo cache.  This is observation only:
@@ -2496,46 +2483,6 @@ static bool EiemApplyStandaloneRenderRulesToRenderer(
       "<mesh setter>", nullptr, nullptr, nullptr, nullptr);
 }
 
-// One native skin assembly call supplies the complete bone table through its
-// rootBones argument while each Renderer keeps only a local palette. Keep the
-// table scoped to the concrete renderer array, so world/NPC/UI instances never
-// borrow one another's bones.
-struct EiemAssemblyBoneSnapshot {
-  void *rendererArray = nullptr;
-  void *rootBonesArray = nullptr;
-  LONG generation = -1;
-  int32_t lod = -1;
-  std::vector<EiemRootBoneInfoValue> rootInfos;
-  std::vector<void *> renderers;
-};
-static SRWLOCK s_eiemAssemblyBoneLock = SRWLOCK_INIT;
-static std::vector<EiemAssemblyBoneSnapshot> s_eiemAssemblyBoneSnapshots;
-
-// Direct runtime association. The PFB/assembly array is not stable across
-// LOD and presentation paths, while the Renderer instance is. Keep the
-// game's completed bones[] keyed by that concrete Renderer pointer.
-struct EiemRendererBoneSnapshot {
-  void *renderer = nullptr;
-  void *bones = nullptr;
-  LONG generation = -1;
-  int32_t lod = -1;
-};
-static std::vector<EiemRendererBoneSnapshot> s_eiemRendererBoneSnapshots;
-
-static int32_t EiemLookupRendererAssemblyLod(void *renderer) {
-  if (!renderer) return -1;
-  int32_t lod = -1;
-  AcquireSRWLockShared(&s_eiemAssemblyBoneLock);
-  for (const auto &snapshot : s_eiemRendererBoneSnapshots) {
-    if (snapshot.renderer == renderer) {
-      lod = snapshot.lod;
-      break;
-    }
-  }
-  ReleaseSRWLockShared(&s_eiemAssemblyBoneLock);
-  return lod;
-}
-
 #include "eiem_assembly_binding.h"
 
 #include "eiem_model_registry.h"
@@ -2746,9 +2693,6 @@ static void TraceAssignSkinGo(int32_t lod, void *renderers,
   auto original = (TraceAssignSkinPostFn)s_origAssignSkinGo;
   if (original)
     original(lod, renderers, rootBones, closure, methodInfo);
-  EiemRememberAssemblyBoneSnapshot(
-      renderers, rootBones,
-      lod, InterlockedCompareExchange(&s_eiemModGeneration, 0, 0));
   const LONG afterGeneration =
       InterlockedCompareExchange(&s_eiemModGeneration, 0, 0);
   EiemRegistrationTraceArrayBoundary(
@@ -2763,9 +2707,6 @@ static void TraceAssignSkinPost(int32_t lod, void *renderers,
   auto original = (TraceAssignSkinPostFn)s_origAssignSkinPost;
   if (original)
     original(lod, renderers, rootBones, closure, methodInfo);
-  EiemRememberAssemblyBoneSnapshot(
-      renderers, rootBones,
-      lod, InterlockedCompareExchange(&s_eiemModGeneration, 0, 0));
   EiemRegistrationTraceArrayBoundary(
       "AssignSkinPost", nullptr, renderers, EiemManagedArrayLength(renderers),
       InterlockedCompareExchange(&s_eiemModGeneration, 0, 0), lod);

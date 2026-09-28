@@ -1,7 +1,104 @@
 #pragma once
 
-// Resolve v6 donor slots inside the current model instance; own replacement bones.
-static bool EiemResolveMeshBonesFromNativeInstance(
+#include <unordered_set>
+
+static bool EiemParseSkinIndexPath(const std::string &text,
+                                   std::vector<uint32_t> &indices,
+                                   std::string &error) {
+  indices.clear();
+  if (text.empty()) return true;
+  size_t begin = 0;
+  while (begin < text.size()) {
+    const size_t end = text.find('/', begin);
+    const size_t length = end == std::string::npos ? text.size() - begin
+                                                   : end - begin;
+    if (!length || length > 6) {
+      error = "Invalid canonical bone index path: " + text;
+      return false;
+    }
+    uint64_t value = 0;
+    for (size_t i = begin; i < begin + length; ++i) {
+      const unsigned char character =
+          static_cast<unsigned char>(text[i]);
+      if (character < '0' || character > '9') {
+        error = "Invalid canonical bone index path: " + text;
+        return false;
+      }
+      value = value * 10u + (character - '0');
+      if (value > 16384u) {
+        error = "Canonical bone child index is too large: " + text;
+        return false;
+      }
+    }
+    indices.push_back(static_cast<uint32_t>(value));
+    if (end == std::string::npos) break;
+    begin = end + 1;
+  }
+  return true;
+}
+
+static void *EiemSkinGetChildByIndex(void *parent, int index) {
+  if (!parent || !g_transform_GetChild) return nullptr;
+  void *args[] = {&index};
+  __try { return Invoke(g_transform_GetChild, parent, args); }
+  __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+
+static bool EiemBuildSkinBoneTable(
+    void *root, EiemSkinPaletteCache::BoneTable &table, std::string &error) {
+  table.root = root;
+  table.byIndexPath.clear();
+  if (!root || !g_transform_get_childCount || !g_transform_GetChild) {
+    error = "Native skeleton hierarchy APIs are unavailable";
+    return false;
+  }
+  std::vector<std::pair<void *, std::string>> pending;
+  pending.emplace_back(root, std::string());
+  size_t visited = 0;
+  while (!pending.empty()) {
+    auto current = std::move(pending.back());
+    pending.pop_back();
+    if (!current.first || EiemNativeObjectStatus(current.first) != 1)
+      continue;
+    if (++visited > 16384) {
+      error = "Native skeleton hierarchy is too large";
+      return false;
+    }
+    auto inserted = table.byIndexPath.emplace(current.second, current.first);
+    if (!inserted.second && inserted.first->second != current.first) {
+      error = "Canonical skeleton index path is ambiguous: " + current.second;
+      return false;
+    }
+    void *boxed = EiemBackendInvokeNoThrow(g_transform_get_childCount,
+                                           current.first);
+    if (!boxed) {
+      error = "Cannot enumerate native skeleton hierarchy";
+      return false;
+    }
+    const int childCount = *(int *)((char *)boxed + 16);
+    if (childCount < 0 || childCount > 16384) {
+      error = "Invalid native skeleton child count";
+      return false;
+    }
+    // Push in reverse so the table construction is deterministic without
+    // changing the child-index identity itself.
+    for (int index = childCount - 1; index >= 0; --index) {
+      void *child = nullptr;
+      child = EiemSkinGetChildByIndex(current.first, index);
+      if (!child) {
+        error = "Cannot read native skeleton child";
+        return false;
+      }
+      std::string path = current.second;
+      if (!path.empty()) path.push_back('/');
+      path += std::to_string(index);
+      pending.emplace_back(child, std::move(path));
+    }
+  }
+  return true;
+}
+
+static bool EiemResolveMeshBonesFromIndexTable(
     const EiemSkinIdentity &identity, void *renderer, void **out,
     char *error, size_t errorSize) {
   if (out) *out = nullptr;
@@ -9,634 +106,88 @@ static bool EiemResolveMeshBonesFromNativeInstance(
     if (error) strncpy_s(error, errorSize, message.c_str(), _TRUNCATE);
     return false;
   };
-  if (!renderer || identity.sourceCandidates.empty() || !g_smr_get_bones ||
-      !il2cpp_array_new || !g_transformClass)
-    return reject("Native instance skeleton APIs are unavailable");
+  if (!renderer || identity.boneIndexPaths.empty() || !il2cpp_array_new ||
+      !g_transformClass)
+    return reject("Mesh has no complete canonical bone index table");
+  std::unordered_set<std::string> uniquePaths;
+  for (const auto &path : identity.boneIndexPaths)
+    if (!uniquePaths.emplace(path).second)
+      return reject("Mesh canonical bone index table contains duplicates");
 
-  // A slot number is local to one Mesh sub-asset's bones[] palette.  Several
-  // sub-assets may live in the same FBX container, so an equal container path
-  // cannot override a differing sub-asset identity. A path-only candidate
-  // identifies a source that has no stable Mesh sub-asset name.
-  auto sourceMatchesMeshIdentity =
-      [](const EiemSkinIdentity::Source &source, const char *meshPath,
-         const char *meshAsset) {
-        if (!source.meshAsset.empty())
-          return meshAsset && meshAsset[0] &&
-                 EiemModEquals(source.meshAsset.c_str(), meshAsset);
-        return !source.meshPath.empty() && meshPath && meshPath[0] &&
-               EiemModSameLogicalPath(source.meshPath.c_str(), meshPath);
-      };
+  void *skinningRoot = g_smr_get_skinningRoot
+                           ? EiemBackendInvokeNoThrow(
+                                 g_smr_get_skinningRoot, renderer)
+                           : nullptr;
+  void *rootBone = g_smr_get_rootBone
+                       ? EiemBackendInvokeNoThrow(g_smr_get_rootBone,
+                                                  renderer)
+                       : nullptr;
+  // Blender emits paths relative to the named armature root.  Unity's
+  // rootBone is that anchor for the renderer; skinningRoot is only the
+  // instance-wide fallback when a renderer does not expose rootBone.
+  std::vector<void *> roots;
+  if (rootBone) roots.push_back(rootBone);
+  if (skinningRoot && skinningRoot != rootBone) roots.push_back(skinningRoot);
+  if (roots.empty())
+    return reject("Native Renderer has no skeleton root");
 
-  // All LOD Renderers in one PFB instance consume one game skeleton, while
-  // each Renderer keeps only a local bones[] palette.  Do not compare local
-  // slot numbers or rootBone pointers across LODs: rootBone is a Renderer
-  // local anchor and may differ for body, cloth, shadow, and physical parts.
-  // The instance boundary is skinningRoot.  A donor slot is therefore allowed
-  // to come from any Renderer under the same skinningRoot, with same-root
-  // donors preferred when both branches expose the slot.  This uses the
-  // completed native hierarchy and never reads a Transform name or falls back
-  // to an authored path.
-  void *targetRootBone = g_smr_get_rootBone
-                             ? EiemBackendInvokeNoThrow(g_smr_get_rootBone,
-                                                        renderer)
-                             : nullptr;
-  void *targetSkinningRoot = g_smr_get_skinningRoot
-                                 ? EiemBackendInvokeNoThrow(
-                                       g_smr_get_skinningRoot, renderer)
-                                 : nullptr;
-  if (!targetSkinningRoot || !g_transform_get_parent ||
-      !g_transform_get_childCount || !g_transform_GetChild)
-    return reject("Native instance has no completed unified skeleton root");
-
-  // Keep the current source Renderer family as the primary donor boundary.
-  // A lower-LOD cloth renderer can share the same skinningRoot with body and
-  // other cloth branches.  All of those branches may expose a valid
-  // L_breast/R_breast slot, but they are not interchangeable physical
-  // palettes.  The replacement's source candidates tell us which original
-  // Mesh family it came from; prefer that family before the generic LOD0 and
-  // palette-size preferences below.
-  std::string targetAssetFamily;
-  {
-    void *currentMesh = EiemReadSharedMesh(renderer, "SkinnedMeshRenderer");
-    void *identityMesh = currentMesh;
-    if (currentMesh)
-      EiemPrepareRenderInput(renderer, currentMesh, "SkinnedMeshRenderer",
-                             &identityMesh);
-    char sourcePath[768] = {}, asset[192] = {};
-    if (identityMesh &&
-        EiemReadLiveMeshIdentity(identityMesh, sourcePath, sizeof(sourcePath),
-                                 asset, sizeof(asset)) && asset[0])
-      targetAssetFamily = EiemSkinAssetFamily(asset);
-  }
-
-  // The authoring Armature describes one logical skeleton, but a model can
-  // expose several native Transform branches for its main, LOD and shadow
-  // renderers.  Bone names cannot identify those branches because different
-  // PFBs may rename the same logical bone.  Anchor the target branch with the
-  // exact original bones[] captured before this model transaction mutates any
-  // Renderer, then grow the branch through shared Transform references.
-  void *targetNativeBones = EiemBackendInvokeNoThrow(g_smr_get_bones, renderer);
-  if (s_eiemLiveSkinSources) {
-    for (const auto &source : *s_eiemLiveSkinSources) {
-      if (source.renderer == renderer && source.bones) {
-        targetNativeBones = source.bones;
+  EiemSkinPaletteCache localCache;
+  EiemSkinPaletteCache *cache = s_eiemActiveSkinPaletteCache;
+  if (!cache) cache = &localCache;
+  for (void *root : roots) {
+    EiemSkinPaletteCache::BoneTable *table = nullptr;
+    for (auto &candidate : cache->boneTables)
+      if (candidate.root == root) {
+        table = &candidate;
         break;
       }
+    if (!table) {
+      EiemSkinPaletteCache::BoneTable next;
+      std::string buildError;
+      if (!EiemBuildSkinBoneTable(root, next, buildError)) continue;
+      cache->boneTables.push_back(std::move(next));
+      table = &cache->boneTables.back();
     }
-  }
-  auto paletteOverlap = [](void *left, void *right) -> size_t {
-    const size_t leftCount = EiemManagedArrayLength(left);
-    const size_t rightCount = EiemManagedArrayLength(right);
-    if (!left || !right || !leftCount || !rightCount) return 0;
-    void **leftItems = (void **)((char *)left + IL2CPP_ARRAY_DATA);
-    void **rightItems = (void **)((char *)right + IL2CPP_ARRAY_DATA);
-    size_t overlap = 0;
-    for (size_t leftIndex = 0; leftIndex < leftCount; ++leftIndex) {
-      void *bone = leftItems[leftIndex];
-      if (!bone) continue;
-      for (size_t rightIndex = 0; rightIndex < rightCount; ++rightIndex) {
-        if (rightItems[rightIndex] != bone) continue;
-        ++overlap;
+    std::vector<void *> resolved;
+    resolved.reserve(identity.boneIndexPaths.size());
+    bool complete = true;
+    for (const auto &path : identity.boneIndexPaths) {
+      std::vector<uint32_t> indices;
+      std::string parseError;
+      if (!EiemParseSkinIndexPath(path, indices, parseError))
+        return reject(parseError);
+      auto found = table->byIndexPath.find(path);
+      if (found == table->byIndexPath.end() ||
+          !found->second || EiemNativeObjectStatus(found->second) != 1) {
+        complete = false;
         break;
       }
+      resolved.push_back(found->second);
     }
-    return overlap;
-  };
-  auto sameSkeletonContext = [&](void *candidateRenderer) -> bool {
-    if (!candidateRenderer) return false;
-    // rootBone is deliberately not an instance boundary.  The game assigns
-    // different local rootBone values to body/cloth/shadow Renderers while
-    // their Transform objects still belong to the same skinningRoot.
-    if (targetSkinningRoot && g_smr_get_skinningRoot) {
-      void *candidateRoot = EiemBackendInvokeNoThrow(
-          g_smr_get_skinningRoot, candidateRenderer);
-      if (!candidateRoot || candidateRoot != targetSkinningRoot) return false;
-    }
-    return true;
-  };
-
-  // A replacement Mesh is often authored from LOD0 and then assigned to the
-  // LOD1/2/3 Renderers as well.  Those target Renderers legitimately expose a
-  // smaller local bones[] palette.  Resolve one complete donor palette for
-  // the replacement Mesh first, preferring the native LOD0 source, and reuse
-  // it for every target Renderer in this model transaction.  This prevents a
-  // lower LOD from competing with the full source palette one slot at a time.
-  auto allocateResolvedPalette = [&](const std::vector<void *> &bones) -> bool {
-    if (bones.empty() || !il2cpp_array_new || !g_transformClass) return false;
-    void *array = il2cpp_array_new(g_transformClass, bones.size());
-    if (!array) return false;
-    memcpy((char *)array + IL2CPP_ARRAY_DATA, bones.data(),
-           bones.size() * sizeof(void *));
-    if (out) *out = array;
-    return true;
-  };
-  auto tryPreferredFullPalette = [&](bool *handled) -> bool {
-    if (handled) *handled = false;
-    if (!s_eiemLiveSkinSources || identity.sourceCandidates.empty())
-      return false;
-
-    EiemSkinPaletteCacheEntry *cached = nullptr;
-    if (s_eiemActiveSkinPaletteCache) {
-      for (auto &entry : s_eiemActiveSkinPaletteCache->entries) {
-        if (entry.identity == &identity) {
-          cached = &entry;
-          break;
-        }
-      }
-      if (cached) {
-        if (handled) *handled = true;
-        if (cached->failed) return reject(cached->error);
-        if (!allocateResolvedPalette(cached->bones))
-          return reject("Unable to allocate cached replacement bone palette");
-        return true;
-      }
-    }
-
-    struct SlotProvider {
-      const EiemLiveSkinSource *source = nullptr;
-      void *bone = nullptr;
-      size_t boneCount = 0;
-      uint64_t score = 0;
-      bool assetFamilyMatch = false;
-    };
-    std::vector<void *> resolved(identity.sourceCandidates.size());
-    void *providerRenderer = nullptr;
-    bool providerRendererShared = true;
-    bool allProvidersLod0 = true;
-    for (size_t slot = 0; slot < identity.sourceCandidates.size(); ++slot) {
-      std::vector<SlotProvider> candidates;
-      for (const auto &candidate : *s_eiemLiveSkinSources) {
-        if (!candidate.renderer || !candidate.bones ||
-            !sameSkeletonContext(candidate.renderer))
-          continue;
-        const size_t boneCount = EiemManagedArrayLength(candidate.bones);
-        if (!boneCount || boneCount > 16384) continue;
-        void **sourceBones =
-            (void **)((char *)candidate.bones + IL2CPP_ARRAY_DATA);
-        void *candidateBone = nullptr;
-        bool ambiguous = false;
-        bool assetFamilyMatch = false;
-        for (const auto &source : identity.sourceCandidates[slot]) {
-          if (!sourceMatchesMeshIdentity(source, candidate.source.c_str(),
-                                         candidate.asset.c_str()) ||
-              source.slot >= boneCount)
-            continue;
-          if (!targetAssetFamily.empty() &&
-              EiemSkinAssetFamily(candidate.asset) == targetAssetFamily)
-            assetFamilyMatch = true;
-          void *bone = sourceBones[source.slot];
-          if (!bone || EiemNativeObjectStatus(bone) != 1) continue;
-          if (candidateBone && candidateBone != bone) {
-            ambiguous = true;
-            break;
-          }
-          candidateBone = bone;
-        }
-        if (ambiguous || !candidateBone) continue;
-        SlotProvider provider;
-        provider.source = &candidate;
-        provider.bone = candidateBone;
-        provider.boneCount = boneCount;
-        provider.assetFamilyMatch = assetFamilyMatch;
-        if (assetFamilyMatch) provider.score += uint64_t(1) << 62;
-        if (candidate.lod == 0) provider.score += uint64_t(1) << 60;
-        if (candidate.renderer == renderer) provider.score += uint64_t(1) << 48;
-        const size_t boundedBoneCount =
-            boneCount < (size_t)0xFFFFFF ? boneCount : (size_t)0xFFFFFF;
-        provider.score += (uint64_t)boundedBoneCount;
-        candidates.push_back(provider);
-      }
-      if (candidates.empty()) return false;
-
-      bool slotHasLod0 = false;
-      for (const auto &candidate : candidates)
-        slotHasLod0 |= candidate.source->lod == 0;
-      if (slotHasLod0) {
-        candidates.erase(
-            std::remove_if(candidates.begin(), candidates.end(),
-                           [](const SlotProvider &candidate) {
-                             return candidate.source->lod != 0;
-                           }),
-            candidates.end());
-      }
-      if (candidates.empty()) return false;
-      const SlotProvider *best = &candidates.front();
-      for (size_t index = 1; index < candidates.size(); ++index)
-        if (candidates[index].score > best->score) best = &candidates[index];
-      for (const auto &candidate : candidates) {
-        if (&candidate == best || candidate.score != best->score) continue;
-        if (candidate.bone == best->bone) continue;
-        const std::string message =
-            "Replacement bone LOD0 slot providers disagree for the same "
-            "replacement Mesh";
-        if (s_eiemActiveSkinPaletteCache) {
-          EiemSkinPaletteCacheEntry entry;
-          entry.identity = &identity;
-          entry.providerRenderer = best->source->renderer;
-          entry.providerLod = best->source->lod;
-          entry.failed = true;
-          entry.error = message;
-          s_eiemActiveSkinPaletteCache->entries.push_back(std::move(entry));
-        }
-        if (handled) *handled = true;
-        return reject(message);
-      }
-      resolved[slot] = best->bone;
-      if (!providerRenderer) providerRenderer = best->source->renderer;
-      else if (providerRenderer != best->source->renderer)
-        providerRendererShared = false;
-      allProvidersLod0 &= best->source->lod == 0;
-    }
-
-    if (s_eiemActiveSkinPaletteCache) {
-      EiemSkinPaletteCacheEntry entry;
-      entry.identity = &identity;
-      entry.bones = resolved;
-      entry.providerRenderer = providerRendererShared ? providerRenderer : nullptr;
-      entry.providerLod = allProvidersLod0 ? 0 : -1;
-      s_eiemActiveSkinPaletteCache->entries.push_back(std::move(entry));
-    }
-    if (handled) *handled = true;
-    if (!allocateResolvedPalette(resolved))
-      return reject("Unable to allocate preferred replacement bone palette");
-    if (kEiemEnableSkinBindingDiagnostics)
-      Log("[MOD-SKIN-PALETTE-v1] renderer=%p provider=%p lod=%d slots=%zu",
-          renderer, providerRendererShared ? providerRenderer : nullptr,
-          allProvidersLod0 ? 0 : -1, resolved.size());
-    return true;
-  };
-  bool preferredHandled = false;
-  if (tryPreferredFullPalette(&preferredHandled)) return true;
-  if (preferredHandled && error && !error[0])
-    strncpy_s(error, errorSize,
-              "Preferred full replacement Mesh bone palette failed", _TRUNCATE);
-  if (preferredHandled) return false;
-
-  std::vector<const EiemLiveSkinSource *> targetBranchSources;
-  if (s_eiemLiveSkinSources && targetNativeBones) {
-    bool changed = true;
-    while (changed) {
-      changed = false;
-      for (const auto &candidate : *s_eiemLiveSkinSources) {
-        if (!candidate.bones) continue;
-        if (std::find(targetBranchSources.begin(), targetBranchSources.end(),
-                      &candidate) != targetBranchSources.end())
-          continue;
-        bool connected = candidate.renderer == renderer ||
-                         (sameSkeletonContext(candidate.renderer) &&
-                          paletteOverlap(targetNativeBones, candidate.bones) != 0);
-        if (!connected) {
-          for (const auto *member : targetBranchSources) {
-            if (member && sameSkeletonContext(candidate.renderer) &&
-                paletteOverlap(member->bones, candidate.bones) != 0) {
-              connected = true;
-              break;
-            }
-          }
-        }
-        // A lower LOD may omit every bone owned by a donor Renderer.  It is
-        // still a valid donor when the game's completed root context proves
-        // that both palettes belong to this same model instance.
-        if (!connected && sameSkeletonContext(candidate.renderer))
-          connected = true;
-        if (!connected) continue;
-        targetBranchSources.push_back(&candidate);
-        changed = true;
-      }
-    }
-  }
-  auto sourceBranchScore = [&](const EiemLiveSkinSource &candidate) -> size_t {
-    if (!candidate.bones || !targetNativeBones) return 0;
-    if (candidate.renderer == renderer)
-      return (size_t)1 << (sizeof(size_t) * 8 - 2);
-    if (std::find(targetBranchSources.begin(), targetBranchSources.end(),
-                  &candidate) == targetBranchSources.end())
-      return 0;
-    // Direct overlap selects the closest native palette inside the connected
-    // branch.  The +1 keeps a transitively connected donor usable when the
-    // target LOD omits every bone owned by that specialised source Mesh.
-    size_t score = paletteOverlap(targetNativeBones, candidate.bones) + 1;
-    if (targetRootBone && g_smr_get_rootBone) {
-      void *candidateRoot = EiemBackendInvokeNoThrow(
-          g_smr_get_rootBone, candidate.renderer);
-      // Prefer a donor from the target Renderer branch, but keep a lower
-      // scoring cross-branch donor available for bones only exposed by cloth,
-      // physics, or another specialised Mesh.
-      if (candidateRoot == targetRootBone)
-        score += (size_t)1 << (sizeof(size_t) * 8 - 3);
-    }
-    return score;
-  };
-
-  auto childIndexPath = [&](void *root, void *node,
-                            std::vector<uint32_t> *path) -> bool {
-    if (!root || !node || !path) return false;
-    path->clear();
-    void *current = node;
-    for (size_t depth = 0; current && current != root && depth < 256;
-         ++depth) {
-      void *parent = EiemBackendInvokeNoThrow(g_transform_get_parent, current);
-      if (!parent || parent == current) return false;
-      void *boxed = EiemBackendInvokeNoThrow(g_transform_get_childCount, parent);
-      if (!boxed) return false;
-      const int childCount = *(int *)((char *)boxed + 16);
-      if (childCount < 0 || childCount > 16384) return false;
-      size_t found = SIZE_MAX;
-      for (int index = 0; index < childCount; ++index) {
-        int childIndex = index;
-        void *params[] = {&childIndex};
-        void *child = Invoke(g_transform_GetChild, parent, params);
-        if (child == current) {
-          found = (size_t)index;
-          break;
-        }
-      }
-      if (found == SIZE_MAX || found > UINT32_MAX) return false;
-      path->push_back((uint32_t)found);
-      current = parent;
-    }
-    if (current != root) return false;
-    std::reverse(path->begin(), path->end());
-    return true;
-  };
-  auto resolveChildIndexPath = [&](void *root,
-                                   const std::vector<uint32_t> &path) -> void * {
-    if (!root) return nullptr;
-    void *current = root;
-    for (uint32_t index : path) {
-      void *boxed = EiemBackendInvokeNoThrow(g_transform_get_childCount,
-                                             current);
-      if (!boxed) return nullptr;
-      const int childCount = *(int *)((char *)boxed + 16);
-      if (childCount < 0 || index >= (uint32_t)childCount) return nullptr;
-      int childIndex = (int)index;
-      void *params[] = {&childIndex};
-      current = Invoke(g_transform_GetChild, current, params);
-      if (!current || EiemNativeObjectStatus(current) != 1) return nullptr;
-    }
-    return current;
-  };
-  auto mapDonorToTargetSkeleton = [&](void *candidateRenderer,
-                                      void *candidateBone) -> void * {
-    if (!candidateRenderer || !candidateBone) return nullptr;
-    // The target Renderer is already part of the completed native table; its
-    // own slot is authoritative and needs no cross-palette conversion.
-    if (candidateRenderer == renderer) return candidateBone;
-    void *candidateRoot = g_smr_get_skinningRoot
-                              ? EiemBackendInvokeNoThrow(
-                                    g_smr_get_skinningRoot,
-                                    candidateRenderer)
-                              : nullptr;
-    if (!candidateRoot) return nullptr;
-    if (candidateRoot == targetSkinningRoot) return candidateBone;
-    std::vector<uint32_t> path;
-    if (!childIndexPath(candidateRoot, candidateBone, &path)) return nullptr;
-    return resolveChildIndexPath(targetSkinningRoot, path);
-  };
-
-  auto resolveSourceSlot = [&](const EiemSkinIdentity::Source &source,
-                               bool *ambiguous,
-                               const EiemLiveSkinSource **donorOut,
-                               size_t *scoreOut) -> void * {
-    if (ambiguous) *ambiguous = false;
-    if (donorOut) *donorOut = nullptr;
-    if (scoreOut) *scoreOut = 0;
-    if (!s_eiemLiveSkinSources ||
-        (source.meshAsset.empty() && source.meshPath.empty()))
-      return nullptr;
-    static volatile LONG s_candidateConflictLogCount = 0;
-    void *firstRenderer = nullptr;
-    void *firstBone = nullptr;
-    void *firstRootBone = nullptr;
-    void *firstSkinningRoot = nullptr;
-    void *resolved = nullptr;
-    size_t resolvedScore = 0;
-    for (const auto &candidate : *s_eiemLiveSkinSources) {
-      if (!sourceMatchesMeshIdentity(source, candidate.source.c_str(),
-                                     candidate.asset.c_str()))
-        continue;
-      const size_t branchScore = sourceBranchScore(candidate);
-      if (!branchScore) continue;
-      const size_t boneCount = EiemManagedArrayLength(candidate.bones);
-      if (!candidate.bones || source.slot >= boneCount) continue;
-      void **sourceBones =
-          (void **)((char *)candidate.bones + IL2CPP_ARRAY_DATA);
-      void *bone = sourceBones[source.slot];
-      if (!bone || EiemNativeObjectStatus(bone) != 1) continue;
-      void *candidateSkinningRoot =
-          g_smr_get_skinningRoot
-              ? EiemBackendInvokeNoThrow(g_smr_get_skinningRoot,
-                                         candidate.renderer)
-              : nullptr;
-      void *candidateRootBone =
-          g_smr_get_rootBone
-              ? EiemBackendInvokeNoThrow(g_smr_get_rootBone,
-                                         candidate.renderer)
-              : nullptr;
-      void *mappedBone = mapDonorToTargetSkeleton(candidate.renderer, bone);
-      if (!mappedBone) continue;
-      if (!resolved || branchScore > resolvedScore) {
-        firstRenderer = candidate.renderer;
-        firstBone = bone;
-        firstRootBone = candidateRootBone;
-        firstSkinningRoot = candidateSkinningRoot;
-        resolved = mappedBone;
-        resolvedScore = branchScore;
-        if (donorOut) *donorOut = &candidate;
-        continue;
-      }
-      if (branchScore == resolvedScore && resolved != mappedBone) {
-        const LONG sample = InterlockedIncrement(&s_candidateConflictLogCount);
-        if (sample <= 48) {
-          Log("[MOD-SKIN-CANDIDATE-v1] model=%p target=%p targetRoot=%p "
-              "targetSkinningRoot=%p targetBranch=%p targetBranchKey=%s "
-              "sourceAsset=%s "
-              "sourcePath=%s slot=%u "
-              "firstRenderer=%p firstBone=%p firstRoot=%p firstSkinningRoot=%p "
-              "conflictRenderer=%p conflictBone=%p conflictRoot=%p "
-              "conflictSkinningRoot=%p conflictBranch=%p "
-              "conflictBranchKey=%s",
-              (void *)s_eiemActivePrefabInstance, renderer, targetRootBone,
-              targetSkinningRoot, nullptr, "native-root-context",
-              source.meshAsset.c_str(), source.meshPath.c_str(), source.slot,
-              firstRenderer, firstBone, firstRootBone, firstSkinningRoot,
-              candidate.renderer, bone, candidateRootBone, candidateSkinningRoot,
-              nullptr, "unified-skeleton");
-        }
-        if (ambiguous) *ambiguous = true;
-        return nullptr;
-      }
-    }
-    if (scoreOut) *scoreOut = resolvedScore;
-    return resolved;
-  };
-
-  auto resolveSourceCandidates =
-      [&](const std::vector<EiemSkinIdentity::Source> &candidates,
-          bool *ambiguous) -> void * {
-    if (ambiguous) *ambiguous = false;
-    static volatile LONG s_candidateDonorMergeLogCount = 0;
-    void *resolved = nullptr;
-    const EiemLiveSkinSource *resolvedDonor = nullptr;
-    size_t resolvedScore = 0;
-    for (const auto &candidate : candidates) {
-      bool candidateAmbiguous = false;
-      const EiemLiveSkinSource *donor = nullptr;
-      size_t candidateScore = 0;
-      void *bone = resolveSourceSlot(candidate, &candidateAmbiguous, &donor,
-                                     &candidateScore);
-      if (candidateAmbiguous) {
-        if (ambiguous) *ambiguous = true;
-        return nullptr;
-      }
-      if (!bone) continue;
-      if (!resolved || candidateScore > resolvedScore) {
-        resolved = bone;
-        resolvedDonor = donor;
-        resolvedScore = candidateScore;
-        continue;
-      }
-      if (candidateScore == resolvedScore && resolved != bone) {
-        const LONG sample =
-            InterlockedIncrement(&s_candidateDonorMergeLogCount);
-        if (sample <= 48) {
-          void *conflictRootBone =
-              donor && g_smr_get_rootBone
-                  ? EiemBackendInvokeNoThrow(g_smr_get_rootBone,
-                                             donor->renderer)
-                  : nullptr;
-          void *conflictSkinningRoot =
-              donor && g_smr_get_skinningRoot
-                  ? EiemBackendInvokeNoThrow(g_smr_get_skinningRoot,
-                                             donor->renderer)
-                  : nullptr;
-          Log("[MOD-SKIN-CANDIDATE-v1] model=%p target=%p "
-              "targetRoot=%p targetSkinningRoot=%p targetBranch=%p "
-              "targetBranchKey=%s slotPath=%s "
-              "resolvedRenderer=%p resolvedBone=%p resolvedRoot=%p "
-              "resolvedSkinningRoot=%p conflictRenderer=%p conflictBone=%p "
-              "conflictRoot=%p conflictSkinningRoot=%p conflictBranch=%p "
-              "conflictBranchKey=%s",
-              (void *)s_eiemActivePrefabInstance, renderer, targetRootBone,
-              targetSkinningRoot, nullptr, "native-root-context",
-              candidate.meshPath.c_str(),
-              resolvedDonor ? resolvedDonor->renderer : nullptr, resolved,
-              targetRootBone, targetSkinningRoot,
-              donor ? donor->renderer : nullptr, bone, conflictRootBone,
-              conflictSkinningRoot, nullptr, "native-root-context");
-        }
-        if (ambiguous) *ambiguous = true;
-        return nullptr;
-      }
-    }
-    return resolved;
-  };
-
-  // Prefer the palette that belongs to this exact Renderer.  A model can
-  // contain several LOD and shadow renderers for the same logical Mesh, and
-  // their local palettes may be different subsets of the same native
-  // skeleton.  Comparing all of those donors before the renderer has a
-  // completed assembly snapshot can reject a valid replacement.  The source
-  // Mesh/slot record is authoritative for the current renderer, so use its
-  // own bones[] whenever it contains every replacement slot we need.
-  void *currentBones = targetNativeBones;
-  const size_t currentBoneCount = EiemManagedArrayLength(currentBones);
-  void **currentBoneItems =
-      currentBones && currentBoneCount
-          ? (void **)((char *)currentBones + IL2CPP_ARRAY_DATA)
-          : nullptr;
-  char currentSource[768] = {}, currentAsset[192] = {};
-  void *currentMesh = EiemReadSharedMesh(renderer, "SkinnedMeshRenderer");
-  void *currentIdentityMesh = currentMesh;
-  if (currentMesh)
-    EiemPrepareRenderInput(renderer, currentMesh, "SkinnedMeshRenderer",
-                           &currentIdentityMesh);
-  const bool currentIdentityKnown =
-      currentIdentityMesh &&
-      EiemReadLiveMeshIdentity(currentIdentityMesh, currentSource,
-                               sizeof(currentSource), currentAsset,
-                               sizeof(currentAsset));
-  auto sourceMatchesCurrentRenderer =
-      [&](const EiemSkinIdentity::Source &source) {
-        return currentIdentityKnown && sourceMatchesMeshIdentity(
-                                           source, currentSource, currentAsset);
-      };
-  auto allocateCurrentPalette = [&](const std::vector<void *> &resolved,
-                                    const char *binding) -> bool {
-    if (resolved.empty() || !il2cpp_array_new || !g_transformClass)
-      return false;
+    if (!complete) continue;
     void *array = il2cpp_array_new(g_transformClass, resolved.size());
-    if (!array) return false;
+    if (!array) return reject("Unable to allocate canonical bone palette");
     memcpy((char *)array + IL2CPP_ARRAY_DATA, resolved.data(),
            resolved.size() * sizeof(void *));
     if (out) *out = array;
     if (kEiemEnableSkinBindingDiagnostics)
-      Log("[MOD-SKIN-NATIVE] renderer=%p binding=%s slots=%zu", renderer,
-          binding, resolved.size());
-    return true;
-  };
-
-  if (currentBoneItems && currentIdentityKnown &&
-      !identity.sourceCandidates.empty()) {
-    std::vector<void *> resolved;
-    resolved.reserve(identity.sourceCandidates.size());
-    bool complete = true;
-    for (const auto &candidates : identity.sourceCandidates) {
-      void *selected = nullptr;
-      for (const auto &source : candidates) {
-        if (!sourceMatchesCurrentRenderer(source) ||
-            source.slot >= currentBoneCount)
-          continue;
-        void *bone = currentBoneItems[source.slot];
-        if (bone && EiemNativeObjectStatus(bone) == 1)
-          selected = bone;
-      }
-      if (!selected) {
-        complete = false;
-        break;
-      }
-      resolved.push_back(selected);
-    }
-    if (complete && resolved.size() == identity.sourceCandidates.size() &&
-        allocateCurrentPalette(resolved, "renderer-source-slots"))
-      return true;
-  }
-
-
-  // EIEMESH v6 is strict by design.  Every replacement slot is backed by one
-  // or more original Mesh/slot donors.  Resolve only donors present in this
-  // model instance; if none exists, or existing donors disagree, fail instead
-  // of guessing with a renamed hierarchy or a local LOD array index.
-  if (!identity.sourceCandidates.empty()) {
-    std::vector<void *> sourceResolved;
-    sourceResolved.reserve(identity.sourceCandidates.size());
-    for (size_t slot = 0; slot < identity.sourceCandidates.size(); ++slot) {
-      bool ambiguous = false;
-      void *bone = resolveSourceCandidates(identity.sourceCandidates[slot],
-                                            &ambiguous);
-      if (ambiguous)
-        return reject("Replacement bone source candidates disagree in model instance: " +
-                      std::to_string(slot));
-      if (!bone)
-        return reject("Replacement bone has no native Mesh donor in model instance: " +
-                      std::to_string(slot));
-      sourceResolved.push_back(bone);
-    }
-    void *array = il2cpp_array_new(g_transformClass, sourceResolved.size());
-    if (!array) return reject("Unable to allocate donor-slot bone palette");
-    memcpy((char *)array + IL2CPP_ARRAY_DATA, sourceResolved.data(),
-           sourceResolved.size() * sizeof(void *));
-    if (out) *out = array;
-    if (kEiemEnableSkinBindingDiagnostics)
-      Log("[MOD-SKIN-NATIVE] renderer=%p binding=instance-donor-candidates "
-          "slots=%zu sourceResolved=%zu",
-          renderer, sourceResolved.size(), sourceResolved.size());
+      Log("[MOD-SKIN-TABLE-v1] renderer=%p root=%p slots=%zu",
+          renderer, root, resolved.size());
     return true;
   }
-
-  return reject("EIEMESH has no native source-Mesh slot records");
+  return reject("Canonical bone index paths do not exist in this skeleton instance");
 }
 
+// Resolve every replacement slot from the concrete model instance hierarchy.
+// The serialized child-index path is authoritative.  No source Mesh donor,
+// local LOD slot, Transform name, or cross-instance cache participates.
+static bool EiemResolveMeshBonesFromNativeInstance(
+    const EiemSkinIdentity &identity, void *renderer, void **out,
+    char *error, size_t errorSize) {
+  if (out) *out = nullptr;
+  return EiemResolveMeshBonesFromIndexTable(identity, renderer, out, error,
+                                             errorSize);
+}
 // Mesh bindings are instance state. Store the exact replacement array for
 // later game setter refreshes; the original array remains separate for F10.
 static bool EiemPreserveSourceSkinning(void *renderer, void *bones,

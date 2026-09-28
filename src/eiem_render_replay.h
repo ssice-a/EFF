@@ -3,9 +3,8 @@
 #include <unordered_set>
 
 // One Unity-thread update can visit the same Renderer through several nested
-// world, UI or NPC model owners. A failed binding remains eligible for a wider
-// owner whose native bone donor table is complete; a successful binding is
-// committed only once in that update.
+// world, UI or NPC model owners. A failed binding remains eligible for a later
+// owner pass; a successful binding is committed only once in that update.
 class EiemRenderReplayLedger {
  public:
   bool Committed(void *renderer) const {

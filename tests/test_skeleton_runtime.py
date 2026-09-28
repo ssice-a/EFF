@@ -136,10 +136,12 @@ int main(int argc,char **argv) {
  assert(sourceWrites==0 && renderer.bones==&palette);
  assert(EiemAcquireSkeleton(rule,&otherPart,b,message,sizeof(message)) && b==a && creates==1);
  EiemSkinIdentity skin; skin.paths={"Rig/Unused","Rig/Pelvis/Extra","Rig/Pelvis"};
+ skin.boneIndexPaths={"1","0/0","0"};
  void *bound=nullptr;
  assert(EiemSkeletonMeshBones(skin,*a,&bound,message,sizeof(message)));
  auto mapped=(Array *)bound; assert(mapped->count==3 && mapped->items[0]==&unused && mapped->items[1]==extra && mapped->items[2]==&pelvis);
- skin.paths[0]="Rig/Missing"; assert(!EiemSkeletonMeshBones(skin,*a,&bound,message,sizeof(message)) && !bound);
+ skin.paths[0]="Rig/Missing"; skin.boneIndexPaths[0]="0/99";
+ assert(!EiemSkeletonMeshBones(skin,*a,&bound,message,sizeof(message)) && !bound);
 
  // Another Mod can use identical author paths without sharing added nodes.
  strcpy_s(rule.modPath,"B/mod.ini");
