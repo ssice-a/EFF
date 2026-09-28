@@ -32,6 +32,7 @@ static void *g_gameObject_get_transform=nullptr, *g_component_get_transform=null
 static void *g_smr_get_rootBone=&method[7], *g_smr_get_skinningRoot=&method[8];
 static void *s_eiemActivePrefabInstance=nullptr;
 static std::vector<std::unique_ptr<Array>> arrays;
+static std::unordered_map<void *, std::string> identityAssets;
 static void *NewArray(void *,size_t n) { auto a=std::make_unique<Array>(); a->count=n; arrays.push_back(std::move(a)); return arrays.back().get(); }
 static auto il2cpp_array_new=&NewArray;
 static std::map<uint32_t,void *> handles;
@@ -77,9 +78,12 @@ static bool EiemModSameLogicalPath(const char *a,const char *b) {
  return EiemModEquals(a,b);
 }
 static bool EiemBuildRelativeRendererPath(void *,void *,char *,size_t) { return false; }
-static void *EiemReadSharedMesh(void *,const char *) { return nullptr; }
-static bool EiemPrepareRenderInput(void *,void *,const char *,void **) { return false; }
-static bool EiemReadLiveMeshIdentity(void *,char *,size_t,char *,size_t) { return false; }
+static void *EiemReadSharedMesh(void *renderer,const char *) { return renderer; }
+static bool EiemPrepareRenderInput(void *,void *,const char *,void **) { return true; }
+static bool EiemReadLiveMeshIdentity(void *mesh,char *,size_t,char *asset,size_t assetSize) {
+ auto found=identityAssets.find(mesh); if(found==identityAssets.end()) return false;
+ strncpy_s(asset,assetSize,found->second.c_str(),_TRUNCATE); return true;
+}
 static thread_local const std::vector<EiemLiveSkinSource> *s_eiemLiveSkinSources=nullptr;
 static bool EiemResolveMeshBonesFromAssembly(
     const EiemSkinIdentity &, void *, void **, char *, size_t) { return false; }
@@ -181,6 +185,40 @@ int main() {
         lodCache.entries[0].providerRenderer==&lod0Renderer &&
         lodCache.entries[0].providerLod==0);
  s_eiemActiveSkinPaletteCache=previousPaletteCache;
+ // When a replacement cloth Mesh is applied to LOD1, the same skinningRoot
+ // may also expose body and cloth02 LOD0 donors with larger local palettes.
+ // The donor must stay within the target Mesh family, otherwise a breast slot
+ // can resolve to another branch's Transform even though every pointer is
+ // alive and the resulting palette is structurally valid.
+ Node bodyBone{"BodyBreast"}, cloth02Bone{"Cloth02Breast"}, cloth03Bone{"Cloth03Breast"};
+ Array targetLod1Bones; targetLod1Bones.count=1; targetLod1Bones.items[0]=&cloth03Bone;
+ Array bodyLod0Bones; bodyLod0Bones.count=2; bodyLod0Bones.items[0]=&bodyBone;
+ Array cloth02Lod0Bones; cloth02Lod0Bones.count=3; cloth02Lod0Bones.items[0]=&cloth02Bone;
+ Array cloth03Lod0Bones; cloth03Lod0Bones.count=4; cloth03Lod0Bones.items[0]=&cloth03Bone;
+ Renderer clothTarget{&targetLod1Bones,nullptr,&otherRoot};
+ Renderer bodyDonor{&bodyLod0Bones,nullptr,&otherRoot};
+ Renderer cloth02Donor{&cloth02Lod0Bones,nullptr,&otherRoot};
+ Renderer cloth03Donor{&cloth03Lod0Bones,nullptr,&otherRoot};
+ identityAssets[&clothTarget]="S_actor_lizhiyan_cloth_03_lod1";
+ EiemSkinIdentity familyReplacement;
+ familyReplacement.sourceCandidates={{{"assets/body.asset","S_actor_lizhiyan_body_01_lod0",0},
+                                      {"assets/cloth02.asset","S_actor_lizhiyan_cloth_02_lod0",0},
+                                      {"assets/cloth03.asset","S_actor_lizhiyan_cloth_03_lod0",0}}};
+ std::vector<EiemLiveSkinSource> familyLive={
+   {"assets/body.asset","S_actor_lizhiyan_body_01_lod0",&bodyDonor,&bodyLod0Bones,0},
+   {"assets/cloth02.asset","S_actor_lizhiyan_cloth_02_lod0",&cloth02Donor,&cloth02Lod0Bones,0},
+   {"assets/cloth03.asset","S_actor_lizhiyan_cloth_03_lod0",&cloth03Donor,&cloth03Lod0Bones,0}};
+ EiemSkinPaletteCache familyCache; familyCache.model=&otherActor;
+ previousPaletteCache=s_eiemActiveSkinPaletteCache;
+ s_eiemActiveSkinPaletteCache=&familyCache;
+ s_eiemLiveSkinSources=&familyLive;
+ void *familyOut=nullptr;
+ assert(EiemResolveMeshBonesFromNativeInstance(
+     familyReplacement,&clothTarget,&familyOut,v6Error,sizeof(v6Error)));
+ assert(((Array *)familyOut)->count==1 &&
+        ((Array *)familyOut)->items[0]==&cloth03Bone);
+ s_eiemActiveSkinPaletteCache=previousPaletteCache;
+ identityAssets.clear();
  // Two native renderers may expose the same source Mesh/slot while belonging
  // to different PFB instances. The donor with the wrong rootBone/skinningRoot
  // must be ignored even when it appears first in the live-source snapshot.

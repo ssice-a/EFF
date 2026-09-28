@@ -48,6 +48,27 @@ static bool EiemResolveMeshBonesFromNativeInstance(
       !g_transform_get_childCount || !g_transform_GetChild)
     return reject("Native instance has no completed unified skeleton root");
 
+  // Keep the current source Renderer family as the primary donor boundary.
+  // A lower-LOD cloth renderer can share the same skinningRoot with body and
+  // other cloth branches.  All of those branches may expose a valid
+  // L_breast/R_breast slot, but they are not interchangeable physical
+  // palettes.  The replacement's source candidates tell us which original
+  // Mesh family it came from; prefer that family before the generic LOD0 and
+  // palette-size preferences below.
+  std::string targetAssetFamily;
+  {
+    void *currentMesh = EiemReadSharedMesh(renderer, "SkinnedMeshRenderer");
+    void *identityMesh = currentMesh;
+    if (currentMesh)
+      EiemPrepareRenderInput(renderer, currentMesh, "SkinnedMeshRenderer",
+                             &identityMesh);
+    char sourcePath[768] = {}, asset[192] = {};
+    if (identityMesh &&
+        EiemReadLiveMeshIdentity(identityMesh, sourcePath, sizeof(sourcePath),
+                                 asset, sizeof(asset)) && asset[0])
+      targetAssetFamily = EiemSkinAssetFamily(asset);
+  }
+
   // The authoring Armature describes one logical skeleton, but a model can
   // expose several native Transform branches for its main, LOD and shadow
   // renderers.  Bone names cannot identify those branches because different
@@ -136,6 +157,7 @@ static bool EiemResolveMeshBonesFromNativeInstance(
       void *bone = nullptr;
       size_t boneCount = 0;
       uint64_t score = 0;
+      bool assetFamilyMatch = false;
     };
     std::vector<void *> resolved(identity.sourceCandidates.size());
     void *providerRenderer = nullptr;
@@ -153,11 +175,15 @@ static bool EiemResolveMeshBonesFromNativeInstance(
             (void **)((char *)candidate.bones + IL2CPP_ARRAY_DATA);
         void *candidateBone = nullptr;
         bool ambiguous = false;
+        bool assetFamilyMatch = false;
         for (const auto &source : identity.sourceCandidates[slot]) {
           if (!sourceMatchesMeshIdentity(source, candidate.source.c_str(),
                                          candidate.asset.c_str()) ||
               source.slot >= boneCount)
             continue;
+          if (!targetAssetFamily.empty() &&
+              EiemSkinAssetFamily(candidate.asset) == targetAssetFamily)
+            assetFamilyMatch = true;
           void *bone = sourceBones[source.slot];
           if (!bone || EiemNativeObjectStatus(bone) != 1) continue;
           if (candidateBone && candidateBone != bone) {
@@ -171,6 +197,8 @@ static bool EiemResolveMeshBonesFromNativeInstance(
         provider.source = &candidate;
         provider.bone = candidateBone;
         provider.boneCount = boneCount;
+        provider.assetFamilyMatch = assetFamilyMatch;
+        if (assetFamilyMatch) provider.score += uint64_t(1) << 62;
         if (candidate.lod == 0) provider.score += uint64_t(1) << 60;
         if (candidate.renderer == renderer) provider.score += uint64_t(1) << 48;
         const size_t boundedBoneCount =

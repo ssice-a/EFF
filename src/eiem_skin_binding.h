@@ -1,4 +1,5 @@
 #pragma once
+#include <cctype>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -54,6 +55,19 @@ struct EiemSkinPaletteCache {
 };
 
 static thread_local EiemSkinPaletteCache *s_eiemActiveSkinPaletteCache = nullptr;
+
+// LOD renderers use asset names such as `S_actor_lizhiyan_cloth_03_lod1`.
+// When a replacement authored from LOD0 is assigned to a lower LOD, the
+// complete donor palette must come from the same logical Mesh family.  The
+// old resolver ranked every LOD0 donor by palette size, so a larger body or
+// cloth02 palette could win over cloth03's own breast bones.
+static std::string EiemSkinAssetFamily(const std::string &asset) {
+  const size_t marker = asset.rfind("_lod");
+  if (marker == std::string::npos || marker + 4 >= asset.size()) return asset;
+  for (size_t index = marker + 4; index < asset.size(); ++index)
+    if (!std::isdigit(static_cast<unsigned char>(asset[index]))) return asset;
+  return asset.substr(0, marker);
+}
 
 // A replacement slot is resolved by this resource identity, never by the
 // target LOD's local array index. A lower LOD may omit slots present in LOD0;
