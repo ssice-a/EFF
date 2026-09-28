@@ -17,9 +17,8 @@ EFF (Endfield Framework) is an in-game resource replacement framework for *Arkni
 Download the package from [EFF Releases](https://github.com/ssice-a/EIEM/releases). Exit the game and extract the ZIP next to `Endfield.exe`:
 
 ```text
-game/
-├─ d3dcompiler_47.dll      # DirectX proxy loader
-├─ vulkan-1.dll            # Vulkan proxy loader
+d3dcompiler_47.dll         # DirectX proxy loader
+vulkan-1.dll               # Vulkan proxy loader
 └─ plugin/
    ├─ eff.dll
    ├─ eff.ini              # Global settings template

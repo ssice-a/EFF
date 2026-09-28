@@ -10,9 +10,8 @@
 The release archive is laid out for direct extraction next to `Endfield.exe`:
 
 ```text
-game/
-├─ d3dcompiler_47.dll
-├─ vulkan-1.dll
+d3dcompiler_47.dll
+vulkan-1.dll
 └─ plugin/
    ├─ eff.dll
    ├─ eff.ini

@@ -17,9 +17,8 @@ EFF（Endfield Framework）是《明日方舟：终末地》的游戏内资源�
 从 [EFF Releases](https://github.com/ssice-a/EIEM/releases) 下载 DLL 包。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录：
 
 ```text
-game/
-├─ d3dcompiler_47.dll      # DirectX 代理加载器
-├─ vulkan-1.dll            # Vulkan 代理加载器
+d3dcompiler_47.dll         # DirectX 代理加载器
+vulkan-1.dll               # Vulkan 代理加载器
 └─ plugin/
    ├─ eff.dll
    ├─ eff.ini              # 全局设置模板
