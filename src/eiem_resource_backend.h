@@ -768,6 +768,19 @@ static void EiemResolveResourceBackend(void **assemblies, size_t assemblyCount) 
         s_eiemShaderClass, "GetPropertyName", intTypes, _countof(intTypes));
     g_eiemShaderGetPropertyType = EiemFindMethodWithParamTypes(
         s_eiemShaderClass, "GetPropertyType", intTypes, _countof(intTypes));
+    // Unity forks sometimes expose the property index as UInt32 or an enum
+    // metadata type even though the ABI is still one integer argument.  The
+    // strict metadata match above then returns null; fall back to the unique
+    // method name/arity so runtime shader enumeration remains available.
+    if (!g_eiemShaderGetPropertyName)
+      g_eiemShaderGetPropertyName =
+          FindMethod(s_eiemShaderClass, "GetPropertyName", 1);
+    if (!g_eiemShaderGetPropertyType)
+      g_eiemShaderGetPropertyType =
+          FindMethod(s_eiemShaderClass, "GetPropertyType", 1);
+    Log("[MOD] Shader backend: class=%p properties=%p/%p/%p",
+        s_eiemShaderClass, g_eiemShaderGetPropertyCount,
+        g_eiemShaderGetPropertyName, g_eiemShaderGetPropertyType);
   }
   if (s_eiemTextureClass) {
     static const char *const filterTypes[] = {"UnityEngine.FilterMode"};    static const char *const wrapTypes[] = {"UnityEngine.TextureWrapMode"};
@@ -2010,6 +2023,98 @@ static bool EiemReadMaterialFile(const char *path,
   if (!formatSeen) {
     if (error) strncpy_s(error, errorSize, "Not an EIEMMAT file", _TRUNCATE);
     return false;
+  }
+  return true;
+}
+
+// Return the shader texture property names declared by an EIEMMAT resource.
+// Unity's Shader property enumeration is not exported by every Endfield
+// player build, while the material file already contains the authoritative
+// mapping from shader property to EIEM texture section.  Keeping this helper
+// data-driven avoids embedding character or shader-specific property names in
+// the native VFX adapter.
+static bool EiemReadMaterialTexturePropertyNames(
+    const EiemModRule &rule, const char *section,
+    std::vector<std::string> *out, char *error, size_t errorSize) {
+  if (out) out->clear();
+  if (!section || !section[0] || !out) return false;
+  EiemModResource resource = {};
+  if (!EiemFindModResource(rule.modPath, section, "Material", &resource)) {
+    if (error) strncpy_s(error, errorSize,
+                         "Render material section is not declared", _TRUNCATE);
+    return false;
+  }
+  char materialPath[kEiemResourceDiskPathCapacity] = {};
+  if (!EiemResolveResourceDiskPath(resource, materialPath,
+                                   sizeof(materialPath))) {
+    if (error) strncpy_s(error, errorSize,
+                         "Unable to resolve EIEM material path", _TRUNCATE);
+    return false;
+  }
+  std::vector<std::pair<std::string, std::string>> values;
+  if (!EiemReadMaterialFile(materialPath, &values, error, errorSize))
+    return false;
+  for (const auto &pair : values) {
+    if (_strnicmp(pair.first.c_str(), "texture.", 8) != 0 ||
+        _strnicmp(pair.first.c_str(), "texture_scale.", 14) == 0 ||
+        _strnicmp(pair.first.c_str(), "texture_offset.", 15) == 0)
+      continue;
+    const std::string property = pair.first.substr(8);
+    if (property.empty()) continue;
+    const bool duplicate = std::any_of(
+        out->begin(), out->end(), [&](const std::string &existing) {
+          return _stricmp(existing.c_str(), property.c_str()) == 0;
+        });
+    if (!duplicate) out->push_back(property);
+  }
+  return true;
+}
+
+static bool EiemBuildLzyTexturePropertyNamesForRule(
+    const EiemModRule &rule,
+    std::vector<std::vector<std::string>> *out, char *error,
+    size_t errorSize) {
+  if (out) out->clear();
+  if (!out || rule.materialCount == 0) return true;
+  uint32_t arrayCount = rule.materialCount;
+  for (uint32_t i = 0; i < rule.materialCount; ++i) {
+    if (rule.materialSlots[i] >= 0 &&
+        (uint32_t)(rule.materialSlots[i] + 1) > arrayCount)
+      arrayCount = (uint32_t)rule.materialSlots[i] + 1;
+  }
+  if (!arrayCount || arrayCount > 64) return false;
+  out->resize(arrayCount);
+  for (uint32_t index = 0; index < rule.materialCount; ++index) {
+    const int32_t slot = rule.materialSlots[index] >= 0
+                             ? rule.materialSlots[index]
+                             : (int32_t)index;
+    if (slot < 0 || (uint32_t)slot >= arrayCount) continue;
+    std::vector<std::string> names;
+    if (!EiemReadMaterialTexturePropertyNames(
+            rule, rule.materials[index], &names, error, errorSize))
+      return false;
+    for (const std::string &name : names) {
+      const bool duplicate = std::any_of(
+          (*out)[slot].begin(), (*out)[slot].end(),
+          [&](const std::string &existing) {
+            return _stricmp(existing.c_str(), name.c_str()) == 0;
+          });
+      if (!duplicate) (*out)[slot].push_back(name);
+    }
+  }
+  // Match EiemBuildRendererMaterials: unspecified slots inherit slot 0.
+  for (uint32_t slot = 1; slot < arrayCount; ++slot)
+    if ((*out)[slot].empty()) (*out)[slot] = (*out)[0];
+  if (rule.submeshCount) {
+    std::vector<std::vector<std::string>> original = *out;
+    const uint32_t limit = rule.submeshCount < arrayCount
+                               ? rule.submeshCount
+                               : arrayCount;
+    for (uint32_t submesh = 0; submesh < limit; ++submesh) {
+      const int32_t sourceSlot = rule.submeshSlots[submesh];
+      if (sourceSlot >= 0 && (uint32_t)sourceSlot < arrayCount)
+        (*out)[submesh] = original[(size_t)sourceSlot];
+    }
   }
   return true;
 }

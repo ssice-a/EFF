@@ -65,7 +65,16 @@ echo [1/4] Compiling version resource ...
 rc /nologo /fo bin\version.res src\version.rc
 
 echo [2/4] Building eiem.dll ...
-cl /nologo /utf-8 /O2 /Zi /Fd"bin\eiem_compile.pdb" /MD /LD /EHsc /std:c++17 ^
+cl /nologo /utf-8 /O2 /Zi /MD /LD /EHsc /std:c++17 ^
+    /DEIEM_VISIBILITY_CONTROLLER_PROBE_BUILD ^
+    /DEIEM_MATERIAL_LIFECYCLE_PROBE_BUILD ^
+    /DEIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD ^
+    /DEIEM_PRESERVE_NATIVE_VFX_MATERIALS_BUILD ^
+    /DEIEM_PERDRAW_END_RESTORE_BUILD ^
+    /DEIEM_PERDRAW_VFX_FANOUT_BUILD ^
+    /DEIEM_NATIVE_VFX_PASSTHROUGH_TEXTURE_PATCH_BUILD ^
+    /DEIEM_DITHER_PROBE_BUILD ^
+    /Fd"bin\eiem_compile.pdb" ^
     /Ideps\minhook_lib\include ^
     /Ideps\imgui ^
     /Ideps\lua ^

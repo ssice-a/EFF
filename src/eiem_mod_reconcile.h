@@ -114,6 +114,12 @@ static void EiemRunModReconcile() {
     // F10 is a full generation rebuild: restore every owned field before
     // publishing and constructing the next generation. This keeps reload
     // semantics independent of cache/file timestamp behaviour.
+#if defined(EIEM_PERDRAW_END_RESTORE_BUILD)
+    // RendererInfo addresses and managed arrays are generation-scoped. Drop
+    // the per-draw expansion/VFX roots before restoring the old generation so
+    // a key-driven render switch or F10 cannot reuse stale pointers/handles.
+    EiemResetPerDrawMaterialCaches();
+#endif
     restoreComplete = EiemRestoreRenderOverrides(affected);
     EiemCollectSkeletonInstances();
     if (!restoreComplete)

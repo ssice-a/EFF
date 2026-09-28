@@ -16,6 +16,8 @@ static LRESULT CALLBACK EiemModWndProc(HWND hwnd, UINT msg, WPARAM wParam,
     KillTimer(hwnd, kEiemModRetryTimer);
     KillTimer(hwnd, kEiemSkinTimingProbeTimer);
     KillTimer(hwnd, kEiemPhysicsCaptureTimer);
+    KillTimer(hwnd, kEiemVisibilityForceOffTimer);
+    EiemClearVisibilityForceOffProbe();
     s_eiemShapeTransitionTick = 0;
     if (original &&
         GetWindowLongPtrW(hwnd, GWLP_WNDPROC) == (LONG_PTR)EiemModWndProc) {
@@ -53,6 +55,10 @@ static LRESULT CALLBACK EiemModWndProc(HWND hwnd, UINT msg, WPARAM wParam,
   }
   if (msg == WM_TIMER && wParam == kEiemPhysicsCaptureTimer) {
     EiemFinishPhysicsManualCaptureOnUnityThread(hwnd,"bounded-window-complete");
+    return 0;
+  }
+  if (msg == WM_TIMER && wParam == kEiemVisibilityForceOffTimer) {
+    EiemRunVisibilityForceOffProbe();
     return 0;
   }
   if (msg == WM_EIEM_MOD_KEY) {
@@ -93,6 +99,12 @@ static DWORD WINAPI HotkeyThread(LPVOID) {
         kEiemEnableLegacyWorkers ? "legacy/main-thread" : "Mod transaction");
   } else {
     Log("[WARN] Failed to subclass game window (err=%lu)", GetLastError());
+  }
+  if (kEiemEnableVisibilityForceOffProbe) {
+    if (!SetTimer(hwnd, kEiemVisibilityForceOffTimer, 16, nullptr))
+      Log("[TEMP-VIS-FORCEOFF-v1] SetTimer failed err=%lu", GetLastError());
+    else
+      Log("[TEMP-VIS-SYNC-v3] probe armed interval=16ms");
   }
   EiemPostPendingModUpdate("game window attached");
 

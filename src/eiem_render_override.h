@@ -397,19 +397,82 @@ static bool EiemRememberReplacement(void *renderer, void *replacementMesh,
 }
 
 // Once a Renderer has been bound to a generated resource, the game may
-// re-assign its original Mesh during LOD/skin refreshes.  Keep the replacement
-// attached for those source-only writes.  Reload restoration sets
+// re-assign its original Mesh during LOD/skin refreshes or during a native VFX
+// transaction.  Keep the replacement attached for that source-only write.
+// Native VFX paths can hand us a distinct wrapper for the same logical asset,
+// so pointer equality alone is insufficient.  Reload restoration sets
 // s_eiemApplyingModMeshAssignment and bypasses this guard explicitly.
+static bool EiemSameMeshIdentity(void *left, void *right) {
+  if (!left || !right) return false;
+  if (left == right) return true;
+
+  int64_t leftHash = 0;
+  int64_t rightHash = 0;
+  char leftPath[768] = {};
+  char rightPath[768] = {};
+  const bool leftKnown =
+      TraceLookupAssetOrigin(left, &leftHash, leftPath, sizeof(leftPath));
+  const bool rightKnown =
+      TraceLookupAssetOrigin(right, &rightHash, rightPath, sizeof(rightPath));
+  if (leftKnown && rightKnown) {
+    if (leftHash && rightHash && leftHash == rightHash) return true;
+    if (leftPath[0] && rightPath[0] && strcmp(leftPath, rightPath) == 0)
+      return true;
+  }
+
+  char leftName[192] = {};
+  char rightName[192] = {};
+  TraceReadUnityObjectName(left, leftName, sizeof(leftName));
+  TraceReadUnityObjectName(right, rightName, sizeof(rightName));
+  return leftName[0] && rightName[0] && strcmp(leftName, rightName) == 0;
+}
+
 static void *EiemReplacementForSourceMesh(void *renderer, void *mesh) {
   if (!renderer || !mesh) return nullptr;
+  void *originalMesh = nullptr;
   void *replacement = nullptr;
   AcquireSRWLockShared(&s_eiemOverrideLock);
   const size_t index = EiemFindOverrideLocked(renderer);
   if (index != SIZE_MAX && !s_eiemOverrides[index].restorePending &&
-      s_eiemOverrides[index].originalMesh == mesh)
+      s_eiemOverrides[index].originalMesh &&
+      s_eiemOverrides[index].replacementMesh) {
+    originalMesh = s_eiemOverrides[index].originalMesh;
     replacement = s_eiemOverrides[index].replacementMesh;
+  }
   ReleaseSRWLockShared(&s_eiemOverrideLock);
-  return replacement;
+  if (replacement && EiemSameMeshIdentity(originalMesh, mesh))
+    return replacement;
+
+  // A sprint VFX object may be a newly cloned Renderer.  It has the same
+  // source Mesh identity but no per-Renderer ledger entry yet, so the exact
+  // lookup above cannot see it.  Use a generic source-identity fallback only
+  // when every live override for that source agrees on one replacement.  An
+  // ambiguous source is left untouched rather than guessing across models.
+  void *uniqueReplacement = nullptr;
+  size_t candidates = 0;
+  AcquireSRWLockShared(&s_eiemOverrideLock);
+  for (const auto &state : s_eiemOverrides) {
+    if (state.restorePending || !state.originalMesh ||
+        !state.replacementMesh ||
+        !EiemSameMeshIdentity(state.originalMesh, mesh))
+      continue;
+    ++candidates;
+    if (!uniqueReplacement) {
+      uniqueReplacement = state.replacementMesh;
+    } else if (!EiemSameMeshIdentity(uniqueReplacement, state.replacementMesh)) {
+      uniqueReplacement = nullptr;
+      break;
+    }
+  }
+  ReleaseSRWLockShared(&s_eiemOverrideLock);
+  if (!uniqueReplacement || !candidates) return nullptr;
+  static volatile LONG s_eiemSourceMeshFallbackLogs = 0;
+  const LONG logIndex = InterlockedIncrement(&s_eiemSourceMeshFallbackLogs);
+  if (logIndex <= 32)
+    Log("[MOD-MESH-SOURCE-FALLBACK] renderer=%p source=%p replacement=%p "
+        "candidates=%zu",
+        renderer, mesh, uniqueReplacement, candidates);
+  return uniqueReplacement;
 }
 
 // A Mesh/material override must never own Renderer.enabled. Only an explicit

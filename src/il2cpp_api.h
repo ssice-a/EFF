@@ -39,6 +39,7 @@ D(uintptr_t, il2cpp_array_length, void *);
 D(void *, il2cpp_class_get_method_from_name, void *, const char *, int);
 D(void *, il2cpp_runtime_invoke, void *, void *, void **, void **);
 D(void *, il2cpp_class_get_parent, void *);
+D(void *, il2cpp_class_get_nested_types, void *, void **);
 D(void *, il2cpp_class_get_element_class, void *);
 D(void, il2cpp_field_static_get_value, void *, void *);
 D(void *, il2cpp_field_get_type, void *);
@@ -145,6 +146,7 @@ static bool Resolve() {
   R(il2cpp_array_length);
   R(il2cpp_runtime_invoke);
   R(il2cpp_class_get_parent);
+  R(il2cpp_class_get_nested_types);
   R(il2cpp_class_get_element_class);
   R(il2cpp_field_static_get_value);
   R(il2cpp_field_get_type);

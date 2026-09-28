@@ -254,6 +254,55 @@ static void EiemDumpCustomSkinPipelineMetadata(void **assemblies,
       _countof(candidates), found);
 }
 
+// Narrow read-only census for the sprint visibility investigation.  The
+// public Renderer.isVisible result changed while enabled/active stayed true;
+// this pass finds the game's own controller or descriptor class before any
+// hook is attempted.  It only dumps metadata and never reads or writes live
+// object fields.
+static void EiemDumpVisibilityPipelineMetadata(void **assemblies,
+                                                size_t assemblyCount) {
+  static std::atomic<bool> dumped{false};
+  if (dumped.exchange(true) || !assemblies || !assemblyCount ||
+      !il2cpp_assembly_get_image || !il2cpp_image_get_class_count ||
+      !il2cpp_image_get_class || !il2cpp_class_get_name)
+    return;
+
+  size_t matched = 0;
+  size_t classes = 0;
+  for (size_t imageIndex = 0; imageIndex < assemblyCount; ++imageIndex) {
+    void *image = il2cpp_assembly_get_image(assemblies[imageIndex]);
+    if (!image) continue;
+    const size_t count = il2cpp_image_get_class_count(image);
+    if (count > 200000) continue;
+    classes += count;
+    for (size_t classIndex = 0; classIndex < count; ++classIndex) {
+      void *klass = il2cpp_image_get_class(image, classIndex);
+      if (!klass) continue;
+      const char *name = il2cpp_class_get_name(klass);
+      if (!name ||
+          (!strstr(name, "VisibleController") &&
+           !strstr(name, "VisibilityController") &&
+           !strstr(name, "SubMeshInfo") &&
+           !strstr(name, "RendererInfo")))
+        continue;
+      const char *nameSpace = il2cpp_class_get_namespace
+                                  ? il2cpp_class_get_namespace(klass)
+                                  : nullptr;
+      ++matched;
+      Log("[VIS-META] assembly=%zu namespace=%s class=%s", imageIndex,
+          nameSpace && nameSpace[0] ? nameSpace : "<global>", name);
+      EiemLogClassFields(klass);
+      EiemLogClassMethods(klass);
+      if (matched >= 32) {
+        Log("[VIS-META] truncated at 32 matching classes");
+        Log("[VIS-META] complete classes=%zu matched=%zu", classes, matched);
+        return;
+      }
+    }
+  }
+  Log("[VIS-META] complete classes=%zu matched=%zu", classes, matched);
+}
+
 // ---------------------------------------------------------------------------
 // Part-table mutation.
 //

@@ -142,6 +142,8 @@ static void TraceRememberAssetOrigin(void *asset, int64_t pathHash,
 static void TraceBuildRendererHierarchy(void *renderer, char *out,
                                         size_t outSize);
 static void TraceReadUnityObjectName(void *object, char *out, int outSize);
+static bool TraceLookupAssetOrigin(void *asset, int64_t *pathHash, char *path,
+                                   size_t pathSize);
 
 static void EiemReconcileModelPhysics(
     void *model, const std::vector<EiemPhysicsIntent> &intents, bool active,
@@ -168,6 +170,11 @@ typedef bool (__fastcall *TraceRendererInfoMaterialCommitFn)(
 static void *s_origRendererInfoTrySetSharedMaterial = nullptr;
 static void *s_origRendererInfoTrySetSharedMaterials = nullptr;
 static void *s_origRendererInfoTryReplaceSharedMaterials = nullptr;
+#if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD)
+static bool EiemInvokeAdaptedNativeVfxCommit(
+    void *self, void *input, bool inputIsArray, void *methodInfo,
+    TraceRendererInfoMaterialCommitFn original, bool *adapted);
+#endif
 static int s_materialRendererInfoRendererOffset = -1;
 static void *s_origMaterialInfoInit = nullptr;
 typedef void (__fastcall *TraceSetBonesFn)(void *self, void *bones,
@@ -2636,35 +2643,231 @@ static void TraceMaterialInfoInit(void *self, void *renderer, void *configs, voi
     Log("[MOD-MATERIAL-SOURCE] init source unresolved; mod reapply not attempted renderer=%p", renderer);
 }
 
+#if defined(EIEM_MATERIAL_LIFECYCLE_PROBE_BUILD)
+static volatile LONG s_eiemMaterialLifecycleProbeCalls = 0;
+
+static void EiemLogMaterialLifecycleProbe(const char *method, const char *phase,
+                                         void *info, void *input,
+                                         bool inputIsArray, void *renderer,
+                                         LONG callIndex) {
+  if (callIndex < 0 || callIndex >= 500 || !renderer) return;
+  char rendererName[160] = {};
+  TraceReadUnityObjectName(renderer, rendererName, sizeof(rendererName));
+  if (!strstr(rendererName, "lizhiyan_body_01_lod0") &&
+      !strstr(rendererName, "lizhiyan_cloth_01_lod0") &&
+      !strstr(rendererName, "lizhiyan_cloth_03_lod0"))
+    return;
+  auto item = [](void *array, size_t index) -> void * {
+    if (!array || index >= EiemManagedArrayLength(array)) return nullptr;
+    __try { return *(void **)((char *)array + 32 + index * sizeof(void *)); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+  };
+  void *current = g_renderer_get_sharedMaterials
+                      ? Invoke(g_renderer_get_sharedMaterials, renderer) : nullptr;
+  void *replacing = nullptr;
+  bool replacingActive = false;
+  __try {
+    replacing = *(void **)((char *)info + 0x40);
+    replacingActive = *(unsigned char *)((char *)info + 0x38) != 0;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {}
+  void *input0 = inputIsArray ? item(input, 0) : input;
+  void *current0 = item(current, 0);
+  void *currentLast = item(current, EiemManagedArrayLength(current)
+                                      ? EiemManagedArrayLength(current) - 1 : 0);
+  void *replacing0 = item(replacing, 0);
+  char inputName[128] = {}, currentName[128] = {}, lastName[128] = {};
+  char replacingName[128] = {};
+  if (input0) TraceReadUnityObjectName(input0, inputName, sizeof(inputName));
+  if (current0) TraceReadUnityObjectName(current0, currentName, sizeof(currentName));
+  if (currentLast) TraceReadUnityObjectName(currentLast, lastName, sizeof(lastName));
+  if (replacing0) TraceReadUnityObjectName(replacing0, replacingName,
+                                            sizeof(replacingName));
+  Log("[MATERIAL-LIFECYCLE-PROBE] call=%ld method=%s phase=%s info=%p renderer=%p "
+      "name=%s input=%p/%zu input0=%p:%s current=%p/%zu current0=%p:%s "
+      "last=%p:%s replacing=%p/%zu replacing0=%p:%s active=%d",
+      callIndex, method, phase, info, renderer, rendererName,
+      input, inputIsArray ? EiemManagedArrayLength(input) : (input ? 1u : 0u),
+      input0, inputName, current, EiemManagedArrayLength(current),
+      current0, currentName, currentLast, lastName, replacing,
+      EiemManagedArrayLength(replacing), replacing0, replacingName,
+      replacingActive ? 1 : 0);
+}
+#endif
+
+#if defined(EIEM_PRESERVE_NATIVE_VFX_MATERIALS_BUILD)
+static bool EiemNativeSprintMaterial(void *material) {
+  if (!material) return false;
+  char name[160] = {};
+  TraceReadUnityObjectName(material, name, sizeof(name));
+  // The character's dissolve material is the *_VFXInstance object.  The
+  // M_fxbat_* object is a separate dash effect slot and must remain visible
+  // while the character's ordinary materials are rebound to the mod output.
+  // Treating both as one transaction left the replacement material in the
+  // native array after sprint recovery.
+  return strstr(name, "_VFXInstance") != nullptr;
+}
+
+static bool EiemNativeSprintMaterialArray(void *materials) {
+  const size_t count = EiemManagedArrayLength(materials);
+  if (!materials || !count || count > 64) return false;
+  __try {
+    void **items = (void **)((char *)materials + 32);
+    for (size_t index = 0; index < count; ++index)
+      if (EiemNativeSprintMaterial(items[index])) return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+  return false;
+}
+
+static bool EiemPreserveNativeSprintCommit(void *materials, bool array) {
+  return array ? EiemNativeSprintMaterialArray(materials)
+               : EiemNativeSprintMaterial(materials);
+}
+#else
+static bool EiemPreserveNativeSprintCommit(void *, bool) { return false; }
+#endif
+
+#if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD) && \
+    defined(EIEM_PERDRAW_END_RESTORE_BUILD)
+// RendererInfo creates/replaces its native *_VFXInstance immediately inside
+// TrySet/ TryReplaceSharedMaterials.  The implementation is defined in the
+// per-draw controller header below; this declaration lets the lifecycle hook
+// prewarm the expanded LZY submesh array at that creation boundary instead of
+// delaying all allocations until the first per-draw frame.
+static bool EiemPrewarmNativeVfxSlotMaterials(void *info, void *renderer,
+                                              void *nativeInput,
+                                              bool inputIsArray);
+#endif
+
 static bool TraceRendererInfoTrySetSharedMaterial(void *self, void *material,
                                                   void *methodInfo) {
+#if defined(EIEM_MATERIAL_LIFECYCLE_PROBE_BUILD)
+  void *renderer = EiemReadRendererFromMaterialInfo(self);
+  const LONG probeCall = InterlockedIncrement(&s_eiemMaterialLifecycleProbeCalls) - 1;
+  EiemLogMaterialLifecycleProbe("TrySetSharedMaterial", "before", self,
+                                material, false, renderer, probeCall);
+#endif
   auto original = (TraceRendererInfoMaterialCommitFn)
       s_origRendererInfoTrySetSharedMaterial;
+  bool adapted = false;
+#if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD)
+  const bool result = EiemInvokeAdaptedNativeVfxCommit(
+      self, material, false, methodInfo, original, &adapted);
+#else
   const bool result = original ? original(self, material, methodInfo) : false;
-  EiemReapplyRendererMaterialsAfterCommit(
-      EiemReadRendererFromMaterialInfo(self), "TrySetSharedMaterial");
+#endif
+#if defined(EIEM_MATERIAL_LIFECYCLE_PROBE_BUILD)
+  EiemLogMaterialLifecycleProbe("TrySetSharedMaterial", "native", self,
+                                material, false, renderer, probeCall);
+#endif
+  void *commitRenderer = EiemReadRendererFromMaterialInfo(self);
+  if (adapted) {
+    Log("[MOD-MATERIAL-VFX-SLOT-ADAPTER] method=TrySetSharedMaterial renderer=%p",
+        commitRenderer);
+#if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD) && \
+    defined(EIEM_PERDRAW_END_RESTORE_BUILD)
+    EiemPrewarmNativeVfxSlotMaterials(self, commitRenderer, material, false);
+#endif
+  } else if (EiemPreserveNativeSprintCommit(material, false)) {
+    Log("[MOD-MATERIAL-SKIP-NATIVE-VFX] method=TrySetSharedMaterial renderer=%p",
+        commitRenderer);
+  } else {
+    EiemReapplyRendererMaterialsAfterCommit(commitRenderer,
+                                            "TrySetSharedMaterial");
+  }
+#if defined(EIEM_MATERIAL_LIFECYCLE_PROBE_BUILD)
+  EiemLogMaterialLifecycleProbe("TrySetSharedMaterial", "eiem", self,
+                                material, false, renderer, probeCall);
+#endif
   return result;
 }
 
 static bool TraceRendererInfoTrySetSharedMaterials(void *self,
                                                    void *materials,
                                                    void *methodInfo) {
+#if defined(EIEM_MATERIAL_LIFECYCLE_PROBE_BUILD)
+  void *renderer = EiemReadRendererFromMaterialInfo(self);
+  const LONG probeCall = InterlockedIncrement(&s_eiemMaterialLifecycleProbeCalls) - 1;
+  EiemLogMaterialLifecycleProbe("TrySetSharedMaterials", "before", self,
+                                materials, true, renderer, probeCall);
+#endif
   auto original = (TraceRendererInfoMaterialCommitFn)
       s_origRendererInfoTrySetSharedMaterials;
+  bool adapted = false;
+#if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD)
+  const bool result = EiemInvokeAdaptedNativeVfxCommit(
+      self, materials, true, methodInfo, original, &adapted);
+#else
   const bool result = original ? original(self, materials, methodInfo) : false;
-  EiemReapplyRendererMaterialsAfterCommit(
-      EiemReadRendererFromMaterialInfo(self), "TrySetSharedMaterials");
+#endif
+#if defined(EIEM_MATERIAL_LIFECYCLE_PROBE_BUILD)
+  EiemLogMaterialLifecycleProbe("TrySetSharedMaterials", "native", self,
+                                materials, true, renderer, probeCall);
+#endif
+  void *commitRenderer = EiemReadRendererFromMaterialInfo(self);
+  if (adapted) {
+    Log("[MOD-MATERIAL-VFX-SLOT-ADAPTER] method=TrySetSharedMaterials renderer=%p",
+        commitRenderer);
+#if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD) && \
+    defined(EIEM_PERDRAW_END_RESTORE_BUILD)
+    EiemPrewarmNativeVfxSlotMaterials(self, commitRenderer, materials, true);
+#endif
+  } else if (EiemPreserveNativeSprintCommit(materials, true)) {
+    Log("[MOD-MATERIAL-SKIP-NATIVE-VFX] method=TrySetSharedMaterials renderer=%p",
+        commitRenderer);
+  } else {
+    EiemReapplyRendererMaterialsAfterCommit(commitRenderer,
+                                            "TrySetSharedMaterials");
+  }
+#if defined(EIEM_MATERIAL_LIFECYCLE_PROBE_BUILD)
+  EiemLogMaterialLifecycleProbe("TrySetSharedMaterials", "eiem", self,
+                                materials, true, renderer, probeCall);
+#endif
   return result;
 }
 
 static bool TraceRendererInfoTryReplaceSharedMaterials(void *self,
                                                        void *materials,
                                                        void *methodInfo) {
+#if defined(EIEM_MATERIAL_LIFECYCLE_PROBE_BUILD)
+  void *renderer = EiemReadRendererFromMaterialInfo(self);
+  const LONG probeCall = InterlockedIncrement(&s_eiemMaterialLifecycleProbeCalls) - 1;
+  EiemLogMaterialLifecycleProbe("TryReplaceSharedMaterials", "before", self,
+                                materials, true, renderer, probeCall);
+#endif
   auto original = (TraceRendererInfoMaterialCommitFn)
       s_origRendererInfoTryReplaceSharedMaterials;
+  bool adapted = false;
+#if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD)
+  const bool result = EiemInvokeAdaptedNativeVfxCommit(
+      self, materials, true, methodInfo, original, &adapted);
+#else
   const bool result = original ? original(self, materials, methodInfo) : false;
-  EiemReapplyRendererMaterialsAfterCommit(
-      EiemReadRendererFromMaterialInfo(self), "TryReplaceSharedMaterials");
+#endif
+#if defined(EIEM_MATERIAL_LIFECYCLE_PROBE_BUILD)
+  EiemLogMaterialLifecycleProbe("TryReplaceSharedMaterials", "native", self,
+                                materials, true, renderer, probeCall);
+#endif
+  void *commitRenderer = EiemReadRendererFromMaterialInfo(self);
+  if (adapted) {
+    Log("[MOD-MATERIAL-VFX-SLOT-ADAPTER] method=TryReplaceSharedMaterials renderer=%p",
+        commitRenderer);
+#if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD) && \
+    defined(EIEM_PERDRAW_END_RESTORE_BUILD)
+    EiemPrewarmNativeVfxSlotMaterials(self, commitRenderer, materials, true);
+#endif
+  } else if (EiemPreserveNativeSprintCommit(materials, true)) {
+    Log("[MOD-MATERIAL-SKIP-NATIVE-VFX] method=TryReplaceSharedMaterials renderer=%p",
+        commitRenderer);
+  } else {
+    EiemReapplyRendererMaterialsAfterCommit(commitRenderer,
+                                            "TryReplaceSharedMaterials");
+  }
+#if defined(EIEM_MATERIAL_LIFECYCLE_PROBE_BUILD)
+  EiemLogMaterialLifecycleProbe("TryReplaceSharedMaterials", "eiem", self,
+                                materials, true, renderer, probeCall);
+#endif
   return result;
 }
 
@@ -3218,6 +3421,12 @@ static uint32_t EiemReapplySubmeshVisibility(
 // Runs only from MmdWndProc. F10 restores the previous generation, then
 // replays configuration against instances registered by either supported
 // model lifecycle adapter. No scene-wide Mesh scan exists.
+#if defined(EIEM_PERDRAW_END_RESTORE_BUILD)
+// The per-draw source/VFX caches are defined by the visibility probe included
+// later in this translation unit.  Reconcile runs first, so expose the
+// Unity-thread generation-boundary cleanup here.
+static void EiemResetPerDrawMaterialCaches();
+#endif
 #include "eiem_mod_reconcile.h"
 
 static void *s_origAssetBundleLoadAsset1 = nullptr;
@@ -6048,6 +6257,7 @@ static void *FindMaterialRendererInfoClass(void **assemblies,
 #include "eiem_native_physics_runtime.h"
 #include "eiem_npc_model_owner.h"
 #include "eiem_metadata_probe.h"
+#include "eiem_visibility_controller_probe.h"
 
 static void InitIl2CppResourceTrace(void **assemblies, size_t assemblyCount) {
   if (!assemblies || assemblyCount == 0) return;
@@ -6068,6 +6278,10 @@ static void InitIl2CppResourceTrace(void **assemblies, size_t assemblyCount) {
   EiemInstallNpcModelOwner(assemblies, assemblyCount);
   if (kEiemEnableCustomSkinPipelineMetadata)
     EiemDumpCustomSkinPipelineMetadata(assemblies, assemblyCount);
+  if (kEiemEnableVisibilityMetadataProbe)
+    EiemDumpVisibilityPipelineMetadata(assemblies, assemblyCount);
+  EiemInstallVisibilityControllerProbe(assemblies, assemblyCount);
+  EiemInstallDitherProbe(assemblies, assemblyCount);
 
   // This manager is a candidate custom-pipeline boundary. The hook is
   // observation-only and bounded by the existing cold/F10 timing window; it

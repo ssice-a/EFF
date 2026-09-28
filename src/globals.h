@@ -17,7 +17,11 @@ static constexpr bool kEiemEnableLegacyWorkers =
 // Keep legacy animation/Partner/physics paths disabled while allowing the
 // game's RendererInfo controller to restore the declared material array after
 // its own initialization or commit.
+#if defined(EIEM_DISABLE_MATERIAL_LIFECYCLE_PROBE_BUILD)
+static constexpr bool kEiemEnableMaterialLifecycle = false;
+#else
 static constexpr bool kEiemEnableMaterialLifecycle = true;
+#endif
 // Enable the identity probe only for a dedicated evidence run. It is
 // intentionally separate from the production baseline.
 // Evidence build: enable the bounded owner/assembly identity records. This
@@ -47,6 +51,8 @@ static constexpr UINT_PTR kEiemSkinTimingProbeTimer = 0xE154;
 // distinct from the skin sample timer prevents either diagnostic from
 // extending the other's lifetime.
 static constexpr UINT_PTR kEiemPhysicsCaptureTimer = 0xE155;
+// Isolated visibility bridge probe. Never armed in the stable build.
+static constexpr UINT_PTR kEiemVisibilityForceOffTimer = 0xE156;
 
 static HANDLE g_logHandle = INVALID_HANDLE_VALUE;
 static CRITICAL_SECTION g_logLock;
@@ -433,6 +439,7 @@ static void *g_material_GetColor = nullptr;
 static void *g_material_GetVector = nullptr;
 static void *g_material_GetFloat = nullptr;
 static void *g_material_GetInt = nullptr;
+static void *g_material_CopyPropertiesFromMaterial = nullptr;
 static void *g_shader_get_name = nullptr;
 static void *g_textureClass = nullptr;
 static void *g_texture_get_width = nullptr;

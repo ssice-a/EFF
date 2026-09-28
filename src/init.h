@@ -990,10 +990,15 @@ static DWORD WINAPI InitThread(LPVOID) {
         g_materialClass, "GetFloat", materialStringType, 1);
     g_material_GetInt = FindMethodWithParamTypes(
         g_materialClass, "GetInt", materialStringType, 1);
+    const char *materialType[] = {"UnityEngine.Material"};
+    g_material_CopyPropertiesFromMaterial = FindMethodWithParamTypes(
+        g_materialClass, "CopyPropertiesFromMaterial", materialType, 1);
     Log("[DUMP] Material APIs: shader=%p textureNames=%p texture=%p color=%p vector=%p float=%p int=%p",
         g_material_get_shader, g_material_GetTexturePropertyNames,
         g_material_GetTexture, g_material_GetColor, g_material_GetVector,
         g_material_GetFloat, g_material_GetInt);
+    Log("[MOD-VFX-MATERIAL] CopyPropertiesFromMaterial=%p",
+        g_material_CopyPropertiesFromMaterial);
   }
   g_textureClass = FindClass("UnityEngine", "Texture", asms, ac);
   if (g_textureClass) {

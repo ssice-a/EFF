@@ -22,6 +22,7 @@
 #include "eiem_config.h"
 #include "eiem_camera_fade.h"
 #include "il2cpp_trace.h"
+#include "eiem_visibility_forceoff_probe.h"
 #include "scene_dump.h"
 #include "eiem_native_physics_diagnostic.h"
 #include "model_dump.h"
