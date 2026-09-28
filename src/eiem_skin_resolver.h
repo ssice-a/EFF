@@ -105,9 +105,19 @@ static bool EiemResolveMeshBonesFromSourcePalettes(
     return reject("Native source Renderer binding APIs are unavailable");
   if (identity.sourceCandidates.empty())
     return reject("Mesh has no source Renderer bone candidate table");
+  EiemSkinPaletteCache localCache;
   EiemSkinPaletteCache *cache = s_eiemActiveSkinPaletteCache;
-  if (!cache || cache->sourcePalettes.empty())
-    return reject("No original Renderer bone palettes were captured");
+  if (!cache || cache->sourcePalettes.empty()) {
+    // A direct sharedMesh setter can precede the model assembly callback
+    // (notably for pooled UI/NPC Renderers). Capture that one source Renderer
+    // on demand instead of falling back to hierarchy guessing.
+    localCache.model = cache ? cache->model : nullptr;
+    std::vector<void *> oneRenderer = {renderer};
+    if (!EiemCaptureSourceSkinPalette(oneRenderer, &localCache) ||
+        localCache.sourcePalettes.empty())
+      return reject("No original Renderer bone palettes were captured");
+    cache = &localCache;
+  }
 
   std::vector<void *> resolved;
   resolved.reserve(identity.sourceCandidates.size());
