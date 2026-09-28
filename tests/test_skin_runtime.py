@@ -52,6 +52,7 @@ static void *Invoke(void *m,void *p,void **args=nullptr) {
 static void *EiemBackendInvokeNoThrow(void *m,void *p) { return Invoke(m,p); }
 static bool EiemReadLiveMeshIdentity(void *,char *,size_t,char *,size_t) { return false; }
 static bool EiemModSameLogicalPath(const char *a,const char *b) { return a && b && !_stricmp(a,b); }
+static bool EiemCaptureSourceSkinPalette(const std::vector<void *> &, EiemSkinPaletteCache *) { return false; }
 static bool InvokeChecked(void *m,void *p,void **args,void **out) { *out=Invoke(m,p,args); return !failSetter; }
 struct State { uint32_t replacementBonesHandle=0; };
 static std::vector<State> s_eiemOverrides(1);
