@@ -198,11 +198,11 @@ static bool EiemIgnoreRelease(const std::string &version) {
 
 static void CheckForUpdates(bool forceIgnored = false) {
   const std::string body = HttpGet(
-      L"api.github.com", L"/repos/ssice-a/EIEM/releases/latest", 3000,
+      L"api.github.com", L"/repos/ssice-a/EFF/releases/latest", 3000,
       L"Accept: application/vnd.github+json\r\nUser-Agent: EFF-UpdateCheck/1.0\r\n");
   std::string tag = JsonExtractString(body, "tag_name");
   std::string url = JsonExtractString(body, "html_url");
-  const std::string prefix = "https://github.com/ssice-a/EIEM/releases/";
+  const std::string prefix = "https://github.com/ssice-a/EFF/releases/";
   int major = 0, minor = 0, patch = 0;
   char extra = 0;
   const char *number = tag.c_str();

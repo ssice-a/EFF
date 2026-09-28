@@ -141,11 +141,11 @@ Skeleton 存在相邻 `skeletons/<完整SHA256>.skeleton`，包含同一 Rig 的
 
 ## 实现和验证
 
-- [Python 编解码](https://github.com/ssice-a/EIEM-blender/blob/main/eiem_physics_document.py)
-- [Blender 作者工具](https://github.com/ssice-a/EIEM-blender/blob/main/eiem_physics_authoring.py)
+- [Python 编解码](https://github.com/ssice-a/EFF-blender/blob/main/eiem_physics_document.py)
+- [Blender 作者工具](https://github.com/ssice-a/EFF-blender/blob/main/eiem_physics_authoring.py)
 - [C++ reader/validator](../src/eiem_physics_document.h)：失败保留调用者原 document；[依赖读取](../src/eiem_physics_asset.h)及
   [运行时适配器](../src/eiem_native_physics_runtime.h)已通过针对性宿主测试和本地构建。
-- [实际 Blender 测试](https://github.com/ssice-a/EIEM-blender/blob/main/test_eiem_physics.py)：编辑模式按钮、节点基础半径与数值化位置曲线、按深度变化的
+- [实际 Blender 测试](https://github.com/ssice-a/EFF-blender/blob/main/test_eiem_physics.py)：编辑模式按钮、节点基础半径与数值化位置曲线、按深度变化的
   真实半径球、完整参数快照和旧工程迁移、碰撞集合复制/加入/移除、局部变换和胶囊量测、保存重开、
   骨骼改名、隐藏辅助体、无权重骨骼、
   异径胶囊、中心/非中心对齐、源碰撞体转换、失效引用、错误导出不覆盖原文件、独立 Rig 导入。

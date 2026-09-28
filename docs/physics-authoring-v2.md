@@ -127,7 +127,7 @@ C++ 读取器检查树编码、资源用途、身份、引用、层级、TRS 和
 **C++ 尚未解码 `raw` 字段的 Base64 并重算原始哈希，也不把原始字节反序列化为 Unity 对象。**
 不得据“C++ 已能读取”声称原生创建或原配置深复制已完成。
 
-实现：[源图编解码](https://github.com/ssice-a/EIEM-blender/blob/main/eiem_physics_source.py)、[Blender 源作者工具](https://github.com/ssice-a/EIEM-blender/blob/main/eiem_physics_native.py)、
+实现：[源图编解码](https://github.com/ssice-a/EFF-blender/blob/main/eiem_physics_source.py)、[Blender 源作者工具](https://github.com/ssice-a/EFF-blender/blob/main/eiem_physics_native.py)、
 [C++ 树读取](../src/eiem_physics_native_document.h)。
 真实 Typhoea 样本覆盖 11 组、27 碰撞体、556 个 Transform 的离线往返；
 测试也覆盖曲线编辑与加权手柄、角度总开关、累计深度采样和锥体刷新、共享引用、物理 Transform 根/忽略闭包、

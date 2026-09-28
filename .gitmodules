@@ -4,5 +4,5 @@
 	branch = master
 [submodule "tools/Blender"]
 	path = tools/Blender
-	url = https://github.com/ssice-a/EIEM-blender.git
+	url = https://github.com/ssice-a/EFF-blender.git
 	branch = main

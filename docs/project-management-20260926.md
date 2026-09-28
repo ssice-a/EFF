@@ -4,8 +4,8 @@
 
 | 产品 | 工作目录 | 分支 | 仓库 | 本轮版本 |
 |---|---|---|---|---|
-| 游戏内 DLL、协议、集成测试 | 仓库根目录 | `main` | `ssice-a/EIEM` | `v1.1.0` |
-| Blender 作者插件 | `tools/Blender` | `main` | `ssice-a/EIEM-blender` | `v0.33.0` |
+| 游戏内 DLL、协议、集成测试 | 仓库根目录 | `main` | `ssice-a/EFF` | `v1.1.0` |
+| Blender 作者插件 | `tools/Blender` | `main` | `ssice-a/EFF-blender` | `v0.33.0` |
 | AnimeStudio 解包工具 | `tools/AnimeStudio` | `master` | `ssice-a/AnimeStudio` | `v1.1.0` |
 
 两个工具为 Git submodule，各自维护源码和提交历史。先提交、推送工具，再在 EFF

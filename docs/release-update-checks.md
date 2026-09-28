@@ -6,8 +6,8 @@
 
 | 产品 | 来源与当前版本 | 触发和提示 | 忽略状态 |
 |---|---|---|---|
-| 游戏内 EFF | `ssice-a/EIEM`；`src/globals.h` | 打开 Mod 管理页时异步检查；发现新版在该页弹窗；手动重查按钮 | 游戏 `plugin/eff-update-state.txt` 中的版本号 |
-| Blender | `ssice-a/EIEM-blender`；`bl_info.version` | 插件设置中的“检查更新”，不自动弹窗 | Blender 插件设置 `ignored_release_tag` |
+| 游戏内 EFF | `ssice-a/EFF`；`src/globals.h` | 打开 Mod 管理页时异步检查；发现新版在该页弹窗；手动重查按钮 | 游戏 `plugin/eff-update-state.txt` 中的版本号 |
+| Blender | `ssice-a/EFF-blender`；`bl_info.version` | 插件设置中的“检查更新”，不自动弹窗 | Blender 插件设置 `ignored_release_tag` |
 | AnimeStudio | `ssice-a/AnimeStudio`；程序集版本 | GUI 显示后异步检查并提示；About 页可手动检查 | 用户设置 `ignoredReleaseTag` |
 
 三个产品独立比较，不因为 EFF DLL 的版本变化就提示更新 Blender 或 AnimeStudio。

@@ -5,8 +5,8 @@ EFF 的运行时、Blender 作者工具和资源解包器是三个独立产品�
 
 | 仓库 | 唯一职责 | 当前输出 |
 |---|---|---|
-| [ssice-a/EIEM](https://github.com/ssice-a/EIEM) | 游戏内 DLL、INI/Lua 运行时、EFF 格式规范、跨端契约测试 | DLL 发布包；读取 EFFMESH v6 |
-| [ssice-a/EIEM-blender](https://github.com/ssice-a/EIEM-blender) | Blender 导入、编辑、LOD/材质/切换作者数据和 Mod 导出 | EFFMESH v6 与 `mod.ini` |
+| [ssice-a/EFF](https://github.com/ssice-a/EFF) | 游戏内 DLL、INI/Lua 运行时、EFF 格式规范、跨端契约测试 | DLL 发布包；读取 EFFMESH v6 |
+| [ssice-a/EFF-blender](https://github.com/ssice-a/EFF-blender) | Blender 导入、编辑、LOD/材质/切换作者数据和 Mod 导出 | EFFMESH v6 与 `mod.ini` |
 | [ssice-a/AnimeStudio](https://github.com/ssice-a/AnimeStudio) | Endfield VFS 索引、原始资源与 PFB 关系提取、源作者数据导出 | EFFMESH v6、EFFSKEL v2、Material、Texture、Physics 源图 |
 
 ## 依赖方向

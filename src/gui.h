@@ -1138,7 +1138,7 @@ static void DrawMainPanel() {
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(25, 28, 38, 255));
     ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(80, 170, 255, 255));
     if (ImGui::Button("EFF project", ImVec2(-60, 0))) {
-      ShellExecuteA(NULL, "open", "https://github.com/ssice-a/EIEM", NULL, NULL, SW_SHOWNORMAL);
+      ShellExecuteA(NULL, "open", "https://github.com/ssice-a/EFF", NULL, NULL, SW_SHOWNORMAL);
     }
     if (ImGui::IsItemHovered()) {
       ImGui::SetTooltip(u8"\u70b9\u51fb\u5728\u6d4f\u89c8\u5668\u4e2d\u6253\u5f00 GitHub \u4ed3\u5e93");
@@ -1146,7 +1146,7 @@ static void DrawMainPanel() {
     ImGui::PopStyleColor(4);
     ImGui::SameLine();
     if (ImGui::Button(u8"\u590d\u5236##repo", ImVec2(-1, 0))) {
-      ImGui::SetClipboardText("https://github.com/ssice-a/EIEM");
+      ImGui::SetClipboardText("https://github.com/ssice-a/EFF");
     }
 
     ImGui::Spacing();

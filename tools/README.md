@@ -3,7 +3,7 @@
 Current authoring/runtime scope: [documentation index](../docs/README.md).
 
 EFF keeps [ssice-a/AnimeStudio](https://github.com/ssice-a/AnimeStudio) and
-[ssice-a/EIEM-blender](https://github.com/ssice-a/EIEM-blender) as separate Git
+[ssice-a/EFF-blender](https://github.com/ssice-a/EFF-blender) as separate Git
 submodules. Develop AnimeStudio in `tools/AnimeStudio` and the Blender add-on in
 `tools/Blender`. Initialize both after cloning:
 

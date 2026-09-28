@@ -142,9 +142,9 @@ endif
 
 开发插件目录：`E:\vscode\EFF\tools\Blender`，用 VS Code 打开该目录后运行 **Blender: Start**。
 包入口 `__init__.py`、实现 `eiem_blender_addon.py` 和切换逻辑 `eiem_blender_controls.py`
-来自独立仓库 [EFF-blender](https://github.com/ssice-a/EIEM-blender)；本仓库的
+来自独立仓库 [EFF-blender](https://github.com/ssice-a/EFF-blender)；本仓库的
 `tools/Blender` 同时是 EFF-blender 的独立 Git 工作树和 EFF 的固定版本。部署时连同 Physics 模块一起同步，完整清单见
-[插件说明](https://github.com/ssice-a/EIEM-blender/blob/main/README.md)。
+[插件说明](https://github.com/ssice-a/EFF-blender/blob/main/README.md)。
 本机该目录的 `.vscode/settings.json` 开启了 `blender.addon.reloadOnSave`；保存后自动重载，也可手动
 运行 **Blender: Reload Addons**。入口在 **文件 → 导入/导出 → EFF package** 和
 **3D 视图 → N → EFF → 网格切换**。不要同时运行旁边的单文件副本，以免重复注册。
