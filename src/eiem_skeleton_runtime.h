@@ -522,7 +522,7 @@ static bool EiemSkeletonMeshBones(const EiemSkinIdentity &skin, const EiemSkelet
   // keys mean the same Transform for native and Mod-owned Skeleton nodes.
   if (skin.boneIndexPaths.empty() || skin.boneIndexPaths.size() != skin.paths.size()) {
     if (message) strncpy_s(message, size,
-                           "Skeleton binding requires a complete canonical bone index table",
+                           "Skeleton binding requires a complete explicit node index table",
                            _TRUNCATE);
     return false;
   }

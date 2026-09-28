@@ -494,14 +494,15 @@ class RuntimeHookContracts(unittest.TestCase):
         self.assertIn("rendererEnabledBeforeCommit", body)
         self.assertIn("EiemReadRendererEnabled(drawRenderer, &actual)", body)
 
-    def test_cross_prefab_bone_rename_uses_instance_canonical_index_table(self):
+    def test_cross_prefab_bone_rename_uses_instance_source_palettes(self):
         resolver_start = self.trace.index(
             "static bool EiemResolveMeshBonesFromNativeInstance")
         resolver_end = self.trace.index(
             "static bool EiemPreserveSourceSkinning", resolver_start)
         resolver = self.trace[resolver_start:resolver_end]
-        self.assertIn("EiemResolveMeshBonesFromIndexTable", resolver)
-        self.assertNotIn("sourceCandidates", resolver)
+        self.assertIn("EiemResolveMeshBonesFromSourcePalettes", resolver)
+        self.assertIn("sourceCandidates", self.trace)
+        self.assertNotIn("EiemResolveMeshBonesFromIndexTable", resolver)
         self.assertNotIn("EiemSkinAssetFamily", resolver)
         for character_specific in (
                 "typhoe", "cloth_", "body_", "skirt_", "actor_"):

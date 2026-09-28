@@ -131,21 +131,20 @@ static bool EiemApplyResolvedRenderRule(void *renderer, void *drawRenderer,
       if (skin) {
         // A generated SkinnedMesh carries its own local bone palette.  Unity
         // requires that palette to agree with the Renderer.bones array at the
-        // moment sharedMesh is assigned.  Mesh-only replacement still keeps
-        // animation and bone ownership in the game: resolve every authored
-        // path against this instance's existing Transform hierarchy and assign
-        // only that managed Transform[]; no Transform or skeleton is created.
+        // moment sharedMesh is assigned. Mesh-only replacement keeps
+        // animation and bone ownership in the game: resolve each exported
+        // source candidate against this instance's original Renderer palette
+        // and assign only that managed Transform[]; no Transform or skeleton
+        // is created.
         if (!EiemModEquals(rendererType, "SkinnedMeshRenderer")) {
           skinPaletteReady = false;
           strncpy_s(meshError, sizeof(meshError),
                     "Skinned replacement requires SkinnedMeshRenderer", _TRUNCATE);
         } else {
-          // Mesh-only replacements resolve every slot from the current
-          // renderer's canonical child-index table.  The table is rooted at
-          // rootBone and falls back to skinningRoot only when rootBone is
-          // absent; it never scans sibling Renderers or guesses from a local
-          // LOD slot.  This keeps body, cloth and shadow branches isolated
-          // while allowing every LOD to reuse the exported structural paths.
+          // Mesh-only replacements resolve every slot from the original
+          // Renderer palettes captured for this model transaction. The
+          // exported candidates identify a source Mesh asset and source slot;
+          // no Transform name, rootBone, or runtime child-index path is used.
           const LONG64 boneResolveStarted = EiemPerfNow();
           skinPaletteReady = skeleton
               ? EiemSkeletonMeshBones(*skin, *skeleton, &assignedBones,
@@ -473,6 +472,11 @@ std::vector<void *> skinnedRenderers;
   snapshotType(g_skinnedMeshRendererClass, &skinnedRenderers);
   snapshotType(g_meshFilterClass, &meshFilters);
   EiemPerfRecord(s_eiemPerfComponentSnapshot, snapshotStarted);
+  // Capture the game's original per-Renderer palettes before any Mesh or
+  // bones setter can change them. Replacement slots resolve against these
+  // exact Transform pointers, so LODs and sibling Renderers can contribute
+  // candidates without borrowing state from another model instance.
+  EiemCaptureSourceSkinPalette(skinnedRenderers, &skinPaletteCache);
 
 auto visitType = [&](const std::vector<void *> &components,
                        const char *rendererType) {
