@@ -2328,10 +2328,10 @@ static void EiemLogMaterialControllerRegistry(void *controller,
         if (!renderer) continue;
         char path[768] = {};
         TraceBuildRendererHierarchy(renderer, path, sizeof(path));
-        if (!path[0] ||
-            (!strstr(path, "body_01") && !strstr(path, "cloth_01") &&
-             !strstr(path, "cloth_02")))
-          continue;
+        AcquireSRWLockShared(&s_eiemOverrideLock);
+        const bool tracked = EiemFindOverrideLocked(renderer) != SIZE_MAX;
+        ReleaseSRWLockShared(&s_eiemOverrideLock);
+        if (!tracked) continue;
         void *currentMesh = EiemReadSharedMesh(renderer, "SkinnedMeshRenderer");
         void *sourceMaterials = *(void **)((char *)info + 0x30);
         void *replacingMaterials = *(void **)((char *)info + 0x40);
@@ -2651,12 +2651,12 @@ static void EiemLogMaterialLifecycleProbe(const char *method, const char *phase,
                                          bool inputIsArray, void *renderer,
                                          LONG callIndex) {
   if (callIndex < 0 || callIndex >= 500 || !renderer) return;
+  AcquireSRWLockShared(&s_eiemOverrideLock);
+  const bool tracked = EiemFindOverrideLocked(renderer) != SIZE_MAX;
+  ReleaseSRWLockShared(&s_eiemOverrideLock);
+  if (!tracked) return;
   char rendererName[160] = {};
   TraceReadUnityObjectName(renderer, rendererName, sizeof(rendererName));
-  if (!strstr(rendererName, "lizhiyan_body_01_lod0") &&
-      !strstr(rendererName, "lizhiyan_cloth_01_lod0") &&
-      !strstr(rendererName, "lizhiyan_cloth_03_lod0"))
-    return;
   auto item = [](void *array, size_t index) -> void * {
     if (!array || index >= EiemManagedArrayLength(array)) return nullptr;
     __try { return *(void **)((char *)array + 32 + index * sizeof(void *)); }

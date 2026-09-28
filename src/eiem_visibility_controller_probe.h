@@ -165,16 +165,11 @@ static void EiemLogVisibleInfoCall(const char *operation, const char *phase,
   const auto state = EiemReadVisibilityControllerProbeState(renderer);
   char rendererName[160] = {};
   char hierarchy[768] = {};
-  if (!state.tracked && renderer) {
+  if (renderer) {
     TraceReadUnityObjectName(renderer, rendererName, sizeof(rendererName));
     TraceBuildRendererHierarchy(renderer, hierarchy, sizeof(hierarchy));
   }
-  const bool target =
-      state.tracked || strstr(rendererName, "lizhiyan") != nullptr ||
-      strstr(hierarchy, "lizhiyan") != nullptr ||
-      strstr(rendererName, "item_effect") != nullptr ||
-      strstr(hierarchy, "item_effect") != nullptr;
-  if (!target) return;
+  if (!state.tracked) return;
   bool originalVisible = false;
   bool currentVisible = false;
   const bool flagsRead =
@@ -415,14 +410,11 @@ static void EiemLogRendererPropertyBlock(const char *operation, void *renderer,
   const auto state = EiemReadVisibilityControllerProbeState(renderer);
   char name[160] = {};
   char hierarchy[768] = {};
-  if (!state.tracked) {
+  if (renderer) {
     TraceReadUnityObjectName(renderer, name, sizeof(name));
     TraceBuildRendererHierarchy(renderer, hierarchy, sizeof(hierarchy));
   }
-  const bool target =
-      state.tracked || strstr(name, "lizhiyan") != nullptr ||
-      strstr(hierarchy, "lizhiyan") != nullptr;
-  if (!target) return;
+  if (!state.tracked) return;
   Log("[DISSOLVE-PROBE] op=%s renderer=%p tracked=%d section=%s block=%p "
       "indexed=%d materialIndex=%d rendererName=%s hierarchy=%s",
       operation ? operation : "?", renderer, state.tracked ? 1 : 0,
@@ -500,32 +492,24 @@ static void EiemLogDitherCall(const char *operation, const char *phase,
   const bool nonZeroAlpha = hasAlpha && std::isfinite(alpha) &&
                             std::fabs(alpha) > 0.000001f;
   const bool disableRequest = requested == 0;
-  // Resolve the identity before applying the untracked budget.  The game
-  // initializes a large number of NPC renderers before the player model is
-  // created; a global budget can therefore hide the exact source renderer we
-  // need to compare with the EIEM replacement.  This is temporary diagnostic
-  // code only, and deliberately narrows the untracked bypass to the target
-  // character instead of logging every renderer indefinitely.
+  // Keep the untracked budget bounded without depending on a character name.
+  // The production replacement path is tracked by renderer identity; this
+  // probe only retains interesting native transitions for comparison.
   char rendererName[160] = {};
   char hierarchy[768] = {};
   char meshName[192] = {};
-  bool targetIdentity = false;
-  if (!state.tracked && renderer) {
+  if (renderer) {
     TraceReadUnityObjectName(renderer, rendererName, sizeof(rendererName));
     TraceBuildRendererHierarchy(renderer, hierarchy, sizeof(hierarchy));
-    targetIdentity =
-        (strstr(rendererName, "lizhiyan") != nullptr) ||
-        (strstr(hierarchy, "lizhiyan") != nullptr);
   }
   // Keep all calls for replacement renderers.  For source/untracked renderers
   // retain only calls that can describe the dissolve transition, so the
   // startup initialization does not consume the useful part of the log.
-  if (!state.tracked && !targetIdentity && !nonZeroAlpha && !disableRequest)
-    return;
-  if (!state.tracked && !targetIdentity &&
+  if (!state.tracked && !nonZeroAlpha && !disableRequest) return;
+  if (!state.tracked &&
       InterlockedIncrement(&s_eiemDitherUntrackedInterestingCalls) > 512)
     return;
-  if (!state.tracked && (nonZeroAlpha || targetIdentity) && renderer) {
+  if (!state.tracked && renderer) {
     void *mesh = EiemReadSharedMesh(renderer, "DitherProbe");
     if (mesh) TraceReadUnityObjectName(mesh, meshName, sizeof(meshName));
   }
@@ -2236,12 +2220,7 @@ static void EiemLogCharacterPerDrawData(const char *phase, void *info,
     TraceReadUnityObjectName(renderer, rendererName, sizeof(rendererName));
     TraceBuildRendererHierarchy(renderer, hierarchy, sizeof(hierarchy));
   }
-  const bool target =
-      state.tracked || strstr(rendererName, "lizhiyan") != nullptr ||
-      strstr(hierarchy, "lizhiyan") != nullptr ||
-      strstr(rendererName, "item_effect") != nullptr ||
-      strstr(hierarchy, "item_effect") != nullptr;
-  if (!target) return;
+  if (!state.tracked) return;
   Vector4 stored = {};
   const bool storedRead = EiemReadRendererInfoPerDrawData(info, &stored);
   const auto materials = EiemReadRendererInfoMaterialState(info, renderer);
