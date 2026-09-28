@@ -15,7 +15,8 @@ static std::atomic<uint64_t> s_eiemCameraEvaluations{0}, s_eiemCameraClears{0};
 static void EiemReportCameraFade() {
   Log("[CAMERA-FADE] status installed=%d enabled=%d evaluations=%llu clears=%llu",
       s_eiemCameraFadeInstalled.load(),
-      g_pluginActive && EiemGetGlobalConfig().disableCameraFade,
+      s_eiemCameraFadeInstalled.load() &&
+          g_pluginActive && EiemGetGlobalConfig().disableCameraFade,
       s_eiemCameraEvaluations.load(), s_eiemCameraClears.load());
 }
 
