@@ -12,7 +12,7 @@ import struct
 import sys
 from pathlib import Path
 
-MAGIC = b"EIESKEL\x00"
+MAGIC = b"EFFSKEL\x00"
 
 
 class Reader:
@@ -47,7 +47,7 @@ def read(path: Path) -> dict:
     reader = Reader(path.read_bytes())
     magic = reader.take(8)
     if magic != MAGIC:
-        raise ValueError(f"not an EIESKEL file: {magic!r}")
+        raise ValueError(f"not an EFFSKEL file: {magic!r}")
     version = reader.i32()
     coordinate = reader.string()
     count = reader.i32()

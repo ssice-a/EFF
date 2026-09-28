@@ -85,7 +85,7 @@ internal static class Program
         Require(packedMeshes > 0, "Test needs at least one packed source Mesh");
         CheckDecoderCases();
 
-        // Exercise the real package writer, not a test reimplementation of EIEMESH.
+        // Exercise the real package writer, not a test reimplementation of EFFMESH.
         var gui = AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(library, "AnimeStudio.GUI.dll"));
         var writerType = gui.GetType("AnimeStudio.GUI.EiemPackageWriter", true)!;
         var writer = Activator.CreateInstance(writerType,

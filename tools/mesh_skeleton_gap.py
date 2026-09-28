@@ -6,11 +6,11 @@ is what a character "lying on the ground" looks like. This walks both containers
 with the runtime's own layout so the comparison is between the paths the runtime
 would actually resolve, not a text scan of the file.
 
-Mesh    (EIEMESH v2/v3): magic, version, coordinate, source, name, vertexCount,
+Mesh    (EFFMESH v2/v3): magic, version, coordinate, source, name, vertexCount,
         vertices/normals/tangents/colors as count+float payload, 8 UV channels,
         indices, submeshes, skin, bindposes, boneHashes, [v3] bonePaths,
         blend shapes.
-Skeleton (EIESKEL v1/v2): magic, version, coordinate, nodes (LEB128 path,
+Skeleton (EFFSKEL v1/v2): magic, version, coordinate, nodes (LEB128 path,
         parent, position, rotation, scale), paletteCount(0), root(-1),
         [v2] source flags.
 Strings use a LEB128 length prefix. Read-only.
@@ -69,8 +69,8 @@ class Reader:
 
 def read_mesh(blob: bytes) -> tuple[str, str, list[str], int]:
     reader = Reader(blob)
-    if reader.take(8) != b"EIEMESH\x00":
-        raise ValueError("not an EIEMESH container")
+    if reader.take(8) != b"EFFMESH\x00":
+        raise ValueError("not an EFFMESH container")
     version = reader.count()
     if version not in (2, 3):
         raise ValueError(f"unsupported mesh version {version}")
@@ -102,8 +102,8 @@ def read_mesh(blob: bytes) -> tuple[str, str, list[str], int]:
 
 def read_skeleton(blob: bytes) -> list[tuple[str, bool]]:
     reader = Reader(blob)
-    if reader.take(8) != b"EIESKEL\x00":
-        raise ValueError("not an EIESKEL container")
+    if reader.take(8) != b"EFFSKEL\x00":
+        raise ValueError("not an EFFSKEL container")
     version = reader.count()
     if version not in (1, 2):
         raise ValueError(f"unsupported skeleton version {version}")

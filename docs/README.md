@@ -1,4 +1,4 @@
-﻿# EIEM 文档索引与当前状态
+﻿# EFF 文档索引与当前状态
 
 
 ## 当前状态
@@ -9,7 +9,7 @@
 | LOD 模板导出 | Blender 从已导入资源发现 LOD0-4；一份选中 Mesh 由各目标 LOD 的精确 Render 规则共同引用，缺失级别不生成规则 | 真实 Blender 5.0.1 回归通过；模板的权重、bindpose 与源骨骼槽不会被目标 LOD 的原生槽顺序重新解释 |
 | 多 submesh / 多材质 | Blender 选择导出生成一个合并 Mesh，保留多个 submesh 和对应材质槽 | 当前 Typhoea 测试包已实机显示；材质和贴图随静态替换生效 |
 | 三端实例 | 世界、角色 UI、NPC 共享资源规则，各自沿游戏原生 owner、装配和 LOD 生命周期运行 | 资源命中与实例隔离已验证；随机姿态仍需覆盖全部 owner 并确认最终装配边界 |
-| 蒙皮槽位 | EIEMESH v6 逐槽记录“源 Mesh 身份 + 原始槽号候选”；每个模型实例复用游戏已装配的原生 Transform | 已覆盖世界、UI、NPC PFB 中同槽位骨骼名称不同的情况；完整 v6 映射不依赖角色名、骨骼名或层级路径 |
+| 蒙皮槽位 | EFFMESH v6 逐槽记录“源 Mesh 身份 + 原始槽号候选”；每个模型实例复用游戏已装配的原生 Transform | 已覆盖世界、UI、NPC PFB 中同槽位骨骼名称不同的情况；完整 v6 映射不依赖角色名、骨骼名或层级路径 |
 | 诊断 Hook | 无关高频探针默认关闭；插件创建的蒙皮 Mesh 四槽校验和写入在普通构建启用 | 普通候选待三端实机验收 |
 | 按键显隐 | Mod 按键使用独立的最小窗口调度器；在同一 Mesh 对象上原地隐藏/恢复目标 submesh 索引，不进入 Partner/Physics 生命周期 | 世界、角色 UI、NPC 实机通过；Mesh、Renderer、骨骼与 LOD 身份保持不变 |
 | 按住形态键 | `[Key] type=hold` 按独立采样节奏向目标值连续移动；`type=cycle` 仍是一按一切换 | DLL、INI 解析和 Blender 形态键导出已实现，见 [按住按键](hold-keys.md) |
@@ -35,7 +35,7 @@ v1.0.0 是功能参照，不能替代当前 DLL 的稳定性证明。**历史姿
 | Blender 网格工具 | [切换作者流程](blender-switches.md) | 选择、显隐、状态和导出 |
 | Blender Mesh-only | [Mesh-only 导出](blender-mesh-only.md) | 只导出选中的 Mesh、材质和贴图，跳过骨架、物理及其他作者控制检查 |
 | 顶点通道 | [顶点数据契约](vertex-data-contract.md) | 原生通道保留与缺失切线生成 |
-| 蒙皮 | [共享骨架绑定](shared-skeleton-binding.md) | EIEMESH v6 源 Mesh/槽位候选、bind pose、实例隔离和回退边界 |
+| 蒙皮 | [共享骨架绑定](shared-skeleton-binding.md) | EFFMESH v6 源 Mesh/槽位候选、bind pose、实例隔离和回退边界 |
 | 统一装配当前状态 | [候选与验收](unified-assembly-status-20260926.md) | 四槽实验、三端缺口、代码边界、候选 DLL 与验证门槛 |
 | 调查归档 | [CPU 蒙皮调查](archive/cpu-skin-random-pose-current-20260925.md)、[GPU 蒙皮证据](archive/gpu-skinning-evidence.md) | 当时的证据和失败假设；当前状态以本页及装配状态为准 |
 | 形态键 | [形态键控制](shape-controls.md) | 作者通道、实例权重与游戏通道归属 |

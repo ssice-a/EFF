@@ -1,4 +1,4 @@
-"""Prove an EIEMESH merge is lossless by slicing each part back out.
+"""Prove an EFFMESH merge is lossless by slicing each part back out.
 
 The merge tool writes vertices verbatim at a constant offset, so the inverse
 operation is exact: part P occupies ``[offset, offset + vertexCount)`` and its
@@ -159,7 +159,7 @@ def compare(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("merged", help="merged EIEMESH file")
+    parser.add_argument("merged", help="merged EFFMESH file")
     parser.add_argument("parts", nargs="+", help="original part files in submesh order")
     parser.add_argument(
         "--pad-uv",

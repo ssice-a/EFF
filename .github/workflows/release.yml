@@ -61,14 +61,28 @@ jobs:
         $modsRoot = Join-Path $pluginRoot "mods"
         New-Item -ItemType Directory -Force -Path $modsRoot | Out-Null
 
-        # The DLL release is intentionally limited to the runtime payload.
-        # Dependencies and diagnostic/build artifacts are not installation
-        # files and must not be copied into the game directory.
-        Copy-Item bin\eiem.dll, bin\eiem.ini -Destination $pluginRoot
-        $archivePath = "EIEM_${tag}_dll.zip"
+        # Install the runtime DLL and both game-root proxy loaders. Symbols and
+        # diagnostic/build artifacts stay out of the distribution archive.
+        Copy-Item bin\eff.dll, bin\eff.ini -Destination $pluginRoot
+        Copy-Item bin\d3dcompiler_47.dll, bin\vulkan-1.dll -Destination $gameRoot
+        $archivePath = "EFF_${tag}_dll.zip"
         Compress-Archive -Path "$gameRoot\*" -DestinationPath $archivePath -Force
         Add-Type -AssemblyName System.IO.Compression
-        $archive = [System.IO.Compression.ZipFile]::OpenRead((Join-Path (Get-Location) $archivePath))
+        $archivePathFull = Join-Path (Get-Location) $archivePath
+        $archive = [System.IO.Compression.ZipFile]::Open(
+          $archivePathFull,
+          [System.IO.Compression.ZipArchiveMode]::Update)
+        try {
+          $archiveNames = @($archive.Entries | ForEach-Object {
+            $_.FullName.Replace('\', '/')
+          })
+          if (-not ($archiveNames -contains "plugin/mods/")) {
+            [void]$archive.CreateEntry("plugin/mods/")
+          }
+        } finally {
+          $archive.Dispose()
+        }
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($archivePathFull)
         try {
           $archiveNames = @($archive.Entries | ForEach-Object {
             $_.FullName.Replace('\', '/')
@@ -85,7 +99,7 @@ jobs:
       with:
         tag_name: ${{ env.RELEASE_TAG }}
         files: |
-          EIEM_${{ env.RELEASE_TAG }}_dll.zip
+          EFF_${{ env.RELEASE_TAG }}_dll.zip
         body_path: RELEASE_NOTES.md
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

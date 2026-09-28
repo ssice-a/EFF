@@ -385,7 +385,7 @@ static bool EiemWriteNativePhysicsProbe(FILE *file,EiemPhysicsTraceReceipt *rece
     fputc(',', file);
     EiemPhysicsWriteState(file, component, clothClass, processClass,setupClass,idMethod,resultClass,
                           data2Class,selectionClass,vertexClass,getItem,
-                          !strncmp(label,"EIEM_Physics_",13));
+                          !strncmp(label,"EFF_Physics_",13));
     fputc('}', file);
   }
   fputs("]}\n", file);

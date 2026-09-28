@@ -1,4 +1,4 @@
-# EIEM DLL source map
+# EFF DLL source map
 
 The DLL builds from `eiem.cpp` as one translation unit. Implementation headers depend on the include order in `il2cpp_trace.h`; extraction into separate `.cpp` files requires an explicit interface pass.
 
@@ -16,6 +16,6 @@ The DLL builds from `eiem.cpp` as one translation unit. Implementation headers d
 
 World, UI and NPC routes share the same renderer executor. Each model instance builds one child-index bone table, and every LOD resolves against that table. F10 rebuilds the resource generation on every press and restores previous renderer state transactionally. A failed binding leaves the original renderer intact.
 
-The current interchange contract is EIEMESH v6, EIESKEL v2 and author EIEPHYS v5. Native source graph EIEPHYS v2 is a separate document kind. Older author resources are rejected and must be re-exported. The generated skinned Mesh uses `InternalSetBoneWeights` and the validated native four-slot metadata correction; source Mesh objects are never patched.
+The current interchange contract is EFFMESH v6, EFFSKEL v2 and author EFFPHYS v5. Native source graph EFFPHYS v2 is a separate document kind. Older author resources are rejected and must be re-exported. The generated skinned Mesh uses `InternalSetBoneWeights` and the validated native four-slot metadata correction; source Mesh objects are never patched.
 
 See [the architecture document](../docs/code-architecture.md) for ownership and verification boundaries.

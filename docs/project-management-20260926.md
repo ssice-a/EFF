@@ -8,14 +8,14 @@
 | Blender 作者插件 | `tools/Blender` | `main` | `ssice-a/EIEM-blender` | `v0.33.0` |
 | AnimeStudio 解包工具 | `tools/AnimeStudio` | `master` | `ssice-a/AnimeStudio` | `v1.1.0` |
 
-两个工具为 Git submodule，各自维护源码和提交历史。先提交、推送工具，再在 EIEM
+两个工具为 Git submodule，各自维护源码和提交历史。先提交、推送工具，再在 EFF
 更新 gitlink 并推送主仓库。日常只在这三个工作树开发；工作区本地 VS Code 设置只显示这三个仓库。
 
 ## Release 内容
 
-- EIEM：只发布 `EIEM_v<版本>_dll.zip`，按游戏目录布局包含加载器、`plugin/eiem.dll`、
-  `plugin/eiem.ini` 模板和许可证。更新时保留用户配置与 Mod。
-- Blender：只在 EIEM-blender 仓库发布可直接从磁盘安装的插件 ZIP。
+- EFF：只发布 `EFF_v<版本>_dll.zip`，按游戏目录布局包含加载器、`plugin/eff.dll`、
+  `plugin/eff.ini` 模板和许可证。更新时保留用户配置与 Mod。
+- Blender：只在 EFF-blender 仓库发布可直接从磁盘安装的插件 ZIP。
 - AnimeStudio：只在 AnimeStudio 仓库发布 .NET 9、.NET 10 两种 Windows GUI/CLI 包，
   用户选择与本机 .NET Desktop Runtime 匹配的一种。
 - tag 必须与程序版本一致。新版本默认由远程工作流构建；使用 CI 产物补发时必须核对构建提交与 tag。

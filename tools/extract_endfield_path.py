@@ -2,7 +2,7 @@
 """Extract one logical file from Endfield's current VFS (code version 4).
 
 This is an offline helper. It never changes the game VFS and does not belong
-to eiem.dll. Requires Python 3 and pycryptodome.
+to eff.dll. Requires Python 3 and pycryptodome.
 """
 
 from __future__ import annotations

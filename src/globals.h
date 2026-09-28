@@ -4,7 +4,7 @@
 
 #define EIEM_VERSION_MAJOR 1
 #define EIEM_VERSION_MINOR 2
-#define EIEM_VERSION_PATCH 3
+#define EIEM_VERSION_PATCH 4
 
 // Stable static-replacement profile. Legacy animation, camera, face and MMD
 // workers stay out of the process so resource assembly has one owner.

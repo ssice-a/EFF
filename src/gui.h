@@ -318,7 +318,7 @@ static void DrawMainPanel() {
   ImGui::SetNextWindowPos(ImVec2(0, 0));
   ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-  ImGui::Begin("EIEM", nullptr,
+  ImGui::Begin("EFF", nullptr,
                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                    ImGuiWindowFlags_NoScrollbar);
@@ -339,7 +339,7 @@ static void DrawMainPanel() {
               IM_COL32(100, 100, 105, 80), 1.0f);
 
   dl->AddText(ImVec2(winPos.x + 14, winPos.y + 9), IM_COL32(255, 218, 0, 255),
-              "EIEM");
+              "EFF");
   if (!g_updateAvailable) {
     char verBuf[64];
     snprintf(verBuf, sizeof(verBuf), "v%s", EIEM_VERSION);
@@ -1124,7 +1124,7 @@ static void DrawMainPanel() {
   if (tabAbout) {
     ImGui::Spacing();
 
-    ImGui::TextColored(ImVec4(1.00f, 0.85f, 0.00f, 1.0f), "EIEM");
+    ImGui::TextColored(ImVec4(1.00f, 0.85f, 0.00f, 1.0f), "EFF");
     ImGui::SameLine();
     ImGui::TextDisabled("v%s", EIEM_VERSION);
     ImGui::TextDisabled(u8"\u660e\u65e5\u65b9\u821f\uff1a\u7ec8\u672b\u5730 \u52a8\u4f5c\u4e0e\u8868\u60c5\u63a7\u5236\u63d2\u4ef6");
@@ -1137,7 +1137,7 @@ static void DrawMainPanel() {
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(50, 55, 70, 255));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(25, 28, 38, 255));
     ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(80, 170, 255, 255));
-    if (ImGui::Button("https://github.com/ssice-a/EIEM", ImVec2(-60, 0))) {
+    if (ImGui::Button("EFF project", ImVec2(-60, 0))) {
       ShellExecuteA(NULL, "open", "https://github.com/ssice-a/EIEM", NULL, NULL, SW_SHOWNORMAL);
     }
     if (ImGui::IsItemHovered()) {
@@ -1447,7 +1447,7 @@ static DWORD WINAPI GuiThread(LPVOID) {
   wc.style = CS_CLASSDC;
   wc.lpfnWndProc = GuiWndProc;
   wc.hInstance = GetModuleHandle(nullptr);
-  wc.lpszClassName = L"EIEM_GUI";
+  wc.lpszClassName = L"EFF_GUI";
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
   RegisterClassExW(&wc);
 
@@ -1461,7 +1461,7 @@ static DWORD WINAPI GuiThread(LPVOID) {
   int posY = gr.top + 40;
 
   g_guiHwnd = CreateWindowExW(
-      WS_EX_TOPMOST | WS_EX_TOOLWINDOW, wc.lpszClassName, L"EIEM",
+      WS_EX_TOPMOST | WS_EX_TOOLWINDOW, wc.lpszClassName, L"EFF",
       WS_POPUP, posX, posY, panelW, panelH,
       nullptr, nullptr, wc.hInstance, nullptr);
 

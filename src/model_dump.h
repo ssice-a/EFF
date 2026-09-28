@@ -612,7 +612,7 @@ static void EiemWriteGltf(const char *directory,
   snprintf(gltfPath, sizeof(gltfPath), "%s\\model.gltf", directory);
   FILE *json = fopen(gltfPath, "wb");
   if (!json) return;
-  fprintf(json, "{\n  \"asset\":{\"version\":\"2.0\",\"generator\":\"EIEM\"},\n");
+  fprintf(json, "{\n  \"asset\":{\"version\":\"2.0\",\"generator\":\"EFF\"},\n");
   fprintf(json, "  \"buffers\":[{\"uri\":\"model.bin\",\"byteLength\":%zu}],\n", blob.bytes.size());
   fprintf(json, "  \"bufferViews\":[");
   for (size_t i = 0; i < views.size(); ++i) {
@@ -672,7 +672,7 @@ static void EiemWriteGltf(const char *directory,
   fclose(json);
 
   char metaPath[768] = {};
-  snprintf(metaPath, sizeof(metaPath), "%s\\eiem.json", directory);
+  snprintf(metaPath, sizeof(metaPath), "%s\\eff.json", directory);
   FILE *meta = fopen(metaPath, "wb");
   if (!meta) return;
   fprintf(meta, "{\n  \"schema\":1,\n  \"format\":\"gltf2\",\n  \"model\":\"model.gltf\",\n  \"meshes\":[\n");

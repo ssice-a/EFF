@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 
-MAGIC = b"EIEMESH\0"
+MAGIC = b"EFFMESH\0"
 
 
 class Reader:

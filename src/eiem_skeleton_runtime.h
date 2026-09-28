@@ -445,7 +445,7 @@ static bool EiemAcquireSkeletonDocument(
       // Private runtime names avoid collisions between Mod-owned nodes.
       // Mesh paths resolve through this instance's explicit node map.
       static uint64_t serial=0;
-      std::string name="EIEM_Bone_"+std::to_string(++serial);
+      std::string name="EFF_Bone_"+std::to_string(++serial);
       void *args[]={il2cpp_string_new(name.c_str())};
       instance->createdObjects.push_back(hold);
       if (!args[0] || !EiemSkeletonCall(g_gameObject_ctor,object,args)) return fail("Cannot construct Skeleton node");
@@ -516,7 +516,7 @@ static bool EiemSkeletonMeshBones(const EiemSkinIdentity &skin, const EiemSkelet
     if (message) strncpy_s(message,size,"Skeleton instance or Transform array API is unavailable",_TRUNCATE);
     return false;
   }
-  // Mesh paths are relative to the named armature root, while EIESKEL v2
+  // Mesh paths are relative to the named armature root, while EFFSKEL v2
   // may contain an empty serialization root above that node. Build one
   // child-index table per named root used by this Mesh so the same exported
   // keys mean the same Transform for native and Mod-owned Skeleton nodes.

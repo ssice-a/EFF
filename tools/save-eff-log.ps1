@@ -1,15 +1,15 @@
-# Save the live EIEM log under a label so two launches can be compared.
+# Save the live EFF log under a label so two launches can be compared.
 #
-# The plugin opens plugin\eiem_log.txt with CREATE_ALWAYS at every startup, so
+# The plugin opens plugin\eff_log.txt with CREATE_ALWAYS at every startup, so
 # each launch overwrites the previous one. Run this right after you exit the
 # game, before starting it again.
 #
 # Usage:
-#   .\tools\save-eiem-log.ps1 good
-#   .\tools\save-eiem-log.ps1 bad
+#   .\tools\save-eff-log.ps1 good
+#   .\tools\save-eff-log.ps1 bad
 #
-# Output goes to E:\EIEM_Workspace\diagnostics\logs\<label>-<timestamp>\
-#   eiem_log.txt   the full log
+# Output goes to E:\EFF_Workspace\diagnostics\logs\<label>-<timestamp>\
+#   eff_log.txt   the full log
 #   summary.txt    the lines that decide whether this run was healthy
 
 param(
@@ -19,17 +19,17 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$pluginLog = 'D:\Hypergryph Launcher\games\Endfield Game\plugin\eiem_log.txt'
+$pluginLog = 'D:\Hypergryph Launcher\games\Endfield Game\plugin\eff_log.txt'
 if (-not (Test-Path $pluginLog)) {
     Write-Error "Not found: $pluginLog"
 }
 
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$dest = "E:\EIEM_Workspace\diagnostics\logs\$Label-$stamp"
+$dest = "E:\EFF_Workspace\diagnostics\logs\$Label-$stamp"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Copy-Item $pluginLog "$dest\eiem_log.txt" -Force
+Copy-Item $pluginLog "$dest\eff_log.txt" -Force
 
-$log = "$dest\eiem_log.txt"
+$log = "$dest\eff_log.txt"
 $out = "$dest\summary.txt"
 
 $patterns = [ordered]@{

@@ -168,7 +168,7 @@ struct AudioPlayer {
     if (isMp3) {
       wchar_t tempDir[MAX_PATH] = {};
       GetTempPathW(MAX_PATH, tempDir);
-      _snwprintf(tempWav, MAX_PATH, L"%seiem_bgm_temp.wav", tempDir);
+      _snwprintf(tempWav, MAX_PATH, L"%seff_bgm_temp.wav", tempDir);
 
       if (!DecodeMp3ToWav(path, tempWav)) {
         Log("[AUDIO] MP3 decode failed, cannot play");

@@ -32,7 +32,7 @@ class BlenderSkinExportTests(unittest.TestCase):
             data = bytearray(mesh.read_bytes())
             data[8:12] = (5).to_bytes(4, 'little')
             old.write_bytes(data)
-            with self.assertRaisesRegex(ValueError, 'unsupported EIEM mesh version'):
+            with self.assertRaisesRegex(ValueError, 'unsupported EFF mesh version'):
                 fmt.read_mesh(old)
 
 if __name__=='__main__': unittest.main()

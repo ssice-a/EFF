@@ -31,7 +31,7 @@
 Render 命中
   -> EiemCollectPhysicsIntent
   -> EiemReconcileModelPhysics
-  -> 自建 EIEM_Physics_<generation> GameObject
+  -> 自建 EFF_Physics_<generation> GameObject
   -> AddComponent(BeyondBoneCloth)
   -> 写入 ClothSerializeData / Collider
   -> BuildAndRun
@@ -46,7 +46,7 @@ Render 命中
 
 | 层 | 内容 | 所有者 |
 |---|---|---|
-| Authoring data | Blender 导出的组、节点、曲线、碰撞体和参数 | EIEM 资源代际 |
+| Authoring data | Blender 导出的组、节点、曲线、碰撞体和参数 | EFF 资源代际 |
 | Source graph | PFB/Prefab 中的 `BoneClothItem`、骨骼引用、选择数据、碰撞引用 | 游戏资源加载器 |
 | Runtime native object | `BeyondBoneCloth`、`ClothProcess`、Team、Collider、Job | 游戏原生 owner/工厂 |
 | Instance state | 某个世界/UI/NPC 实例的 active、LOD、卸载和当前代际 | 游戏实例 owner |

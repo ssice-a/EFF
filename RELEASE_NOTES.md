@@ -1,14 +1,26 @@
-# EIEM v1.2.3
+﻿# EFF v1.2.4
 
-- Reduces F10 replay work while preserving a fresh resource generation for each reload.
-- Keeps model-instance replay independent across world, NPC, and UI owners.
-- Retains per-instance LOD and skinning palette resolution during replay.
-- Invalid individual Mod files are skipped without preventing other Mods from loading.
+- Keeps F10 reloads isolated across world, NPC, and UI model owners.
+- Preserves per-instance LOD and skinning palette resolution during reload.
+- Skips invalid Mod files without preventing other Mods from loading.
+- Keeps native sprint material and complete submesh restoration paths active.
 
-**Package contents**
+## Package contents
 
-The DLL release contains only `plugin/eiem.dll`, `plugin/eiem.ini`, and an empty `plugin/mods/` directory. It does not include proxy loaders, licenses, symbols, or diagnostic files.
+The release archive is laid out for direct extraction next to `Endfield.exe`:
 
-**Install**
+```text
+game/
+├─ d3dcompiler_47.dll
+├─ vulkan-1.dll
+└─ plugin/
+   ├─ eff.dll
+   ├─ eff.ini
+   └─ mods/
+```
 
-Exit the game, extract `EIEM_v1.2.3_dll.zip` into the directory containing `Endfield.exe`, then put each Mod folder containing `mod.ini` under `plugin/mods/`. Keep your existing `plugin/eiem.ini` and Mods when updating.
+`plugin/mods/` is intentionally empty so a fresh install has the Mod directory ready.
+
+## Install
+
+Exit the game, extract `EFF_v1.2.4_dll.zip` next to `Endfield.exe`, put each Mod folder containing `mod.ini` under `plugin/mods/`, and press F10 after adding or editing Mods.

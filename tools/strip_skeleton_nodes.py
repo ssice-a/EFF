@@ -1,4 +1,4 @@
-"""Remove generated-object nodes from an EIESKEL skeleton resource.
+"""Remove generated-object nodes from an EFFSKEL skeleton resource.
 
 The physics skeleton export walks the authored physics hierarchy, which contains
 objects the physics runtime creates rather than objects the game ships: capsule

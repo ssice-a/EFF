@@ -1,6 +1,6 @@
-"""Summarise EIEMESH bonePath sets so sibling meshes can be compared.
+"""Summarise EFFMESH bonePath sets so sibling meshes can be compared.
 
-Read-only analysis helper. It parses the documented EIEMESH layout far enough to
+Read-only analysis helper. It parses the documented EFFMESH layout far enough to
 reach the v3 bonePath table and reports, per mesh: vertex/submesh/bone counts,
 the full bonePath list, and the exact branch each mesh hangs on. The goal is to
 answer "how many independent bone chains does a merged mesh need", so the report
@@ -19,7 +19,7 @@ import struct
 import sys
 from collections import Counter
 
-MAGIC = b"EIEMESH\x00"
+MAGIC = b"EFFMESH\x00"
 
 
 class Reader:
@@ -68,10 +68,10 @@ def read_mesh(path: str) -> dict:
     with open(path, "rb") as handle:
         reader = Reader(handle.read())
     if reader.take(8) != MAGIC:
-        raise ValueError("not an EIEMESH file")
+        raise ValueError("not an EFFMESH file")
     version = reader.i32()
     if version not in (2, 3):
-        raise ValueError(f"unsupported EIEMESH version {version}")
+        raise ValueError(f"unsupported EFFMESH version {version}")
     coordinate_space = reader.string()
     source = reader.string()
     name = reader.string()
@@ -171,7 +171,7 @@ def summarise(meshes: list[dict]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("meshes", nargs="*", help="EIEMESH files to inspect")
+    parser.add_argument("meshes", nargs="*", help="EFFMESH files to inspect")
     parser.add_argument("--dir", help="inspect every *.mesh in this folder")
     args = parser.parse_args()
 

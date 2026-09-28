@@ -610,7 +610,7 @@ EiemReadRendererInfoMaterialState(void *info, void *renderer) {
 // Endfield's RendererInfo keeps the original material array in a private
 // sourceMaterials field.  A replacement Mesh may deliberately have more
 // submeshes than that source array.  Unity's public sharedMaterials getter can
-// therefore report the complete EIEM array while the game's custom draw path
+// therefore report the complete EFF array while the game's custom draw path
 // still submits only the original slot range (which makes only submesh 0
 // visible).  Keep the native one-slot source table while the native VFX call
 // is running, then expose the complete clean array during the idle draw.
@@ -703,7 +703,7 @@ static bool EiemPerDrawExpandNativeSource(void *info, void *renderer,
 // returns to zero while RendererInfo may still hold the temporary replacement
 // array.  Restore the exact LZY material array after the native per-draw call
 // has completed.  The native controller remains the owner of its private
-// replacement fields; EIEM never clears those fields directly.
+// replacement fields; EFF never clears those fields directly.
 static bool EiemPerDrawArrayHasVfxInstance(void *array) {
   if (!array) return false;
   const size_t count = EiemManagedArrayLength(array);
@@ -1034,7 +1034,7 @@ static bool EiemCopyLzyTextureProperties(
     // The game fork does not expose Material.GetTexturePropertyNames() in all
     // builds (the pointer is null in the current Endfield player).  Enumerate
     // the source shader instead and keep only ShaderPropertyType.Texture (4).
-    // This remains generic: the shader declares the property names; EIEM does
+    // This remains generic: the shader declares the property names; EFF does
     // not contain character, material, or slot names.
     void *properties = g_material_GetTexturePropertyNames
                            ? Invoke(g_material_GetTexturePropertyNames, source)
@@ -1246,7 +1246,7 @@ static bool EiemBuildLzyMaterialSectionsForRule(
   return true;
 }
 
-// Apply only properties explicitly declared by an EIEM material resource.
+// Apply only properties explicitly declared by an EFF material resource.
 // The clone already contains the game's native VFX material, so undeclared
 // dissolve/Fresnel/runtime values remain intact.  This is the material-side
 // equivalent of the texture patch and is intentionally data-driven.
@@ -1964,7 +1964,7 @@ static bool EiemPerDrawRestoreCleanMaterials(void *info, void *renderer,
     return false;
 
   // The game appends its dash material(s) after the replacement mesh's
-  // submesh slots.  Keep only the mesh slots that EIEM actually owns.
+  // submesh slots.  Keep only the mesh slots that EFF actually owns.
   void *clean = il2cpp_array_new(s_eiemMaterialClass, cleanCount);
   if (!clean) return false;
   void **items = (void **)((char *)clean + IL2CPP_ARRAY_DATA);
@@ -2122,7 +2122,7 @@ static void EiemLogPerDrawMaterialProbe(void *info, const char *section,
 
 #if defined(EIEM_PERDRAW_REPLACING_LINK_PROBE_BUILD)
 // Diagnostic only: RendererInfo keeps a managed reference to the material
-// array used by its per-draw path.  EIEM replaces Renderer.sharedMaterials
+// array used by its per-draw path.  EFF replaces Renderer.sharedMaterials
 // after RendererInfo has initialized, so the controller can continue to read
 // the old one-slot game array while Unity renders EIEM's expanded array.  This
 // probe links the controller field to the current Renderer array for tracked
@@ -2285,7 +2285,7 @@ static bool TraceRendererInfoCharacterPerDrawData(void *self, Vector4 value,
 #if defined(EIEM_PERDRAW_END_RESTORE_BUILD)
   // The native per-draw transaction can write its source Mesh back while it
   // updates the temporary VFX material.  The pre-call guard alone is not
-  // sufficient: re-assert the bound EIEM replacement after the native call so
+  // sufficient: re-assert the bound EFF replacement after the native call so
   // every submesh in the replacement Mesh remains present.
   if (perDrawVisibility.tracked) {
     const auto afterNativeVisibility =

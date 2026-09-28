@@ -42,9 +42,9 @@ int wmain(int argc, wchar_t **argv) {
     CHECK(p.rules.size()==1 && std::string(p.rules[0].mesh)==meshSection);
   } else if (mode==L"global") {
     CHECK(LoadEiemConfig());
-    CHECK(std::filesystem::is_regular_file(L"plugin/eiem.ini"));
+    CHECK(std::filesystem::is_regular_file(L"plugin/eff.ini"));
     CHECK(EiemGetGlobalConfig().reload.vk==VK_F10);
-    { std::ofstream update(L"plugin/eiem.ini",std::ios::binary);
+    { std::ofstream update(L"plugin/eff.ini",std::ios::binary);
       update<<"[Hotkeys]\nreload=F8\ngui=INSERT\n"; }
     CHECK(LoadEiemConfig() && EiemGetGlobalConfig().reload.vk==VK_F8);
   } else if (mode==L"disk") {
@@ -71,7 +71,7 @@ int wmain(int argc, wchar_t **argv) {
     std::vector<std::pair<std::string,std::string>> values;
     CHECK(EiemReadMaterialFile(path,&values,detail,sizeof(detail)));
     CHECK((values==std::vector<std::pair<std::string,std::string>>{
-          {"format","EIEMMAT"},{"texture._BaseMap",u8"Texture贴图"}}));
+          {"format","EFFMAT"},{"texture._BaseMap",u8"Texture贴图"}}));
     CHECK(EiemResolveResourceDiskPath(texture,path,sizeof(path)));
     EiemNativeReader png(path); char magic[8]={};
     CHECK(png.Bytes(magic,8) && std::string(magic,8)==std::string("\x89PNG\r\n\x1a\n",8));
@@ -142,7 +142,7 @@ class UnicodePathTests(unittest.TestCase):
             for subdir in ("meshes", "materials", "textures", "skeletons", "physics"):
                 (mod / subdir).mkdir(parents=True)
             (mod / "meshes/衣服.mesh").write_bytes(struct.pack("<I", 0x12345678))
-            (mod / "materials/材质.mat").write_text("format=EIEMMAT\ntexture._BaseMap=Texture贴图\n", encoding="utf-8")
+            (mod / "materials/材质.mat").write_text("format=EFFMAT\ntexture._BaseMap=Texture贴图\n", encoding="utf-8")
             (mod / "textures/贴图.png").write_bytes(b"\x89PNG\r\n\x1a\n")
             (mod / "skeletons/骨架.skeleton").write_bytes(skeleton_bytes())
             physics = fixture()

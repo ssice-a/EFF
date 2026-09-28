@@ -61,7 +61,7 @@ def seven_bit_string(value):
 
 
 def skeleton_bytes():
-    data = bytearray(b"EIESKEL\0")
+    data = bytearray(b"EFFSKEL\0")
     data.extend(struct.pack("<i", 2))
     data.extend(seven_bit_string(COORDINATE))
     data.extend(struct.pack("<I", len(NODES)))

@@ -3,7 +3,7 @@
 setlocal enabledelayedexpansion
 
 echo ==========================================
-echo   EIEM Build Script
+echo   EFF Build Script
 echo ==========================================
 echo.
 
@@ -60,11 +60,11 @@ if errorlevel 1 exit /b 1
 lib /nologo /out:bin\lua.lib bin\lua\*.obj
 if errorlevel 1 exit /b 1
 
-:: Build eiem.dll
+:: Build eff.dll
 echo [1/4] Compiling version resource ...
 rc /nologo /fo bin\version.res src\version.rc
 
-echo [2/4] Building eiem.dll ...
+echo [2/4] Building eff.dll ...
 cl /nologo /utf-8 /O2 /Zi /MD /LD /EHsc /std:c++17 ^
     /DEIEM_VISIBILITY_CONTROLLER_PROBE_BUILD ^
     /DEIEM_MATERIAL_LIFECYCLE_PROBE_BUILD ^
@@ -74,7 +74,7 @@ cl /nologo /utf-8 /O2 /Zi /MD /LD /EHsc /std:c++17 ^
     /DEIEM_PERDRAW_VFX_FANOUT_BUILD ^
     /DEIEM_NATIVE_VFX_PASSTHROUGH_TEXTURE_PATCH_BUILD ^
     /DEIEM_DITHER_PROBE_BUILD ^
-    /Fd"bin\eiem_compile.pdb" ^
+    /Fd"bin\eff_compile.pdb" ^
     /Ideps\minhook_lib\include ^
     /Ideps\imgui ^
     /Ideps\lua ^
@@ -97,15 +97,15 @@ cl /nologo /utf-8 /O2 /Zi /MD /LD /EHsc /std:c++17 ^
     dwmapi.lib ^
     ole32.lib ^
     winhttp.lib ^
-    /Fe"bin\eiem.dll" ^
-    /link /DLL /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /PDB:"bin\eiem.pdb"
+    /Fe"bin\eff.dll" ^
+    /link /DLL /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /PDB:"bin\eff.pdb"
 
 if %errorlevel% neq 0 (
-    echo [ERROR] eiem.dll build failed!
+    echo [ERROR] eff.dll build failed!
 
     exit /b 1
 )
-echo [OK] eiem.dll built successfully
+echo [OK] eff.dll built successfully
 echo.
 
 :: Build d3dcompiler_47.dll (proxy loader)
@@ -138,7 +138,7 @@ echo [OK] vulkan-1.dll built successfully
 echo.
 
 :: Distribution template only; never overwrite the installed user's configuration.
-copy /y config\eiem.ini bin\eiem.ini >nul
+copy /y config\eff.ini bin\eff.ini >nul
 if %errorlevel% neq 0 exit /b 1
 copy /y deps\lua\LICENSE bin\LUA-LICENSE.txt >nul
 if %errorlevel% neq 0 exit /b 1
@@ -153,8 +153,8 @@ del /q imgui_impl_win32.obj 2>nul
 del /q imgui_impl_dx11.obj 2>nul
 del /q proxy_d3dcompiler.obj 2>nul
 del /q proxy_vulkan_full.obj 2>nul
-del /q bin\eiem.exp 2>nul
-del /q bin\eiem.lib 2>nul
+del /q bin\eff.exp 2>nul
+del /q bin\eff.lib 2>nul
 del /q bin\d3dcompiler_47.exp 2>nul
 del /q bin\d3dcompiler_47.lib 2>nul
 del /q bin\vulkan-1.exp 2>nul
@@ -165,9 +165,9 @@ echo   Build Complete!
 echo ==========================================
 echo.
 echo Output files in bin\:
-echo   - eiem.dll               (EIEM plugin)
+echo   - eff.dll                (EFF plugin)
 echo   - d3dcompiler_47.dll     (DX proxy loader)
 echo   - vulkan-1.dll           (Vulkan proxy loader)
-echo   - eiem.ini              (global settings template)
+echo   - eff.ini               (global settings template)
 echo.
 

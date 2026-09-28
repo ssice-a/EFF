@@ -26,7 +26,7 @@ def skeleton_bytes(version=2, tip="Tip", extra_path=None, position=0.0):
     nodes = [("", -1), ("Rig", 0), ("Rig/Root", 1), (f"Rig/Root/{tip}", 2)]
     if extra_path is not None:
         nodes.append((extra_path, 1))
-    data = b"EIESKEL\0" + struct.pack("<i", version)
+    data = b"EFFSKEL\0" + struct.pack("<i", version)
     data += string(codec.COORDINATE) + struct.pack("<I", len(nodes))
     for path, parent in nodes:
         data += string(path) + struct.pack("<i3f4f3f", parent, position, 0, 0, 0, 0, 0, 1, 1, 1, 1)

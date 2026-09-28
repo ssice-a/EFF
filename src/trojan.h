@@ -2212,7 +2212,7 @@ static LRESULT CALLBACK MmdWndProc(HWND hwnd, UINT msg, WPARAM wParam,
 
     // Restore the game's procedure before forwarding the close message. This
     // removes the cross-thread restore race and prevents later destroy
-    // messages from entering EIEM during host teardown.
+    // messages from entering EFF during host teardown.
     if (originalWndProc &&
         GetWindowLongPtrW(hwnd, GWLP_WNDPROC) ==
             (LONG_PTR)MmdWndProc) {
@@ -2822,7 +2822,7 @@ static void AnimationTick() {
   FILE *dumpF = nullptr;
   if (!s_dumpedFrame0 && frame < 1.0f) {
     s_dumpedFrame0 = true;
-    dumpF = fopen("plugin\\eiem_frame0.txt", "w");
+    dumpF = fopen("plugin\\eff_frame0.txt", "w");
     if (dumpF)
       fprintf(dumpF, "=== VMD Frame 0 Dump ===\n\n");
   }

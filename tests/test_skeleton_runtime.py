@@ -16,7 +16,7 @@ def skeleton_bytes(version=2, named=False):
     nodes=[('',-1),('Rig',0),('Rig/Pelvis',1),('Rig/Unused',1),('Rig/Pelvis/Extra',2)]
     if named:
         nodes=[(p, parent-1) for p,parent in nodes[1:]]
-    data=b'EIESKEL\0'+struct.pack('<i',version)+string('unity-y-up-left-handed')+struct.pack('<i',len(nodes))
+    data=b'EFFSKEL\0'+struct.pack('<i',version)+string('unity-y-up-left-handed')+struct.pack('<i',len(nodes))
     for i,(path,parent) in enumerate(nodes):
         new=i==len(nodes)-1
         data+=string(path)+struct.pack('<i3f4f3f',parent,*( (.2,.3,.4) if new else (0,0,0)),
@@ -92,7 +92,7 @@ static bool InvokeChecked(void *m,void *p,void **args,void **out) {
    const float *source=m==g_transform_get_localPosition?n->p:m==g_transform_get_localRotation?n->q:n->s;
    memcpy(trsBox.value,source,m==g_transform_get_localRotation?16:12); *out=&trsBox;
  } else if(m==g_transform_set_localPosition || m==g_transform_set_localRotation || m==g_transform_set_localScale) {
-   if(n->name.rfind("EIEM_Bone_",0)!=0)++sourceWrites;
+   if(n->name.rfind("EFF_Bone_",0)!=0)++sourceWrites;
    if(m==g_transform_set_localPosition && failPosition)return false;
    memcpy(m==g_transform_set_localPosition?n->p:m==g_transform_set_localRotation?n->q:n->s,args[0],m==g_transform_set_localRotation?16:12);
  } else return false;

@@ -399,7 +399,7 @@ static bool EiemPhysicsRuntimeNewHost(EiemPhysicsRuntimeInstance &instance,
   }
   void *host = il2cpp_object_new(api.gameObjectClass);
   instance.hostRef = EiemUnityRef::Capture(host, false);
-  const std::string name = "EIEM_Physics_" +
+  const std::string name = "EFF_Physics_" +
                            std::to_string(instance.generation);
   void *nameObject = il2cpp_string_new(name.c_str());
   void *result = nullptr;

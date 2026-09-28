@@ -23,8 +23,8 @@ SPEC = importlib.util.spec_from_file_location("eiem_physics_document", PHYSICS_M
 physics_document = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(physics_document)
 
-MESH_MAGIC = b"EIEMESH\0"
-SKELETON_MAGIC = b"EIESKEL\0"
+MESH_MAGIC = b"EFFMESH\0"
+SKELETON_MAGIC = b"EFFSKEL\0"
 COORDINATE = "unity-y-up-left-handed"
 MESH_RELATIVE = "meshes/MeshS_actor_typhoea_body_01_lod0_0.mesh"
 OLD_PHYSICS_RELATIVE = "physics/typhoea-left-index-v67.physics"

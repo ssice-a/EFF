@@ -225,7 +225,7 @@ static bool EiemReadPhysicsAuthor(Reader &source,EiemPhysicsDocument &out,std::s
   EiemPhysicsAuthorReader<Reader> r{source}; EiemPhysicsDocument next;
   auto invalid=[&] { error="Invalid, unsupported or truncated Physics authoring resource"; return false; };
   char magic[8]; uint32_t version=0,count=0; std::string purpose,coordinate,backend;
-  if (!r.Bytes(magic,8) || std::string(magic,8)!=std::string("EIEPHYS\0",8) || !r.Value(version)) return invalid();
+  if (!r.Bytes(magic,8) || std::string(magic,8)!=std::string("EFFPHYS\0",8) || !r.Value(version)) return invalid();
   if (version==2) {
     auto tree=std::make_shared<EiemPhysicsNativeValue>();
     if (!EiemReadPhysicsNativeValue(r,*tree) || !source.End()) return invalid();

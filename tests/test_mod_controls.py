@@ -109,7 +109,7 @@ int main(int argc, char **argv) {
       CHECK(!EiemParseGlobalConfig(invalid, &config, error));
       CHECK(config.reload.vk == VK_F8); // failed edits do not remove the working key
     }
-    CHECK(std::string(kEiemGlobalConfigPath) == "plugin\\eiem.ini");
+    CHECK(std::string(kEiemGlobalConfigPath) == "plugin\\eff.ini");
     CHECK(LoadEiemConfig()); // create default, not legacy-file search
     CHECK(EiemGetGlobalConfig().reload.vk == VK_F10);
     { std::ofstream file(kEiemGlobalConfigPath); file << "[Hotkeys]\nreload=F8\n"; }

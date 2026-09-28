@@ -55,14 +55,14 @@ static bool EiemValidateSkeleton(const EiemSkeletonDocument &document, std::stri
   return true;
 }
 
-// EIESKEL v2 requires explicit provenance on every node.
+// EFFSKEL v2 requires explicit provenance on every node.
 template <typename Reader>
 static bool EiemReadSkeleton(Reader &reader, EiemSkeletonDocument &out, std::string &error) {
   EiemSkeletonDocument next;
   char magic[8] = {}; int32_t version = 0, root = -1;
   uint32_t count = 0, paletteCount = 0; std::string coordinate;
-  auto invalid = [&] { error = "Invalid or truncated EIEM Skeleton resource"; return false; };
-  if (!reader.Bytes(magic, 8) || std::string(magic,8) != std::string("EIESKEL\0",8) ||
+  auto invalid = [&] { error = "Invalid or truncated EFF Skeleton resource"; return false; };
+  if (!reader.Bytes(magic, 8) || std::string(magic,8) != std::string("EFFSKEL\0",8) ||
       !reader.Value(&version) || version != 2 || !reader.String(&coordinate) ||
       coordinate != "unity-y-up-left-handed" || !reader.Count(&count,16384)) return invalid();
   next.nodes.resize(count);

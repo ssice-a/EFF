@@ -258,7 +258,7 @@ public:
     // Keep native ### stable-title semantics without letting it discard the
     // Mod namespace. Multiple windows per script have independent native IDs.
     char id[16]; snprintf(id,sizeof(id),"%08X",ImHashStr(title.c_str(),0,ImHashStr(identity.c_str())));
-    return title.substr(0,title.find("##")) + "###EIEM-" + id;
+    return title.substr(0,title.find("##")) + "###EFF-" + id;
   }
   bool Load(const std::string &source, const std::string &filename) {
     if (vm) { lua_close(vm); vm = nullptr; }

@@ -47,7 +47,7 @@ def markers(path: Path) -> dict:
     blob = path.read_bytes()
     reader = Reader(blob)
     magic = reader.take(8)
-    if magic == b"EIEMESH\x00":
+    if magic == b"EFFMESH\x00":
         version = reader.i32()
         return {
             "kind": "mesh",
@@ -57,7 +57,7 @@ def markers(path: Path) -> dict:
             "name": reader.string(),
             "vertexCount": reader.i32(),
         }
-    if magic == b"EIESKEL\x00":
+    if magic == b"EFFSKEL\x00":
         version = reader.i32()
         return {
             "kind": "skeleton",
@@ -65,7 +65,7 @@ def markers(path: Path) -> dict:
             "coordinate": reader.string(),
             "nodes": reader.i32(),
         }
-    if magic.startswith(b"EIEPHYS"):
+    if magic.startswith(b"EFFPHYS"):
         return {"kind": "physics", "magic": magic.decode("ascii", "replace")}
     return {"kind": "unknown", "magic": repr(magic)}
 

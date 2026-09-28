@@ -171,8 +171,8 @@ static void DumpIl2CppMetadata(void **assemblies, size_t assemblyCount) {
   if (!assemblies || assemblyCount == 0) return;
   CreateDirectoryA("plugin", nullptr);
 
-  FILE *classes = fopen("plugin\\eiem_il2cpp_classes.txt", "w");
-  FILE *details = fopen("plugin\\eiem_il2cpp_resource_dump.txt", "w");
+  FILE *classes = fopen("plugin\\eff_il2cpp_classes.txt", "w");
+  FILE *details = fopen("plugin\\eff_il2cpp_resource_dump.txt", "w");
   if (!classes || !details) {
     if (classes) fclose(classes);
     if (details) fclose(details);
@@ -180,9 +180,9 @@ static void DumpIl2CppMetadata(void **assemblies, size_t assemblyCount) {
     return;
   }
 
-  fprintf(classes, "=== EIEM IL2CPP CLASS INDEX ===\n");
+  fprintf(classes, "=== EFF IL2CPP CLASS INDEX ===\n");
   fprintf(classes, "Assemblies: %zu\n\n", assemblyCount);
-  fprintf(details, "=== EIEM IL2CPP RESOURCE CANDIDATES ===\n");
+  fprintf(details, "=== EFF IL2CPP RESOURCE CANDIDATES ===\n");
   fprintf(details, "This file contains metadata only; no managed methods were invoked.\n");
 
   size_t totalClasses = 0;
@@ -237,6 +237,6 @@ static void DumpIl2CppMetadata(void **assemblies, size_t assemblyCount) {
 
   Log("[IL2CPP-DUMP] Wrote %zu classes and %zu resource candidates",
       totalClasses, candidateClasses);
-  Log("[IL2CPP-DUMP] See plugin\\eiem_il2cpp_classes.txt and "
-      "plugin\\eiem_il2cpp_resource_dump.txt");
+  Log("[IL2CPP-DUMP] See plugin\\eff_il2cpp_classes.txt and "
+      "plugin\\eff_il2cpp_resource_dump.txt");
 }

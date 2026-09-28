@@ -56,16 +56,16 @@ static bool UnboxBool(void *boxed) {
 #include "applepie_mgr.h"
 
 static AP_HotkeyInfo s_apHotkeys[] = {
-    { "EIEM GUI", "gui", VK_INSERT },
-    { "Reload EIEM mods", "reload", VK_F10 },
+    { "EFF GUI", "gui", VK_INSERT },
+    { "Reload EFF mods", "reload", VK_F10 },
 };
 
 static AP_PluginInfo s_apPluginInfo = {
     APPLEPIE_PLUGIN_API_VERSION,
-    "eiem",
-    "EIEM",
-    "Endfield MMD",
-    "eiem.ini",
+    "eff",
+    "EFF",
+    "Endfield Mod Framework",
+    "eff.ini",
     true 
 };
 

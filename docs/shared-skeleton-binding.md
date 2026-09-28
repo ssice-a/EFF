@@ -1,6 +1,6 @@
 # Shared skeleton binding
 
-EIEMESH stores two different kinds of skeleton information:
+EFFMESH stores two different kinds of skeleton information:
 
 - `bonePaths`, bind poses, and weights describe the exported Mesh palette.
 - `boneSourceCandidates` describes where each palette slot can be obtained
@@ -30,7 +30,7 @@ This is intentionally instance-local:
 
 ## Explicit Mod-owned Skeleton
 
-An optional `Skeleton` resource creates EIEM-owned Transform nodes for future
+An optional `Skeleton` resource creates EFF-owned Transform nodes for future
 physics or truly new bones. That path is separate from normal Mesh binding and
 may use the serialized `boneIndexPaths` to address nodes inside the explicit
 Skeleton resource. A normal replacement Mesh must still provide source
@@ -46,6 +46,6 @@ Mesh extends the palette and merges donor records from sibling source Meshes.
 If an authored source bone has no donor, export fails instead of producing a
 package that can only fall back to names or local LOD order.
 
-`boneIndexPaths` remains in EIEMESH v6 for the explicit Skeleton interface and
+`boneIndexPaths` remains in EFFMESH v6 for the explicit Skeleton interface and
 authoring round trips. It is not consulted by the ordinary Mesh replacement
 resolver.

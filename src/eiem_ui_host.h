@@ -79,10 +79,10 @@ class EiemUiHost {
   }
   bool Create() {
     WNDCLASSW wc = {}; wc.lpfnWndProc = WndProc; wc.hInstance = GetModuleHandleW(nullptr);
-    wc.lpszClassName = L"EIEM_ModLuaUI"; wc.hCursor = LoadCursor(nullptr,IDC_ARROW);
+    wc.lpszClassName = L"EFF_ModLuaUI"; wc.hCursor = LoadCursor(nullptr,IDC_ARROW);
     if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
     hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP | WS_EX_TRANSPARENT,
-      wc.lpszClassName,L"EIEM Mod UI",WS_POPUP,0,0,1,1,nullptr,nullptr,wc.hInstance,this);
+      wc.lpszClassName,L"EFF Mod UI",WS_POPUP,0,0,1,1,nullptr,nullptr,wc.hInstance,this);
     if (!hwnd) return false;
     g_modUiHwnd = hwnd;
     D3D_FEATURE_LEVEL level;
@@ -133,7 +133,7 @@ class EiemUiHost {
     (void)controlGeneration;
     bool open = true;
     ImGui::SetNextWindowSize(ImVec2(620.0f, 420.0f), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("EIEM Mod Manager", &open)) {
+    if (ImGui::Begin("EFF Mod Manager", &open)) {
       int selectedIndex = -1;
       for (size_t index = 0; index < controls.size(); ++index)
         if (controls[index].selected) { selectedIndex = (int)index; break; }
@@ -223,10 +223,10 @@ class EiemUiHost {
     ImGui::End();
     const auto update = EiemGetUpdateSnapshot();
     if (update.available && !updateDismissedForOpen)
-      ImGui::OpenPopup("EIEM update");
-    if (ImGui::BeginPopupModal("EIEM update", nullptr,
+      ImGui::OpenPopup("EFF update");
+    if (ImGui::BeginPopupModal("EFF update", nullptr,
                               ImGuiWindowFlags_AlwaysAutoResize)) {
-      ImGui::Text("EIEM v%s is available (installed v%s).",
+      ImGui::Text("EFF v%s is available (installed v%s).",
                   update.version.c_str(), EIEM_VERSION);
       if (ImGui::Button("Open Release")) {
         ShellExecuteA(nullptr, "open", update.url.c_str(), nullptr, nullptr,
@@ -264,7 +264,7 @@ public:
     swap.Reset(); immediate.Reset(); device.Reset();
     if (hwnd) DestroyWindow(hwnd);
     hwnd = nullptr; g_modUiHwnd = nullptr;
-    UnregisterClassW(L"EIEM_ModLuaUI",GetModuleHandleW(nullptr));
+    UnregisterClassW(L"EFF_ModLuaUI",GetModuleHandleW(nullptr));
   }
   void Tick() {
     ContextScope restore(ImGui::GetCurrentContext());

@@ -53,8 +53,8 @@ class Reader:
 
 def read_mesh(path: Path):
     reader = Reader(path.read_bytes())
-    if reader.take(8) != b"EIEMESH\x00":
-        raise ValueError("not an EIEMESH container")
+    if reader.take(8) != b"EFFMESH\x00":
+        raise ValueError("not an EFFMESH container")
     version = reader.i32()
     reader.string()  # coordinate
     source = reader.string()

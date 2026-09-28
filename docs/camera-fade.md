@@ -20,7 +20,7 @@
 
 ## 配置与刷新
 
-唯一全局文件仍为游戏目录下 `plugin/eiem.ini`：
+唯一全局文件仍为游戏目录下 `plugin/eff.ini`：
 
 ```ini
 [Hotkeys]
@@ -45,7 +45,7 @@ F10 不重装 hook，也不在按键线程直接调用游戏相机方法；它�
 [Endfield-Uncensored CameraMono hook](https://github.com/DynamiByte/Endfield-Uncensored/blob/509d1b8b6ad0cec9787af7b055984d955c1f0461/src/dll.zig#L275-L293)。
 仅参考游戏方法与调用契约；不复制其手写跳转补丁、快捷键轮询或 UI，使用本项目 MinHook 与全局配置。
 
-本机 `eiem_il2cpp_classes.txt` 列出 Gameplay.Beyond.dll 下的 CameraMono；
+本机 `eff_il2cpp_classes.txt` 列出 Gameplay.Beyond.dll 下的 CameraMono；
 当前 global-metadata.dat 含 `_ProcessDitherByPitch`、`ForceClearDither` 名称。
 资源详情 dump 因资源类过滤不列出 CameraMono，不能据此推断相机类不存在。
 元数据名称存在只证明可继续解析，不证明运行时一定经过该入口。

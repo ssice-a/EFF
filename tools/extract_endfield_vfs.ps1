@@ -1,7 +1,7 @@
 <#
 Extract Endfield's VFS with the current external EndfieldUnpacker tool.
 
-The extractor is deliberately outside eiem.dll. It only reads the game's VFS
+The extractor is deliberately outside eff.dll. It only reads the game's VFS
 payloads and writes a versioned working directory.
 
 Example:

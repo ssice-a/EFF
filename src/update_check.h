@@ -32,7 +32,7 @@ static std::string HttpGet(const wchar_t *host, const wchar_t *path,
   std::string result;
 
   HINTERNET hSession = WinHttpOpen(
-      L"EIEM-UpdateCheck/1.0",
+      L"EFF-UpdateCheck/1.0",
       WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
       WINHTTP_NO_PROXY_NAME,
       WINHTTP_NO_PROXY_BYPASS, 0);
@@ -154,7 +154,7 @@ struct EiemUpdateSnapshot {
 static SRWLOCK s_eiemUpdateLock = SRWLOCK_INIT;
 static volatile LONG s_eiemUpdateRunning = 0;
 static constexpr const wchar_t *kEiemIgnoredReleasePath =
-    L"plugin\\eiem-update-state.txt";
+    L"plugin\\eff-update-state.txt";
 
 static EiemUpdateSnapshot EiemGetUpdateSnapshot() {
   AcquireSRWLockShared(&s_eiemUpdateLock);
@@ -199,7 +199,7 @@ static bool EiemIgnoreRelease(const std::string &version) {
 static void CheckForUpdates(bool forceIgnored = false) {
   const std::string body = HttpGet(
       L"api.github.com", L"/repos/ssice-a/EIEM/releases/latest", 3000,
-      L"Accept: application/vnd.github+json\r\nUser-Agent: EIEM-UpdateCheck/1.0\r\n");
+      L"Accept: application/vnd.github+json\r\nUser-Agent: EFF-UpdateCheck/1.0\r\n");
   std::string tag = JsonExtractString(body, "tag_name");
   std::string url = JsonExtractString(body, "html_url");
   const std::string prefix = "https://github.com/ssice-a/EIEM/releases/";

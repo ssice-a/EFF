@@ -111,7 +111,7 @@ static bool EiemResolveResourceDiskPath(const EiemModResource &r, char *out, siz
 }
 static bool EiemReadMaterialFile(const char *, std::vector<std::pair<std::string, std::string>> *out,
                                   char *, size_t) {
-    *out = {{"format", "EIEMMAT"}, {"version", "1"}, {"overrides", "true"},
+    *out = {{"format", "EFFMAT"}, {"version", "1"}, {"overrides", "true"},
             {"source", "assets/material.mat"}, {"texture._BaseMap", "TextureA"},
             {"texture._OtherMap", "TextureA"}, {"float._Value", "1"}};
     return true;

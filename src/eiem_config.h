@@ -11,10 +11,10 @@ struct EiemGlobalConfig {
   bool disableCameraFade = true;
 };
 
-static constexpr const char *kEiemGlobalConfigPath = "plugin\\eiem.ini";
+static constexpr const char *kEiemGlobalConfigPath = "plugin\\eff.ini";
 static constexpr const char *kEiemDefaultGlobalConfig =
-    "; EIEM global settings. Mod controls belong in mods/<name>/mod.ini.\n"
-    "; Change reload, then press the OLD shortcut once to load the new binding.\n"
+    "; EFF global settings. Mod controls belong in mods/<name>/mod.ini.\n"
+    "; After editing, press the reload shortcut once to load the new binding.\n"
     "[Hotkeys]\n"
     "reload=F10\n"
     "gui=INSERT\n"

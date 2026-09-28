@@ -688,7 +688,7 @@ class BlenderExportContracts(unittest.TestCase):
 
     def test_export_is_rooted_at_selected_eiem_meshes(self):
         self.assertIn("selected_objects", self.addon)
-        self.assertIn("No EIEM mesh objects selected", self.controls)
+        self.assertIn("No EFF mesh objects selected", self.controls)
 
     def test_export_materials_and_textures_are_dependency_closure(self):
         self.assertIn("referenced_materials", self.addon)
@@ -732,14 +732,14 @@ class BlenderExportContracts(unittest.TestCase):
                       self.physics_writer)
 
     def test_blender_has_ordered_left_aligned_eiem_property_panels(self):
-        self.assertIn("class EIEM_PT_material_properties", self.addon)
-        self.assertIn("class EIEM_PT_mesh_properties", self.addon)
-        self.assertIn("class EIEM_PT_image_properties", self.addon)
+        self.assertIn("class EFF_PT_material_properties", self.addon)
+        self.assertIn("class EFF_PT_mesh_properties", self.addon)
+        self.assertIn("class EFF_PT_image_properties", self.addon)
         self.assertIn('label_column.alignment = "LEFT"', self.addon)
         start = self.addon.index("def material_property_groups")
         body = self.addon[start : start + 1800]
         self.assertLess(body.index("texture_paths"), body.index("parameters"))
-        self.assertIn("EIEM_INTERNAL_MATERIAL_PROPERTIES", body)
+        self.assertIn("EFF_INTERNAL_MATERIAL_PROPERTIES", body)
 
 
 if __name__ == "__main__":

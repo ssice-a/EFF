@@ -5,7 +5,7 @@
 
 ## 输入与编辑
 
-AnimeStudio 的正常 **Export Prefab as EIEM mod package** 现在会在所选 Prefab 含有受支持组件时，
+AnimeStudio 的正常 **Export Prefab as EFF mod package** 现在会在所选 Prefab 含有受支持组件时，
 把完整源图写入包内 `physics/components.json` 及同目录的原始字节、TypeTree 和解码字段文件。
 Blender 勾选“导入物理骨骼与碰撞体”即可在同一次包导入中载入 Mesh、共享 Rig 和原生物理。
 导入器只把组件 owner、显式 Transform 引用、`rootBones - ignoreFromRootBones` 展开的物理节点及其祖先
@@ -24,7 +24,7 @@ Blender 勾选“导入物理骨骼与碰撞体”即可在同一次包导入中
   完整源字段按 32 项分页并可筛选。普通求解参数修改不重建几何；碰撞体 `center/size/direction` 等外形字段
   刷新碰撞几何；节点半径、角度限制开关、基础角及对应曲线只刷新该组的链预览。
 - 参数存在物理组或碰撞体 Empty 的 RNA 属性组中，是导出的唯一源数据；选中 Empty 后从对象属性中的
-  **EIEM 物理参数**编辑。九类常用曲线另投影到同一 Empty 的 ID 自定义属性和 Action/F-Curve，供 Blender
+  **EFF 物理参数**编辑。九类常用曲线另投影到同一 Empty 的 ID 自定义属性和 Action/F-Curve，供 Blender
   Graph Editor 直观编辑；导出时自动写回 RNA 源字段，不建立第二份独立物理配置。
   JSON 中看起来是整数的源 float，依据 TypeTree 保持浮点编辑。
   未编辑字段保留源十进制值，不因为 Blender RNA 的 float32 显示精度重写源数据。
@@ -115,7 +115,7 @@ v73 已部署，尚未由新进程验证游戏内碰撞响应。
 
 ## 编码与校验
 
-头为 `EIEPHYS\0` + little-endian u32 `2`，后接带类型标签的树：
+头为 `EFFPHYS\0` + little-endian u32 `2`，后接带类型标签的树：
 null/false/true/int64/float64/string/array/object 分别为 0～7。
 字符串使用 u32 UTF-8 字节长度；集合使用 u32 数量，object 键为字符串。
 限制包括 16 MiB 文件、64 层嵌套、262144 单集合元素及 524288 树节点。

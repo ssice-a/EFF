@@ -415,7 +415,7 @@ static thread_local bool s_eiemEntityRenderHelperMaterialInitGuard = false;
 static thread_local void *s_eiemEntityRenderHelperActiveModel = nullptr;
 static thread_local bool s_eiemEntityRenderHelperMaterialApplied = false;
 // RendererInfo._Init samples original materials during an enclosing helper.
-// The helper must finish that sampling before EIEM restores its owned slots.
+// The helper must finish that sampling before EFF restores its owned slots.
 // RendererInfo callbacks may occur anywhere inside the outer helper, not only
 // inside MaterialController.Init. Drain this queue after the complete helper
 // returns so no raw Renderer pointer survives into a later assembly pass.
@@ -1010,7 +1010,7 @@ static bool EiemExposeSourceMaterialsForInit(void *renderer) {
 
 
 // Resolve a replacement Mesh against the concrete native skeleton instance.
-// EIEMESH structural child-index paths are authoritative.  The same path
+// EFFMESH structural child-index paths are authoritative.  The same path
 // table is used for world, UI and NPC renderers; names, source Mesh donors and
 // LOD-local slot order are not runtime inputs.
 #include "eiem_skin_resolver.h"
@@ -2420,7 +2420,7 @@ static void TraceEntityRenderHelperInitRenderAndMaterial(void *self,
     if (original) original(self, methodInfo);
     return;
   }
-  // Setters issued by EIEM can re-enter the helper. Preserve the game's call,
+  // Setters issued by EFF can re-enter the helper. Preserve the game's call,
   // but never start another replacement transaction from our own write.
   if (s_eiemApplyingModMeshAssignment) {
     if (original) original(self, methodInfo);
@@ -4300,7 +4300,7 @@ static bool EiemUpstreamMeshObject(void *object) {
 // keyed by the game's logical asset identity (proxy path or Mesh name), not by
 // vertex counts or a Renderer address.  The game therefore continues to own
 // PFB/UI/world construction, LOD selection, material registration and skin
-// submission; EIEM only changes the Mesh object that crosses the boundary.
+// submission; EFF only changes the Mesh object that crosses the boundary.
 
 
 static void *TraceAssetProxyHandleGet(void *self, void *methodInfo) {

@@ -526,7 +526,7 @@ static void EiemPruneModelInstances() {
 
 // Endfield owns source/replacement material arrays in
 // EntityRenderHelperMaterialController.RendererInfo.  Scene transitions can
-// commit those arrays after a prefab and its EIEM Render rule have completed.
+// commit those arrays after a prefab and its EFF Render rule have completed.
 // Mesh identity remains the rule key, so enforce only the material portion at
 // that game-owned final commit boundary.  This is not a UI-specific rule and
 // does not re-run mesh, skip, or partner actions.

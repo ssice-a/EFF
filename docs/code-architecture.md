@@ -2,7 +2,7 @@
 
 The runtime is divided into three boundaries:
 
-1. Resource readers load the EIEMESH v6 payload and build a generated Unity
+1. Resource readers load the EFFMESH v6 payload and build a generated Unity
    Mesh. They keep weights, bind poses, and source candidates immutable.
 2. Model assembly snapshots the completed model's original Renderers. The
    skin resolver maps replacement slots to the exact `bones[]` pointers from

@@ -47,9 +47,9 @@
 - Blender 切线接口支持三角面/四边面；需生成切线的 N-gon 先三角化。
   若用户主动重做全部切线，可删除成对的切线属性再导出；这表示生成，不表示恢复源数据。
   普通切线生成不代替游戏专用描边 UV2 或形态键切线增量生成。
-- EIEMESH v3 不变，DLL 继续消费切线数组，不增加运行时回退或新 INI 选项。
+- EFFMESH v3 不变，DLL 继续消费切线数组，不增加运行时回退或新 INI 选项。
 
-回归入口：设置 `EIEM_BLENDER` 后运行 `python -m unittest discover -s tests -p test_blender_tangent_export.py -v`。
+回归入口：设置 `EFF_BLENDER` 后运行 `python -m unittest discover -s tests -p test_blender_tangent_export.py -v`。
 测试先复现空数组再验证生成，覆盖源切线逐位保留、混合新旧顶点、镜像切线接缝与源坐标副切线方向、
 自定义法线、稀疏 UV0/UV2、孤立顶点、重复导出、导出不改工程及生成数据再次导入后的往返。
 测试在独立后台 Blender 5.0.1 中运行；本轮不修改用户场景、游戏 Mod 或部署 DLL，不作为游戏着色验收。

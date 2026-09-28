@@ -34,7 +34,7 @@ class EiemPersistentStore {
     return values;
   }
   static void Write(const std::filesystem::path &path,const EiemVariables &values) {
-    std::ostringstream stream;stream.imbue(std::locale::classic());stream<<"; EIEM runtime preferences, not Mod actions\n[Values]\n";
+    std::ostringstream stream;stream.imbue(std::locale::classic());stream<<"; EFF runtime preferences, not Mod actions\n[Values]\n";
     std::map<std::string,double> ordered(values.begin(),values.end());
     for(const auto &v:ordered)stream<<v.first<<'='<<std::setprecision(17)<<v.second<<'\n';
     const auto text=stream.str();auto tmp=path;tmp+=L".tmp-"+std::to_wstring(GetCurrentProcessId());

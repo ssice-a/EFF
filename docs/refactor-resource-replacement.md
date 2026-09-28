@@ -5,7 +5,7 @@
 
 ## 1. 目标
 
-EIEM 需要支持：
+EFF 需要支持：
 
 - 替换或增加 Mesh、材质、贴图和材质参数；
 - 同一 Mod 的世界、角色 UI、NPC 实例共享规则和按键状态；
@@ -55,7 +55,7 @@ set_sharedMesh
 
 Unity 蒙皮使用 Mesh 内的骨骼索引、Renderer 的 `bones[]` 数组和 bindpose，不使用 Blender 顶点组名称在运行时查找 Transform。
 
-Blender 导出器必须为 EIEMESH v6 的每个局部槽保存来源 Mesh 身份、原始槽号及可用供体候选。DLL 遵守以下规则：
+Blender 导出器必须为 EFFMESH v6 的每个局部槽保存来源 Mesh 身份、原始槽号及可用供体候选。DLL 遵守以下规则：
 
 1. 修改任何 Renderer 前，快照当前模型实例内所有原生 SkinnedMeshRenderer 的 Mesh 身份和原始 `bones[]`。
 2. replacement 的每个槽按“源 Mesh 身份 + 原始槽号”读取当前实例 Transform，不按目标 Renderer 的同序号猜测。

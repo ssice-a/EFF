@@ -9,7 +9,7 @@ static void LoadAndResolveVmd(HWND hwnd) {
   ofn.lpstrFile = filePath;
   ofn.nMaxFile = MAX_PATH;
   ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-  ofn.lpstrTitle = "EIEM - Select VMD File";
+  ofn.lpstrTitle = "EFF - Select VMD File";
 
   if (!GetOpenFileNameA(&ofn)) {
     Log("[VMD] File dialog cancelled");
@@ -36,7 +36,7 @@ static void LoadAndResolveVmd(HWND hwnd) {
       g_vmd->modelName, g_vmd->totalFrames, g_vmd->totalFrames / 30.0f,
       g_vmd->boneTimelines.size());
 
-  FILE *dumpFile = fopen("plugin/eiem_vmd_dump.txt", "w");
+  FILE *dumpFile = fopen("plugin/eff_vmd_dump.txt", "w");
   if (dumpFile) {
     DumpVmd(g_vmd, dumpFile);
 
@@ -115,7 +115,7 @@ static void LoadAndResolveVmd(HWND hwnd) {
             unmapped, mapped + unmapped);
     fclose(dumpFile);
 
-    Log("[VMD] Bone mapping: %d mapped, %d unmapped. See eiem_vmd_dump.txt",
+    Log("[VMD] Bone mapping: %d mapped, %d unmapped. See eff_vmd_dump.txt",
         mapped, unmapped);
   }
 }
@@ -208,14 +208,14 @@ static void DumpTransformHierarchy(void *transform, int depth, FILE *dumpFile) {
 }
 
 static void DiscoverSkeleton() {
-  Log("=== EIEM Phase 2: Bone Discovery ===");
+  Log("=== EFF Phase 2: Bone Discovery ===");
 
-  FILE *df = fopen("plugin\\eiem_skeleton_dump.txt", "w");
+  FILE *df = fopen("plugin\\eff_skeleton_dump.txt", "w");
   if (!df) {
     Log("[ERROR] Cannot create dump file");
     return;
   }
-  fprintf(df, "=== EIEM Phase 2: Bone Discovery ===\n\n");
+  fprintf(df, "=== EFF Phase 2: Bone Discovery ===\n\n");
 
   void *domain = il2cpp_domain_get();
   il2cpp_thread_attach(domain);
@@ -440,7 +440,7 @@ static void DiscoverSkeleton() {
 
   fflush(df);
   fclose(df);
-  Log("[OK] Phase 2 bone discovery written to eiem_skeleton_dump.txt");
+  Log("[OK] Phase 2 bone discovery written to eff_skeleton_dump.txt");
 }
 
 
@@ -457,9 +457,9 @@ static DWORD WINAPI InitThread(LPVOID) {
 
   InitializeCriticalSection(&g_logLock);
   g_logHandle =
-      CreateFileA("plugin\\eiem_log.txt", GENERIC_WRITE, FILE_SHARE_READ, NULL,
+      CreateFileA("plugin\\eff_log.txt", GENERIC_WRITE, FILE_SHARE_READ, NULL,
                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-  Log("=== EIEM Phase 1: Skeleton Discovery ===");
+  Log("=== EFF Phase 1: Skeleton Discovery ===");
   Log("[DIAG-LOOP-v113] process=%lu thread=%lu tick=%llu stage=startup "
       "generation=%ld",
       (unsigned long)GetCurrentProcessId(), (unsigned long)GetCurrentThreadId(),

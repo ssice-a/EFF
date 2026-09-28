@@ -40,7 +40,7 @@ import struct
 import sys
 from pathlib import Path
 
-MAGIC = b"EIEMESH\x00"
+MAGIC = b"EFFMESH\x00"
 COORDINATE_SPACE = "unity-y-up-left-handed"
 UV_CHANNELS = 8
 
@@ -131,16 +131,16 @@ class Writer:
 
 
 class Mesh:
-    """One parsed EIEMESH file, in the exact field order the runtime reads."""
+    """One parsed EFFMESH file, in the exact field order the runtime reads."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         reader = Reader(path.read_bytes())
         if reader.take(8) != MAGIC:
-            raise ValueError("not an EIEMESH file")
+            raise ValueError("not an EFFMESH file")
         self.version = reader.i32()
         if self.version not in (2, 3):
-            raise ValueError(f"unsupported EIEMESH version {self.version}")
+            raise ValueError(f"unsupported EFFMESH version {self.version}")
         self.coordinate_space = reader.string()
         self.source = reader.string()
         self.name = reader.string()
@@ -202,7 +202,7 @@ class Mesh:
         self.blend_weights = reader.floats()
         self.additional_vertices = [reader.f32() for _ in range(max(0, reader.i32()) * 3)]
         if reader.pos != len(reader.data):
-            raise ValueError("unexpected trailing EIEMESH data")
+            raise ValueError("unexpected trailing EFFMESH data")
         self.validate()
 
     def uv_dimensions(self) -> list[int]:
@@ -533,7 +533,7 @@ def read_part_list(path: Path) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("output", help="merged EIEMESH file to write")
+    parser.add_argument("output", help="merged EFFMESH file to write")
     parser.add_argument(
         "parts",
         nargs="*",
