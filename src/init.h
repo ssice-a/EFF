@@ -507,18 +507,12 @@ static DWORD WINAPI InitThread(LPVOID) {
   // observed completion cannot commit an unmodified object due to startup
   // ordering. Later reload requests are dispatched on Unity's thread.
   LoadEiemConfig();
-  // The stable replacement profile keeps camera, face and legacy animation
-  // hooks out of the process.  ForceClearDither is an experimental global
-  // visual operation: it runs after every camera pitch evaluation and can
-  // interfere with the game's temporary dodge/occlusion dither state.  Keep
-  // the implementation and config available for a dedicated visual test, but
-  // never install it in the production static-replacement baseline.
-  if (!kEiemStaticReplacementBaseline &&
-      EiemGetGlobalConfig().disableCameraFade) {
+  // Camera fade is a user-facing runtime option.  Keep it independent from
+  // the static replacement validation switch so the configured anti-fade
+  // behavior remains available while the face/animation hooks stay disabled.
+  if (EiemGetGlobalConfig().disableCameraFade) {
     if (!InitEiemCameraFade(asms, ac))
       Log("[CAMERA-FADE] enabled in config, but initialization was unavailable");
-  } else if (kEiemStaticReplacementBaseline) {
-    Log("[CAMERA-FADE] disabled in static replacement baseline");
   } else {
     Log("[CAMERA-FADE] disabled by config");
   }
