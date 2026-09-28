@@ -30,25 +30,3 @@ struct EiemSkinPaletteCache {
 
 static thread_local EiemSkinPaletteCache *s_eiemActiveSkinPaletteCache = nullptr;
 
-static bool EiemSkinPathSuffix(const std::string &full, const std::string &path) {
-  return !path.empty() && (full == path ||
-      (full.size() > path.size() && full[full.size()-path.size()-1] == '/' &&
-       full.compare(full.size()-path.size(), path.size(), path) == 0));
-}
-
-static bool EiemResolveSkinPathIndices(const std::vector<std::string> &payload,
-                                        const std::vector<std::string> &live,
-                                        std::vector<size_t> &indices,
-                                        std::string &error) {
-  indices.clear();
-  for (const auto &path : payload) {
-    size_t found = SIZE_MAX;
-    for (size_t i=0; i<live.size(); ++i) if (live[i] == path) {
-      if (found != SIZE_MAX) { error = "Ambiguous skeleton bone path: " + path; indices.clear(); return false; }
-      found=i;
-    }
-    if (found == SIZE_MAX) { error = "Skeleton bone path not found: " + path; indices.clear(); return false; }
-    indices.push_back(found);
-  }
-  return true;
-}

@@ -6,6 +6,15 @@
 #include "eiem_skeleton_document.h"
 #include "eiem_registration_trace.h"
 
+static bool EiemSkeletonPathSuffix(const std::string &full,
+                                    const std::string &path) {
+  return !path.empty() &&
+         (full == path ||
+          (full.size() > path.size() &&
+           full[full.size() - path.size() - 1] == '/' &&
+           full.compare(full.size() - path.size(), path.size(), path) == 0));
+}
+
 // Only instantiated on the Unity thread. Consumers keep leases until their
 // source Mesh/bones are restored. The registry owns the final retirement ref.
 struct EiemSkeletonInstance {
@@ -195,7 +204,9 @@ static bool EiemSkeletonSourceNodes(
       if (!inserted.second && inserted.first->second!=it->second) { error="Ambiguous source bone ancestry"; return false; }
     }
     for (const auto &node:document.nodes) {
-      if (!node.source || node.path.empty() || !EiemSkinPathSuffix(full,node.path)) continue;
+      if (!node.source || node.path.empty() ||
+          !EiemSkeletonPathSuffix(full, node.path))
+        continue;
       const auto candidate=full.substr(0,full.size()-node.path.size());
       if (anchored && prefix!=candidate) { error="Skeleton document spans multiple instances"; return false; }
       prefix=candidate; anchored=true;
