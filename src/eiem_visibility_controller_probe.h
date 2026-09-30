@@ -1242,7 +1242,7 @@ static bool EiemResolveVfxRenderRule(void *renderer,
   EiemFindStandaloneRenderRules(&standaloneRules);
   for (const auto &candidate : standaloneRules) {
     if (candidate.path[0] ||
-        !EiemRenderRuleMatches(candidate, "", mesh, asset))
+        !EiemRenderRuleMatches(candidate, "", mesh, asset, source))
       continue;
     out->rule = candidate;
     strncpy_s(out->source, sizeof(out->source),

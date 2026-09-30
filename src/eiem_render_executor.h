@@ -395,7 +395,8 @@ static bool EiemApplyRenderRuleSetToRenderer(
       }
       if (!relativePathResolved) continue;
     }
-    if (!EiemRenderRuleMatches(rule, relativePath, identityMesh, asset))
+    if (!EiemRenderRuleMatches(rule, relativePath, identityMesh, asset,
+                               source))
       continue;
     if (referenced) referenced[ruleIndex] = true;
     if (matched) *matched = true;

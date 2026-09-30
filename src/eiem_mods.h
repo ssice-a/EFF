@@ -210,6 +210,7 @@ static bool EiemSameRenderIdentity(const EiemModRule &a, const EiemModRule &b,
                                    bool ignoreHiddenSubmeshMask) {
   if (strcmp(a.modPath, b.modPath) || strcmp(a.section, b.section) ||
       strcmp(a.path, b.path) || strcmp(a.handling, b.handling) ||
+      strcmp(a.resource, b.resource) ||
       strcmp(a.mesh, b.mesh) || strcmp(a.asset, b.asset) ||
       a.matchVertices != b.matchVertices || a.matchIndices != b.matchIndices ||
       a.matchSubMeshes != b.matchSubMeshes || strcmp(a.skeleton, b.skeleton) ||
@@ -422,8 +423,9 @@ static LONG EiemPublishPreparedModReload(EiemModProgram next) {
   for (const auto &prefab : next.prefabs)
     Log("[MOD] prefab section=%s path=%s renders=%u", prefab.section, prefab.path, prefab.renderCount);
   for (const auto &rule : next.rules)
-    Log("[MOD] rule section=%s path=%s asset=%s handling=%s mesh=%s",
-        rule.section, rule.path, rule.asset, rule.handling[0] ? rule.handling : "<none>",
+    Log("[MOD] rule section=%s path=%s asset=%s resource=%s handling=%s mesh=%s",
+        rule.section, rule.path, rule.asset, rule.resource,
+        rule.handling[0] ? rule.handling : "<none>",
         rule.hasMesh ? rule.mesh : "<none>");
   const size_t prefabCount = next.prefabs.size(), ruleCount = next.rules.size();
   const size_t resourceCount = next.resources.size(), standaloneCount = next.standaloneRules.size();
@@ -473,6 +475,43 @@ static void EiemFindStandaloneRenderRules(std::vector<EiemModRule> *out) {
   AcquireSRWLockShared(&s_eiemModLock);
   for (size_t index : s_eiemModProgram.standaloneRules)
     out->push_back(s_eiemModProgram.rules[index]);
+
+  // A Mesh declaration describes the resource being replaced, while a
+  // Render section describes the replacement payload. Derive one additional
+  // rule per Mesh resource so every live consumer of that original resource
+  // receives the same replacement, even when its Renderer was created from a
+  // different PFB or by a short-lived effect instance. The ordinary rules
+  // remain first and therefore retain their existing path/asset precedence.
+  std::unordered_set<std::string> emitted;
+  for (size_t index : s_eiemModProgram.standaloneRules) {
+    if (index >= s_eiemModProgram.rules.size()) continue;
+    const EiemModRule &sourceRule = s_eiemModProgram.rules[index];
+    if (!sourceRule.hasMesh || !sourceRule.mesh[0]) continue;
+    const EiemModResource *meshResource = nullptr;
+    for (const auto &resource : s_eiemModProgram.resources) {
+      if (_stricmp(resource.modPath, sourceRule.modPath) == 0 &&
+          _stricmp(resource.section, sourceRule.mesh) == 0 &&
+          _stricmp(resource.kind, "Mesh") == 0) {
+        meshResource = &resource;
+        break;
+      }
+    }
+    if (!meshResource ||
+        (!meshResource->targetPath[0] && !meshResource->targetAsset[0]))
+      continue;
+    const std::string key = EiemModIdentifier(sourceRule.modPath,
+                                               meshResource->section);
+    if (!emitted.insert(key).second) continue;
+    EiemModRule resourceRule = sourceRule;
+    resourceRule.path[0] = '\0';
+    resourceRule.asset[0] = '\0';
+    strncpy_s(resourceRule.resource, sizeof(resourceRule.resource),
+              meshResource->section, _TRUNCATE);
+    std::string section = std::string(sourceRule.section) + "__resource";
+    strncpy_s(resourceRule.section, sizeof(resourceRule.section),
+              section.c_str(), _TRUNCATE);
+    out->push_back(resourceRule);
+  }
   ReleaseSRWLockShared(&s_eiemModLock);
 }
 
