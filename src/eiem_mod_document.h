@@ -30,10 +30,6 @@ struct EiemModRule {
   char modPath[MAX_PATH] = {};
   char section[96] = {};
   char path[768] = {};
-  // Optional resource-level selector. When present, the Render is matched
-  // against the target.path/target.asset identity of this Mesh resource,
-  // instead of a particular Renderer hierarchy or Mesh object name.
-  char resource[96] = {};
   char handling[32] = {};
   char mesh[192] = {};
   char asset[192] = {};
@@ -263,8 +259,7 @@ struct EiemModProgram {
 };
 
 static bool EiemRenderSelectorKey(const std::string &key) {
-  return key == "path" || key == "asset" || key == "resource" ||
-         key == "match.vertices" ||
+  return key == "path" || key == "asset" || key == "match.vertices" ||
          key == "match.indices" || key == "match.submeshes";
 }
 
@@ -283,7 +278,6 @@ static bool EiemSetRenderField(EiemModRule &rule, const std::string &key,
   };
   if (key == "path") return copy(rule.path) || fail();
   if (key == "asset") return copy(rule.asset) || fail();
-  if (key == "resource") return copy(rule.resource) || fail();
   if (key == "match.vertices") return EiemModInteger(value, &rule.matchVertices) || fail();
   if (key == "match.indices") return EiemModInteger(value, &rule.matchIndices) || fail();
   if (key == "match.submeshes") return EiemModInteger(value, &rule.matchSubMeshes) || fail();
@@ -584,7 +578,7 @@ static void EiemCompileModProgram(EiemModProgram &program) {
   // Every Render that identifies a source Mesh is compiled as a direct action.
   for (size_t i = 0; i < program.definitions.size(); ++i) {
     const auto &rule = program.definitions[i].selector;
-    if (rule.path[0] || rule.asset[0] || rule.resource[0])
+    if (rule.path[0] || rule.asset[0])
       program.standaloneRules.push_back(i);
   }
   // Derive default 0..1 sliders once per parsed generation. Explicit
@@ -689,13 +683,6 @@ static bool EiemValidateModDocument(EiemModProgram &doc, std::string &error) {
   for (size_t i = 0; i < doc.definitions.size(); ++i) {
     bool valid = true;
     const auto &selector = doc.definitions[i].selector;
-    if (selector.resource[0]) {
-      const auto it = resources.find(EiemModIdentifier("", selector.resource));
-      if (it == resources.end() || it->second != "Mesh") {
-        error = "Missing Mesh declaration: " + std::string(selector.resource);
-        return false;
-      }
-    }
     for (uint32_t binding = 0;
          valid && binding < selector.visibilityBindingCount; ++binding) {
       const char *variable = selector.visibilityVariables[binding];

@@ -279,64 +279,16 @@ static bool EiemBuildRelativeRendererPath(void *rootTransform, void *renderer,
   return true;
 }
 
-// Legacy path/asset Render sections usually also carry `mesh=`. When the
-// declaration has an original resource identity, use it to guard the older
-// selectors too. This prevents a same-named Mesh sub-asset from another FBX
-// from winning merely because Unity object names are not globally unique.
-static bool EiemDeclaredMeshResourceMatches(const EiemModRule &rule,
-                                            const char *asset,
-                                            const char *source) {
-  if (!rule.hasMesh || !rule.mesh[0]) return true;
-  EiemModResource resource = {};
-  if (!EiemFindModResource(rule.modPath, rule.mesh, "Mesh", &resource))
-    return true; // Document validation handles authored missing declarations.
-  if (resource.targetPath[0] && source && source[0])
-    return EiemModSameLogicalPath(resource.targetPath, source);
-  if (resource.targetAsset[0] && asset &&
-      EiemModEquals(resource.targetAsset, asset))
-    return true;
-  return !resource.targetPath[0] && !resource.targetAsset[0];
-}
-
 static bool EiemRenderRuleMatches(const EiemModRule &rule,
                                   const char *relativePath, void *mesh,
-                                  const char *asset,
-                                  const char *source) {
-  // A resource selector identifies the original game Mesh resource. It is
-  // intentionally resolved before the legacy hierarchy/name selectors: the
-  // generated resource rule must match every live Renderer consuming that
-  // Mesh, including consumers outside the authored PFB hierarchy.
-  bool selectorMatched = false;
-  if (rule.resource[0]) {
-    EiemModResource resource = {};
-    if (!EiemFindModResource(rule.modPath, rule.resource, "Mesh", &resource))
-      return false;
-    if (resource.targetPath[0]) {
-      // A source origin is authoritative when available. Do not fall back to
-      // a same-name Mesh from an unrelated FBX/sub-asset, because asset names
-      // are not globally unique in Unity.
-      if (source && source[0])
-        selectorMatched = EiemModSameLogicalPath(resource.targetPath, source);
-      if (resource.targetAsset[0])
-        selectorMatched = selectorMatched ||
-                          (!source || !source[0]) && asset &&
-                              EiemModEquals(resource.targetAsset, asset);
-    } else {
-      selectorMatched = resource.targetAsset[0] && asset &&
-                        EiemModEquals(resource.targetAsset, asset);
-    }
-  } else {
-    // A source Render must identify a node path, a Mesh sub-asset, or both.
-    // Selector-free Render sections are valid only as partner declarations.
-    if (!EiemDeclaredMeshResourceMatches(rule, asset, source)) return false;
-    if (!rule.path[0] && !rule.asset[0]) return false;
-    selectorMatched = true;
-    if (rule.path[0] && !EiemSameRelativePath(rule.path, relativePath))
-      selectorMatched = false;
-    if (rule.asset[0] && (!asset || !EiemModEquals(rule.asset, asset)))
-      selectorMatched = false;
-  }
-  if (!selectorMatched) return false;
+                                  const char *asset) {
+  // A source Render must identify a node path, a Mesh sub-asset, or both.
+  // Selector-free Render sections are valid only as partner declarations.
+  if (!rule.path[0] && !rule.asset[0]) return false;
+  if (rule.path[0] && !EiemSameRelativePath(rule.path, relativePath))
+    return false;
+  if (rule.asset[0] && (!asset || !EiemModEquals(rule.asset, asset)))
+    return false;
   if (rule.matchVertices >= 0 || rule.matchIndices >= 0 ||
       rule.matchSubMeshes >= 0) {
     int32_t vertices = -1, indices = -1, subMeshes = -1;

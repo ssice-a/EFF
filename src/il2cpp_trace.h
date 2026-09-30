@@ -598,8 +598,7 @@ static void *EiemReadLodRendererMesh(void *renderer,
                                      const char **rendererTypeOut);
 static bool EiemRenderRuleMatches(const EiemModRule &rule,
                                   const char *relativePath, void *mesh,
-                                  const char *asset,
-                                  const char *source = nullptr);
+                                  const char *asset);
 static void EiemForgetModelOwner(EiemModelOwnerKind ownerKind, void *owner,
                                  const char *stage);
 static void EiemForgetModelInstance(void *model, const char *stage);
@@ -2759,7 +2758,7 @@ static void TraceMaterialInfoInit(void *self, void *renderer, void *configs, voi
           for (const auto &candidate : standaloneRules) {
             if (!candidate.path[0] &&
                 EiemRenderRuleMatches(candidate, "", mesh,
-                                      assetIdentity, sourceIdentity)) {
+                                      assetIdentity)) {
               standaloneMatch = true;
               break;
             }
