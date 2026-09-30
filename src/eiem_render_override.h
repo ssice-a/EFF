@@ -25,6 +25,11 @@ struct EiemRenderOverrideState {
   bool hasCommitEnabled = false;
   bool commitEnabled = true;
   bool hasMaterials = false;
+  // A tracked renderer can be owned by a mesh-only rule.  Keep this separate
+  // from hasMaterials: the latter means that source material slots were
+  // captured for restoration, while this flag says the bound rule actually
+  // supplies LZY material resources for the VFX path.
+  bool hasMaterialRule = false;
   bool hasSkinning = false;
   bool ownsMesh = false;
   std::vector<size_t> materialSlots;
@@ -322,6 +327,7 @@ static void EiemRememberRuleBinding(void *renderer,
     strncpy_s(state.modPath, sizeof(state.modPath), rule.modPath, _TRUNCATE);
     strncpy_s(state.renderSection, sizeof(state.renderSection), rule.section,
               _TRUNCATE);
+    state.hasMaterialRule = rule.materialCount != 0;
   }
   ReleaseSRWLockExclusive(&s_eiemOverrideLock);
 }
@@ -427,6 +433,89 @@ static bool EiemSameMeshIdentity(void *left, void *right) {
   return leftName[0] && rightName[0] && strcmp(leftName, rightName) == 0;
 }
 
+// Draw-only VFX clones do not necessarily have a Renderer override entry.
+// Their Mesh pointer can still be the original or generated Mesh owned by a
+// live LZY binding.  Resolve the rule from that binding without guessing from
+// a renderer name.  Multiple LOD renderers may share one generated Mesh, so
+// the first live binding for that Mesh is the logical rule owner.
+static bool EiemFindRenderRuleForMeshBinding(void *mesh,
+                                             EiemModRule *out) {
+  if (!mesh || !out) return false;
+  char modPath[MAX_PATH] = {};
+  char section[96] = {};
+  AcquireSRWLockShared(&s_eiemOverrideLock);
+  for (const auto &state : s_eiemOverrides) {
+    if (state.restorePending || !state.originalMesh ||
+        !state.replacementMesh)
+      continue;
+    if (!EiemSameMeshIdentity(state.originalMesh, mesh) &&
+        !EiemSameMeshIdentity(state.replacementMesh, mesh))
+      continue;
+    strncpy_s(modPath, sizeof(modPath), state.modPath, _TRUNCATE);
+    strncpy_s(section, sizeof(section), state.renderSection, _TRUNCATE);
+    break;
+  }
+  ReleaseSRWLockShared(&s_eiemOverrideLock);
+  return modPath[0] && section[0] &&
+         EiemFindRenderRuleBySection(modPath, section, out);
+}
+
+// Draw-only VFX renderers are short-lived, but all of them point at one of the
+// same source meshes used by the live character.  The identity comparison
+// below is intentionally thorough (asset origin/name fallbacks), so doing it
+// for every per-draw callback turns combat into a Unity reflection hot path.
+// Keep only positive results here: a negative result could race the initial
+// renderer registration and make a later afterimage miss its replacement.
+struct EiemSourceMeshFallbackCacheEntry {
+  void *source = nullptr;
+  void *replacement = nullptr;
+  LONG generation = 0;
+};
+static SRWLOCK s_eiemSourceMeshFallbackCacheLock = SRWLOCK_INIT;
+static EiemSourceMeshFallbackCacheEntry s_eiemSourceMeshFallbackCache[256];
+
+static bool EiemLookupSourceMeshFallbackCache(void *source,
+                                              void **replacementOut) {
+  if (replacementOut) *replacementOut = nullptr;
+  if (!source) return false;
+  const LONG generation =
+      InterlockedCompareExchange(&s_eiemModGeneration, 0, 0);
+  const size_t start = (reinterpret_cast<uintptr_t>(source) >> 4) & 255u;
+  AcquireSRWLockShared(&s_eiemSourceMeshFallbackCacheLock);
+  for (size_t step = 0; step < 8; ++step) {
+    const auto &entry = s_eiemSourceMeshFallbackCache[(start + step) & 255u];
+    if (!entry.source) break;
+    if (entry.source == source && entry.generation == generation) {
+      if (replacementOut) *replacementOut = entry.replacement;
+      ReleaseSRWLockShared(&s_eiemSourceMeshFallbackCacheLock);
+      return entry.replacement != nullptr;
+    }
+  }
+  ReleaseSRWLockShared(&s_eiemSourceMeshFallbackCacheLock);
+  return false;
+}
+
+static void EiemStoreSourceMeshFallbackCache(void *source,
+                                             void *replacement) {
+  if (!source || !replacement) return;
+  const LONG generation =
+      InterlockedCompareExchange(&s_eiemModGeneration, 0, 0);
+  const size_t start = (reinterpret_cast<uintptr_t>(source) >> 4) & 255u;
+  AcquireSRWLockExclusive(&s_eiemSourceMeshFallbackCacheLock);
+  size_t slot = start;
+  for (size_t step = 0; step < 8; ++step) {
+    const size_t candidate = (start + step) & 255u;
+    auto &entry = s_eiemSourceMeshFallbackCache[candidate];
+    if (!entry.source || entry.source == source ||
+        entry.generation != generation) {
+      slot = candidate;
+      break;
+    }
+  }
+  s_eiemSourceMeshFallbackCache[slot] = {source, replacement, generation};
+  ReleaseSRWLockExclusive(&s_eiemSourceMeshFallbackCacheLock);
+}
+
 static void *EiemReplacementForSourceMesh(void *renderer, void *mesh) {
   if (!renderer || !mesh) return nullptr;
   void *originalMesh = nullptr;
@@ -442,6 +531,10 @@ static void *EiemReplacementForSourceMesh(void *renderer, void *mesh) {
   ReleaseSRWLockShared(&s_eiemOverrideLock);
   if (replacement && EiemSameMeshIdentity(originalMesh, mesh))
     return replacement;
+
+  void *cachedReplacement = nullptr;
+  if (EiemLookupSourceMeshFallbackCache(mesh, &cachedReplacement))
+    return cachedReplacement;
 
   // A sprint VFX object may be a newly cloned Renderer.  It has the same
   // source Mesh identity but no per-Renderer ledger entry yet, so the exact
@@ -466,6 +559,7 @@ static void *EiemReplacementForSourceMesh(void *renderer, void *mesh) {
   }
   ReleaseSRWLockShared(&s_eiemOverrideLock);
   if (!uniqueReplacement || !candidates) return nullptr;
+  EiemStoreSourceMeshFallbackCache(mesh, uniqueReplacement);
   static volatile LONG s_eiemSourceMeshFallbackLogs = 0;
   const LONG logIndex = InterlockedIncrement(&s_eiemSourceMeshFallbackLogs);
   if (logIndex <= 32)

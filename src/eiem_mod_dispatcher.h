@@ -77,6 +77,19 @@ static LRESULT CALLBACK EiemModWndProc(HWND hwnd, UINT msg, WPARAM wParam,
 static DWORD WINAPI HotkeyThread(LPVOID) {
   Log("[OK] Hotkey thread started");
 
+  SetLastError(ERROR_SUCCESS);
+  HANDLE hotkeyOwnerMutex = CreateMutexW(
+      nullptr, FALSE, L"Global\\EIEM.Endfield.EffHotkeyOwner");
+  if (!hotkeyOwnerMutex) {
+    Log("[HOTKEY-TRACE] owner mutex create failed err=%lu", GetLastError());
+  } else if (GetLastError() == ERROR_ALREADY_EXISTS) {
+    Log("[HOTKEY-TRACE] duplicate EFF hotkey owner detected pid=%lu",
+        GetCurrentProcessId());
+  } else {
+    Log("[HOTKEY-TRACE] EFF hotkey owner acquired pid=%lu",
+        GetCurrentProcessId());
+  }
+
   void *domain = il2cpp_domain_get();
   if (domain)
     il2cpp_thread_attach(domain);
@@ -146,7 +159,11 @@ static DWORD WINAPI HotkeyThread(LPVOID) {
   MSG message = {};
   PeekMessageW(&message, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
   auto clearBindings = [&] {
-    for (const auto &binding : registered) UnregisterHotKey(nullptr, binding.id);
+    for (const auto &binding : registered) {
+      if (!UnregisterHotKey(nullptr, binding.id))
+        Log("[HOTKEY-TRACE] unregister failed id=%d vk=%u err=%lu",
+            binding.id, binding.chord.vk, GetLastError());
+    }
     registered.clear();
   };
   while (g_guiRunning && !g_shutdownRequested && IsWindowAlive(hwnd)) {
@@ -176,13 +193,38 @@ static DWORD WINAPI HotkeyThread(LPVOID) {
           &modGeneration, &controlGeneration, &selectedModPath,
           EiemModUsesUiKeyScope(foreground == hwnd,
                                 foreground == g_modUiHwnd, managerOpen));
+      DWORD foregroundPid = 0;
+      if (foreground) GetWindowThreadProcessId(foreground, &foregroundPid);
+      DWORD gameWindowPid = 0;
+      if (hwnd) GetWindowThreadProcessId(hwnd, &gameWindowPid);
+      Log("[HOTKEY-TRACE] rebind pid=%lu tid=%lu hwnd=%p gamePid=%lu "
+          "foreground=%p foregroundPid=%lu owned=%d modGen=%ld cfgGen=%ld",
+          GetCurrentProcessId(), GetCurrentThreadId(), hwnd, gameWindowPid,
+          foreground, foregroundPid,
+          (foreground == hwnd || (g_guiHwnd && foreground == g_guiHwnd) ||
+           (g_modUiHwnd && foreground == g_modUiHwnd)) ? 1 : 0,
+          modGeneration, configGeneration);
+      const int probeId = 0xBFFE;
+      BOOL probeF24 = RegisterHotKey(nullptr, probeId, MOD_NOREPEAT, VK_F24);
+      DWORD probeError = probeF24 ? ERROR_SUCCESS : GetLastError();
+      Log("[HOTKEY-TRACE] probe vk=%u result=%d err=%lu", VK_F24,
+          probeF24 ? 1 : 0, probeError);
+      if (probeF24) UnregisterHotKey(nullptr, probeId);
       int nextId = 1;
       auto bind = [&](EiemKeyChord chord, EiemModKeyBehavior behavior,
                       KeyAction action) -> bool {
         int id = nextId++;
-        if (id > 0xBFFF || !RegisterHotKey(nullptr, id, chord.modifiers | MOD_NOREPEAT, chord.vk)) {
-          Log("[HOTKEY] registration failed vk=%u modifiers=%u err=%lu; change key in INI",
-              chord.vk, chord.modifiers, GetLastError());
+        if (id > 0xBFFF || !RegisterHotKey(nullptr, id,
+                                           chord.modifiers | MOD_NOREPEAT,
+                                           chord.vk)) {
+          DWORD error = GetLastError();
+          DWORD failureForegroundPid = 0;
+          if (foreground) GetWindowThreadProcessId(foreground,
+                                                   &failureForegroundPid);
+          Log("[HOTKEY] registration failed id=%d vk=%u modifiers=%u "
+              "err=%lu pid=%lu tid=%lu foregroundPid=%lu; change key in INI",
+              id, chord.vk, chord.modifiers, error, GetCurrentProcessId(),
+              GetCurrentThreadId(), failureForegroundPid);
           return false;
         }
         registered.push_back({id, chord, behavior, action, modGeneration});
@@ -291,6 +333,7 @@ static DWORD WINAPI HotkeyThread(LPVOID) {
     g_origWndProc = nullptr;
   }
   s_eiemPersistentStates.Flush(true);
+  if (hotkeyOwnerMutex) CloseHandle(hotkeyOwnerMutex);
   g_guiRunning = false;
   Log("[INFO] Game window closed, hotkey thread exiting");
   return 0;

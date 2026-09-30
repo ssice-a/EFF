@@ -272,6 +272,39 @@
 #pragma comment(linker, "/export:vkWaitForFences=C:\\Windows\\System32\\vulkan-1.vkWaitForFences")
 #pragma comment(linker, "/export:vkWaitSemaphores=C:\\Windows\\System32\\vulkan-1.vkWaitSemaphores")
 
+static void SetDefaultEnvironmentVariable(const wchar_t *name, const wchar_t *value)
+{
+    SetLastError(ERROR_SUCCESS);
+    const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
+    if(required == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND)
+        SetEnvironmentVariableW(name, value);
+}
+
+static void EnableGfxTraceBeforeVulkanStarts()
+{
+    // The game loads this proxy before it creates its Vulkan instance. Enable the
+    // registered GfxTrace implicit layer here so the normal launcher path works
+    // without relying on an inherited shell environment or late DLL injection.
+    SetDefaultEnvironmentVariable(L"ENABLE_VULKAN_GFXTRACE_CAPTURE", L"1");
+    SetDefaultEnvironmentVariable(L"GFXTRACE_CAPTURE_FRAME", L"off");
+    SetDefaultEnvironmentVariable(L"GFXTRACE_CAPTURE_PATH", L"E:\\renderdoc\\captures\\Endfield\\endfield");
+}
+
+// The Vulkan loader evaluates implicit layers before the game creates its
+// VkInstance.  A previous RenderDoc/GfxTrace launcher can leave the enable
+// variables in the game's inherited environment, so merely removing our own
+// opt-in call is not enough to turn the layer off.  The layer manifests expose
+// versioned disable variables; set both of them explicitly for the normal
+// production proxy.  This is process-local and leaves RenderDoc installed for
+// a later, intentional capture launch.
+static void DisableExternalGpuCaptureBeforeVulkanStarts()
+{
+    SetEnvironmentVariableW(L"ENABLE_VULKAN_GFXTRACE_CAPTURE", L"0");
+    SetEnvironmentVariableW(L"ENABLE_VULKAN_RENDERDOC_CAPTURE", L"0");
+    SetEnvironmentVariableW(L"DISABLE_VULKAN_GFXTRACE_CAPTURE_1_46", L"1");
+    SetEnvironmentVariableW(L"DISABLE_VULKAN_RENDERDOC_CAPTURE_1_45", L"1");
+}
+
 static bool IsPluginDisabled(const char* dllName) {
     FILE* f = fopen("plugin\\applepie_manager_config.txt", "r");
     if (!f) return false;
@@ -328,6 +361,15 @@ void LoadPlugin() {
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
+#if defined(EIEM_ENABLE_GFXTRACE_CAPTURE)
+        // GPU capture is opt-in for diagnostic builds.  The normal plugin
+        // must not inject the RenderDoc/GfxTrace implicit layer on every
+        // launch because that changes the game's Vulkan startup and runtime
+        // cost even when no frame capture is requested.
+        EnableGfxTraceBeforeVulkanStarts();
+#else
+        DisableExternalGpuCaptureBeforeVulkanStarts();
+#endif
         CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)LoadPlugin, NULL, 0, NULL);
     }
     return TRUE;

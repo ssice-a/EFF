@@ -24,6 +24,11 @@ static size_t EiemManagedArrayLength(void *array);
 #include "eiem_registration_trace.h"
 #include "eiem_skin_probe.h"
 
+// Defined by scene_dump.h, which is included after this header. The census is
+// observation-only and runs on Unity's main thread after a model registry
+// boundary; it does not depend on F10 or the GUI hotkeys.
+static void EiemAutoSceneCensus();
+
 // Resource-loading hooks preserve the game's VFS/decryption pipeline and
 // observe logical identities. Only the Render executor applies declared
 // replacement resources to the matching game instances.
@@ -163,13 +168,27 @@ static void EiemExtractObjectName(const char *description, char *out,
                                    size_t outSize);
 typedef void (__fastcall *TraceSetSharedMeshFn)(void *self, void *mesh,
                                                  void *methodInfo);
+typedef void *(__fastcall *TraceGetMeshFn)(void *self, void *methodInfo);
 static void *s_origSkinnedMeshSetSharedMesh = nullptr;
 static void *s_origMeshFilterSetSharedMesh = nullptr;
+static void *s_origMeshFilterSetMesh = nullptr;
+static void *s_origMeshFilterGetMesh = nullptr;
 typedef bool (__fastcall *TraceRendererInfoMaterialCommitFn)(
     void *self, void *materialOrMaterials, void *methodInfo);
 static void *s_origRendererInfoTrySetSharedMaterial = nullptr;
 static void *s_origRendererInfoTrySetSharedMaterials = nullptr;
 static void *s_origRendererInfoTryReplaceSharedMaterials = nullptr;
+// RendererInfo material commits can synchronously re-enter themselves when
+// EIEM assigns the expanded VFX array through Renderer.sharedMaterials.  The
+// nested call must still execute the game's original method, but it must not
+// start another EIEM patch/prewarm/reapply transaction.  Without this guard,
+// the first attack afterimage can recurse through the commit hook until the
+// Unity thread stops responding.
+static thread_local LONG s_eiemRendererInfoCommitDepth = 0;
+struct EiemRendererInfoCommitGuard {
+  EiemRendererInfoCommitGuard() { ++s_eiemRendererInfoCommitDepth; }
+  ~EiemRendererInfoCommitGuard() { --s_eiemRendererInfoCommitDepth; }
+};
 #if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD)
 static bool EiemInvokeAdaptedNativeVfxCommit(
     void *self, void *input, bool inputIsArray, void *methodInfo,
@@ -256,10 +275,17 @@ typedef void (__fastcall *TraceCommandBufferSetGlobalConstantBufferFn)(
     int32_t size, void *methodInfo);
 typedef void (__fastcall *TraceCommandBufferSetGlobalBufferFn)(
     void *self, int32_t propertyId, void *buffer, void *methodInfo);
+typedef void (__fastcall *TraceCommandBufferDrawRendererFn)(
+    void *self, void *renderer, void *material, void *methodInfo);
+typedef void (__fastcall *TraceCommandBufferDrawRenderer4Fn)(
+    void *self, void *renderer, void *material, int32_t submeshIndex,
+    int32_t shaderPass, void *methodInfo);
 static void *s_origCommandBufferSetGlobalConstantBuffer0 = nullptr;
 static void *s_origCommandBufferSetGlobalBufferId = nullptr;
 static void *s_origCommandBufferSetGlobalConstantBuffer = nullptr;
 static void *s_origCommandBufferSetGlobalBuffer = nullptr;
+static void *s_origCommandBufferDrawRenderer = nullptr;
+static void *s_origCommandBufferDrawRenderer4 = nullptr;
 // HG GPU-driven renderer is the game's custom render submission path.  These
 // hooks only identify the command buffer/list submitted during a bounded
 // skin transaction; they do not alter renderer state or GPU resources.
@@ -559,7 +585,8 @@ static bool EiemApplyStandaloneRenderRules(void *model, const char *stage,
                                            const std::vector<EiemModRule> *preparedRules = nullptr);
 static bool EiemApplyStandaloneRenderRulesToRenderer(
     void *meshOwner, void *drawRenderer, void *mesh,
-    const char *rendererType, void *methodInfo, const char *stage);
+    const char *rendererType, void *methodInfo, const char *stage,
+    bool includeGameHidden = false);
 static bool EiemReapplyRendererMaterialsAfterCommit(void *renderer,
                                                      const char *stage);
 static bool EiemResolveMeshBonesFromAssembly(
@@ -809,6 +836,7 @@ static bool EiemUpdateRendererShapes(void *renderer, const char *type,
 }
 
 #include "eiem_render_override.h"
+#include "eiem_mesh_usage_graph.h"
 
 struct EiemResolvedRenderRule {
   EiemModRule rule = {};
@@ -928,19 +956,27 @@ static bool EiemAssignRendererMaterials(void *renderer, void *materials,
                 _TRUNCATE);
     return false;
   }
-  void *current = Invoke(g_renderer_get_sharedMaterials, renderer);
-  if (EiemManagedObjectArraySame(materials, current)) return true;
-  void *params[] = {materials};
-  Invoke(s_eiemRendererSetSharedMaterials, renderer, params);
-  void *actual = Invoke(g_renderer_get_sharedMaterials, renderer);
-  if (!EiemManagedObjectArraySame(materials, actual)) {
+  __try {
+    void *current = Invoke(g_renderer_get_sharedMaterials, renderer);
+    if (EiemManagedObjectArraySame(materials, current)) return true;
+    void *params[] = {materials};
+    Invoke(s_eiemRendererSetSharedMaterials, renderer, params);
+    void *actual = Invoke(g_renderer_get_sharedMaterials, renderer);
+    if (!EiemManagedObjectArraySame(materials, actual)) {
+      if (error)
+        strncpy_s(error, errorSize,
+                  "Unity Renderer material assignment read-back failed",
+                  _TRUNCATE);
+      return false;
+    }
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
     if (error)
       strncpy_s(error, errorSize,
-                "Unity Renderer material assignment read-back failed",
+                "Unity Renderer material assignment raised an access exception",
                 _TRUNCATE);
     return false;
   }
-  return true;
 }
 
 // Expose the existing per-instance baseline while RendererInfo._Init reads
@@ -2480,14 +2516,15 @@ static void TraceEntityRenderHelperInitRenderAndMaterial(void *self,
 
 static bool EiemApplyStandaloneRenderRulesToRenderer(
     void *meshOwner, void *drawRenderer, void *mesh,
-    const char *rendererType, void *methodInfo, const char *stage) {
+    const char *rendererType, void *methodInfo, const char *stage,
+    bool includeGameHidden) {
   (void)stage;
   if (!EiemOnUnityThread()) return false;
   std::vector<EiemModRule> rules;
   EiemFindStandaloneRenderRules(&rules);
   return EiemApplyRenderRuleSetToRenderer(
       nullptr, meshOwner, drawRenderer, mesh, rendererType, methodInfo, rules,
-      "<mesh setter>", nullptr, nullptr, nullptr, nullptr);
+      "<mesh setter>", nullptr, nullptr, nullptr, nullptr, includeGameHidden);
 }
 
 #include "eiem_assembly_binding.h"
@@ -2589,11 +2626,89 @@ static void *EiemReadRendererFromMaterialInfo(void *rendererInfo) {
   }
 }
 
+// RendererInfo._Init is also the construction boundary for short-lived VFX
+// renderers.  Some afterimage prefabs assign their Mesh before the public
+// MeshFilter/SkinnedMeshRenderer setter hooks are reached, so observe the
+// current Mesh here as a fallback lineage edge.  This is diagnostic-only and
+// never changes the RendererInfo or Mesh state.
+static void EiemMeshGraphObserveRendererInfoInit(void *renderer) {
+  if (!kEiemEnableMeshUsageGraph || !renderer) return;
+  const char *rendererType = "RendererInfo";
+  void *mesh = EiemReadLodRendererMesh(renderer, &rendererType);
+  if (!mesh) {
+    // A few game builds pass the MeshFilter/SkinnedMeshRenderer component
+    // directly instead of the draw Renderer.  Keep the existing read helper
+    // as a guarded fallback for that layout.
+    mesh = EiemReadSharedMesh(renderer, "SkinnedMeshRenderer");
+    if (mesh) rendererType = "SkinnedMeshRenderer";
+  }
+  if (!mesh) {
+    mesh = EiemReadSharedMesh(renderer, "MeshFilter");
+    if (mesh) rendererType = "MeshFilter";
+  }
+  if (mesh)
+    EiemMeshGraphObserveMeshAssignment(renderer, mesh, mesh, rendererType,
+                                       "RendererInfo._Init");
+}
+
 static void TraceMaterialInfoInit(void *self, void *renderer, void *configs, void *methodInfo) {
   using InitFn = void (*)(void *, void *, void *, void *);
   auto original = (InitFn)s_origMaterialInfoInit;
+  EiemMeshGraphObserveRendererInfoInit(renderer);
+  bool tracked = false;
+  AcquireSRWLockShared(&s_eiemOverrideLock);
+  tracked = renderer && EiemFindOverrideLocked(renderer) != SIZE_MAX;
+  ReleaseSRWLockShared(&s_eiemOverrideLock);
+  if (!tracked && renderer) {
+    // The original-model side of the A/B run is intentionally untracked.
+    // Filter by identity before logging so the probe does not consume a
+    // global startup budget on unrelated NPC/UI renderers.
+    void *probeMesh = EiemReadSharedMesh(renderer, "SkinnedMeshRenderer");
+    if (!probeMesh) probeMesh = EiemReadSharedMesh(renderer, "MeshFilter");
+    char rendererName[160] = {};
+    char hierarchy[768] = {};
+    char meshName[192] = {};
+    char originPath[768] = {};
+    int64_t originHash = 0;
+    TraceReadUnityObjectName(renderer, rendererName, sizeof(rendererName));
+    TraceBuildRendererHierarchy(renderer, hierarchy, sizeof(hierarchy));
+    TraceReadUnityObjectName(probeMesh, meshName, sizeof(meshName));
+    TraceLookupAssetOrigin(probeMesh, &originHash, originPath,
+                           sizeof(originPath));
+    const bool target = strstr(rendererName, "lizhiyan") != nullptr ||
+                        strstr(hierarchy, "lizhiyan") != nullptr ||
+                        strstr(meshName, "lizhiyan") != nullptr ||
+                        strstr(originPath, "lizhiyan") != nullptr;
+    static volatile LONG s_eiemAbInitProbeLogs = 0;
+    const LONG logIndex = target ? InterlockedIncrement(&s_eiemAbInitProbeLogs)
+                                 : 0;
+    // The afterimage A/B pass is intentionally allowed a larger observation
+    // budget.  These are RendererInfo construction events, not per-frame
+    // calls, and the extra records are needed to compare the two attacks after
+    // an F10 generation reload.
+#if defined(EIEM_AFTERIMAGE_DIAGNOSTICS_BUILD)
+    constexpr LONG kAbInitProbeLimit = 512;
+#else
+    constexpr LONG kAbInitProbeLimit = 128;
+#endif
+    if (target && logIndex <= kAbInitProbeLimit) {
+      bool enabled = true;
+      bool forceOff = false;
+      EiemReadRendererEnabled(renderer, &enabled);
+      EiemReadRendererForceRenderingOff(renderer, &forceOff);
+      Log("[AB-INIT-PROBE] index=%ld info=%p renderer=%p tracked=0 "
+          "name=%s mesh=%p meshName=%s originHash=%lld originPath=%s "
+          "enabled=%d forceOff=%d hierarchy=%s",
+          logIndex, self, renderer, rendererName[0] ? rendererName : "<none>",
+          probeMesh, meshName[0] ? meshName : "<none>",
+          (long long)originHash, originPath[0] ? originPath : "<none>",
+          enabled ? 1 : 0, forceOff ? 1 : 0,
+          hierarchy[0] ? hierarchy : "<none>");
+    }
+  }
   if (!kEiemEnableMaterialLifecycle) {
     if (original) original(self, renderer, configs, methodInfo);
+    EiemMeshGraphObserveRendererInfoInit(renderer);
     return;
   }
   bool sourceReady = false;
@@ -2603,6 +2718,7 @@ static void TraceMaterialInfoInit(void *self, void *renderer, void *configs, voi
     // Never skip game initialization, including when source exposure failed.
     if (original) original(self, renderer, configs, methodInfo);
   }
+  EiemMeshGraphObserveRendererInfoInit(renderer);
   if (sourceReady) {
     // EntityRenderHelper owns a complete renderer-registration pass.  Do not
     // replace one Mesh while that pass is still iterating: later game systems
@@ -2623,10 +2739,59 @@ static void TraceMaterialInfoInit(void *self, void *renderer, void *configs, voi
     bool applied = false;
     if (EiemIsSkinnedRenderer(renderer)) {
       void *mesh = EiemReadSharedMesh(renderer, "SkinnedMeshRenderer");
-      if (mesh)
+      if (mesh) {
+        // A short-lived attack afterimage can initialize a RendererInfo while
+        // its Renderer is still disabled/force-off.  It has no model-root
+        // replay boundary, so record the source-identity hit here and let the
+        // standalone mesh path apply the same rule with hidden renderers
+        // included.  This is mesh-only diagnostics; VFX material commits keep
+        // their separate native-input gate.
+        std::vector<EiemModRule> standaloneRules;
+        EiemFindStandaloneRenderRules(&standaloneRules);
+        char sourceIdentity[768] = {};
+        char assetIdentity[192] = {};
+        const bool identityRead = EiemReadLiveMeshIdentity(
+            mesh, sourceIdentity, sizeof(sourceIdentity), assetIdentity,
+            sizeof(assetIdentity));
+        bool standaloneMatch = false;
+        if (identityRead) {
+          for (const auto &candidate : standaloneRules) {
+            if (!candidate.path[0] &&
+                EiemRenderRuleMatches(candidate, "", mesh,
+                                      assetIdentity)) {
+              standaloneMatch = true;
+              break;
+            }
+          }
+        }
+        if (standaloneMatch) {
+          static volatile LONG s_eiemIndependentMeshInitLogs = 0;
+          const LONG logIndex =
+              InterlockedIncrement(&s_eiemIndependentMeshInitLogs);
+          if (logIndex <= 128) {
+            bool enabled = true;
+            bool forceOff = false;
+            EiemReadRendererEnabled(renderer, &enabled);
+            EiemReadRendererForceRenderingOff(renderer, &forceOff);
+            char rendererName[160] = {};
+            char meshName[192] = {};
+            TraceReadUnityObjectName(renderer, rendererName,
+                                     sizeof(rendererName));
+            TraceReadUnityObjectName(mesh, meshName, sizeof(meshName));
+            Log("[MOD-INDEPENDENT-MESH] phase=RendererInfo._Init "
+                "renderer=%p name=%s mesh=%p meshName=%s asset=%s "
+                "enabled=%d forceOff=%d source=%s",
+                renderer, rendererName[0] ? rendererName : "<none>", mesh,
+                meshName[0] ? meshName : "<none>",
+                assetIdentity[0] ? assetIdentity : "<none>", enabled ? 1 : 0,
+                forceOff ? 1 : 0,
+                sourceIdentity[0] ? sourceIdentity : "<none>");
+          }
+        }
         applied = EiemApplyStandaloneRenderRulesToRenderer(
             renderer, renderer, mesh, "SkinnedMeshRenderer", methodInfo,
-            "RendererInfo._Init");
+            "RendererInfo._Init", true);
+      }
     }
     // Path-qualified rules cannot be newly resolved without a model root, but
     // a previously bound Renderer still needs its material slots restored
@@ -2645,22 +2810,70 @@ static void TraceMaterialInfoInit(void *self, void *renderer, void *configs, voi
 
 #if defined(EIEM_MATERIAL_LIFECYCLE_PROBE_BUILD)
 static volatile LONG s_eiemMaterialLifecycleProbeCalls = 0;
+static volatile LONG s_eiemMaterialLifecycleProbeTargetLogs = 0;
 
 static void EiemLogMaterialLifecycleProbe(const char *method, const char *phase,
                                          void *info, void *input,
                                          bool inputIsArray, void *renderer,
                                          LONG callIndex) {
-  if (callIndex < 0 || callIndex >= 500 || !renderer) return;
+  if (callIndex < 0 || !renderer) return;
   AcquireSRWLockShared(&s_eiemOverrideLock);
   const bool tracked = EiemFindOverrideLocked(renderer) != SIZE_MAX;
   ReleaseSRWLockShared(&s_eiemOverrideLock);
-  if (!tracked) return;
   char rendererName[160] = {};
   TraceReadUnityObjectName(renderer, rendererName, sizeof(rendererName));
+  void *probeMesh = EiemReadSharedMesh(renderer, "SkinnedMeshRenderer");
+  if (!probeMesh) probeMesh = EiemReadSharedMesh(renderer, "MeshFilter");
+  char meshName[192] = {};
+  char hierarchy[768] = {};
+  TraceReadUnityObjectName(probeMesh, meshName, sizeof(meshName));
+  TraceBuildRendererHierarchy(renderer, hierarchy, sizeof(hierarchy));
+  const bool target = strstr(rendererName, "S_actor_lizhiyan_body") != nullptr ||
+                      strstr(rendererName, "S_actor_lizhiyan_cloth") != nullptr ||
+                      strstr(meshName, "S_actor_lizhiyan_body") != nullptr ||
+                      strstr(meshName, "S_actor_lizhiyan_cloth") != nullptr ||
+                      strstr(hierarchy, "S_actor_lizhiyan_body") != nullptr ||
+                      strstr(hierarchy, "S_actor_lizhiyan_cloth") != nullptr
+#if defined(EIEM_AFTERIMAGE_DIAGNOSTICS_BUILD)
+                      || strstr(rendererName, "S_item_effect_lizhiyancombo") != nullptr ||
+                      strstr(meshName, "S_item_effect_lizhiyancombo") != nullptr ||
+                      strstr(hierarchy, "S_item_effect_lizhiyancombo") != nullptr ||
+                      strstr(hierarchy, "Att_widget_lizhiyan") != nullptr
+#endif
+                      ;
+  // Keep the normal tracked probe intact, but include the exact body/cloth
+  // targets even when the original-model side of an A/B run is untracked.
+  if (!tracked && !target) return;
+  const LONG targetLogIndex =
+      InterlockedIncrement(&s_eiemMaterialLifecycleProbeTargetLogs) - 1;
+#if defined(EIEM_AFTERIMAGE_DIAGNOSTICS_BUILD)
+  constexpr LONG kProbeLogLimit = 2048;
+#else
+  constexpr LONG kProbeLogLimit = 500;
+#endif
+  if (targetLogIndex >= kProbeLogLimit) return;
   auto item = [](void *array, size_t index) -> void * {
     if (!array || index >= EiemManagedArrayLength(array)) return nullptr;
     __try { return *(void **)((char *)array + 32 + index * sizeof(void *)); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+  };
+  auto names = [&](void *array, bool isArray, char *out, size_t cap) {
+    if (!out || !cap) return;
+    out[0] = '\0';
+    const size_t count = isArray ? EiemManagedArrayLength(array)
+                                 : (array ? 1u : 0u);
+    const size_t bounded = count > 64 ? 64 : count;
+    for (size_t index = 0; index < bounded; ++index) {
+      void *material = isArray ? item(array, index) : (index == 0 ? array : nullptr);
+      char materialName[128] = {};
+      if (material) TraceReadUnityObjectName(material, materialName,
+                                             sizeof(materialName));
+      char entry[160] = {};
+      _snprintf_s(entry, sizeof(entry), _TRUNCATE, "%zu:%s", index,
+                  materialName[0] ? materialName : "<none>");
+      if (index) strncat_s(out, cap, ",", _TRUNCATE);
+      strncat_s(out, cap, entry, _TRUNCATE);
+    }
   };
   void *current = g_renderer_get_sharedMaterials
                       ? Invoke(g_renderer_get_sharedMaterials, renderer) : nullptr;
@@ -2677,24 +2890,38 @@ static void EiemLogMaterialLifecycleProbe(const char *method, const char *phase,
   void *replacing0 = item(replacing, 0);
   char inputName[128] = {}, currentName[128] = {}, lastName[128] = {};
   char replacingName[128] = {};
+  char inputNames[2048] = {}, currentNames[2048] = {}, replacingNames[2048] = {};
   if (input0) TraceReadUnityObjectName(input0, inputName, sizeof(inputName));
   if (current0) TraceReadUnityObjectName(current0, currentName, sizeof(currentName));
   if (currentLast) TraceReadUnityObjectName(currentLast, lastName, sizeof(lastName));
   if (replacing0) TraceReadUnityObjectName(replacing0, replacingName,
                                             sizeof(replacingName));
-  Log("[MATERIAL-LIFECYCLE-PROBE] call=%ld method=%s phase=%s info=%p renderer=%p "
-      "name=%s input=%p/%zu input0=%p:%s current=%p/%zu current0=%p:%s "
-      "last=%p:%s replacing=%p/%zu replacing0=%p:%s active=%d",
-      callIndex, method, phase, info, renderer, rendererName,
+  names(input, inputIsArray, inputNames, sizeof(inputNames));
+  names(current, true, currentNames, sizeof(currentNames));
+  names(replacing, true, replacingNames, sizeof(replacingNames));
+  const LONG generation =
+      InterlockedCompareExchange(&s_eiemModGeneration, 0, 0);
+  Log("[MATERIAL-LIFECYCLE-PROBE] call=%ld targetIndex=%ld generation=%ld "
+      "tracked=%d method=%s phase=%s info=%p renderer=%p name=%s meshName=%s "
+      "input=%p/%zu input0=%p:%s inputNames=%s current=%p/%zu current0=%p:%s "
+      "currentNames=%s last=%p:%s replacing=%p/%zu replacing0=%p:%s "
+      "replacingNames=%s active=%d hierarchy=%s",
+      callIndex, targetLogIndex, generation, tracked ? 1 : 0, method, phase,
+      info, renderer, rendererName[0] ? rendererName : "<none>",
+      meshName[0] ? meshName : "<none>",
       input, inputIsArray ? EiemManagedArrayLength(input) : (input ? 1u : 0u),
-      input0, inputName, current, EiemManagedArrayLength(current),
-      current0, currentName, currentLast, lastName, replacing,
-      EiemManagedArrayLength(replacing), replacing0, replacingName,
-      replacingActive ? 1 : 0);
+      input0, inputName[0] ? inputName : "<none>", inputNames,
+      current, EiemManagedArrayLength(current), current0,
+      currentName[0] ? currentName : "<none>", currentNames, currentLast,
+      lastName[0] ? lastName : "<none>", replacing,
+      EiemManagedArrayLength(replacing), replacing0,
+      replacingName[0] ? replacingName : "<none>", replacingNames,
+      replacingActive ? 1 : 0, hierarchy[0] ? hierarchy : "<none>");
 }
 #endif
 
-#if defined(EIEM_PRESERVE_NATIVE_VFX_MATERIALS_BUILD)
+#if defined(EIEM_PRESERVE_NATIVE_VFX_MATERIALS_BUILD) && \
+    !defined(EIEM_NATIVE_VFX_PASSTHROUGH_TEXTURE_PATCH_BUILD)
 static bool EiemNativeSprintMaterial(void *material) {
   if (!material) return false;
   char name[160] = {};
@@ -2725,8 +2952,17 @@ static bool EiemPreserveNativeSprintCommit(void *materials, bool array) {
                : EiemNativeSprintMaterial(materials);
 }
 #else
+// The passthrough path above is authoritative for real native VFX instances.
+// Do not classify a commit as "sprint" from the material name alone: normal
+// attacks can create the same *_VFXInstance name and otherwise skip the EFF
+// material reapply, leaving the source textures visible until the next dash.
 static bool EiemPreserveNativeSprintCommit(void *, bool) { return false; }
 #endif
+
+// Material commit hooks can run once for every LOD/shadow renderer during a
+// sprint.  Keep the adapter evidence bounded; unbounded synchronous file I/O
+// here makes a render hitch look like a material deadlock.
+static volatile LONG s_eiemVfxAdapterCommitLogs = 0;
 
 #if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD) && \
     defined(EIEM_PERDRAW_END_RESTORE_BUILD)
@@ -2740,16 +2976,33 @@ static bool EiemPrewarmNativeVfxSlotMaterials(void *info, void *renderer,
                                               bool inputIsArray);
 #endif
 
+#if defined(EIEM_SPRINT_TIMING_PROBE_BUILD)
+// Observation-only ordering probe.  The implementation lives in the
+// visibility controller header below, after the RendererInfo material fields
+// and VFX helpers are available.
+static void EiemSprintTimingProbeOnMaterialCommit(
+    void *info, void *renderer, const char *method, bool nativeResult,
+    bool adapted);
+#endif
+
 static bool TraceRendererInfoTrySetSharedMaterial(void *self, void *material,
                                                   void *methodInfo) {
+  auto original = (TraceRendererInfoMaterialCommitFn)
+      s_origRendererInfoTrySetSharedMaterial;
+  if (s_eiemRendererInfoCommitDepth > 0)
+    return original ? original(self, material, methodInfo) : false;
+  EiemRendererInfoCommitGuard commitGuard;
+#if defined(EIEM_MESH_USAGE_GRAPH_BUILD)
+  EiemMeshGraphObserveMaterialCommit(
+      EiemReadRendererFromMaterialInfo(self), material, false,
+      "TrySetSharedMaterial", "before");
+#endif
 #if defined(EIEM_MATERIAL_LIFECYCLE_PROBE_BUILD)
   void *renderer = EiemReadRendererFromMaterialInfo(self);
   const LONG probeCall = InterlockedIncrement(&s_eiemMaterialLifecycleProbeCalls) - 1;
   EiemLogMaterialLifecycleProbe("TrySetSharedMaterial", "before", self,
                                 material, false, renderer, probeCall);
 #endif
-  auto original = (TraceRendererInfoMaterialCommitFn)
-      s_origRendererInfoTrySetSharedMaterial;
   bool adapted = false;
 #if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD)
   const bool result = EiemInvokeAdaptedNativeVfxCommit(
@@ -2762,9 +3015,19 @@ static bool TraceRendererInfoTrySetSharedMaterial(void *self, void *material,
                                 material, false, renderer, probeCall);
 #endif
   void *commitRenderer = EiemReadRendererFromMaterialInfo(self);
+#if defined(EIEM_MESH_USAGE_GRAPH_BUILD)
+  EiemMeshGraphObserveMaterialCommit(commitRenderer, material, false,
+                                     "TrySetSharedMaterial", "native");
+#endif
+#if defined(EIEM_SPRINT_TIMING_PROBE_BUILD)
+  EiemSprintTimingProbeOnMaterialCommit(
+      self, commitRenderer, "TrySetSharedMaterial", result, adapted);
+#endif
   if (adapted) {
-    Log("[MOD-MATERIAL-VFX-SLOT-ADAPTER] method=TrySetSharedMaterial renderer=%p",
-        commitRenderer);
+    const LONG logIndex = InterlockedIncrement(&s_eiemVfxAdapterCommitLogs);
+    if (logIndex <= 64)
+      Log("[MOD-MATERIAL-VFX-SLOT-ADAPTER] method=TrySetSharedMaterial renderer=%p",
+          commitRenderer);
 #if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD) && \
     defined(EIEM_PERDRAW_END_RESTORE_BUILD)
     EiemPrewarmNativeVfxSlotMaterials(self, commitRenderer, material, false);
@@ -2786,14 +3049,22 @@ static bool TraceRendererInfoTrySetSharedMaterial(void *self, void *material,
 static bool TraceRendererInfoTrySetSharedMaterials(void *self,
                                                    void *materials,
                                                    void *methodInfo) {
+  auto original = (TraceRendererInfoMaterialCommitFn)
+      s_origRendererInfoTrySetSharedMaterials;
+  if (s_eiemRendererInfoCommitDepth > 0)
+    return original ? original(self, materials, methodInfo) : false;
+  EiemRendererInfoCommitGuard commitGuard;
+#if defined(EIEM_MESH_USAGE_GRAPH_BUILD)
+  EiemMeshGraphObserveMaterialCommit(
+      EiemReadRendererFromMaterialInfo(self), materials, true,
+      "TrySetSharedMaterials", "before");
+#endif
 #if defined(EIEM_MATERIAL_LIFECYCLE_PROBE_BUILD)
   void *renderer = EiemReadRendererFromMaterialInfo(self);
   const LONG probeCall = InterlockedIncrement(&s_eiemMaterialLifecycleProbeCalls) - 1;
   EiemLogMaterialLifecycleProbe("TrySetSharedMaterials", "before", self,
                                 materials, true, renderer, probeCall);
 #endif
-  auto original = (TraceRendererInfoMaterialCommitFn)
-      s_origRendererInfoTrySetSharedMaterials;
   bool adapted = false;
 #if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD)
   const bool result = EiemInvokeAdaptedNativeVfxCommit(
@@ -2806,9 +3077,19 @@ static bool TraceRendererInfoTrySetSharedMaterials(void *self,
                                 materials, true, renderer, probeCall);
 #endif
   void *commitRenderer = EiemReadRendererFromMaterialInfo(self);
+#if defined(EIEM_MESH_USAGE_GRAPH_BUILD)
+  EiemMeshGraphObserveMaterialCommit(commitRenderer, materials, true,
+                                     "TrySetSharedMaterials", "native");
+#endif
+#if defined(EIEM_SPRINT_TIMING_PROBE_BUILD)
+  EiemSprintTimingProbeOnMaterialCommit(
+      self, commitRenderer, "TrySetSharedMaterials", result, adapted);
+#endif
   if (adapted) {
-    Log("[MOD-MATERIAL-VFX-SLOT-ADAPTER] method=TrySetSharedMaterials renderer=%p",
-        commitRenderer);
+    const LONG logIndex = InterlockedIncrement(&s_eiemVfxAdapterCommitLogs);
+    if (logIndex <= 64)
+      Log("[MOD-MATERIAL-VFX-SLOT-ADAPTER] method=TrySetSharedMaterials renderer=%p",
+          commitRenderer);
 #if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD) && \
     defined(EIEM_PERDRAW_END_RESTORE_BUILD)
     EiemPrewarmNativeVfxSlotMaterials(self, commitRenderer, materials, true);
@@ -2830,14 +3111,22 @@ static bool TraceRendererInfoTrySetSharedMaterials(void *self,
 static bool TraceRendererInfoTryReplaceSharedMaterials(void *self,
                                                        void *materials,
                                                        void *methodInfo) {
+  auto original = (TraceRendererInfoMaterialCommitFn)
+      s_origRendererInfoTryReplaceSharedMaterials;
+  if (s_eiemRendererInfoCommitDepth > 0)
+    return original ? original(self, materials, methodInfo) : false;
+  EiemRendererInfoCommitGuard commitGuard;
+#if defined(EIEM_MESH_USAGE_GRAPH_BUILD)
+  EiemMeshGraphObserveMaterialCommit(
+      EiemReadRendererFromMaterialInfo(self), materials, true,
+      "TryReplaceSharedMaterials", "before");
+#endif
 #if defined(EIEM_MATERIAL_LIFECYCLE_PROBE_BUILD)
   void *renderer = EiemReadRendererFromMaterialInfo(self);
   const LONG probeCall = InterlockedIncrement(&s_eiemMaterialLifecycleProbeCalls) - 1;
   EiemLogMaterialLifecycleProbe("TryReplaceSharedMaterials", "before", self,
                                 materials, true, renderer, probeCall);
 #endif
-  auto original = (TraceRendererInfoMaterialCommitFn)
-      s_origRendererInfoTryReplaceSharedMaterials;
   bool adapted = false;
 #if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD)
   const bool result = EiemInvokeAdaptedNativeVfxCommit(
@@ -2850,9 +3139,19 @@ static bool TraceRendererInfoTryReplaceSharedMaterials(void *self,
                                 materials, true, renderer, probeCall);
 #endif
   void *commitRenderer = EiemReadRendererFromMaterialInfo(self);
+#if defined(EIEM_MESH_USAGE_GRAPH_BUILD)
+  EiemMeshGraphObserveMaterialCommit(commitRenderer, materials, true,
+                                     "TryReplaceSharedMaterials", "native");
+#endif
+#if defined(EIEM_SPRINT_TIMING_PROBE_BUILD)
+  EiemSprintTimingProbeOnMaterialCommit(
+      self, commitRenderer, "TryReplaceSharedMaterials", result, adapted);
+#endif
   if (adapted) {
-    Log("[MOD-MATERIAL-VFX-SLOT-ADAPTER] method=TryReplaceSharedMaterials renderer=%p",
-        commitRenderer);
+    const LONG logIndex = InterlockedIncrement(&s_eiemVfxAdapterCommitLogs);
+    if (logIndex <= 64)
+      Log("[MOD-MATERIAL-VFX-SLOT-ADAPTER] method=TryReplaceSharedMaterials renderer=%p",
+          commitRenderer);
 #if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD) && \
     defined(EIEM_PERDRAW_END_RESTORE_BUILD)
     EiemPrewarmNativeVfxSlotMaterials(self, commitRenderer, materials, true);
@@ -3000,6 +3299,12 @@ struct EiemMeshObservation {
   char rendererName[192];
   char meshName[192];
   char hierarchyPath[512];
+  int64_t originHash;
+  char originPath[768];
+  int32_t vertexCount;
+  int32_t subMeshCount;
+  int32_t indexCounts[16];
+  int32_t materialCount;
   void *renderers[16];
   uint32_t rendererCount;
   uint32_t instanceCount;
@@ -3045,6 +3350,12 @@ static void TraceBuildRendererHierarchy(void *renderer, char *out,
 }
 
 static void TraceFillMeshObservationDetails(EiemMeshObservation &entry) {
+  entry.originHash = 0;
+  entry.originPath[0] = '\0';
+  entry.vertexCount = -1;
+  entry.subMeshCount = -1;
+  entry.materialCount = -1;
+  memset(entry.indexCounts, 0xFF, sizeof(entry.indexCounts));
   char rendererText[512] = {};
   char meshText[512] = {};
   TraceDescribeObject(entry.renderer, rendererText, sizeof(rendererText));
@@ -3054,6 +3365,39 @@ static void TraceFillMeshObservationDetails(EiemMeshObservation &entry) {
   strncpy_s(entry.meshName, sizeof(entry.meshName), meshText, _TRUNCATE);
   TraceBuildRendererHierarchy(entry.renderer, entry.hierarchyPath,
                               sizeof(entry.hierarchyPath));
+  TraceLookupAssetOrigin(entry.mesh, &entry.originHash, entry.originPath,
+                         sizeof(entry.originPath));
+  if (entry.mesh && g_mesh_get_vertexCount) {
+    __try {
+      void *boxed = Invoke(g_mesh_get_vertexCount, entry.mesh);
+      if (boxed) entry.vertexCount = *(int32_t *)((char *)boxed + 16);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+  }
+  if (entry.mesh && g_mesh_get_subMeshCount) {
+    __try {
+      void *boxed = Invoke(g_mesh_get_subMeshCount, entry.mesh);
+      if (boxed) entry.subMeshCount = *(int32_t *)((char *)boxed + 16);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+  }
+  if (entry.mesh && g_mesh_GetIndexCount && entry.subMeshCount >= 0 &&
+      entry.subMeshCount <= (int32_t)_countof(entry.indexCounts)) {
+    for (int32_t submesh = 0; submesh < entry.subMeshCount; ++submesh) {
+      __try {
+        void *params[] = {&submesh};
+        void *boxed = Invoke(g_mesh_GetIndexCount, entry.mesh, params);
+        if (boxed) entry.indexCounts[submesh] = *(int32_t *)((char *)boxed + 16);
+      } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+  }
+  if (entry.renderer && g_renderer_get_sharedMaterials) {
+    __try {
+      void *materials = Invoke(g_renderer_get_sharedMaterials, entry.renderer);
+      if (materials) {
+        const int32_t count = *(int32_t *)((char *)materials + 24);
+        if (count >= 0 && count <= 64) entry.materialCount = count;
+      }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+  }
 }
 
 static void TraceRememberMeshObservation(void *renderer, void *mesh,
@@ -3167,6 +3511,14 @@ static void TraceVisitRendererType(void *rendererClass,
 static void TraceObserveRendererVisitor(void *renderer, void *mesh,
                                         const char *rendererType,
                                         void *) {
+  // Scene enumeration is the fallback for MeshFilters that were populated by
+  // prefab deserialization/native code before EIEM's setter hooks existed.
+  // This is especially important for the short-lived canying afterimage: it
+  // can be visible in the scene while never entering a managed Mesh setter or
+  // RendererInfo._Init path.  The usage graph remains observation-only.
+  if (kEiemEnableMeshUsageGraph && renderer && mesh)
+    EiemMeshGraphObserveMeshAssignment(renderer, mesh, mesh, rendererType,
+                                       "scene-enumeration");
   TraceRememberMeshObservation(renderer, mesh, rendererType);
 }
 
@@ -5277,6 +5629,8 @@ static void TraceSkinnedMeshSetSharedMesh(void *self, void *mesh,
   auto original = (TraceSetSharedMeshFn)s_origSkinnedMeshSetSharedMesh;
   if (s_eiemApplyingModMeshAssignment) {
     if (original) original(self, mesh, methodInfo);
+    EiemMeshGraphObserveMeshAssignment(
+        self, mesh, mesh, "SkinnedMeshRenderer", "mod-assignment");
     return;
   }
   if (InterlockedCompareExchange(&s_traceSetterThreadLogged, 1, 0) == 0)
@@ -5288,12 +5642,76 @@ static void TraceSkinnedMeshSetSharedMesh(void *self, void *mesh,
   if (kEiemEnableContinuousMeshObservation)
     TraceRememberMeshObservation(self, mesh, "SkinnedMeshRenderer");
   void *sourceMesh = mesh;
+  EiemMeshGraphObserveMeshAssignment(
+      self, sourceMesh, sourceMesh, "SkinnedMeshRenderer", "request");
+#if defined(EIEM_AFTERIMAGE_DIAGNOSTICS_BUILD)
+  char afterimageRendererName[160] = {};
+  char afterimageMeshName[192] = {};
+  char afterimageHierarchy[768] = {};
+  bool afterimageTarget = false;
+  if (self) {
+    TraceReadUnityObjectName(self, afterimageRendererName,
+                             sizeof(afterimageRendererName));
+    TraceReadUnityObjectName(sourceMesh, afterimageMeshName,
+                             sizeof(afterimageMeshName));
+    TraceBuildRendererHierarchy(self, afterimageHierarchy,
+                                sizeof(afterimageHierarchy));
+    afterimageTarget =
+        strstr(afterimageRendererName, "lizhiyan") != nullptr ||
+        strstr(afterimageMeshName, "lizhiyan") != nullptr ||
+        strstr(afterimageHierarchy, "lizhiyan") != nullptr ||
+        strstr(afterimageHierarchy, "Att_widget") != nullptr;
+  }
+#endif
+  // Attack afterimages may create an untracked SkinnedMeshRenderer and assign
+  // the source mesh through this setter without ever reaching a model-root
+  // registration boundary.  Record a bounded sample for that branch.
+  bool tracked = false;
+  AcquireSRWLockShared(&s_eiemOverrideLock);
+  tracked = EiemFindOverrideLocked(self) != SIZE_MAX;
+  ReleaseSRWLockShared(&s_eiemOverrideLock);
+  if (!tracked) {
+    static volatile LONG s_eiemUntrackedSharedMeshProbeLogs = 0;
+    const LONG logIndex =
+        InterlockedIncrement(&s_eiemUntrackedSharedMeshProbeLogs);
+    if (logIndex <= 256) {
+      char rendererName[160] = {};
+      char meshName[192] = {};
+      char originPath[768] = {};
+      int64_t originHash = 0;
+      TraceReadUnityObjectName(self, rendererName, sizeof(rendererName));
+      TraceReadUnityObjectName(sourceMesh, meshName, sizeof(meshName));
+      TraceLookupAssetOrigin(sourceMesh, &originHash, originPath,
+                             sizeof(originPath));
+      Log("[MOD-UNTRACKED-SHAREDMESH] renderer=%p name=%s mesh=%p "
+          "meshName=%s originHash=%lld originPath=%s",
+          self, rendererName[0] ? rendererName : "<none>", sourceMesh,
+          meshName[0] ? meshName : "<none>", (long long)originHash,
+          originPath[0] ? originPath : "<none>");
+    }
+  }
   // A later game-side LOD/skin refresh may assign the original Mesh again.
   // Preserve an existing binding; otherwise this assignment is also a precise
   // lifecycle event at which standalone Mesh-identity rules can be evaluated.
   void *retained = EiemReplacementForSourceMesh(self, sourceMesh);
   if (retained) mesh = retained;
   if (original) original(self, mesh, methodInfo);
+  EiemMeshGraphObserveMeshAssignment(
+      self, sourceMesh, mesh, "SkinnedMeshRenderer", "native-assignment");
+#if defined(EIEM_AFTERIMAGE_DIAGNOSTICS_BUILD)
+  if (afterimageTarget) {
+    char afterMeshName[192] = {};
+    TraceReadUnityObjectName(mesh, afterMeshName, sizeof(afterMeshName));
+    Log("[AFTERIMAGE-MESH-SETTER] renderer=%p name=%s hierarchy=%s "
+        "tracked=%d sourceMesh=%p sourceName=%s retained=%p assignedMesh=%p "
+        "assignedName=%s changed=%d",
+        self, afterimageRendererName[0] ? afterimageRendererName : "<none>",
+        afterimageHierarchy[0] ? afterimageHierarchy : "<none>", tracked ? 1 : 0,
+        sourceMesh, afterimageMeshName[0] ? afterimageMeshName : "<none>",
+        retained, mesh, afterMeshName[0] ? afterMeshName : "<none>",
+        sourceMesh != mesh ? 1 : 0);
+  }
+#endif
   EiemLogSkinSetterTimeline("sharedMesh-game", self, sourceMesh, mesh,
                             nullptr, nullptr);
   // This setter is also used while the game's skin/LOD assembly is only
@@ -5325,14 +5743,44 @@ static void TraceMeshFilterSetSharedMesh(void *self, void *mesh,
   auto original = (TraceSetSharedMeshFn)s_origMeshFilterSetSharedMesh;
   if (s_eiemApplyingModMeshAssignment) {
     if (original) original(self, mesh, methodInfo);
+    EiemMeshGraphObserveMeshAssignment(
+        self, mesh, mesh, "MeshFilter", "mod-assignment");
     return;
   }
   if (kEiemEnableContinuousMeshObservation)
     TraceRememberMeshObservation(self, mesh, "MeshFilter");
   void *sourceMesh = mesh;
+  EiemMeshGraphObserveMeshAssignment(self, sourceMesh, sourceMesh,
+                                     "MeshFilter", "request");
+  bool tracked = false;
+  AcquireSRWLockShared(&s_eiemOverrideLock);
+  tracked = EiemFindOverrideLocked(self) != SIZE_MAX;
+  ReleaseSRWLockShared(&s_eiemOverrideLock);
+  if (!tracked) {
+    static volatile LONG s_eiemUntrackedMeshFilterProbeLogs = 0;
+    const LONG logIndex =
+        InterlockedIncrement(&s_eiemUntrackedMeshFilterProbeLogs);
+    if (logIndex <= 128) {
+      char rendererName[160] = {};
+      char meshName[192] = {};
+      char originPath[768] = {};
+      int64_t originHash = 0;
+      TraceReadUnityObjectName(self, rendererName, sizeof(rendererName));
+      TraceReadUnityObjectName(sourceMesh, meshName, sizeof(meshName));
+      TraceLookupAssetOrigin(sourceMesh, &originHash, originPath,
+                             sizeof(originPath));
+      Log("[MOD-UNTRACKED-MESHFILTER] renderer=%p name=%s mesh=%p "
+          "meshName=%s originHash=%lld originPath=%s",
+          self, rendererName[0] ? rendererName : "<none>", sourceMesh,
+          meshName[0] ? meshName : "<none>", (long long)originHash,
+          originPath[0] ? originPath : "<none>");
+    }
+  }
   void *retained = EiemReplacementForSourceMesh(self, sourceMesh);
   if (retained) mesh = retained;
   if (original) original(self, mesh, methodInfo);
+  EiemMeshGraphObserveMeshAssignment(self, sourceMesh, mesh, "MeshFilter",
+                                     "native-assignment");
   // MeshFilter follows the same rule as SkinnedMeshRenderer: do not mutate a
   // resource from a low-level setter before the owning game assembly returns;
   // commit only at completed assembly boundaries.
@@ -5354,6 +5802,60 @@ static void TraceMeshFilterSetSharedMesh(void *self, void *mesh,
       s_traceReentrant = false;
     }
   }
+}
+
+// Some transient capture objects use MeshFilter.mesh (an instance mesh)
+// instead of MeshFilter.sharedMesh. Observe that boundary without changing
+// the incoming mesh; replacement decisions remain owned by the normal model
+// assembly path.
+static void TraceMeshFilterSetMesh(void *self, void *mesh,
+                                   void *methodInfo) {
+  auto original = (TraceSetSharedMeshFn)s_origMeshFilterSetMesh;
+  if (self) {
+    static volatile LONG s_eiemUntrackedMeshFilterMeshProbeLogs = 0;
+    bool tracked = false;
+    AcquireSRWLockShared(&s_eiemOverrideLock);
+    tracked = EiemFindOverrideLocked(self) != SIZE_MAX;
+    ReleaseSRWLockShared(&s_eiemOverrideLock);
+    const LONG logIndex =
+        InterlockedIncrement(&s_eiemUntrackedMeshFilterMeshProbeLogs);
+    if (!tracked && logIndex <= 256) {
+      char rendererName[160] = {};
+      char meshName[192] = {};
+      TraceReadUnityObjectName(self, rendererName, sizeof(rendererName));
+      TraceReadUnityObjectName(mesh, meshName, sizeof(meshName));
+      Log("[MOD-UNTRACKED-MESHFILTER-MESH] renderer=%p name=%s "
+          "mesh=%p meshName=%s",
+          self, rendererName[0] ? rendererName : "<none>", mesh,
+          meshName[0] ? meshName : "<none>");
+    }
+  }
+  if (original) original(self, mesh, methodInfo);
+  EiemMeshGraphObserveMeshAssignment(self, mesh, mesh, "MeshFilter",
+                                     "instance-assignment");
+}
+
+static void *TraceMeshFilterGetMesh(void *self, void *methodInfo) {
+  auto original = (TraceGetMeshFn)s_origMeshFilterGetMesh;
+  const bool unityThread = EiemOnUnityThread();
+  void *sharedBefore = nullptr;
+  if (unityThread && g_meshFilter_get_sharedMesh) {
+    __try { sharedBefore = Invoke(g_meshFilter_get_sharedMesh, self); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { sharedBefore = nullptr; }
+  }
+  void *result = original ? original(self, methodInfo) : nullptr;
+  void *sharedAfter = nullptr;
+  if (unityThread && g_meshFilter_get_sharedMesh) {
+    __try { sharedAfter = Invoke(g_meshFilter_get_sharedMesh, self); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { sharedAfter = nullptr; }
+  }
+  if (result && sharedBefore && result != sharedBefore)
+    EiemMeshGraphObserveDerivedMesh(sharedBefore, result,
+                                     "MeshFilter.get_mesh");
+  EiemMeshGraphObserveMeshAssignment(
+      self, sharedBefore ? sharedBefore : result,
+      result ? result : sharedAfter, "MeshFilter", "get_mesh");
+  return result;
 }
 
 // Unity's public Mesh/bones properties can remain valid while the internal
@@ -5493,10 +5995,27 @@ static void TraceSkinnedMeshCaptureRequest(void *self, void *meshRenderer,
     original(self, meshRenderer, skinnedMeshRenderer, propertyBlock,
              methodInfo);
 
+#if defined(EIEM_CUSTOM_SKIN_PIPELINE_OBSERVATION_BUILD) && \
+    defined(EIEM_AFTERIMAGE_DIAGNOSTICS_BUILD) && \
+    defined(EIEM_AUTO_SCENE_CENSUS_BUILD)
+  // Global Unity enumeration is intentionally opt-in.  RequestCapture is a
+  // render/capture boundary and running a census here can enumerate hundreds
+  // of objects, emit a large log, and write JSON while the first attack is
+  // being prepared.  Keep the helper available for an explicit diagnostics
+  // build, but never execute it in the normal live-hook build.
+  if (EiemOnUnityThread()) EiemAutoSceneCensus();
+#endif
+
   const LONG transaction =
       InterlockedCompareExchange(&s_eiemSkinTimingProbePending, 0, 0);
-  if (!transaction || !skinnedMeshRenderer ||
-      InterlockedIncrement(&s_eiemSkinCaptureRequestCalls) > 64)
+  const LONG captureCall =
+      InterlockedIncrement(&s_eiemSkinCaptureRequestCalls);
+  // The temporary custom-pipeline build keeps a small process-wide census even
+  // before a skin-timing transaction is armed.  This is needed because the
+  // attack afterimage may be rendered entirely through RequestCapture and
+  // never touch the ordinary RendererInfo/per-draw seams.
+  const LONG captureLimit = transaction ? 64 : 256;
+  if (!skinnedMeshRenderer || captureCall > captureLimit)
     return;
 
   bool tracked = false;
@@ -5516,21 +6035,43 @@ static void TraceSkinnedMeshCaptureRequest(void *self, void *meshRenderer,
 
   void *currentMesh = nullptr;
   size_t boneCount = 0;
-  if (tracked && EiemOnUnityThread()) {
+  char meshRendererName[192] = {};
+  char skinnedRendererName[192] = {};
+  char currentMeshName[192] = {};
+  char expectedMeshName[192] = {};
+  if (EiemOnUnityThread()) {
+    TraceReadUnityObjectName(meshRenderer, meshRendererName,
+                             (int)sizeof(meshRendererName));
+    TraceReadUnityObjectName(skinnedMeshRenderer, skinnedRendererName,
+                             (int)sizeof(skinnedRendererName));
     currentMesh = EiemReadSharedMesh(skinnedMeshRenderer,
                                      "SkinnedMeshRenderer");
-    void *bones = g_smr_get_bones
-                      ? Invoke(g_smr_get_bones, skinnedMeshRenderer)
-                      : nullptr;
-    boneCount = EiemManagedArrayLength(bones);
+    if (currentMesh)
+      TraceReadUnityObjectName(currentMesh, currentMeshName,
+                               (int)sizeof(currentMeshName));
+    if (expectedMesh)
+      TraceReadUnityObjectName(expectedMesh, expectedMeshName,
+                               (int)sizeof(expectedMeshName));
+    if (tracked) {
+      void *bones = g_smr_get_bones
+                        ? Invoke(g_smr_get_bones, skinnedMeshRenderer)
+                        : nullptr;
+      boneCount = EiemManagedArrayLength(bones);
+    }
   }
-  Log("[SKIN-CAPTURE-v1] tx=%ld manager=%p managerFrame=%u "
+  Log("[MOD-SKIN-CAPTURE] call=%ld tx=%ld manager=%p managerFrame=%u "
       "meshRenderer=%p skinnedRenderer=%p propertyBlock=%p tracked=%d "
       "owner=%p section=%s currentMesh=%p expectedMesh=%p boneCount=%zu "
+      "meshRendererName=\"%s\" skinnedRendererName=\"%s\" "
+      "currentMeshName=\"%s\" expectedMeshName=\"%s\" "
       "tick=%llu tid=%lu",
-      transaction, self, EiemReadSkinCaptureFrame(self), meshRenderer,
-      skinnedMeshRenderer, propertyBlock, tracked ? 1 : 0, owner, section,
-      currentMesh, expectedMesh, boneCount,
+      captureCall, transaction, self, EiemReadSkinCaptureFrame(self),
+      meshRenderer, skinnedMeshRenderer, propertyBlock, tracked ? 1 : 0,
+      owner, section, currentMesh, expectedMesh, boneCount,
+      meshRendererName[0] ? meshRendererName : "?",
+      skinnedRendererName[0] ? skinnedRendererName : "?",
+      currentMeshName[0] ? currentMeshName : "?",
+      expectedMeshName[0] ? expectedMeshName : "?",
       (unsigned long long)GetTickCount64(), (unsigned long)GetCurrentThreadId());
 }
 
@@ -5760,6 +6301,57 @@ static void TraceMaterialSetConstantBuffer(
       transaction, propertyId, self, buffer, offset, size,
       _ReturnAddress(), (unsigned long long)GetTickCount64(),
       (unsigned long)GetCurrentThreadId());
+}
+
+static void EiemLogCommandBufferDrawRenderer(void *commandBuffer,
+                                              void *renderer,
+                                              void *material,
+                                              int32_t submeshIndex,
+                                              int32_t shaderPass,
+                                              const char *overload) {
+  static volatile LONG s_eiemCommandBufferDrawRendererLogs = 0;
+  const LONG logIndex =
+      InterlockedIncrement(&s_eiemCommandBufferDrawRendererLogs);
+  if (logIndex > 512 || !renderer) return;
+  char rendererName[192] = {};
+  char materialName[192] = {};
+  char meshName[192] = {};
+  TraceReadUnityObjectName(renderer, rendererName, sizeof(rendererName));
+  TraceReadUnityObjectName(material, materialName, sizeof(materialName));
+  void *mesh = EiemReadSharedMesh(renderer, "SkinnedMeshRenderer");
+  if (!mesh) mesh = EiemReadSharedMesh(renderer, "MeshFilter");
+  TraceReadUnityObjectName(mesh, meshName, sizeof(meshName));
+  Log("[MOD-CMD-DRAW-RENDERER] overload=%s cmd=%p renderer=%p "
+      "rendererName=\"%s\" material=%p materialName=\"%s\" "
+      "mesh=%p meshName=\"%s\" submesh=%d shaderPass=%d tx=%ld",
+      overload ? overload : "?", commandBuffer, renderer,
+      rendererName[0] ? rendererName : "?", material,
+      materialName[0] ? materialName : "?", mesh,
+      meshName[0] ? meshName : "?", submeshIndex, shaderPass,
+      InterlockedCompareExchange(&s_eiemSkinTimingProbePending, 0, 0));
+}
+
+static void TraceCommandBufferDrawRenderer(void *self, void *renderer,
+                                           void *material,
+                                           void *methodInfo) {
+  auto original =
+      (TraceCommandBufferDrawRendererFn)s_origCommandBufferDrawRenderer;
+  if (original) original(self, renderer, material, methodInfo);
+  if (kEiemEnableCustomSkinPipelineObservation)
+    EiemLogCommandBufferDrawRenderer(self, renderer, material, -1, -1,
+                                     "2-arg");
+}
+
+static void TraceCommandBufferDrawRenderer4(
+    void *self, void *renderer, void *material, int32_t submeshIndex,
+    int32_t shaderPass, void *methodInfo) {
+  auto original =
+      (TraceCommandBufferDrawRenderer4Fn)s_origCommandBufferDrawRenderer4;
+  if (original)
+    original(self, renderer, material, submeshIndex, shaderPass, methodInfo);
+  if (kEiemEnableCustomSkinPipelineObservation)
+    EiemLogCommandBufferDrawRenderer(self, renderer, material, submeshIndex,
+                                     shaderPass, "4-arg");
 }
 
 static void *TraceRenderGraphGetComputeBuffer(void *self, void *handle,
@@ -6271,6 +6863,11 @@ static void InitIl2CppResourceTrace(void **assemblies, size_t assemblyCount) {
   Log("[VALIDATION] mode=static-resource-baseline metadata-enumeration=%s "
       "part-table-mutation=off",
       kEiemEnableCustomSkinPipelineMetadata ? "custom-skin-only" : "off");
+  Log("[DIAG-FEATURES] customSkinObservation=%d customSkinMetadata=%d "
+      "ditherProbe=%d",
+      kEiemEnableCustomSkinPipelineObservation ? 1 : 0,
+      kEiemEnableCustomSkinPipelineMetadata ? 1 : 0,
+      kEiemEnableDitherProbe ? 1 : 0);
   Log("[PHYSICS-MODE] experimentalRuntime=%s nativeObservation=%s",
       kEiemEnableExperimentalPhysicsRuntime ? "enabled" : "disabled",
       kEiemEnableNativePhysicsObservation ? "enabled" : "disabled");
@@ -6466,6 +7063,23 @@ static void InitIl2CppResourceTrace(void **assemblies, size_t assemblyCount) {
           "CommandBuffer.SetGlobalBufferInternal", "System.Void",
           (void *)TraceCommandBufferSetGlobalBuffer,
           &s_origCommandBufferSetGlobalBuffer);
+
+      static const char *const drawRendererTypes[] = {
+          "UnityEngine.Renderer", "UnityEngine.Material"};
+      HookTraceMethodWithParamTypesAndReturnType(
+          commandBufferClass, "DrawRenderer", drawRendererTypes, 2,
+          "CommandBuffer.DrawRenderer", "System.Void",
+          (void *)TraceCommandBufferDrawRenderer,
+          &s_origCommandBufferDrawRenderer);
+
+      static const char *const drawRenderer4Types[] = {
+          "UnityEngine.Renderer", "UnityEngine.Material", "System.Int32",
+          "System.Int32"};
+      HookTraceMethodWithParamTypesAndReturnType(
+          commandBufferClass, "DrawRenderer", drawRenderer4Types, 4,
+          "CommandBuffer.DrawRenderer(submesh,pass)", "System.Void",
+          (void *)TraceCommandBufferDrawRenderer4,
+          &s_origCommandBufferDrawRenderer4);
     } else {
       Log("[RES-TRACE] UnityEngine.Rendering.CommandBuffer class not found");
     }
@@ -6853,6 +7467,17 @@ static void InitIl2CppResourceTrace(void **assemblies, size_t assemblyCount) {
                   "MeshFilter.set_sharedMesh",
                   (void *)TraceMeshFilterSetSharedMesh,
                   &s_origMeshFilterSetSharedMesh);
+  if (kEiemEnableCustomSkinPipelineObservation ||
+      kEiemEnableMeshUsageGraph) {
+    HookTraceMethod(meshFilterClass, "set_mesh", 1,
+                    "MeshFilter.set_mesh", (void *)TraceMeshFilterSetMesh,
+                    &s_origMeshFilterSetMesh);
+  }
+  if (kEiemEnableMeshUsageGraph) {
+    HookTraceMethod(meshFilterClass, "get_mesh", 0,
+                    "MeshFilter.get_mesh", (void *)TraceMeshFilterGetMesh,
+                    &s_origMeshFilterGetMesh);
+  }
 
   // Generic character/model lifecycle. BaseModelViewPart is also the explicit
   // completion owner for cached/handle-reused character models.

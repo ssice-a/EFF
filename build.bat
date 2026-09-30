@@ -74,6 +74,7 @@ cl /nologo /utf-8 /O2 /Zi /MD /LD /EHsc /std:c++17 ^
     /DEIEM_PERDRAW_VFX_FANOUT_BUILD ^
     /DEIEM_NATIVE_VFX_PASSTHROUGH_TEXTURE_PATCH_BUILD ^
     /DEIEM_DITHER_PROBE_BUILD ^
+    /DEIEM_MESH_USAGE_GRAPH_BUILD ^
     /Fd"bin\eff_compile.pdb" ^
     /Ideps\minhook_lib\include ^
     /Ideps\imgui ^

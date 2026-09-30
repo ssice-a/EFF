@@ -20,6 +20,7 @@
 #define WM_EIEM_MODEL_CURRENT (WM_APP + 0x314)
 #define WM_EIEM_MODEL_FULL    (WM_APP + 0x315)
 // 0x316/0x317 belong to Mod reconciliation/input (globals.h).
+static constexpr UINT_PTR kEiemAutoSceneCensusTimer = 0xE15B;
 
 static SRWLOCK s_dumpSelectionLock = SRWLOCK_INIT;
 static void *s_dumpSelectedMeshes[4096] = {};
@@ -585,6 +586,123 @@ static void EiemDumpObservedMeshes(bool full) {
     Log("[DUMP] %s", status);
   }
   InterlockedExchange(&s_dumpInProgress, 0);
+}
+
+// Automatic, read-only census used for transient afterimage investigation.
+// It runs after the game's renderer registry is built, so it does not depend
+// on F10/Insert registration and does not alter any Renderer or Mesh state.
+static volatile LONG s_eiemAutoSceneCensusCount = 0;
+static ULONGLONG s_eiemAutoSceneCensusLastMs = 0;
+
+static bool EiemSceneCensusLooksLikeLizhiyan(const EiemMeshObservation &entry) {
+  return EiemContainsText(entry.rendererName, "lizhiyan") ||
+         EiemContainsText(entry.meshName, "lizhiyan") ||
+         EiemContainsText(entry.hierarchyPath, "lizhiyan");
+}
+
+static void EiemWriteAutoSceneCensus(const EiemMeshObservation *rows,
+                                     size_t rowCount, LONG attempt) {
+  char directory[512] = {};
+  strncpy_s(directory, sizeof(directory), g_dumpOutputDir, _TRUNCATE);
+  if (!EiemEnsureDirectory(directory)) {
+    Log("[SCENE-LIZHIYAN] cannot create output directory=%s", directory);
+    return;
+  }
+  char finalPath[768] = {};
+  snprintf(finalPath, sizeof(finalPath), "%s\\lizhiyan_scene_census.json",
+           directory);
+  char tempPath[800] = {};
+  snprintf(tempPath, sizeof(tempPath), "%s.tmp", finalPath);
+  FILE *file = fopen(tempPath, "wb");
+  if (!file) {
+    Log("[SCENE-LIZHIYAN] cannot open output=%s", finalPath);
+    return;
+  }
+  fprintf(file, "{\n  \"schema\": 1,\n  \"kind\": \"automatic_scene_mesh_census\",\n"
+                "  \"attempt\": %ld,\n  \"capturedAtMs\": %llu,\n"
+                "  \"meshCount\": %zu,\n  \"meshes\": [\n",
+          attempt, (unsigned long long)GetTickCount64(), rowCount);
+  for (size_t i = 0; i < rowCount; ++i) {
+    const auto &entry = rows[i];
+    if (i) fputs(",\n", file);
+    fprintf(file, "    {\"rendererType\":");
+    EiemWriteJsonString(file, entry.rendererType);
+    fprintf(file, ",\"renderer\":");
+    EiemWriteJsonString(file, entry.rendererName);
+    fprintf(file, ",\"mesh\":");
+    EiemWriteJsonString(file, entry.meshName);
+    fprintf(file, ",\"hierarchy\":");
+    EiemWriteJsonString(file, entry.hierarchyPath);
+    fprintf(file, ",\"lizhiyanHint\":%s,\"instanceCount\":%u,"
+                  "\"firstSeenMs\":%llu,\"lastSeenMs\":%llu,"
+                  "\"originHash\":%lld,\"originPath\":",
+            EiemSceneCensusLooksLikeLizhiyan(entry) ? "true" : "false",
+            entry.instanceCount, (unsigned long long)entry.firstSeenMs,
+            (unsigned long long)entry.lastSeenMs,
+            (long long)entry.originHash);
+    EiemWriteJsonString(file, entry.originPath);
+    fprintf(file, ",\"vertexCount\":%d,\"subMeshCount\":%d,\"indexCounts\":[",
+            entry.vertexCount, entry.subMeshCount);
+    const int32_t indexCountLimit =
+        entry.subMeshCount >= 0 && entry.subMeshCount <= 16
+            ? entry.subMeshCount
+            : 0;
+    for (int32_t submesh = 0; submesh < indexCountLimit; ++submesh) {
+      if (submesh) fputs(",", file);
+      fprintf(file, "%d", entry.indexCounts[submesh]);
+    }
+    fprintf(file, "],\"materialCount\":%d,\"nativeRenderer\":\"%p\","
+                  "\"nativeMesh\":\"%p\"}",
+            entry.materialCount, entry.renderer, entry.mesh);
+  }
+  fputs("\n  ]\n}\n", file);
+  const bool ok = fflush(file) == 0;
+  fclose(file);
+  if (!ok || !MoveFileExA(tempPath, finalPath,
+                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    DeleteFileA(tempPath);
+    Log("[SCENE-LIZHIYAN] write failed output=%s", finalPath);
+    return;
+  }
+  Log("[SCENE-LIZHIYAN] wrote attempt=%ld rows=%zu output=%s", attempt,
+      rowCount, finalPath);
+}
+
+static void EiemAutoSceneCensus() {
+  // A registry boundary or the bounded window timer may call this repeatedly.
+  // Keep one Unity-wide enumeration per second and stop after one minute.
+  const ULONGLONG now = GetTickCount64();
+  if (s_eiemAutoSceneCensusLastMs && now - s_eiemAutoSceneCensusLastMs < 1000)
+    return;
+  s_eiemAutoSceneCensusLastMs = now;
+  const LONG attempt = InterlockedIncrement(&s_eiemAutoSceneCensusCount);
+  if (attempt > 60) {
+    if (g_gameHwnd && IsWindow(g_gameHwnd))
+      KillTimer(g_gameHwnd, kEiemAutoSceneCensusTimer);
+    return;
+  }
+
+  // Retain the union of all observations. A one-frame attack afterimage may
+  // disappear before the next sample, so clearing here would lose it.
+  TraceEnumerateRendererType(g_skinnedMeshRendererClass,
+                             "SkinnedMeshRenderer");
+  TraceEnumerateRendererType(g_meshFilterClass, "MeshFilter");
+  const size_t rowCount = TraceCopyMeshObservations(
+      s_dumpGameSnapshot, _countof(s_dumpGameSnapshot));
+  size_t lizhiyanCount = 0;
+  for (size_t i = 0; i < rowCount; ++i) {
+    if (!EiemSceneCensusLooksLikeLizhiyan(s_dumpGameSnapshot[i])) continue;
+    ++lizhiyanCount;
+    Log("[SCENE-LIZHIYAN] attempt=%ld type=%s renderer=%s mesh=%s hierarchy=%s",
+        attempt, s_dumpGameSnapshot[i].rendererType,
+        s_dumpGameSnapshot[i].rendererName, s_dumpGameSnapshot[i].meshName,
+        s_dumpGameSnapshot[i].hierarchyPath);
+  }
+  EiemWriteAutoSceneCensus(s_dumpGameSnapshot, rowCount, attempt);
+  Log("[SCENE-LIZHIYAN] attempt=%ld rows=%zu lizhiyanHints=%zu", attempt,
+      rowCount, lizhiyanCount);
+  if (attempt >= 60 && g_gameHwnd && IsWindow(g_gameHwnd))
+    KillTimer(g_gameHwnd, kEiemAutoSceneCensusTimer);
 }
 
 static void EiemRequestDump(bool full) {

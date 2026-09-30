@@ -11,6 +11,10 @@ struct EiemVisibilityControllerProbeState {
   bool visible = false;
   bool forceOff = false;
   bool active = true;
+  // Mesh replacement and material replacement are independent.  A mesh-only
+  // binding must still receive the per-draw mesh reassert/restore, but it must
+  // never enter the VFX material clone/fanout path.
+  bool materialTarget = false;
   char section[96] = {};
   uintptr_t owner = 0;
   void *replacementMesh = nullptr;
@@ -18,8 +22,12 @@ struct EiemVisibilityControllerProbeState {
 
 static volatile LONG s_eiemVisibilityControllerProbeCalls = 0;
 
+// The per-draw hook only needs the ledger facts that identify the replacement
+// target.  Reading Renderer.enabled/isVisible/forceRenderingOff and the active
+// GameObject state invokes Unity getters on every draw, so keep that runtime
+// snapshot separate from the cheap binding snapshot.
 static EiemVisibilityControllerProbeState
-EiemReadVisibilityControllerProbeState(void *renderer) {
+EiemReadVisibilityControllerProbeLedger(void *renderer) {
   EiemVisibilityControllerProbeState state;
   if (!renderer) return state;
 
@@ -27,12 +35,19 @@ EiemReadVisibilityControllerProbeState(void *renderer) {
   const size_t index = EiemFindOverrideLocked(renderer);
   if (index != SIZE_MAX && !s_eiemOverrides[index].restorePending) {
     state.tracked = true;
+    state.materialTarget = s_eiemOverrides[index].hasMaterialRule;
     state.owner = s_eiemOverrides[index].ownerPrefabInstance;
     state.replacementMesh = s_eiemOverrides[index].replacementMesh;
     strncpy_s(state.section, sizeof(state.section),
               s_eiemOverrides[index].renderSection, _TRUNCATE);
   }
   ReleaseSRWLockShared(&s_eiemOverrideLock);
+  return state;
+}
+
+static EiemVisibilityControllerProbeState
+EiemReadVisibilityControllerProbeState(void *renderer) {
+  auto state = EiemReadVisibilityControllerProbeLedger(renderer);
   if (!state.tracked) return state;
 
   EiemReadRendererEnabled(renderer, &state.enabled);
@@ -44,6 +59,11 @@ EiemReadVisibilityControllerProbeState(void *renderer) {
                       &state.active);
   }
   return state;
+}
+
+static EiemVisibilityControllerProbeState
+EiemReadVisibilityControllerProbeStateFast(void *renderer) {
+  return EiemReadVisibilityControllerProbeLedger(renderer);
 }
 
 static void EiemLogVisibilityControllerRenderer(
@@ -368,6 +388,7 @@ using EiemCharacterPerDrawDataFn = bool (__fastcall *)(void *self,
                                                        void *methodInfo);
 static void *s_origRendererInfoDitherAlpha = nullptr;
 static void *s_origRendererInfoDitherEnable = nullptr;
+
 static void *s_origRendererInfoCharacterPerDrawData = nullptr;
 
 // The sprint dissolve is not using RendererInfo's manual dither entry in the
@@ -486,6 +507,16 @@ static void *EiemRendererInfoRenderer(void *info) {
 static void EiemLogDitherCall(const char *operation, const char *phase,
                               void *info, float alpha, int hasAlpha,
                               int requested, bool *changed) {
+#if !defined(EIEM_HIGH_FREQUENCY_DIAGNOSTICS_BUILD)
+  (void)operation;
+  (void)phase;
+  (void)info;
+  (void)alpha;
+  (void)hasAlpha;
+  (void)requested;
+  (void)changed;
+  return;
+#else
   void *renderer = EiemRendererInfoRenderer(info);
   EiemVisibilityControllerProbeState state =
       EiemReadVisibilityControllerProbeState(renderer);
@@ -528,6 +559,7 @@ static void EiemLogDitherCall(const char *operation, const char *phase,
   if (hasAlpha)
     Log("[DITHER-PROBE-VALUE] op=%s info=%p renderer=%p alpha=%.6f",
         operation ? operation : "?", info, renderer, alpha);
+#endif
 }
 
 static bool TraceRendererInfoDitherAlpha(void *self, float alpha,
@@ -538,8 +570,10 @@ static bool TraceRendererInfoDitherAlpha(void *self, float alpha,
   const bool result = original ? original(self, alpha, methodInfo) : false;
   EiemLogDitherCall("TrySetManualDitherAlphaValue", "after", self, alpha, 1,
                     -1, nullptr);
+#if defined(EIEM_HIGH_FREQUENCY_DIAGNOSTICS_BUILD)
   Log("[DITHER-PROBE-RESULT] op=TrySetManualDitherAlphaValue info=%p result=%d",
       self, result ? 1 : 0);
+#endif
   return result;
 }
 
@@ -552,9 +586,11 @@ static bool TraceRendererInfoDitherEnable(void *self, bool enabled,
                                : false;
   EiemLogDitherCall("TrySetManualDitherEnable", "after", self, 0.0f, 0,
                     enabled ? 1 : 0, changed);
+#if defined(EIEM_HIGH_FREQUENCY_DIAGNOSTICS_BUILD)
   Log("[DITHER-PROBE-RESULT] op=TrySetManualDitherEnable info=%p result=%d "
       "changed=%d",
       self, result ? 1 : 0, changed ? (*changed ? 1 : 0) : -1);
+#endif
   return result;
 }
 
@@ -702,8 +738,10 @@ static bool EiemPerDrawExpandNativeSource(void *info, void *renderer,
 // changing the Mesh rule.  At the end of the dissolve the per-draw value
 // returns to zero while RendererInfo may still hold the temporary replacement
 // array.  Restore the exact LZY material array after the native per-draw call
-// has completed.  The native controller remains the owner of its private
-// replacement fields; EFF never clears those fields directly.
+// has completed.  The native replacement methods are not called from this
+// callback; after the public Renderer assignment succeeds, the stale private
+// replacement fields are retired directly so they cannot overwrite the clean
+// array on the next frame.
 static bool EiemPerDrawArrayHasVfxInstance(void *array) {
   if (!array) return false;
   const size_t count = EiemManagedArrayLength(array);
@@ -778,10 +816,9 @@ static void EiemLogPerDrawSubmeshState(const char *phase, void *renderer,
       materialCount, materialState.empty() ? "<none>" : materialState.c_str());
 }
 
-static thread_local bool s_eiemPerDrawNativeRestoreInProgress = false;
-
 static bool EiemPerDrawRestoreLzyMaterials(void *info, void *renderer,
                                            void *methodInfo) {
+  (void)methodInfo;
   if (!info || !renderer || !EiemOnUnityThread()) return false;
   const auto before = EiemReadRendererInfoMaterialState(info, renderer);
   if (!before.fieldsRead ||
@@ -845,59 +882,41 @@ static bool EiemPerDrawRestoreLzyMaterials(void *info, void *renderer,
     sourceFallback = true;
   }
 
-  // Renderer.sharedMaterials is only the visible side of RendererInfo's
-  // transaction.  Calling the original controller setter first lets the game
-  // retire its replacingMaterials reference through its own lifecycle.  The
-  // direct renderer assignment remains a read-back fallback for versions
-  // where the setter rejects the expanded LZY slot count.
-  bool nativeRestored = false;
-  bool nativeReplacementRestored = false;
-  if (s_origRendererInfoTryReplaceSharedMaterials &&
-      !s_eiemPerDrawNativeRestoreInProgress) {
-    s_eiemPerDrawNativeRestoreInProgress = true;
-    auto replaceOriginal = (TraceRendererInfoMaterialCommitFn)
-        s_origRendererInfoTryReplaceSharedMaterials;
-    nativeReplacementRestored = replaceOriginal(info, clean, methodInfo);
-    s_eiemPerDrawNativeRestoreInProgress = false;
-  }
-  if (s_origRendererInfoTrySetSharedMaterials &&
-      !s_eiemPerDrawNativeRestoreInProgress) {
-    s_eiemPerDrawNativeRestoreInProgress = true;
-    auto original = (TraceRendererInfoMaterialCommitFn)
-        s_origRendererInfoTrySetSharedMaterials;
-    nativeRestored = original(info, clean, methodInfo);
-    s_eiemPerDrawNativeRestoreInProgress = false;
-  }
+  // Do not call RendererInfo.TryReplaceSharedMaterials or TrySetSharedMaterials
+  // from inside TrySetCharacterPerDrawData.  Those methods are the owner of
+  // the same transaction that is currently executing and are not re-entrant;
+  // the crash dump showed the sprint-end fault at this exact nested call.
+  // Restore the visible Renderer array directly, then retire the private
+  // replacement fields below after the native per-draw callback has returned.
   const bool assigned = EiemAssignRendererMaterials(
       renderer, clean, error, sizeof(error));
-  // The public TryReplace/TrySet calls restore Renderer.sharedMaterials, but
-  // this game build leaves RendererInfo's private replacement transaction
+  // This game build can leave RendererInfo's private replacement transaction
   // armed (materialReplacing=1, replacingMaterials=one VFX slot).  On the
   // next frame that stale transaction can overwrite the restored LZY array.
   // The verified idle representation is a null replacing array and a false
-  // flag.  Clear only after the native restore calls and the public assignment
-  // have completed, so the native end transition still runs normally.
+  // flag.  Clear it only after the public assignment has completed.
   bool nativeCleared = false;
-  __try {
-    const auto pending = EiemReadRendererInfoMaterialState(info, renderer);
-    if (pending.materialReplacing || pending.replacingMaterials) {
-      *(void **)((char *)info + 0x40) = nullptr;
-      *(unsigned char *)((char *)info + 0x38) = 0;
-      nativeCleared = true;
+  if (assigned) {
+    __try {
+      const auto pending = EiemReadRendererInfoMaterialState(info, renderer);
+      if (pending.materialReplacing || pending.replacingMaterials) {
+        *(void **)((char *)info + 0x40) = nullptr;
+        *(unsigned char *)((char *)info + 0x38) = 0;
+        nativeCleared = true;
+      }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+      nativeCleared = false;
     }
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    nativeCleared = false;
   }
   const auto after = EiemReadRendererInfoMaterialState(info, renderer);
   EiemLogPerDrawSubmeshState("end-restore", renderer, resolved.rule.section);
   Log("[MOD-PERDRAW-END-RESTORE] info=%p renderer=%p section=%s "
-      "nativeRestored=%d nativeReplacementRestored=%d assigned=%d "
+      "nativeSetterSkipped=1 assigned=%d "
       "nativeCleared=%d sourceFallback=%d cleanCount=%zu currentCount=%zu "
       "replacingCount=%zu materialReplacing=%d error=%s",
       info, renderer, resolved.rule.section,
-      nativeRestored ? 1 : 0, nativeReplacementRestored ? 1 : 0,
       assigned ? 1 : 0,
-      (!after.materialReplacing && !after.replacingMaterials) ? 1 : 0,
+      nativeCleared ? 1 : 0,
       sourceFallback ? 1 : 0, EiemManagedArrayLength(clean), after.currentCount,
       after.replacingCount, after.materialReplacing ? 1 : 0,
       error[0] ? error : "<none>");
@@ -911,31 +930,87 @@ static bool EiemPerDrawRestoreLzyMaterials(void *info, void *renderer,
 // name is embedded here.
 static bool EiemPerDrawEnsureReplacementMesh(
     void *renderer, const EiemVisibilityControllerProbeState &visibility) {
-  if (!renderer || !visibility.tracked || !visibility.replacementMesh ||
-      !EiemOnUnityThread())
+  if (!renderer || !EiemOnUnityThread())
     return false;
   const char *rendererType = EiemIsSkinnedRenderer(renderer)
                                  ? "SkinnedMeshRenderer"
                                  : "MeshFilter";
   void *current = EiemReadSharedMesh(renderer, rendererType);
-  if (current == visibility.replacementMesh) {
+  // A native afterimage can be a draw-only Renderer clone.  It may never pass
+  // through RendererInfo._Init or the sharedMesh setter, so it has no override
+  // ledger entry even though its source Mesh is the same as a live bound
+  // renderer.  Reuse the source-identity fallback only when all existing
+  // bindings for that source agree on one replacement; ambiguous sources stay
+  // untouched rather than guessing across models.
+  void *replacement = visibility.tracked ? visibility.replacementMesh : nullptr;
+  if (!replacement && current)
+    replacement = EiemReplacementForSourceMesh(renderer, current);
+  if (!replacement) {
+    // The attack afterimage is a draw-only renderer and may never receive a
+    // ledger entry.  Keep a bounded probe for that branch so we can tell
+    // whether the missing body is an unrecognised source Mesh or whether the
+    // renderer never reaches this per-draw seam at all.
+    if (!visibility.tracked) {
+      static volatile LONG s_eiemUntrackedMeshProbeLogs = 0;
+      const LONG logIndex = InterlockedIncrement(&s_eiemUntrackedMeshProbeLogs);
+      if (logIndex <= 128) {
+        char rendererName[160] = {};
+        char meshName[192] = {};
+        char originPath[768] = {};
+        char hierarchy[768] = {};
+        int64_t originHash = 0;
+        if (renderer)
+          TraceReadUnityObjectName(renderer, rendererName,
+                                   sizeof(rendererName));
+        if (current) {
+          TraceReadUnityObjectName(current, meshName, sizeof(meshName));
+          TraceLookupAssetOrigin(current, &originHash, originPath,
+                                 sizeof(originPath));
+        }
+        if (renderer)
+          TraceBuildRendererHierarchy(renderer, hierarchy, sizeof(hierarchy));
+        Log("[MOD-PERDRAW-UNTRACKED-MESH] renderer=%p type=%s mesh=%p "
+            "meshName=%s originHash=%lld originPath=%s enabled=%d visible=%d "
+            "forceOff=%d active=%d rendererName=%s hierarchy=%s",
+            renderer, rendererType, current, meshName[0] ? meshName : "<none>",
+            (long long)originHash,
+            originPath[0] ? originPath : "<none>", visibility.enabled ? 1 : 0,
+            visibility.visible ? 1 : 0, visibility.forceOff ? 1 : 0,
+            visibility.active ? 1 : 0,
+            rendererName[0] ? rendererName : "<none>",
+            hierarchy[0] ? hierarchy : "<none>");
+      }
+    }
+    return false;
+  }
+  if (current == replacement) {
     static volatile LONG s_eiemMeshReassertObserved = 0;
     const LONG observed = InterlockedIncrement(&s_eiemMeshReassertObserved);
     if (observed <= 24)
       Log("[MOD-PERDRAW-MESH-CHECK] renderer=%p tracked=%d type=%s "
           "current=%p replacement=%p same=1",
           renderer, visibility.tracked ? 1 : 0, rendererType, current,
-          visibility.replacementMesh);
+          replacement);
     return true;
   }
   const bool assigned = EiemSetSharedMesh(
-      renderer, visibility.replacementMesh, rendererType, nullptr);
+      renderer, replacement, rendererType, nullptr);
   void *after = EiemReadSharedMesh(renderer, rendererType);
-  Log("[MOD-PERDRAW-MESH-REASSERT] renderer=%p tracked=%d type=%s "
-      "before=%p replacement=%p assigned=%d after=%p",
-      renderer, visibility.tracked ? 1 : 0, rendererType, current,
-      visibility.replacementMesh, assigned ? 1 : 0, after);
-  return assigned && after == visibility.replacementMesh;
+  if (visibility.tracked) {
+    Log("[MOD-PERDRAW-MESH-REASSERT] renderer=%p tracked=1 type=%s "
+        "before=%p replacement=%p assigned=%d after=%p",
+        renderer, rendererType, current, replacement, assigned ? 1 : 0,
+        after);
+  } else {
+    static volatile LONG s_eiemMeshFallbackLogs = 0;
+    const LONG logIndex = InterlockedIncrement(&s_eiemMeshFallbackLogs);
+    if (logIndex <= 64)
+      Log("[MOD-PERDRAW-MESH-FALLBACK] renderer=%p tracked=0 type=%s "
+          "before=%p replacement=%p assigned=%d after=%p",
+          renderer, rendererType, current, replacement, assigned ? 1 : 0,
+          after);
+  }
+  return assigned && after == replacement;
 }
 #endif
 
@@ -956,9 +1031,227 @@ static void *EiemVfxArrayItem(void *array, size_t index) {
 
 static bool EiemMaterialLooksLikeVfx(void *material) {
   if (!material) return false;
+  struct VfxNameCacheEntry {
+    void *material;
+    LONG generation;
+    bool isVfx;
+  };
+  static VfxNameCacheEntry s_cache[128] = {};
+  const LONG generation =
+      InterlockedCompareExchange(&s_eiemModGeneration, 0, 0);
+  const size_t cacheIndex = (reinterpret_cast<uintptr_t>(material) >> 4) &
+                            (_countof(s_cache) - 1);
+  if (s_cache[cacheIndex].material == material &&
+      s_cache[cacheIndex].generation == generation)
+    return s_cache[cacheIndex].isVfx;
   char name[192] = {};
   TraceReadUnityObjectName(material, name, sizeof(name));
-  return strstr(name, "_VFXInstance") != nullptr;
+  const bool isVfx = strstr(name, "_VFXInstance") != nullptr;
+  s_cache[cacheIndex] = {material, generation, isVfx};
+  return isVfx;
+}
+
+// Native RendererInfo keeps the same VFXInstance alive while its per-draw
+// value changes.  Texture/property overlay is static for that instance, so
+// remember which targets were already patched and avoid repeating Unity
+// material calls on every frame of a dash.
+struct EiemVfxPatchSeenEntry {
+  void *info = nullptr;
+  void *target = nullptr;
+  LONG generation = 0;
+};
+static EiemVfxPatchSeenEntry s_eiemVfxPatchSeen[256] = {};
+// A native material commit can synchronously re-enter the per-draw hook.  Do
+// not release the cache that the outer VFX patch is reading until that patch
+// has returned; otherwise its vector references become use-after-clear.
+static thread_local LONG s_eiemVfxPatchDepth = 0;
+static void EiemFlushDeferredPerDrawVfxSlotCaches();
+
+struct EiemVfxPatchGuard {
+  EiemVfxPatchGuard() { ++s_eiemVfxPatchDepth; }
+  ~EiemVfxPatchGuard() {
+    if (--s_eiemVfxPatchDepth == 0)
+      EiemFlushDeferredPerDrawVfxSlotCaches();
+  }
+};
+#if !defined(EIEM_PERDRAW_END_RESTORE_BUILD)
+static void EiemFlushDeferredPerDrawVfxSlotCaches() {}
+#endif
+
+static bool EiemVfxPatchWasSeen(void *info, void *target) {
+  if (!info || !target) return false;
+  const LONG generation =
+      InterlockedCompareExchange(&s_eiemModGeneration, 0, 0);
+  for (const auto &entry : s_eiemVfxPatchSeen)
+    if (entry.info == info && entry.target == target &&
+        entry.generation == generation)
+      return true;
+  return false;
+}
+
+static void EiemRememberVfxPatch(void *info, void *target) {
+  if (!info || !target) return;
+  const LONG generation =
+      InterlockedCompareExchange(&s_eiemModGeneration, 0, 0);
+  for (auto &entry : s_eiemVfxPatchSeen) {
+    if (entry.info == info && entry.target == target) {
+      entry.generation = generation;
+      return;
+    }
+  }
+  for (auto &entry : s_eiemVfxPatchSeen) {
+    if (!entry.info) {
+      entry = {info, target, generation};
+      return;
+    }
+  }
+  // The table is only a bounded hot-path guard. Reuse an old slot if a game
+  // scene creates more short-lived RendererInfo objects than the table holds.
+  s_eiemVfxPatchSeen[(reinterpret_cast<uintptr_t>(info) >> 4) &
+                     (_countof(s_eiemVfxPatchSeen) - 1)] =
+      {info, target, generation};
+}
+
+static bool EiemVfxPatchHasUnseenTarget(void *info,
+                                        const EiemPerDrawMaterialState &state,
+                                        bool *hasVfxOut = nullptr) {
+  void *arrays[] = {state.replacingMaterials, state.currentMaterials};
+  bool hasVfx = false;
+  void *seen[64] = {};
+  size_t seenCount = 0;
+  for (void *array : arrays) {
+    const size_t count = EiemManagedArrayLength(array);
+    if (!array || !count || count > 64) continue;
+    for (size_t index = 0; index < count; ++index) {
+      void *target = EiemVfxArrayItem(array, index);
+      if (!target) continue;
+      // A stable native VFXInstance is the common case.  Once it has been
+      // patched, avoid asking Unity for its object name on every per-draw
+      // callback just to rediscover the same classification.
+      if (!EiemVfxPatchWasSeen(info, target) &&
+          !EiemMaterialLooksLikeVfx(target))
+        continue;
+      hasVfx = true;
+      bool duplicate = false;
+      for (size_t i = 0; i < seenCount; ++i)
+        if (seen[i] == target) {
+          duplicate = true;
+          break;
+      }
+      if (!duplicate && seenCount < _countof(seen)) seen[seenCount++] = target;
+      if (!EiemVfxPatchWasSeen(info, target)) {
+        if (hasVfxOut) *hasVfxOut = true;
+        return true;
+      }
+    }
+  }
+  if (hasVfxOut) *hasVfxOut = hasVfx;
+  return false;
+}
+
+// Mesh-to-rule resolution is the other expensive part of the draw-only VFX
+// path.  A cloned RendererInfo can be different every frame, while its source
+// Mesh and the active mod generation stay stable for the whole attack/dash.
+// Cache successful resolutions by Mesh so the hot path does not repeatedly
+// call TraceDescribeObject or scan the override ledger.
+struct EiemVfxRenderRuleCacheEntry {
+  void *mesh = nullptr;
+  LONG generation = 0;
+  EiemResolvedRenderRule resolved = {};
+};
+static SRWLOCK s_eiemVfxRenderRuleCacheLock = SRWLOCK_INIT;
+static EiemVfxRenderRuleCacheEntry s_eiemVfxRenderRuleCache[128];
+
+static bool EiemLookupVfxRenderRuleCache(void *mesh,
+                                         EiemResolvedRenderRule *out) {
+  if (!mesh || !out) return false;
+  const LONG generation =
+      InterlockedCompareExchange(&s_eiemModGeneration, 0, 0);
+  const size_t start = (reinterpret_cast<uintptr_t>(mesh) >> 4) & 127u;
+  AcquireSRWLockShared(&s_eiemVfxRenderRuleCacheLock);
+  for (size_t step = 0; step < 8; ++step) {
+    const auto &entry = s_eiemVfxRenderRuleCache[(start + step) & 127u];
+    if (!entry.mesh) break;
+    if (entry.mesh == mesh && entry.generation == generation) {
+      *out = entry.resolved;
+      ReleaseSRWLockShared(&s_eiemVfxRenderRuleCacheLock);
+      return true;
+    }
+  }
+  ReleaseSRWLockShared(&s_eiemVfxRenderRuleCacheLock);
+  return false;
+}
+
+static void EiemStoreVfxRenderRuleCache(void *mesh,
+                                        const EiemResolvedRenderRule &resolved) {
+  if (!mesh) return;
+  const LONG generation =
+      InterlockedCompareExchange(&s_eiemModGeneration, 0, 0);
+  const size_t start = (reinterpret_cast<uintptr_t>(mesh) >> 4) & 127u;
+  AcquireSRWLockExclusive(&s_eiemVfxRenderRuleCacheLock);
+  size_t slot = start;
+  for (size_t step = 0; step < 8; ++step) {
+    const size_t candidate = (start + step) & 127u;
+    auto &entry = s_eiemVfxRenderRuleCache[candidate];
+    if (!entry.mesh || entry.mesh == mesh || entry.generation != generation) {
+      slot = candidate;
+      break;
+    }
+  }
+  s_eiemVfxRenderRuleCache[slot] = {mesh, generation, resolved};
+  ReleaseSRWLockExclusive(&s_eiemVfxRenderRuleCacheLock);
+}
+
+// RendererInfo creates short-lived afterimage renderers without running the
+// normal Renderer lifecycle hooks.  Resolve the LZY Render rule in the same
+// order as the normal path: exact renderer binding, Mesh binding, then a
+// standalone source-Mesh match.  The material-slot predicate is evaluated
+// separately after native has committed its runtime arrays.
+static bool EiemResolveVfxRenderRule(void *renderer,
+                                     EiemResolvedRenderRule *out) {
+  if (!renderer || !out) return false;
+  *out = {};
+
+  if (EiemFindBoundRenderRule(renderer, &out->rule)) {
+    strncpy_s(out->source, sizeof(out->source), "renderer-binding",
+              _TRUNCATE);
+    return out->rule.materialCount || out->rule.submeshCount;
+  }
+
+  const char *rendererType = EiemIsSkinnedRenderer(renderer)
+                                 ? "SkinnedMeshRenderer"
+                                 : "MeshFilter";
+  void *mesh = EiemReadSharedMesh(renderer, rendererType);
+  if (!mesh) return false;
+
+  if (EiemLookupVfxRenderRuleCache(mesh, out))
+    return out->rule.materialCount || out->rule.submeshCount;
+
+  if (EiemFindRenderRuleForMeshBinding(mesh, &out->rule)) {
+    strncpy_s(out->source, sizeof(out->source), "mesh-binding", _TRUNCATE);
+    EiemStoreVfxRenderRuleCache(mesh, *out);
+    return out->rule.materialCount || out->rule.submeshCount;
+  }
+
+  char source[768] = {};
+  char asset[192] = {};
+  if (!EiemReadLiveMeshIdentity(mesh, source, sizeof(source), asset,
+                                sizeof(asset)))
+    return false;
+  std::vector<EiemModRule> standaloneRules;
+  EiemFindStandaloneRenderRules(&standaloneRules);
+  for (const auto &candidate : standaloneRules) {
+    if (candidate.path[0] ||
+        !EiemRenderRuleMatches(candidate, "", mesh, asset))
+      continue;
+    out->rule = candidate;
+    strncpy_s(out->source, sizeof(out->source),
+              source[0] ? source : "standalone", _TRUNCATE);
+    strncpy_s(out->asset, sizeof(out->asset), asset, _TRUNCATE);
+    EiemStoreVfxRenderRuleCache(mesh, *out);
+    return out->rule.materialCount || out->rule.submeshCount;
+  }
+  return false;
 }
 
 static void *EiemFindVfxTemplate(void *materials, bool inputIsArray) {
@@ -972,6 +1265,204 @@ static void *EiemFindVfxTemplate(void *materials, bool inputIsArray) {
   }
   return nullptr;
 }
+
+#if defined(EIEM_SPRINT_TIMING_PROBE_BUILD)
+// Observation-only sprint lifecycle probe.  It records ordering and aggregate
+// counts without changing any RendererInfo, Renderer, Mesh or Material state.
+// The production build does not compile this block.
+struct EiemSprintTimingProbeEntry {
+  void *info = nullptr;
+  void *renderer = nullptr;
+  void *lastTemplate = nullptr;
+  uint64_t session = 0;
+  uint64_t firstCommitMs = 0;
+  uint64_t firstTemplateMs = 0;
+  uint64_t firstCacheMs = 0;
+  uint64_t cacheBuildStartMs = 0;
+  uint64_t firstActiveMs = 0;
+  uint64_t endMs = 0;
+  uint32_t commitCount = 0;
+  uint32_t cacheBuildCount = 0;
+  uint64_t activeCallCount = 0;
+  bool sawActive = false;
+  bool ended = false;
+};
+
+static EiemSprintTimingProbeEntry s_eiemSprintTimingProbe[128] = {};
+static uint64_t s_eiemSprintTimingProbeSession = 0;
+
+static uint64_t EiemSprintTimingProbeNowMs() {
+  return static_cast<uint64_t>(GetTickCount64());
+}
+
+static EiemSprintTimingProbeEntry *EiemSprintTimingProbeFind(
+    void *info, bool allocate) {
+  if (!info) return nullptr;
+  for (auto &entry : s_eiemSprintTimingProbe)
+    if (entry.info == info) return &entry;
+  if (!allocate) return nullptr;
+  for (auto &entry : s_eiemSprintTimingProbe) {
+    if (entry.info) continue;
+    entry.info = info;
+    entry.session = ++s_eiemSprintTimingProbeSession;
+    return &entry;
+  }
+  // Reuse a completed lifecycle if the fixed evidence table is exhausted.
+  for (auto &entry : s_eiemSprintTimingProbe) {
+    if (!entry.ended) continue;
+    entry = {};
+    entry.info = info;
+    entry.session = ++s_eiemSprintTimingProbeSession;
+    return &entry;
+  }
+  return nullptr;
+}
+
+static EiemSprintTimingProbeEntry *EiemSprintTimingProbeEnsure(
+    void *info, void *renderer) {
+  auto *entry = EiemSprintTimingProbeFind(info, true);
+  if (!entry) return nullptr;
+  if (entry->ended) {
+    *entry = {};
+    entry->info = info;
+    entry->session = ++s_eiemSprintTimingProbeSession;
+  }
+  entry->renderer = renderer;
+  return entry;
+}
+
+static void EiemSprintTimingProbeOnMaterialCommit(
+    void *info, void *renderer, const char *method, bool nativeResult,
+    bool adapted) {
+  if (!info || !renderer) return;
+  const auto visibility = EiemReadVisibilityControllerProbeState(renderer);
+  if (!visibility.tracked) return;
+
+  const auto state = EiemReadRendererInfoMaterialState(info, renderer);
+  void *templateMaterial =
+      EiemFindVfxTemplate(state.replacingMaterials, true);
+  if (!templateMaterial)
+    templateMaterial = EiemFindVfxTemplate(state.currentMaterials, true);
+  if (!templateMaterial) return;
+
+  auto *entry = EiemSprintTimingProbeEnsure(info, renderer);
+  if (!entry) return;
+  const uint64_t now = EiemSprintTimingProbeNowMs();
+  ++entry->commitCount;
+  if (!entry->firstCommitMs) {
+    entry->firstCommitMs = now;
+    entry->firstTemplateMs = now;
+    entry->lastTemplate = templateMaterial;
+    Log("[SPRINT-TIMING] event=native-vfx-commit session=%llu "
+        "info=%p renderer=%p method=%s template=%p nativeResult=%d "
+        "adapted=%d tickMs=%llu",
+        (unsigned long long)entry->session, info, renderer,
+        method ? method : "?", templateMaterial, nativeResult ? 1 : 0,
+        adapted ? 1 : 0, (unsigned long long)now);
+  } else if (entry->lastTemplate != templateMaterial) {
+    entry->lastTemplate = templateMaterial;
+    Log("[SPRINT-TIMING] event=native-vfx-template-change session=%llu "
+        "info=%p renderer=%p method=%s template=%p tickMs=%llu",
+        (unsigned long long)entry->session, info, renderer,
+        method ? method : "?", templateMaterial,
+        (unsigned long long)now);
+  }
+}
+
+static void EiemSprintTimingProbeOnVfxTemplate(
+    void *info, void *renderer, void *templateMaterial, const char *stage) {
+  if (!info || !renderer || !templateMaterial) return;
+  auto *entry = EiemSprintTimingProbeEnsure(info, renderer);
+  if (!entry) return;
+  const uint64_t now = EiemSprintTimingProbeNowMs();
+  if (!entry->firstTemplateMs) {
+    entry->firstTemplateMs = now;
+    entry->lastTemplate = templateMaterial;
+    Log("[SPRINT-TIMING] event=vfx-template-seen session=%llu info=%p "
+        "renderer=%p stage=%s template=%p tickMs=%llu",
+        (unsigned long long)entry->session, info, renderer,
+        stage ? stage : "?", templateMaterial, (unsigned long long)now);
+  } else if (entry->lastTemplate != templateMaterial) {
+    entry->lastTemplate = templateMaterial;
+    Log("[SPRINT-TIMING] event=vfx-template-change session=%llu info=%p "
+        "renderer=%p stage=%s template=%p tickMs=%llu",
+        (unsigned long long)entry->session, info, renderer,
+        stage ? stage : "?", templateMaterial, (unsigned long long)now);
+  }
+}
+
+static void EiemSprintTimingProbeOnCacheBuild(
+    void *info, void *renderer, void *templateMaterial, bool begin,
+    bool success) {
+  if (!info || !renderer) return;
+  auto *entry = EiemSprintTimingProbeEnsure(info, renderer);
+  if (!entry) return;
+  const uint64_t now = EiemSprintTimingProbeNowMs();
+  if (begin) {
+    ++entry->cacheBuildCount;
+    if (!entry->firstCacheMs) entry->firstCacheMs = now;
+    entry->cacheBuildStartMs = now;
+    Log("[SPRINT-TIMING] event=cache-build-begin session=%llu info=%p "
+        "renderer=%p template=%p buildCount=%u tickMs=%llu",
+        (unsigned long long)entry->session, info, renderer, templateMaterial,
+        (unsigned)entry->cacheBuildCount, (unsigned long long)now);
+    return;
+  }
+  const uint64_t elapsed = entry->cacheBuildStartMs
+                               ? now - entry->cacheBuildStartMs
+                               : 0;
+  Log("[SPRINT-TIMING] event=cache-build-end session=%llu info=%p "
+      "renderer=%p template=%p success=%d elapsedMs=%llu tickMs=%llu",
+      (unsigned long long)entry->session, info, renderer, templateMaterial,
+      success ? 1 : 0, (unsigned long long)elapsed,
+      (unsigned long long)now);
+  entry->cacheBuildStartMs = 0;
+}
+
+static void EiemSprintTimingProbeOnPerDraw(void *info, void *renderer,
+                                            float valueW) {
+  if (!info || !renderer) return;
+  auto *entry = EiemSprintTimingProbeFind(info, valueW > 0.01f);
+  if (!entry) return;
+  entry->renderer = renderer;
+  if (valueW > 0.01f) {
+    ++entry->activeCallCount;
+    if (!entry->firstActiveMs) {
+      entry->firstActiveMs = EiemSprintTimingProbeNowMs();
+      entry->sawActive = true;
+      Log("[SPRINT-TIMING] event=first-active-perdraw session=%llu "
+          "info=%p renderer=%p valueW=%.3f activeCalls=%llu tickMs=%llu",
+          (unsigned long long)entry->session, info, renderer,
+          (double)valueW, (unsigned long long)entry->activeCallCount,
+          (unsigned long long)entry->firstActiveMs);
+    }
+    return;
+  }
+  if (!entry->sawActive || entry->ended) return;
+  entry->ended = true;
+  entry->endMs = EiemSprintTimingProbeNowMs();
+  const bool commitBeforeActive =
+      entry->firstCommitMs && entry->firstActiveMs &&
+      entry->firstCommitMs <= entry->firstActiveMs;
+  const bool cacheBeforeActive =
+      entry->firstCacheMs && entry->firstActiveMs &&
+      entry->firstCacheMs <= entry->firstActiveMs;
+  const uint64_t commitToActive =
+      commitBeforeActive ? entry->firstActiveMs - entry->firstCommitMs : 0;
+  const uint64_t cacheToActive =
+      cacheBeforeActive ? entry->firstActiveMs - entry->firstCacheMs : 0;
+  Log("[SPRINT-TIMING] event=sprint-end session=%llu info=%p renderer=%p "
+      "commitCount=%u cacheBuildCount=%u activeCalls=%llu "
+      "commitBeforeActive=%d cacheBeforeActive=%d commitToActiveMs=%llu "
+      "cacheToActiveMs=%llu tickMs=%llu",
+      (unsigned long long)entry->session, info, renderer,
+      (unsigned)entry->commitCount, (unsigned)entry->cacheBuildCount,
+      (unsigned long long)entry->activeCallCount,
+      commitBeforeActive ? 1 : 0, cacheBeforeActive ? 1 : 0,
+      (unsigned long long)commitToActive, (unsigned long long)cacheToActive,
+      (unsigned long long)entry->endMs);
+}
+#endif
 
 static bool EiemCopyLzyTextureProperties(
     void *target, void *source,
@@ -1091,56 +1582,97 @@ static bool EiemBuildLzyMaterialSectionsForRule(
 static bool EiemApplyLzyMaterialValueProperties(
     void *target, const EiemModRule &rule, const char *section,
     size_t *appliedOut);
+static bool EiemCopyCachedPerDrawVfxLzyData(
+    void *info, void **clean, size_t *cleanCount,
+    std::vector<std::vector<std::string>> *textureProperties,
+    std::vector<std::string> *materialSections);
 
 // Let RendererInfo create and own the native VFXInstance.  Once the native
 // commit has completed, replace only the texture properties on that runtime
 // material with the matched LZY material's textures.  This preserves the
 // game's shader, dissolve parameters, per-draw identity and one-slot
-// replacement transaction while still making every VFX instance use the mod
-// textures.  The mapping is array-index based when native supplies several
-// VFX instances; a single native instance falls back to LZY slot zero because
-// that is the material the game's one-slot renderer contract can actually
-// sample.
+// replacement transaction while making only the VFX instance that occupies an
+// EFF material slot use the mod textures.  Extra effect-only entries are left
+// native.  The mapping is array-index based when native supplies several VFX
+// instances; a single native instance falls back to LZY slot zero because that
+// is the material the game's one-slot renderer contract can actually sample.
 static bool EiemPatchNativeVfxTexturesForRenderer(void *info,
                                                   void *renderer) {
   if (!info || !renderer || !EiemOnUnityThread()) return false;
+  EiemVfxPatchGuard patchGuard;
+  const auto state = EiemReadRendererInfoMaterialState(info, renderer);
+  // The native VFX instance normally survives for the whole dash.  Once all
+  // visible VFX targets have been overlaid, the per-draw hook only needs to
+  // keep the native animation running; rebuilding mod arrays and reading .mat
+  // files here would turn every frame into a resource preparation pass.
+  bool hasVfx = false;
+  const bool hasUnseenVfx =
+      EiemVfxPatchHasUnseenTarget(info, state, &hasVfx);
+  // Most native material commits are ordinary clean arrays.  Do not resolve
+  // rules, copy cache vectors, or touch .mat data until a VFXInstance is
+  // actually present.  This is both the hot-path fast exit and the boundary
+  // that keeps unrelated material commits out of the sprint adapter.
+  if (!hasVfx) return false;
+  if (!hasUnseenVfx)
+    return true;
   EiemResolvedRenderRule resolved = {};
-  if (!EiemFindBoundRenderRule(renderer, &resolved.rule) ||
+  char error[256] = {};
+  void *clean = nullptr;
+  size_t cleanCount = 0;
+  std::vector<std::vector<std::string>> textureProperties;
+  std::vector<std::string> materialSections;
+  if (!EiemResolveVfxRenderRule(renderer, &resolved) ||
       !resolved.rule.materialCount)
     return false;
 
-  char error[256] = {};
-  void *clean = nullptr;
-  if (!EiemBuildRendererMaterials(resolved.rule, &clean, error,
-                                  sizeof(error)) || !clean)
-    return false;
-  const size_t cleanCount = EiemManagedArrayLength(clean);
+  // Prewarm creates this cache at the native material commit boundary.  Reuse
+  // its parsed LZY data when a new native VFXInstance arrives on a later draw;
+  // otherwise every frame would rebuild arrays and reread .mat resources.
+  if (!EiemCopyCachedPerDrawVfxLzyData(
+          info, &clean, &cleanCount, &textureProperties,
+          &materialSections)) {
+    if (!EiemBuildRendererMaterials(resolved.rule, &clean, error,
+                                    sizeof(error)) || !clean)
+      return false;
+    cleanCount = EiemManagedArrayLength(clean);
+    if (!cleanCount || cleanCount > 64) return false;
+    if (!EiemBuildLzyTexturePropertyNamesForRule(
+            resolved.rule, &textureProperties, error, sizeof(error)))
+      return false;
+    if (textureProperties.size() < cleanCount)
+      textureProperties.resize(cleanCount);
+    if (!EiemBuildLzyMaterialSectionsForRule(
+            resolved.rule, &materialSections, error, sizeof(error)))
+      return false;
+    if (materialSections.size() < cleanCount)
+      materialSections.resize(cleanCount);
+  }
   if (!cleanCount || cleanCount > 64) return false;
 
-  std::vector<std::vector<std::string>> textureProperties;
-  if (!EiemBuildLzyTexturePropertyNamesForRule(
-          resolved.rule, &textureProperties, error, sizeof(error)))
-    return false;
-  if (textureProperties.size() < cleanCount)
-    textureProperties.resize(cleanCount);
-  std::vector<std::string> materialSections;
-  if (!EiemBuildLzyMaterialSectionsForRule(
-          resolved.rule, &materialSections, error, sizeof(error)))
-    return false;
-  if (materialSections.size() < cleanCount)
-    materialSections.resize(cleanCount);
-
-  const auto state = EiemReadRendererInfoMaterialState(info, renderer);
-  void *arrays[] = {state.replacingMaterials, state.currentMaterials};
+  const auto runtimeState = EiemReadRendererInfoMaterialState(info, renderer);
+  void *arrays[] = {runtimeState.replacingMaterials,
+                    runtimeState.currentMaterials};
   void *seen[64] = {};
   size_t seenCount = 0;
+  size_t overlappingVfx = 0;
   size_t patched = 0;
   for (void *array : arrays) {
     const size_t count = EiemManagedArrayLength(array);
     if (!array || !count || count > 64) continue;
     for (size_t index = 0; index < count; ++index) {
+      // A native VFX array may contain extra effect-only entries after the
+      // renderer's declared EFF material slots.  Those entries are owned by
+      // the game and must remain untouched.  Only a VFX material occupying an
+      // EFF slot is the overlay case this adapter is meant to handle.
       void *target = EiemVfxArrayItem(array, index);
       if (!target || !EiemMaterialLooksLikeVfx(target)) continue;
+      if (index >= cleanCount) {
+        // Remember effect-only entries too; otherwise an unrelated native
+        // VFX slot would defeat the once-per-instance fast path forever.
+        EiemRememberVfxPatch(info, target);
+        continue;
+      }
+      ++overlappingVfx;
       bool duplicate = false;
       for (size_t i = 0; i < seenCount; ++i)
         if (seen[i] == target) {
@@ -1149,8 +1681,7 @@ static bool EiemPatchNativeVfxTexturesForRenderer(void *info,
         }
       if (duplicate) continue;
       if (seenCount < _countof(seen)) seen[seenCount++] = target;
-      const size_t sourceIndex =
-          (index < cleanCount) ? index : 0;
+      const size_t sourceIndex = index;
       void *source = EiemVfxArrayItem(clean, sourceIndex);
       const std::vector<std::string> *properties =
           sourceIndex < textureProperties.size()
@@ -1164,16 +1695,25 @@ static bool EiemPatchNativeVfxTexturesForRenderer(void *info,
           EiemApplyLzyMaterialValueProperties(
               target, resolved.rule, materialSections[sourceIndex].c_str(),
               &values);
+      EiemRememberVfxPatch(info, target);
       if (textures || (materialValues && values)) ++patched;
     }
   }
+  // Texture copying is on a hot VFX commit path.  Logging every successful
+  // patch made the diagnostic DLL itself a frame-time participant during
+  // sprint/attack bursts.  Keep only a bounded sample; the counters still
+  // record whether the patch occurred.
   static volatile LONG s_logs = 0;
-  if (patched || InterlockedIncrement(&s_logs) <= 24) {
+  const LONG logIndex = InterlockedIncrement(&s_logs);
+  if (logIndex <= 96) {
     Log("[MOD-NATIVE-VFX-TEX] info=%p renderer=%p section=%s "
-        "patched=%zu cleanCount=%zu replacingCount=%zu currentCount=%zu "
-        "error=%s",
-        info, renderer, resolved.rule.section, patched, cleanCount,
-        state.replacingCount, state.currentCount, error[0] ? error : "<none>");
+        "ruleSource=%s overlap=%zu patched=%zu cleanCount=%zu replacingCount=%zu "
+        "currentCount=%zu error=%s",
+        info, renderer, resolved.rule.section,
+        resolved.source[0] ? resolved.source : "<unknown>", overlappingVfx,
+        patched, cleanCount,
+        runtimeState.replacingCount, runtimeState.currentCount,
+        error[0] ? error : "<none>");
   }
   return patched != 0;
 }
@@ -1250,24 +1790,85 @@ static bool EiemBuildLzyMaterialSectionsForRule(
 // The clone already contains the game's native VFX material, so undeclared
 // dissolve/Fresnel/runtime values remain intact.  This is the material-side
 // equivalent of the texture patch and is intentionally data-driven.
+struct EiemLzyMaterialValueCacheEntry {
+  char modPath[MAX_PATH] = {};
+  char section[96] = {};
+  LONG generation = 0;
+  bool loaded = false;
+  bool valid = false;
+  std::vector<std::pair<std::string, std::string>> values;
+};
+static EiemLzyMaterialValueCacheEntry s_eiemLzyMaterialValueCache[64] = {};
+
+static const std::vector<std::pair<std::string, std::string>> *
+EiemGetCachedLzyMaterialValueProperties(const EiemModRule &rule,
+                                         const char *section) {
+  if (!section || !section[0] || !rule.modPath[0]) return nullptr;
+  const LONG generation =
+      InterlockedCompareExchange(&s_eiemModGeneration, 0, 0);
+  for (auto &entry : s_eiemLzyMaterialValueCache) {
+    if (entry.loaded && entry.generation == generation &&
+        strcmp(entry.modPath, rule.modPath) == 0 &&
+        strcmp(entry.section, section) == 0)
+      return entry.valid ? &entry.values : nullptr;
+  }
+
+  EiemModResource resource = {};
+  char materialPath[kEiemResourceDiskPathCapacity] = {};
+  std::vector<std::pair<std::string, std::string>> values;
+  char error[256] = {};
+  const bool valid =
+      EiemFindModResource(rule.modPath, section, "Material", &resource) &&
+      EiemResolveResourceDiskPath(resource, materialPath,
+                                  sizeof(materialPath)) &&
+      EiemReadMaterialFile(materialPath, &values, error, sizeof(error));
+
+  EiemLzyMaterialValueCacheEntry *slot = nullptr;
+  for (auto &entry : s_eiemLzyMaterialValueCache) {
+    if (!entry.loaded || entry.generation != generation) {
+      slot = &entry;
+      break;
+    }
+    if (strcmp(entry.modPath, rule.modPath) == 0 &&
+        strcmp(entry.section, section) == 0) {
+      slot = &entry;
+      break;
+    }
+  }
+  if (!slot) {
+    slot = &s_eiemLzyMaterialValueCache[
+        (reinterpret_cast<uintptr_t>(section) >> 4) &
+        (_countof(s_eiemLzyMaterialValueCache) - 1)];
+  }
+  *slot = {};
+  strncpy_s(slot->modPath, sizeof(slot->modPath), rule.modPath, _TRUNCATE);
+  strncpy_s(slot->section, sizeof(slot->section), section, _TRUNCATE);
+  slot->generation = generation;
+  slot->loaded = true;
+  slot->valid = valid;
+  if (valid) {
+    for (auto &pair : values) {
+      const char *key = pair.first.c_str();
+      if (_strnicmp(key, "float.", 6) == 0 ||
+          _strnicmp(key, "int.", 4) == 0 ||
+          _strnicmp(key, "value4.", 7) == 0 ||
+          _strnicmp(key, "texture_scale.", 14) == 0 ||
+          _strnicmp(key, "texture_offset.", 15) == 0)
+        slot->values.push_back(std::move(pair));
+    }
+  }
+  return slot->valid ? &slot->values : nullptr;
+}
+
 static bool EiemApplyLzyMaterialValueProperties(
     void *target, const EiemModRule &rule, const char *section,
     size_t *appliedOut = nullptr) {
   if (appliedOut) *appliedOut = 0;
   if (!target || !section || !section[0]) return false;
-  EiemModResource resource = {};
-  if (!EiemFindModResource(rule.modPath, section, "Material", &resource))
-    return false;
-  char materialPath[kEiemResourceDiskPathCapacity] = {};
-  if (!EiemResolveResourceDiskPath(resource, materialPath,
-                                   sizeof(materialPath)))
-    return false;
-  std::vector<std::pair<std::string, std::string>> values;
-  char error[256] = {};
-  if (!EiemReadMaterialFile(materialPath, &values, error, sizeof(error)))
-    return false;
+  const auto *values = EiemGetCachedLzyMaterialValueProperties(rule, section);
+  if (!values) return false;
   size_t applied = 0;
-  for (const auto &pair : values) {
+  for (const auto &pair : *values) {
     const char *key = pair.first.c_str();
     if (_strnicmp(key, "float.", 6) == 0 && s_eiemMaterialSetFloat) {
       float value = 0.0f;
@@ -1443,12 +2044,28 @@ static bool EiemInvokeAdaptedNativeVfxCommit(
   // only patches the native instance after that commit has finished.
   const bool result = original ? original(self, input, methodInfo) : false;
   void *renderer = EiemReadRendererFromMaterialInfo(self);
+  // The input to TrySet/TryReplace is the clean material array.  Native VFX
+  // can replace RendererInfo's runtime slots inside the original call, so the
+  // input name/type is not a reliable discriminator.  The patch helper reads
+  // the post-native current/replacing arrays and only succeeds when a VFX
+  // material occupies a corresponding LZY material slot.  That result is the
+  // adaptation predicate: ordinary attack commits continue through the normal
+  // EFF material reapply path, while a matched native VFX slot keeps the
+  // game's native shader/dissolve transaction and receives only LZY textures.
   const bool patched = EiemPatchNativeVfxTexturesForRenderer(self, renderer);
-  Log("[MOD-NATIVE-VFX-PASSTHROUGH] methodArray=%d info=%p renderer=%p "
-      "result=%d patched=%d inputCount=%zu",
-      inputIsArray ? 1 : 0, self, renderer, result ? 1 : 0,
-      patched ? 1 : 0, inputIsArray ? EiemManagedArrayLength(input) : 1u);
-  if (adapted) *adapted = true;
+  static volatile LONG s_passthroughLogs = 0;
+  const LONG logIndex = InterlockedIncrement(&s_passthroughLogs);
+  if (logIndex <= 64) {
+    Log("[MOD-NATIVE-VFX-PASSTHROUGH] methodArray=%d info=%p renderer=%p "
+        "result=%d slotMatched=%d patched=%d inputCount=%zu",
+        inputIsArray ? 1 : 0, self, renderer, result ? 1 : 0,
+        patched ? 1 : 0, patched ? 1 : 0,
+        inputIsArray ? EiemManagedArrayLength(input) : 1u);
+  }
+  // Keep the native VFX commit on the prewarm path.  The renderer rule, not
+  // the effect asset name, decides which LZY materials are copied into the
+  // runtime VFX instance.
+  if (adapted) *adapted = patched;
   return result;
 #else
   void *renderer = EiemReadRendererFromMaterialInfo(self);
@@ -1506,9 +2123,9 @@ struct EiemPerDrawVfxSlotCache {
   size_t count = 0;
   std::vector<std::vector<std::string>> textureProperties;
   std::vector<std::string> materialSections;
+  bool clearPending = false;
 };
 static EiemPerDrawVfxSlotCache s_eiemPerDrawVfxSlotCaches[256] = {};
-static volatile LONG s_eiemPerDrawVfxSlotCacheCount = 0;
 
 static EiemPerDrawVfxSlotCache *EiemFindPerDrawVfxSlotCache(void *info,
                                                             bool allocate) {
@@ -1516,14 +2133,47 @@ static EiemPerDrawVfxSlotCache *EiemFindPerDrawVfxSlotCache(void *info,
   for (auto &entry : s_eiemPerDrawVfxSlotCaches)
     if (entry.info == info) return &entry;
   if (!allocate) return nullptr;
-  const LONG index = InterlockedIncrement(&s_eiemPerDrawVfxSlotCacheCount) - 1;
-  if (index < 0 || index >= (LONG)_countof(s_eiemPerDrawVfxSlotCaches))
-    return nullptr;
-  s_eiemPerDrawVfxSlotCaches[index].info = info;
-  return &s_eiemPerDrawVfxSlotCaches[index];
+  // EiemClearPerDrawVfxSlotCache intentionally drops the managed handles and
+  // zeroes the entry. Reuse that released slot for the next VFX transaction;
+  // otherwise repeated attack/dodge cycles eventually hit the fixed 256-entry
+  // table and the expanded submesh material array silently stops being built.
+  for (auto &entry : s_eiemPerDrawVfxSlotCaches)
+    if (!entry.info) {
+      entry.info = info;
+      return &entry;
+    }
+  return nullptr;
 }
 
-static void EiemClearPerDrawVfxSlotCache(void *info) {
+// Copy the parsed cache while still at the cache boundary.  Callers must not
+// retain pointers into EiemPerDrawVfxSlotCache: a nested Unity material call
+// can request cleanup as soon as the next managed call begins.  Returning
+// value-owned vectors makes the later native-array walk independent of that
+// cache entry's lifetime.
+static bool EiemCopyCachedPerDrawVfxLzyData(
+    void *info, void **clean, size_t *cleanCount,
+    std::vector<std::vector<std::string>> *textureProperties,
+    std::vector<std::string> *materialSections) {
+  if (clean) *clean = nullptr;
+  if (cleanCount) *cleanCount = 0;
+  if (textureProperties) textureProperties->clear();
+  if (materialSections) materialSections->clear();
+  auto *cache = EiemFindPerDrawVfxSlotCache(info, false);
+  if (!cache || !cache->cleanMaterials || !cache->count ||
+      !textureProperties || !materialSections)
+    return false;
+  try {
+    *textureProperties = cache->textureProperties;
+    *materialSections = cache->materialSections;
+  } catch (...) {
+    return false;
+  }
+  if (clean) *clean = cache->cleanMaterials;
+  if (cleanCount) *cleanCount = cache->count;
+  return true;
+}
+
+static void EiemClearPerDrawVfxSlotCacheNow(void *info) {
   auto *entry = EiemFindPerDrawVfxSlotCache(info, false);
   if (!entry) return;
   if (entry->cleanHandle && il2cpp_gchandle_free)
@@ -1533,6 +2183,32 @@ static void EiemClearPerDrawVfxSlotCache(void *info) {
   if (entry->fanoutHandle && il2cpp_gchandle_free)
     il2cpp_gchandle_free(entry->fanoutHandle);
   *entry = {};
+  // RendererInfo addresses can be reused by the next dash.  Do not let the
+  // once-per-native-VFX patch guard mistake a new instance for the old one.
+  for (auto &seen : s_eiemVfxPatchSeen)
+    if (seen.info == info) seen = {};
+}
+
+static void EiemClearPerDrawVfxSlotCache(void *info) {
+  auto *entry = EiemFindPerDrawVfxSlotCache(info, false);
+  if (!entry) return;
+  if (s_eiemVfxPatchDepth > 0) {
+    // The current patch may still be using cleanMaterials and the copied
+    // property vectors.  Defer handle release and table reset until the outer
+    // patch guard has finished.
+    entry->clearPending = true;
+    return;
+  }
+  EiemClearPerDrawVfxSlotCacheNow(info);
+}
+
+static void EiemFlushDeferredPerDrawVfxSlotCaches() {
+  if (s_eiemVfxPatchDepth != 0) return;
+  for (auto &entry : s_eiemPerDrawVfxSlotCaches) {
+    if (!entry.info || !entry.clearPending) continue;
+    void *info = entry.info;
+    EiemClearPerDrawVfxSlotCacheNow(info);
+  }
 }
 
 #if defined(EIEM_PERDRAW_END_RESTORE_BUILD)
@@ -1571,7 +2247,6 @@ static void EiemResetPerDrawMaterialCaches() {
       il2cpp_gchandle_free(entry.fanoutHandle);
     entry = {};
   }
-  InterlockedExchange(&s_eiemPerDrawVfxSlotCacheCount, 0);
 #endif
 }
 #endif
@@ -1602,7 +2277,7 @@ static bool EiemBuildPerDrawVfxSlotArray(
   if (!renderer || !templateMaterial || !outArray || !s_eiemMaterialClass)
     return false;
   EiemResolvedRenderRule resolved = {};
-  if (!EiemFindBoundRenderRule(renderer, &resolved.rule) ||
+  if (!EiemResolveVfxRenderRule(renderer, &resolved) ||
       (!resolved.rule.materialCount && !resolved.rule.submeshCount))
     return false;
   char error[256] = {};
@@ -1628,9 +2303,25 @@ static bool EiemBuildPerDrawVfxSlotArray(
   void **items = (void **)((char *)mapped + IL2CPP_ARRAY_DATA);
   std::vector<void *> uniqueLzyMaterials;
   std::vector<void *> uniqueVfxMaterials;
+  void *firstLzyMaterial = nullptr;
   for (size_t index = 0; index < cleanCount; ++index) {
     void *lzyMaterial = EiemVfxArrayItem(clean, index);
     if (!lzyMaterial) return false;
+
+    // The native dash transaction has one VFX material.  Keep that exact
+    // instance for slot 0 and for every repeated LZY material reference;
+    // this is the common merged-clothes case and avoids needless clones and
+    // per-frame property copies.  Only a genuinely different LZY material
+    // needs a VFX clone.
+    if (index == 0) {
+      firstLzyMaterial = lzyMaterial;
+      items[index] = templateMaterial;
+      continue;
+    }
+    if (lzyMaterial == firstLzyMaterial) {
+      items[index] = templateMaterial;
+      continue;
+    }
     size_t uniqueIndex = SIZE_MAX;
     for (size_t candidate = 0; candidate < uniqueLzyMaterials.size();
          ++candidate) {
@@ -1673,16 +2364,17 @@ static size_t EiemSyncPerDrawVfxRuntimeProperties(
   if (!count || count > 64) return 0;
   if (!g_material_CopyPropertiesFromMaterial) return 0;
   EiemResolvedRenderRule resolved = {};
-  const bool hasRule =
-      cache.info &&
-      EiemFindBoundRenderRule(EiemRendererInfoRenderer(cache.info),
-                              &resolved.rule);
+  const bool hasRule = cache.info && EiemResolveVfxRenderRule(
+      EiemRendererInfoRenderer(cache.info), &resolved);
   void **mappedItems = (void **)((char *)cache.mappedMaterials + IL2CPP_ARRAY_DATA);
   void *seen[64] = {};
   size_t seenCount = 0;
   size_t copied = 0;
   for (size_t index = 0; index < count; ++index) {
-    if (!mappedItems[index]) continue;
+    // Slot 0 and repeated references intentionally point at the native
+    // template.  The game already updated that object this frame; copying it
+    // back to itself only adds a costly managed call.
+    if (!mappedItems[index] || mappedItems[index] == templateMaterial) continue;
     bool duplicate = false;
     for (size_t seenIndex = 0; seenIndex < seenCount; ++seenIndex) {
       if (seen[seenIndex] == mappedItems[index]) {
@@ -1785,9 +2477,35 @@ static size_t EiemFanoutNativePerDrawToVfxSlots(
 }
 #endif
 
+// Assigning the expanded VFX array can synchronously cause another
+// RendererInfo material commit.  The outer commit owns the cache and the
+// Unity setter; a nested EIEM apply would allocate/assign the same array again
+// and can loop indefinitely on the first attack.  Let the nested native commit
+// continue through its original hook, but skip a second EIEM apply transaction.
+static thread_local LONG s_eiemPerDrawVfxApplyDepth = 0;
+struct EiemPerDrawVfxApplyGuard {
+  EiemPerDrawVfxApplyGuard() { ++s_eiemPerDrawVfxApplyDepth; }
+  ~EiemPerDrawVfxApplyGuard() { --s_eiemPerDrawVfxApplyDepth; }
+};
+
 static bool EiemApplyPerDrawVfxSlotMaterials(void *info, void *renderer,
                                              void *templateOverride = nullptr) {
   if (!info || !renderer || !EiemOnUnityThread()) return false;
+  const auto visibility = EiemReadVisibilityControllerProbeStateFast(renderer);
+  if (!visibility.tracked || !visibility.materialTarget) return false;
+  if (s_eiemPerDrawVfxApplyDepth > 0) {
+    static volatile LONG s_reentryLogs = 0;
+    const LONG logIndex = InterlockedIncrement(&s_reentryLogs);
+    if (logIndex <= 32)
+      Log("[MOD-VFX-REENTRY-SKIP] info=%p renderer=%p depth=%ld",
+          info, renderer, s_eiemPerDrawVfxApplyDepth);
+    return false;
+  }
+  EiemPerDrawVfxApplyGuard applyGuard;
+  // This function holds cache-owned managed arrays and material metadata while
+  // invoking Unity setters.  A nested end-of-dash callback may request cache
+  // cleanup; defer that cleanup until this whole apply transaction returns.
+  EiemVfxPatchGuard cacheGuard;
   const auto state = EiemReadRendererInfoMaterialState(info, renderer);
   // During the native end-of-dash cleanup, RendererInfo clears its private
   // replacingMaterials field before the public commit hook returns.  In that
@@ -1802,10 +2520,17 @@ static bool EiemApplyPerDrawVfxSlotMaterials(void *info, void *renderer,
   if (!templateMaterial) return false;
   auto *cache = EiemFindPerDrawVfxSlotCache(info, true);
   if (!cache) return false;
-  if (!cache->mappedMaterials || cache->templateMaterial != templateMaterial) {
-    EiemClearPerDrawVfxSlotCache(info);
-    cache = EiemFindPerDrawVfxSlotCache(info, true);
-    if (!cache) return false;
+#if defined(EIEM_SPRINT_TIMING_PROBE_BUILD)
+  const bool cacheNeedsBuild = !cache->mappedMaterials;
+  if (cacheNeedsBuild || cache->templateMaterial != templateMaterial)
+    EiemSprintTimingProbeOnVfxTemplate(info, renderer, templateMaterial,
+                                       cacheNeedsBuild ? "cache-build"
+                                                       : "template-refresh");
+  if (cacheNeedsBuild)
+    EiemSprintTimingProbeOnCacheBuild(info, renderer, templateMaterial, true,
+                                      false);
+#endif
+  if (!cache->mappedMaterials) {
     void *mapped = nullptr;
     size_t count = 0;
     void *cleanMaterials = nullptr;
@@ -1814,8 +2539,13 @@ static bool EiemApplyPerDrawVfxSlotMaterials(void *info, void *renderer,
     if (!EiemBuildPerDrawVfxSlotArray(renderer, templateMaterial, &mapped,
                                       &count, &cleanMaterials,
                                       &textureProperties,
-                                      &materialSections))
+                                      &materialSections)) {
+#if defined(EIEM_SPRINT_TIMING_PROBE_BUILD)
+      EiemSprintTimingProbeOnCacheBuild(info, renderer, templateMaterial,
+                                        false, false);
+#endif
       return false;
+    }
     cache->templateMaterial = templateMaterial;
     cache->cleanMaterials = cleanMaterials;
     cache->mappedMaterials = mapped;
@@ -1826,6 +2556,26 @@ static bool EiemApplyPerDrawVfxSlotMaterials(void *info, void *renderer,
       cache->cleanHandle = il2cpp_gchandle_new(cleanMaterials, false);
     if (il2cpp_gchandle_new)
       cache->mappedHandle = il2cpp_gchandle_new(mapped, false);
+#if defined(EIEM_SPRINT_TIMING_PROBE_BUILD)
+    EiemSprintTimingProbeOnCacheBuild(info, renderer, templateMaterial, false,
+                                      cache->mappedMaterials != nullptr);
+#endif
+  } else if (cache->templateMaterial != templateMaterial) {
+    // Native may allocate a fresh VFXInstance while the dash is active.  The
+    // LZY rule and clone cache are unchanged, so update only references that
+    // pointed at the previous native template.  Rebuilding here would reread
+    // material files and allocate managed Materials on every frame.
+    void *oldTemplate = cache->templateMaterial;
+    cache->templateMaterial = templateMaterial;
+    if (cache->mappedMaterials) {
+      const size_t count = EiemManagedArrayLength(cache->mappedMaterials);
+      if (count && count <= 64) {
+        void **items =
+            (void **)((char *)cache->mappedMaterials + IL2CPP_ARRAY_DATA);
+        for (size_t index = 0; index < count; ++index)
+          if (items[index] == oldTemplate) items[index] = templateMaterial;
+      }
+    }
   }
   const size_t synced = EiemSyncPerDrawVfxRuntimeProperties(
       *cache, templateMaterial);
@@ -1869,8 +2619,8 @@ static bool EiemPrewarmNativeVfxSlotMaterials(void *info, void *renderer,
                                               void *nativeInput,
                                               bool inputIsArray) {
   if (!info || !renderer || !EiemOnUnityThread()) return false;
-  const auto visibility = EiemReadVisibilityControllerProbeState(renderer);
-  if (!visibility.tracked) return false;
+  const auto visibility = EiemReadVisibilityControllerProbeStateFast(renderer);
+  if (!visibility.tracked || !visibility.materialTarget) return false;
   const auto state = EiemReadRendererInfoMaterialState(info, renderer);
   if (!state.fieldsRead) return false;
   void *templateMaterial =
@@ -1885,10 +2635,13 @@ static bool EiemPrewarmNativeVfxSlotMaterials(void *info, void *renderer,
       info, renderer, templateMaterial);
   if (assigned) {
     auto *cache = EiemFindPerDrawVfxSlotCache(info, false);
-    Log("[MOD-VFX-PREWARM] info=%p renderer=%p input=%p inputArray=%d "
-        "template=%p cleanCount=%zu assigned=1",
-        info, renderer, nativeInput, inputIsArray ? 1 : 0, templateMaterial,
-        cache ? cache->count : 0u);
+    static volatile LONG s_prewarmLogs = 0;
+    const LONG logIndex = InterlockedIncrement(&s_prewarmLogs);
+    if (logIndex <= 64)
+      Log("[MOD-VFX-PREWARM] info=%p renderer=%p input=%p inputArray=%d "
+          "template=%p cleanCount=%zu assigned=1",
+          info, renderer, nativeInput, inputIsArray ? 1 : 0, templateMaterial,
+          cache ? cache->count : 0u);
   }
   return assigned;
 }
@@ -2211,6 +2964,14 @@ static void EiemPerDrawLinkReplacingMaterials(void *info, Vector4 requested) {
 static void EiemLogCharacterPerDrawData(const char *phase, void *info,
                                         Vector4 requested, bool resultKnown,
                                         bool result) {
+#if !defined(EIEM_HIGH_FREQUENCY_DIAGNOSTICS_BUILD)
+  (void)phase;
+  (void)info;
+  (void)requested;
+  (void)resultKnown;
+  (void)result;
+  return;
+#else
   if (!info) return;
   void *renderer = EiemRendererInfoRenderer(info);
   const auto state = EiemReadVisibilityControllerProbeState(renderer);
@@ -2254,14 +3015,197 @@ static void EiemLogCharacterPerDrawData(const char *phase, void *info,
       replacingMatchesCurrent ? 1 : 0,
       rendererName[0] ? rendererName : "<none>",
       hierarchy[0] ? hierarchy : "<none>");
+#endif
 }
+
+// A/B probe for the LZY body/clothes afterimage path.  The normal per-draw
+// diagnostic intentionally reports only tracked renderers; that hides the
+// original-model side of an A/B run because an unmodified body has no EIEM
+// ledger entry.  This probe observes each RendererInfo once (with a small
+// retry allowance while Unity finishes assigning its mesh) and records both
+// tracked and untracked targets without changing any state.
+struct EiemAbRendererProbeEntry {
+  void *info = nullptr;
+  LONG generation = -1;
+  uint8_t attempts = 0;
+};
+static EiemAbRendererProbeEntry s_eiemAbRendererProbeEntries[512] = {};
+
+static bool EiemAbRendererProbeShouldInspect(void *info, uint8_t *attempts) {
+  if (!info || !attempts) return false;
+  const LONG generation =
+      InterlockedCompareExchange(&s_eiemModGeneration, 0, 0);
+  constexpr size_t kProbeTableSize = _countof(s_eiemAbRendererProbeEntries);
+  const size_t start =
+      (static_cast<size_t>(reinterpret_cast<uintptr_t>(info) >> 4)) &
+      (kProbeTableSize - 1);
+  // This hook is on a draw hot path.  Use a short open-addressed lookup
+  // instead of scanning the whole diagnostic table on every frame.
+  for (size_t probe = 0; probe < 16; ++probe) {
+    auto &entry = s_eiemAbRendererProbeEntries[(start + probe) &
+                                                (kProbeTableSize - 1)];
+    if (entry.info == info) {
+      // F10 publishes a new mod generation while the same short-lived
+      // RendererInfo address can be reused.  Start a fresh A/B sample set so
+      // the enabled and commented-ini attacks can be compared in one run.
+      if (entry.generation != generation) {
+        entry.generation = generation;
+        entry.attempts = 0;
+      }
+      if (entry.attempts >= 12) return false;
+      ++entry.attempts;
+      *attempts = entry.attempts;
+      return true;
+    }
+    if (!entry.info) {
+      entry.info = info;
+      entry.generation = generation;
+      entry.attempts = 1;
+      *attempts = 1;
+      return true;
+    }
+  }
+  return false;
+}
+
+static void EiemLogAbRendererProbe(void *info, void *renderer,
+                                   Vector4 value, const char *phase) {
+#if !defined(EIEM_AFTERIMAGE_DIAGNOSTICS_BUILD)
+  (void)info;
+  (void)renderer;
+  (void)value;
+  (void)phase;
+  return;
+#else
+  // The comparison concerns a visible afterimage.  Skip idle per-draw calls
+  // so the probe adds no frame-time work between attacks.
+  if (value.w <= 0.01f) return;
+  uint8_t attempts = 0;
+  if (!EiemAbRendererProbeShouldInspect(info, &attempts) || !renderer) return;
+
+  char rendererName[160] = {};
+  char hierarchy[768] = {};
+  char meshName[192] = {};
+  char originPath[768] = {};
+  int64_t originHash = 0;
+  TraceReadUnityObjectName(renderer, rendererName, sizeof(rendererName));
+  TraceBuildRendererHierarchy(renderer, hierarchy, sizeof(hierarchy));
+  void *mesh = EiemReadSharedMesh(renderer, "SkinnedMeshRenderer");
+  if (!mesh) mesh = EiemReadSharedMesh(renderer, "MeshFilter");
+  TraceReadUnityObjectName(mesh, meshName, sizeof(meshName));
+  if (mesh)
+    TraceLookupAssetOrigin(mesh, &originHash, originPath, sizeof(originPath));
+  const bool target = strstr(rendererName, "lizhiyan") != nullptr ||
+                      strstr(hierarchy, "lizhiyan") != nullptr ||
+                      strstr(meshName, "lizhiyan") != nullptr ||
+                      strstr(originPath, "lizhiyan") != nullptr;
+  if (!target) return;
+
+  const auto visibility = EiemReadVisibilityControllerProbeState(renderer);
+  const auto materials = EiemReadRendererInfoMaterialState(info, renderer);
+  EiemModRule rendererRule = {};
+  EiemModRule meshRule = {};
+  const bool rendererRuleHit = EiemFindBoundRenderRule(renderer, &rendererRule);
+  const bool meshRuleHit = mesh && EiemFindRenderRuleForMeshBinding(mesh, &meshRule);
+  bool enabled = true;
+  bool forceOff = false;
+  EiemReadRendererEnabled(renderer, &enabled);
+  EiemReadRendererForceRenderingOff(renderer, &forceOff);
+
+  char materialNames[8][128] = {};
+  const size_t materialCount =
+      std::min<size_t>(materials.currentCount, _countof(materialNames));
+  for (size_t index = 0; index < materialCount; ++index) {
+    void *material = EiemVfxArrayItem(materials.currentMaterials, index);
+    if (material)
+      TraceReadUnityObjectName(material, materialNames[index],
+                               sizeof(materialNames[index]));
+  }
+  auto summarizeMaterials = [&](void *array, char *out, size_t outSize) {
+    if (!out || !outSize) return;
+    out[0] = '\0';
+    const size_t count = EiemManagedArrayLength(array);
+    const size_t bounded = count > 8 ? 8 : count;
+    size_t offset = 0;
+    for (size_t index = 0;
+         index < bounded && offset + 4 < outSize; ++index) {
+      void *material = EiemVfxArrayItem(array, index);
+      char name[128] = {};
+      if (material)
+        TraceReadUnityObjectName(material, name, sizeof(name));
+      const char *label = name[0] ? name : "<none>";
+      int written = _snprintf_s(out + offset, outSize - offset, _TRUNCATE,
+                                "%s%zu:%s", index ? "," : "", index,
+                                label);
+      if (written <= 0) break;
+      offset += (size_t)written;
+    }
+    if (!out[0] && count) strncpy_s(out, outSize, "<unreadable>", _TRUNCATE);
+  };
+  char sourceSummary[512] = {};
+  char replacingSummary[512] = {};
+  char currentSummary[512] = {};
+  summarizeMaterials(materials.sourceMaterials, sourceSummary,
+                     sizeof(sourceSummary));
+  summarizeMaterials(materials.replacingMaterials, replacingSummary,
+                     sizeof(replacingSummary));
+  summarizeMaterials(materials.currentMaterials, currentSummary,
+                     sizeof(currentSummary));
+
+  const LONG generation =
+      InterlockedCompareExchange(&s_eiemModGeneration, 0, 0);
+  Log("[AB-RENDERER-PROBE] phase=%s generation=%ld attempt=%u info=%p renderer=%p "
+      "tracked=%d materialTarget=%d section=%s mesh=%p meshName=%s originHash=%lld "
+      "originPath=%s replacement=%p meshSame=%d enabled=%d visible=%d "
+      "forceOff=%d active=%d value=(%.3f,%.3f,%.3f,%.3f) "
+      "rendererRuleHit=%d rendererRule=%s meshRuleHit=%d meshRule=%s "
+      "current=%p/%zu replacing=%p/%zu source=%p/%zu materialReplacing=%d "
+      "sourceMaterials=%s replacingMaterials=%s currentMaterials=%s "
+      "rendererName=%s "
+      "hierarchy=%s",
+      phase ? phase : "?", generation, (unsigned)attempts, info, renderer,
+      visibility.tracked ? 1 : 0, visibility.materialTarget ? 1 : 0,
+      visibility.section[0] ? visibility.section : "<none>", mesh,
+      meshName[0] ? meshName : "<none>", (long long)originHash,
+      originPath[0] ? originPath : "<none>", visibility.replacementMesh,
+      visibility.replacementMesh && mesh == visibility.replacementMesh ? 1 : 0,
+      enabled ? 1 : 0, visibility.visible ? 1 : 0, forceOff ? 1 : 0,
+      visibility.active ? 1 : 0, (double)value.x, (double)value.y,
+      (double)value.z, (double)value.w, rendererRuleHit ? 1 : 0,
+      rendererRule.section[0] ? rendererRule.section : "<none>",
+      meshRuleHit ? 1 : 0, meshRule.section[0] ? meshRule.section : "<none>",
+      materials.currentMaterials,
+      materials.currentCount, materials.replacingMaterials,
+      materials.replacingCount, materials.sourceMaterials, materials.sourceCount,
+      materials.materialReplacing ? 1 : 0,
+      sourceSummary[0] ? sourceSummary : "<none>",
+      replacingSummary[0] ? replacingSummary : "<none>",
+      currentSummary[0] ? currentSummary : "<none>",
+      rendererName[0] ? rendererName : "<none>",
+      hierarchy[0] ? hierarchy : "<none>");
+#endif
+}
+
+static thread_local bool s_eiemPerDrawHookActive = false;
 
 static bool TraceRendererInfoCharacterPerDrawData(void *self, Vector4 value,
                                                   void *methodInfo) {
+  auto original = (EiemCharacterPerDrawDataFn)
+      s_origRendererInfoCharacterPerDrawData;
+  if (s_eiemPerDrawHookActive)
+    return original ? original(self, value, methodInfo) : false;
+  s_eiemPerDrawHookActive = true;
+  struct EiemPerDrawHookGuard {
+    ~EiemPerDrawHookGuard() { s_eiemPerDrawHookActive = false; }
+  } guard;
 #if defined(EIEM_PERDRAW_END_RESTORE_BUILD)
   void *perDrawRenderer = EiemRendererInfoRenderer(self);
   const auto perDrawVisibility =
-      EiemReadVisibilityControllerProbeState(perDrawRenderer);
+      EiemReadVisibilityControllerProbeStateFast(perDrawRenderer);
+#if defined(EIEM_SPRINT_TIMING_PROBE_BUILD)
+  if (perDrawVisibility.tracked)
+    EiemSprintTimingProbeOnPerDraw(self, perDrawRenderer, value.w);
+#endif
   // If the preceding idle frame exposed EIEM's expanded source slot table,
   // restore the exact one-slot table before the game's own VFX transaction.
   // Native RendererInfo code must continue to see its original layout.
@@ -2270,7 +3214,8 @@ static bool TraceRendererInfoCharacterPerDrawData(void *self, Vector4 value,
   // The Mesh guard must run before the game's draw-state update.  The native
   // method is still called unchanged, so its dissolve/Fresnel animation and
   // VFX lifetime remain authoritative.
-  EiemPerDrawEnsureReplacementMesh(perDrawRenderer, perDrawVisibility);
+  if (perDrawVisibility.tracked && value.w > 0.01f)
+    EiemPerDrawEnsureReplacementMesh(perDrawRenderer, perDrawVisibility);
 #endif
 #if defined(EIEM_PERDRAW_REPLACING_LINK_PROBE_BUILD)
   EiemPerDrawLinkReplacingMaterials(self, value);
@@ -2279,32 +3224,31 @@ static bool TraceRendererInfoCharacterPerDrawData(void *self, Vector4 value,
   EiemPerDrawSyncReplacementMaterials(self, value, methodInfo);
 #endif
   EiemLogCharacterPerDrawData("before", self, value, false, false);
-  auto original = (EiemCharacterPerDrawDataFn)
-      s_origRendererInfoCharacterPerDrawData;
   const bool result = original ? original(self, value, methodInfo) : false;
 #if defined(EIEM_PERDRAW_END_RESTORE_BUILD)
   // The native per-draw transaction can write its source Mesh back while it
   // updates the temporary VFX material.  The pre-call guard alone is not
   // sufficient: re-assert the bound EFF replacement after the native call so
   // every submesh in the replacement Mesh remains present.
-  if (perDrawVisibility.tracked) {
-    const auto afterNativeVisibility =
-        EiemReadVisibilityControllerProbeState(perDrawRenderer);
-    EiemPerDrawEnsureReplacementMesh(perDrawRenderer,
-                                     afterNativeVisibility);
-  }
+  const auto afterNativeVisibility =
+      EiemReadVisibilityControllerProbeStateFast(perDrawRenderer);
+  if (perDrawVisibility.tracked && value.w > 0.01f)
+    EiemPerDrawEnsureReplacementMesh(perDrawRenderer, afterNativeVisibility);
+  EiemLogAbRendererProbe(self, perDrawRenderer, value, "after-native");
   // Native has now updated the one VFX template's dissolve/Fresnel state.
   // Mirror that state into every matched LZY material slot only after the
   // native call; doing it before the call lets RendererInfo overwrite the
   // expanded clothes array with its one-slot transaction.
 #if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD)
 #if defined(EIEM_NATIVE_VFX_PASSTHROUGH_TEXTURE_PATCH_BUILD)
-  if (perDrawVisibility.tracked && value.w > 0.01f)
+  if (perDrawVisibility.tracked && perDrawVisibility.materialTarget &&
+      value.w > 0.01f)
     // Native may replace the VFXInstance pointer on every frame.  Re-read the
     // current/replacing arrays after the native per-draw update and patch the
     // newly-created instance instead of caching or expanding it.
     EiemPatchNativeVfxTexturesForRenderer(self, perDrawRenderer);
-  if (perDrawVisibility.tracked && value.w > 0.01f) {
+  if (perDrawVisibility.tracked && perDrawVisibility.materialTarget &&
+      value.w > 0.01f) {
     // The native transaction is one VFX material, even when the replacement
     // Mesh has several submeshes.  The renderer must still receive one
     // material entry per replacement submesh; otherwise Unity draws only
@@ -2316,7 +3260,7 @@ static bool TraceRendererInfoCharacterPerDrawData(void *self, Vector4 value,
     EiemApplyPerDrawVfxSlotMaterials(self, perDrawRenderer);
   }
 #else
-  if (perDrawVisibility.tracked) {
+  if (perDrawVisibility.tracked && perDrawVisibility.materialTarget) {
     // Build/retrieve the expanded clone array first.  The native fanout below
     // temporarily swaps only RendererInfo's private one-slot pointer and then
     // restores it, so this final apply keeps the visible renderer expanded.
@@ -2326,7 +3270,7 @@ static bool TraceRendererInfoCharacterPerDrawData(void *self, Vector4 value,
     if (slotCache && slotCache->mappedMaterials)
       EiemFanoutNativePerDrawToVfxSlots(self, self, value, methodInfo,
                                         slotCache);
-    if (value.w > 0.01f)
+    if (value.w > 0.01f && perDrawVisibility.materialTarget)
       EiemApplyPerDrawVfxSlotMaterials(self, perDrawRenderer);
 #endif
   }
@@ -2335,21 +3279,28 @@ static bool TraceRendererInfoCharacterPerDrawData(void *self, Vector4 value,
   // Restore only after the native call.  Restoring before it lets the native
   // controller immediately overwrite the clean array with its VFX instance.
   if (value.w <= 0.01f && perDrawVisibility.tracked) {
-    EiemPerDrawRestoreLzyMaterials(self, perDrawRenderer, methodInfo);
+    const bool restored = EiemPerDrawRestoreLzyMaterials(
+        self, perDrawRenderer, methodInfo);
 #if defined(EIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD)
-    EiemClearPerDrawVfxSlotCache(self);
+    // The cache owns GC handles for the expanded managed arrays.  Never drop
+    // those roots when the visible restore failed; RendererInfo or Renderer
+    // may still reference the arrays and freeing them would leave Unity with
+    // a dangling managed object on the next frame.
+    if (restored)
+      EiemClearPerDrawVfxSlotCache(self);
 #endif
     // Material restoration is a separate native transaction.  Confirm the
     // replacement Mesh once more after it completes; this covers engines that
     // rebuild the draw object during TrySet/TryReplaceSharedMaterials.
     const auto afterRestoreVisibility =
-        EiemReadVisibilityControllerProbeState(perDrawRenderer);
+        EiemReadVisibilityControllerProbeStateFast(perDrawRenderer);
     EiemPerDrawEnsureReplacementMesh(perDrawRenderer,
                                      afterRestoreVisibility);
     const auto afterRestoreMaterials =
         EiemReadRendererInfoMaterialState(self, perDrawRenderer);
     EiemPerDrawExpandNativeSource(self, perDrawRenderer,
                                   afterRestoreMaterials.currentMaterials);
+    (void)restored;
   }
 #endif
 #if defined(EIEM_PERDRAW_MATERIAL_PROBE_BUILD)
@@ -2373,6 +3324,7 @@ static void EiemInstallDitherProbe(void **assemblies, size_t assemblyCount) {
     Log("[DITHER-PROBE] material RendererInfo class not found");
     return;
   }
+#if defined(EIEM_HIGH_FREQUENCY_DIAGNOSTICS_BUILD)
   const char *alphaTypes[] = {"System.Single"};
   const char *enableTypes[] = {"System.Boolean", "System.Boolean&"};
   HookTraceMethodWithParamTypesAndReturnType(
@@ -2383,6 +3335,7 @@ static void EiemInstallDitherProbe(void **assemblies, size_t assemblyCount) {
       rendererInfo, "TrySetManualDitherEnable", enableTypes, 2,
       "RendererInfo.TrySetManualDitherEnable", "System.Boolean",
       (void *)TraceRendererInfoDitherEnable, &s_origRendererInfoDitherEnable);
+#endif
   const char *perDrawTypes[] = {"UnityEngine.Vector4"};
   HookTraceMethodWithParamTypesAndReturnType(
       rendererInfo, "TrySetCharacterPerDrawData", perDrawTypes, 1,
@@ -2390,6 +3343,7 @@ static void EiemInstallDitherProbe(void **assemblies, size_t assemblyCount) {
       (void *)TraceRendererInfoCharacterPerDrawData,
       &s_origRendererInfoCharacterPerDrawData);
 
+#if defined(EIEM_HIGH_FREQUENCY_DIAGNOSTICS_BUILD)
   void *propertyBlockClass =
       FindClass("UnityEngine", "MaterialPropertyBlock", assemblies,
                assemblyCount);
@@ -2437,5 +3391,6 @@ static void EiemInstallDitherProbe(void **assemblies, size_t assemblyCount) {
   } else {
     Log("[DISSOLVE-PROBE] Renderer class not found");
   }
+#endif
   Log("[DITHER-PROBE] installed rendererInfo=%p", rendererInfo);
 }
