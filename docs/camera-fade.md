@@ -82,3 +82,15 @@ F10 不重装 hook，也不在按键线程直接调用游戏相机方法；它�
 
 游戏画面需要核验拉近镜头、开关往返、换地图、角色 UI，并与日志一起判断。
 编译及模拟 MinHook 测试不能替代该验收。历史自动验证与部署结果见版本记录。
+
+## 资源输入入口接入（v26）
+
+当前 `eiem_resource_entry.cpp` 通过独立的 `eiem_entry_camera_fade.h` 接入本模块，
+与旧入口共用 `eiem_camera_fade_core.h` 的 original → clear 契约和
+`eiem_global_settings.h` 的严格配置解析。解析使用精确的零参数、实例、`System.Void`
+签名；缺失、重载歧义、同一 pitch/clear 地址或 hook 安装失败均拒绝接入。
+相机模块失败不阻断资源输入、按键或残影模块。
+
+资源入口启动时读取游戏 `plugin/eff.ini`。F10 的配置候选在 Unity 帧提交成功后
+发布相机开关；非法候选保留此前设置。这个功能无需修改 Blender 导出或加载 GFX。
+当前入口的真实 MinHook 模拟回归与旧入口六项回归已通过，反虚化实机画面仍需验收。

@@ -1,0 +1,60 @@
+# AnimeStudio 解包来源基线
+
+日期：2026-10-02。范围：作者输入的来源与装配保真，不是游戏内替换实现。
+
+## 格式与输出
+
+沿用 EFFMESH v6、EFFSKEL v2、EFFMAT v1 和 PNG 编辑格式。这轮不改 Blender 导入器，也不要求重做已有 `.blend`。旧作者目录不动，重新读取当前游戏 VFS 的源 PFB 后输出：
+
+`E:\EIEM_Workspace\exports\source-baseline-20261002\assets\beyond\dynamicassets\gameplay\actors\postmodels\characters\chr_0032_lizhiyan_postmodel.eff`
+
+新目录扩展名是当前导出器的 `.eff`，旧 `.eiem` 的作者数据仍可供历史核查。工作区索引的旧 EIEM v3 标志可直接读取，数据布局、VFS 指纹与完整记录计数继续校验；不重写旧索引。
+
+## 具体改动
+
+- PFB 根节点从 `AssetBundle.m_Container[].Value.asset` 精确解析，不从同名 GameObject 猜测。层级去重使用 CAB + PathID，避免跨文件 PathID 碰撞。
+- 遍历 GameObject 的实际组件表导出 Renderer。几何按 Mesh 去重，但在去重前处理每个 Renderer 的材质，不遗漏另一使用者的不同材质。
+- 新增 `source/manifest.json`，格式 `EFFSOURCE` v1。保存当前 VFS 指纹、容器入口证据、逻辑资源路径和精确物理身份、作者文件映射、全部 Renderer 使用记录、层级与组件表。
+- Renderer 使用记录包含 Mesh PPtr、Material 槽、bones/rootBone/skinningRoot、包围盒、形态权重、静态批次及 subset 信息。Endfield 解析器原先丢弃的 skinningRoot 现在保留。
+- Material 清单记录精确 Shader PPtr 与纹理属性引用，Texture/Mesh 清单记录流数据定位。独立命令行导出不解析 Shader 程序，完整 Shader 原始对象仍保存在序列化副本中。
+- `source/serialized/*.bytes` 保存依赖闭包内完整 SerializedFile；对象表、类型树、未知组件、材质关键字/标记等未修改信息直接保留原字节。`source/streams/*.bytes` 保存对应原始流成员，避免仅保存 PNG 后丢失原格式、mip 与流载荷。
+- 清单列出文件大小/SHA256、对象范围、类型哈希/schema 数量、external 表及流范围。检查失败不发布成功清单；重新导出开始时移除旧成功清单，避免失败产物被误认为完整包。
+
+这个基线复制本次依赖闭包，用于验证写回所需信息完整。后续可以由公共工作区源缓存提供相同输入，避免多个作者包重复复制；它不是游戏运行内存缓存。
+
+## 本次实测
+
+| 数据 | 数量 |
+|---|---:|
+| 作者 Mesh | 66 |
+| 作者 Material / Texture | 27 / 50 |
+| 作者 Skeleton | 1 |
+| 完整 Renderer 使用 | 75 |
+| 共享 Mesh 的额外使用 | 9 |
+| 层级节点 | 569 |
+| SerializedFile / 原始流 | 88 / 39 |
+| 原始字节总量 | 149,008,140，约 142.1 MiB |
+| 重新解析的源对象 | 2,649 |
+
+此前目标集合的 18 个 Mesh、23 个 Renderer 引用全部对应到新清单，包含 body/cloth 的 LOD1 与 shadow proxy。75 个 Renderer 是当前选择 PFB 的完整用法，不表示游戏全体消费者只有这些，也不建立跨版本 PFB 白名单。
+
+当前读取器完整消费全部 66 份 Mesh 和 1 份 Skeleton。与旧导出相比，顶点、法线、索引、submesh、权重、bindpose、骨骼来源和形态载荷一致，骨架数据和 50 份 PNG 也一致；60 份 Mesh 的压缩切线转换存在最后几位浮点差异，最大绝对差 `1.7881393432617188e-7`。没有修改切线解码算法，原始序列化载荷独立保存并校验。
+
+离线重新解析原始副本，核对文件头、完整对象/类型/external 表、实际容器入口、Renderer Mesh/Material/bones/root/skinningRoot PPtr、层级组件和 Material Shader PPtr。全部 external 文件在本次副本中存在。它证明来源数据完整，不证明游戏能加载新的原生替换包、F10 原生重建或新增 Renderer 的 VFX 行为。
+
+## 复现
+
+```powershell
+dotnet build tools/AnimeStudio/AnimeStudio.GUI/AnimeStudio.GUI.csproj -c Release -p:TargetFrameworks=net9.0-windows
+dotnet tools/AnimeStudio/AnimeStudio.GUI/bin/Release/net9.0-windows/AnimeStudio.GUI.dll --export-eff-prefab `
+  'D:\Hypergryph Launcher\games\Endfield Game\Endfield_Data\StreamingAssets\VFS' `
+  'E:\EIEM_Workspace' `
+  'assets/beyond/dynamicassets/gameplay/actors/postmodels/characters/chr_0032_lizhiyan_postmodel.prefab' `
+  'E:\EIEM_Workspace\exports\source-baseline-20261002'
+```
+
+验证入口：`tools/diagnostics/audit_author_package.py`、`tools/diagnostics/audit_source_baseline.py` 和 `tools/EndfieldVfsProbe --verify-source-baseline`。证据位于 `diagnostics/prefab-resource-validation-20261002/`；其中 v1 的旧包审计只因旧骨架标志识别错误失败，修正实际 `EIESKEL` 标志后的 v2 审计通过，原文件未迁移。
+
+## 后续边界
+
+来源基线没有写出修改后的游戏兼容 SerializedFile/Bundle，没有注册新资源或扩大 Renderer 装配，也没有改变插件替换路线。后续打包器可以基于保留的原生数据只修改已明确的字段；未知字段保持原字节，仍需证明对象表/依赖写出、游戏资源登记与原生加载成功。运行时形态、显隐、热重载以及冲刺材质传播继续按统一资源路线验收。

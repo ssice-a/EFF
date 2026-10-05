@@ -3,7 +3,28 @@ using System.Security.Cryptography;
 using AnimeStudio;
 using AnimeStudio.GUI;
 
-if (args.Length > 0 && args[0] == "--inspect-prefab-components")
+if (args.Length > 0 && args[0] == "--inspect-observed-inputs")
+    return ObservedInputProbe.Run(args);
+if (args.Length > 0 && args[0] == "--resolve-target-input-ranges")
+    return ObservedInputProbe.Ranges(args);
+if (args.Length > 0 && args[0] == "--resolve-input-source-ranges")
+    return ObservedInputProbe.SourceRanges(args);
+
+if (args.Length > 0 && args[0] == "--verify-source-baseline")
+    return SourceBaselineProbe.Run(args);
+
+if (args.Length > 0 && args[0] == "--export-native-schema")
+    return NativePackProbe.Run(args);
+if (args.Length > 0 && args[0] == "--export-observed-schema")
+    return NativePackProbe.Current(args);
+
+if (args.Length > 0 && args[0] == "--verify-native-pack")
+    return NativePackProbe.Verify(args);
+
+if (args.Length > 0 && (args[0] == "--inspect-mesh-consumers" || args[0] == "--inspect-prefab-container-roots"))
+    return PrefabMeshReferenceProbe.Run(args);
+
+if (args.Length > 0 && (args[0] == "--inspect-prefab-components" || args[0] == "--inspect-resource-components"))
     return PrefabComponentProbe.Run(args);
 
 if (args.Length > 0 && args[0] == "--inspect-prefab-animation")

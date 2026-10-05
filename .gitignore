@@ -47,6 +47,9 @@ bin/
 # not sources; the corresponding releases live outside the repository.
 /backups/
 
+# Local game captures, compiled packages and profiling output (not source).
+/diagnostics/
+
 # AnimeStudio keeps its own source-control history.
 
 !deps/**/*.lib

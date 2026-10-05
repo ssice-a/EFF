@@ -110,6 +110,55 @@ V1 不伪装支持绝对形态键、非 Basis 相对键或顶点组遮罩：遇�
 
 ## 验证
 
+### 反序列化输入链的残影捕获
+
+主 Mesh 保留原生形态键，EFF 控制其权重。游戏捕获残影时，插件按捕获时的权重生成局部空间的不可变几何副本；
+只有副本移除已烘入顶点的形态键。副本的索引、UV、权重和 bind pose 保持，生命周期跟随游戏原生 Capture/Release。
+
+形态键数量检查和 MeshFilter 赋值通过，并不证明残影能画出来。当前故障帧已直接观察到身体矩阵请求返回 false，
+GPU 上 85 个 3×4 矩阵全部为零，14,693 个 post-VS 顶点落在同一点；同帧衣服残影的矩阵和顶点正常。
+证据见 [v21 GPU 对照](../diagnostics/resource-directory-entry-20261003/v21-capture-frame/gpu-afterimage-evidence.json)。
+
+矩阵适配器为已经提交快照、原生矩阵请求被拒绝且没有待完成请求的 Renderer 同步提供完整矩阵。
+每个槽从同一 Renderer 的 `bones[]` 与同一 Mesh 的 `bindposes[]` 读取，计算
+`captureParent.worldToLocalMatrix * bone.localToWorldMatrix * bindpose`，转换为请求需要的逐行 3×4 数据；
+头部矩阵保留 rootBone 的世界矩阵。写入范围只限调用者传入、长度完全匹配的矩阵缓冲区。
+原生接受的请求保留原生异步完成流程；插件不强制 Finished，不修改私有 Job 字段，不共享其他 Mesh 的数字槽号。
+
+矩阵回归覆盖原生拒绝、完整同步输出、原生已接受请求、错误长度、引用数组、槽位顺序、行列布局及非有限值拒绝。
+形态键快照的多帧插值、非零权重与快照不可变性回归仍通过。
+`audit_afterimage_palette.py` 用实际抓帧检查矩阵、顶点是否再次坍缩，并可比较 GPU 与已交付矩阵的完整字节。
+
+v22 GPU 已确认非零矩阵交付，残影顶点不再塌缩，但用户观察到 body 残影躺地。按骨骼路径对齐 body 与
+原生衣服残影的 palette，并分别消去各 Mesh 的 bind pose，可见二者相差一个整体约 90° 的坐标转换。
+v22 实际读取的是 Renderer 对象的 Transform 矩阵；v23 改为直接读取公开的 `Renderer.worldToLocalMatrix`。
+回归覆盖 Renderer 与 Transform 不同的情况，不能用仅有平移且两者相同的样例验证渲染坐标空间。
+
+形态键按键由 `Beyond.TailGameLoop.LateUpdate` 的常规帧回调驱动；捕获控制器的 LateTick 继续保留，
+同一 Unity 帧去重。测试覆盖无 Capture 时的实际权重写入/回读、hold 时间推进、失焦与 cycle 边沿。
+当前反序列化输入入口仅注册 ShapeControl 变量的按键；服装 NUMPAD 显隐切换尚未接入此入口。
+
+v23 视觉验收：用户确认方向键控制正常，但 body 残影消失。实际 Renderer 逆矩阵仍带轴向旋转，
+因此读取 Renderer 属性不足以确定这个游戏自定义残影的模型空间。CPU 日志确认快照及矩阵已交付，
+不把交付成功当成画面通过。
+
+原生 Capture 在构造残影后读取同一 SMR 的 `skinningRoot`，将副本放到该节点下面；
+缺少 skinningRoot 时使用 rootBone。v24 按相同规则读取父 Transform 的 worldToLocalMatrix；
+两者均无有效节点时采用无父节点的世界空间。palette 头部的 rootBone 世界矩阵仍按既有方式提供。
+每个槽仍读取同一 Renderer 的 bones[] 和同一 Mesh 的 bindposes[]，不会共享其他 Mesh 的数字索引。
+回归覆盖 source Renderer 与实际 skinningRoot 相差 90°，以及 rootBone 回退；旧版在该边界失败。
+
+v24 游戏画面与 GPU 对照尚未验收。主 Mesh 原生形态键、不可变快照和 v23 已通过的常规帧按键更新均保留。
+用户允许有诊断需要时重新加载 GfxTrace；捕获配置单独记录在部署报告，不能依据源码版本推断安装配置。
+动作期间非零权重、F10 和多实例画面仍需独立验收。
+
 `tests/test_shape_controls.py`、`test_shape_runtime.py`、`test_shape_ownership.py` 与
 `test_blender_shapes.py` 覆盖资源、权重、游戏通道归属和 Blender 作者流程。
-游戏 GPU 形变、动作期间权重、F10 和多实例画面仍需独立验收。
+
+### v25 已验收，v26 配置重载
+
+用户已验收 v25 完整按键及 body 残影。v26 将数字控制与偏好状态独立为
+`eiem_entry_controls.h`，保留已验收的原生 shape 通道、父节点空间、每 Mesh 骨骼槽和
+不可变残影快照寿命。F10 支持已有通道的绑定修改；删除绑定通过公开 setter 将原权重归零，
+不删除 Mesh 的原生通道。残影是否需要适配由原生通道决定，独立于当前绑定数量。
+配置重载与完整资源重载的边界见 `resource-input-key-controls.md`；后者仍是待完成的 DLL 阶段。

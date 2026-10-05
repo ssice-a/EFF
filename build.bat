@@ -1,4 +1,7 @@
 @echo off
+:: Legacy runtime entry (src/eiem.cpp). For the current format=2 resource-input
+:: plugin deployment, build tools\diagnostics\build_resource_directory_entry.cmd
+:: and deploy bin\resource-directory-entry\eff.dll instead of bin\eff.dll.
 
 setlocal enabledelayedexpansion
 
@@ -75,6 +78,10 @@ cl /nologo /utf-8 /O2 /Zi /MD /LD /EHsc /std:c++17 ^
     /DEIEM_NATIVE_VFX_PASSTHROUGH_TEXTURE_PATCH_BUILD ^
     /DEIEM_DITHER_PROBE_BUILD ^
     /DEIEM_MESH_USAGE_GRAPH_BUILD ^
+    /DEIEM_AFTERIMAGE_DIAGNOSTICS_BUILD ^
+    /DEIEM_PERDRAW_MATERIAL_PROBE_BUILD ^
+    /DEIEM_NATIVE_MESH_CLONE_BUILD ^
+    /DEIEM_NATIVE_MESH_RUNTIME_SNAPSHOT_BUILD ^
     /Fd"bin\eff_compile.pdb" ^
     /Ideps\minhook_lib\include ^
     /Ideps\imgui ^

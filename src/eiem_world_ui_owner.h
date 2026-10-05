@@ -21,6 +21,8 @@ static void TracePrefabInstantiateCompleted(void *self, void *methodInfo) {
   void *model = s_prefabInstantiateGetGameObject
                     ? Invoke(s_prefabInstantiateGetGameObject, self)
                     : nullptr;
+  EiemObservePrefabResourceEvent("prefab-instance-completed", path, 0, self,
+                                model, instanceUid);
   std::vector<EiemModPrefab> prefabs;
   EiemFindModPrefabs(path, &prefabs);
   const bool configured = !prefabs.empty();
@@ -176,6 +178,14 @@ static void *TraceModelManagerLoadFromPersistentPool(void *self,
   if (model) {
     TraceRememberLoadedModelPath(model, pathHash);
   }
+#if defined(EIEM_PREFAB_RESOURCE_OBSERVATION_BUILD)
+  char observedPath[768] = {};
+  TraceLookupHashPath(pathHash, observedPath, sizeof(observedPath));
+  if (model && !observedPath[0])
+    TraceLookupLoadedModelPath(model, observedPath, sizeof(observedPath));
+  EiemObservePrefabResourceEvent("persistent-pool-return", observedPath,
+                                pathHash, self, model);
+#endif
   return model;
 }
 

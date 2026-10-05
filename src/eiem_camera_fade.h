@@ -5,7 +5,7 @@
 
 // Managed zero-argument instance methods receive self and MethodInfo.
 // Retain metadata only, never Unity camera/Renderer objects.
-using EiemCameraMethod = void (*)(void *, void *);
+#include "eiem_camera_fade_core.h"
 static EiemCameraMethod s_eiemCameraPitchOriginal = nullptr;
 static EiemCameraMethod s_eiemCameraForceClear = nullptr;
 static void *s_eiemCameraForceClearInfo = nullptr;
@@ -21,13 +21,9 @@ static void EiemReportCameraFade() {
 }
 
 static void EiemCameraPitchHook(void *camera, void *methodInfo) {
-  s_eiemCameraPitchOriginal(camera, methodInfo);
-  if (s_eiemCameraEvaluations.fetch_add(1) == 0)
-    Log("[CAMERA-FADE] observed CameraMono._ProcessDitherByPitch returned");
-  if (!g_pluginActive || !EiemGetGlobalConfig().disableCameraFade) return;
-  s_eiemCameraForceClear(camera, s_eiemCameraForceClearInfo);
-  if (s_eiemCameraClears.fetch_add(1) == 0)
-    Log("[CAMERA-FADE] cleared CameraMono.ForceClearDither returned");
+  EiemEvaluateCameraFade(camera,methodInfo,s_eiemCameraPitchOriginal,s_eiemCameraForceClear,
+      s_eiemCameraForceClearInfo,[] {return g_pluginActive && EiemGetGlobalConfig().disableCameraFade;},
+      Log,s_eiemCameraEvaluations,s_eiemCameraClears);
 }
 
 static bool InitEiemCameraFade(void **assemblies, size_t count) {

@@ -3018,6 +3018,129 @@ static void EiemLogCharacterPerDrawData(const char *phase, void *info,
 #endif
 }
 
+#if defined(EIEM_AFTERIMAGE_DIAGNOSTICS_BUILD)
+// The general A/B renderer probe intentionally ignores idle values.  A native
+// afterimage may use a zero w component while still changing the other
+// per-draw channels, so keep a small body/cloth Shadow_Proxy-only probe that
+// records both sides of the native callback.
+struct EiemAfterimagePerDrawProbeEntry {
+  void *info = nullptr;
+  LONG generation = -1;
+  uint8_t attempts = 0;
+};
+static EiemAfterimagePerDrawProbeEntry
+    s_eiemAfterimagePerDrawProbeEntries[128] = {};
+
+static bool EiemAfterimagePerDrawProbeShouldLog(void *info,
+                                                uint8_t *attempts) {
+  if (!info || !attempts) return false;
+  const LONG generation =
+      InterlockedCompareExchange(&s_eiemModGeneration, 0, 0);
+  constexpr size_t kProbeTableSize =
+      _countof(s_eiemAfterimagePerDrawProbeEntries);
+  const size_t start =
+      (static_cast<size_t>(reinterpret_cast<uintptr_t>(info) >> 4)) &
+      (kProbeTableSize - 1);
+  for (size_t probe = 0; probe < 16; ++probe) {
+    auto &entry = s_eiemAfterimagePerDrawProbeEntries[
+        (start + probe) & (kProbeTableSize - 1)];
+    if (entry.info == info) {
+      if (entry.generation != generation) {
+        entry.generation = generation;
+        entry.attempts = 0;
+      }
+      if (entry.attempts >= 16) return false;
+      ++entry.attempts;
+      *attempts = entry.attempts;
+      return true;
+    }
+    if (!entry.info) {
+      entry.info = info;
+      entry.generation = generation;
+      entry.attempts = 1;
+      *attempts = 1;
+      return true;
+    }
+  }
+  return false;
+}
+
+static void EiemLogAfterimagePerDrawProxyProbe(const char *phase, void *info,
+                                               void *renderer,
+                                               Vector4 value) {
+  if (!info || !renderer || g_shutdownRequested) return;
+  char rendererName[160] = {};
+  char hierarchy[768] = {};
+  TraceReadUnityObjectName(renderer, rendererName, sizeof(rendererName));
+  TraceBuildRendererHierarchy(renderer, hierarchy, sizeof(hierarchy));
+  const bool shadowProxy = strstr(hierarchy, "Shadow_Proxy") != nullptr ||
+                           strstr(rendererName, "shadowProxy") != nullptr;
+  const bool bodyOrCloth =
+      strstr(rendererName, "body_01") || strstr(rendererName, "cloth_01") ||
+      strstr(rendererName, "cloth_02") || strstr(rendererName, "cloth_03") ||
+      strstr(rendererName, "cloth_04") || strstr(rendererName, "cloth_05") ||
+      strstr(rendererName, "cloth_06") || strstr(hierarchy, "body_01") ||
+      strstr(hierarchy, "cloth_01") || strstr(hierarchy, "cloth_02") ||
+      strstr(hierarchy, "cloth_03") || strstr(hierarchy, "cloth_04") ||
+      strstr(hierarchy, "cloth_05") || strstr(hierarchy, "cloth_06");
+  if (!shadowProxy || !bodyOrCloth) return;
+  uint8_t attempts = 0;
+  if (!EiemAfterimagePerDrawProbeShouldLog(info, &attempts)) return;
+
+  const auto visibility = EiemReadVisibilityControllerProbeState(renderer);
+  const auto materials = EiemReadRendererInfoMaterialState(info, renderer);
+  void *mesh = EiemReadSharedMesh(
+      renderer, EiemIsSkinnedRenderer(renderer) ? "SkinnedMeshRenderer"
+                                                  : "MeshFilter");
+  char meshName[192] = {};
+  if (mesh) TraceReadUnityObjectName(mesh, meshName, sizeof(meshName));
+  char currentNames[768] = {};
+  char replacingNames[768] = {};
+  auto summarize = [](void *array, char *out, size_t outSize) {
+    if (!out || !outSize) return;
+    out[0] = '\0';
+    const size_t count = EiemManagedArrayLength(array);
+    const size_t bounded = count > 8 ? 8 : count;
+    size_t used = 0;
+    for (size_t index = 0; index < bounded; ++index) {
+      void *material = EiemVfxArrayItem(array, index);
+      char name[128] = {};
+      if (material)
+        TraceReadUnityObjectName(material, name, sizeof(name));
+      const int written = _snprintf_s(
+          out + used, outSize - used, _TRUNCATE, "%s%zu:%s",
+          index ? "," : "", index, name[0] ? name : "<none>");
+      if (written <= 0) break;
+      used += static_cast<size_t>(written);
+      if (used + 24 >= outSize) break;
+    }
+  };
+  summarize(materials.currentMaterials, currentNames, sizeof(currentNames));
+  summarize(materials.replacingMaterials, replacingNames,
+            sizeof(replacingNames));
+  const LONG generation =
+      InterlockedCompareExchange(&s_eiemModGeneration, 0, 0);
+  Log("[AFTERIMAGE-PERDRAW-PROBE] phase=%s generation=%ld attempt=%u "
+      "info=%p renderer=%p tracked=%d section=%s value=(%.4f,%.4f,%.4f,%.4f) "
+      "mesh=%p meshName=%s replacement=%p meshSame=%d enabled=%d visible=%d "
+      "forceOff=%d active=%d materialReplacing=%d current=%s replacing=%s "
+      "rendererName=%s hierarchy=%s",
+      phase ? phase : "?", generation, (unsigned)attempts, info, renderer,
+      visibility.tracked ? 1 : 0,
+      visibility.section[0] ? visibility.section : "<none>",
+      (double)value.x, (double)value.y, (double)value.z, (double)value.w,
+      mesh, meshName[0] ? meshName : "<none>", visibility.replacementMesh,
+      visibility.replacementMesh && mesh == visibility.replacementMesh ? 1 : 0,
+      visibility.enabled ? 1 : 0, visibility.visible ? 1 : 0,
+      visibility.forceOff ? 1 : 0, visibility.active ? 1 : 0,
+      materials.materialReplacing ? 1 : 0,
+      currentNames[0] ? currentNames : "<none>",
+      replacingNames[0] ? replacingNames : "<none>",
+      rendererName[0] ? rendererName : "<none>",
+      hierarchy[0] ? hierarchy : "<none>");
+}
+#endif
+
 // A/B probe for the LZY body/clothes afterimage path.  The normal per-draw
 // diagnostic intentionally reports only tracked renderers; that hides the
 // original-model side of an A/B run because an unmodified body has no EIEM
@@ -3217,6 +3340,9 @@ static bool TraceRendererInfoCharacterPerDrawData(void *self, Vector4 value,
   if (perDrawVisibility.tracked && value.w > 0.01f)
     EiemPerDrawEnsureReplacementMesh(perDrawRenderer, perDrawVisibility);
 #endif
+#if defined(EIEM_AFTERIMAGE_DIAGNOSTICS_BUILD)
+  EiemLogAfterimagePerDrawProxyProbe("before", self, perDrawRenderer, value);
+#endif
 #if defined(EIEM_PERDRAW_REPLACING_LINK_PROBE_BUILD)
   EiemPerDrawLinkReplacingMaterials(self, value);
 #endif
@@ -3225,6 +3351,10 @@ static bool TraceRendererInfoCharacterPerDrawData(void *self, Vector4 value,
 #endif
   EiemLogCharacterPerDrawData("before", self, value, false, false);
   const bool result = original ? original(self, value, methodInfo) : false;
+#if defined(EIEM_AFTERIMAGE_DIAGNOSTICS_BUILD)
+  EiemLogAfterimagePerDrawProxyProbe("after-native", self, perDrawRenderer,
+                                     value);
+#endif
 #if defined(EIEM_PERDRAW_END_RESTORE_BUILD)
   // The native per-draw transaction can write its source Mesh back while it
   // updates the temporary VFX material.  The pre-call guard alone is not

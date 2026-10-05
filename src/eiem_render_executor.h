@@ -7,6 +7,14 @@ static bool EiemApplyResolvedRenderRule(void *renderer, void *drawRenderer,
                                         void *methodInfo,
                                         const EiemResolvedRenderRule &resolved,
                                         bool allowMeshReplacement = true) {
+#if defined(EIEM_NATIVE_MESH_ENTRY_TRACE_BUILD)
+  // Creation-entry tracing must examine unmodified game Meshes. Parsing and
+  // rule matching can still run, but no author Mesh, Material, shape, skeleton,
+  // or visibility action may reach Unity from this diagnostic build.
+  (void)renderer; (void)drawRenderer; (void)mesh; (void)rendererType;
+  (void)methodInfo; (void)resolved; (void)allowMeshReplacement;
+  return false;
+#else
   (void)methodInfo;
   if (!renderer || !mesh) return false;
   if (!drawRenderer) drawRenderer = renderer;
@@ -339,6 +347,7 @@ static bool EiemApplyResolvedRenderRule(void *renderer, void *drawRenderer,
         meshBuildMs, boneResolveMs, meshCommitMs, ruleElapsedMs);
   }
   return resourceCommitted;
+#endif
 }
 
 static void *EiemFindMeshFilterDrawRenderer(void *meshFilter) {
@@ -538,6 +547,18 @@ static bool EiemApplyStandaloneRenderRules(void *model, const char *stage,
                                            bool *matched, const std::vector<std::string> *affected,
                                            std::vector<EiemPhysicsIntent> *physicsIntents,
                                            const std::vector<EiemModRule> *preparedRules) {
+#if defined(EIEM_SOURCE_NATIVE_SNAPSHOT_BUILD)
+  // The source snapshot DLL is observation-only.  It must leave the game's
+  // source Mesh bound to its Renderers so RendererInfo can be compared against
+  // the exact object captured at creation/assembly time.
+  (void)model;
+  (void)stage;
+  (void)matched;
+  (void)affected;
+  (void)physicsIntents;
+  (void)preparedRules;
+  return false;
+#else
   std::vector<EiemModRule> rules;
   const std::vector<EiemModRule> *ruleSet = preparedRules;
   if (!ruleSet) {
@@ -566,4 +587,5 @@ static bool EiemApplyStandaloneRenderRules(void *model, const char *stage,
         (unsigned long)EiemPhysicsOrderLastCompletionThread());
   }
   return applied;
+#endif
 }

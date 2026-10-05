@@ -1,6 +1,8 @@
 ﻿# EFF 文档索引与当前状态
 
 
+2026-10-05 当前安装为 v35c 生命周期探针 v2，主源码 v36 装配清单尚未部署。Blender 与 DLL 使用配套离线编译器，首次替换随游戏资源加载；重载直接请求当前 Mod 的 Mesh/材质/贴图/配置。最新实机已通过同路径身体贴图正向更新：候选提交成功，用户确认青绿色贴图、动作、残影和头饰正常。当前重载键已改为小键盘减号（`reload=NUMPADMINUS`），下次启动生效；反向恢复与新键待验证，完整热重载尚未验收。具体状态与下一轮步骤见 [当前热重载测试](hot-reload-testing.md)。Blender 支持全部或分资源导出，无需手动 PNG 转换器。完整目标见 [渲染装配契约](full-render-assembly-reload.md)；离线范围和 persistent pool 边界见 [离线包契约](offline-resource-package-format.md)、[实施结果](offline-resource-reload-plan.md)、[完整重载验证](full-resource-reload-validation.md)。以下表格还包含旧执行器历史，不替代本次验收。
+
 ## 当前状态
 
 | 能力 | 当前实现 | 验证边界 |
@@ -33,13 +35,14 @@ v1.0.0 是功能参照，不能替代当前 DLL 的稳定性证明。**历史姿
 | Blender LOD 导出 | [LOD 导出](blender-lod-export.md) | 从已导入资源发现 LOD；多个精确 Render 命中共享一份模板 Mesh 与切换状态 |
 | 输入与配置 | [条件与按键](conditional-keys.md) | INI、表达式、状态与更新顺序 |
 | Blender 网格工具 | [切换作者流程](blender-switches.md) | 选择、显隐、状态和导出 |
-| Blender Mesh-only | [Mesh-only 导出](blender-mesh-only.md) | 只导出选中的 Mesh、材质和贴图，跳过骨架、物理及其他作者控制检查 |
+| Blender 分资源导出 | [分资源导出](blender-scoped-resource-export.md) | 默认全部资源；仅 Mesh、材质与贴图、贴图更新已有完整 Mod；自动离线编译 |
 | 顶点通道 | [顶点数据契约](vertex-data-contract.md) | 原生通道保留与缺失切线生成 |
 | 蒙皮 | [共享骨架绑定](shared-skeleton-binding.md) | EFFMESH v6 源 Mesh/槽位候选、bind pose、实例隔离和回退边界 |
 | 统一装配当前状态 | [候选与验收](unified-assembly-status-20260926.md) | 四槽实验、三端缺口、代码边界、候选 DLL 与验证门槛 |
 | 调查归档 | [CPU 蒙皮调查](archive/cpu-skin-random-pose-current-20260925.md)、[GPU 蒙皮证据](archive/gpu-skinning-evidence.md) | 当时的证据和失败假设；当前状态以本页及装配状态为准 |
 | 形态键 | [形态键控制](shape-controls.md) | 作者通道、实例权重与游戏通道归属 |
 | 作者状态 | [默认值、持久化与材质](author-state-materials.md) | `.blend` 数据、`state.ini` 和材质导入 |
+| 历史贴图工具 | [PNG 转换工具](manual-png-texture-conversion.md) | 已由 Blender 导出取代；保留辅助工具记录 |
 | Mod UI | [Lua UI](lua-ui.md) | 脚本 API、窗口和变量事务 |
 | 相机 | [反虚化契约](camera-fade.md) | CameraMono 原评估后清理 |
 | 物理设计 | [三端物理契约](physics-authoring-design.md) | 解包、Blender、DLL 的完整链路要求 |

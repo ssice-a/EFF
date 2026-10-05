@@ -120,6 +120,13 @@ static void EiemRunModReconcile() {
     // a key-driven render switch or F10 cannot reuse stale pointers/handles.
     EiemResetPerDrawMaterialCaches();
 #endif
+#if defined(EIEM_NATIVE_MESH_METADATA_TRACE_BUILD)
+    // The metadata diagnostic temporarily writes replacement geometry into
+    // the original source Mesh object. Restore those public channels before
+    // Renderer pointers and the next generation are replayed.
+    if (!EiemRestoreNativeMeshMetadataTraceSources())
+      Log("[MESH-META-INPLACE] source restore was incomplete");
+#endif
     restoreComplete = EiemRestoreRenderOverrides(affected);
     EiemCollectSkeletonInstances();
     if (!restoreComplete)

@@ -18,7 +18,10 @@ static constexpr bool kEiemEnableNativeBoundaryStacks = true;
 static constexpr bool kEiemEnableNativeBoundaryStacks = false;
 #endif
 static constexpr bool kEiemEnableSkinDiagnostics = false;
-static constexpr bool kEiemEnableNativeMeshBoneSlots = true;
+// The old four-slot compatibility patch wrote a guessed private offset and is
+// disabled while native Mesh initialization is being integrated at the game's
+// source deserialization boundary.
+static constexpr bool kEiemEnableNativeMeshBoneSlots = false;
 #if defined(EIEM_NATIVE_MESH_BONE_SLOTS_PROBE_BUILD)
 static constexpr bool kEiemEnableSkinBindingDiagnostics = true;
 static constexpr bool kEiemEnableNativeMeshFlagProbe = true;

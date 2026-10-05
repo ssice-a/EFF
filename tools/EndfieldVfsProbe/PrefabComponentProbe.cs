@@ -16,9 +16,10 @@ internal static class PrefabComponentProbe
 
     public static int Run(string[] args)
     {
+        var resourceMode = args[0] == "--inspect-resource-components";
         if (args.Length != 6)
         {
-            Console.Error.WriteLine("--inspect-prefab-components VFS_ROOT WORKSPACE LOGICAL_PREFAB NEW_OUTPUT_DIRECTORY SOURCE_INDEX");
+            Console.Error.WriteLine("--inspect-prefab-components/--inspect-resource-components VFS_ROOT WORKSPACE LOGICAL_RESOURCE NEW_OUTPUT_DIRECTORY SOURCE_INDEX");
             return 2;
         }
         var output = Path.GetFullPath(args[4]);
@@ -28,10 +29,12 @@ internal static class PrefabComponentProbe
             return 2;
         }
         var archive = EndfieldVfsArchive.Open(args[1]);
-        var index = EndfieldIndexStore.LoadPrefabExportIndex(args[5], args[3]);
+        var index = EndfieldIndexStore.Load(args[5]);
+        var resourceRecords = index.Assets.Records.Where(r =>
+            string.Equals(r.Container, args[3], StringComparison.OrdinalIgnoreCase)).ToArray();
         if (index.VfsFingerprint != archive.Fingerprint)
             throw new InvalidDataException("Index fingerprint does not match the source VFS.");
-        var sources = index.Prefab.Records.Select(r => r.Source).Where(s => !string.IsNullOrEmpty(s))
+        var sources = resourceRecords.Select(r => r.Source).Where(s => !string.IsNullOrEmpty(s))
             .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if (sources.Length != 1)
             throw new InvalidDataException($"Expected one Prefab source bundle, found {sources.Length}.");
@@ -41,7 +44,8 @@ internal static class PrefabComponentProbe
         Console.WriteLine($"Loading {paths.Length} dependency bundles (components only).");
         TypeFlags.SetTypes(new());
         foreach (var type in new[] { ClassIDType.GameObject, ClassIDType.Transform,
-                     ClassIDType.MonoBehaviour, ClassIDType.MonoScript, ClassIDType.AssetBundle })
+                     ClassIDType.MonoBehaviour, ClassIDType.MonoScript, ClassIDType.AssetBundle,
+                     ClassIDType.Material, ClassIDType.SkinnedMeshRenderer, ClassIDType.MeshRenderer, ClassIDType.MeshFilter })
             TypeFlags.SetType(type, true, false);
         Logger.Default = new ConsoleLogger();
         Logger.Flags = LoggerEvent.Error;
@@ -51,12 +55,14 @@ internal static class PrefabComponentProbe
             SpecifyUnityVersion = "2021.3.34f5", ResolveDependencies = false
         };
         manager.LoadFiles(paths, mergeSplitAssets: false);
-        var root = EndfieldPrefabDocument.FindRoot(
+        var sourceCabs = index.Dependencies.GetCabNames(source).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var root = resourceMode ? null : EndfieldPrefabDocument.FindRoot(
             manager.assetsFileList.SelectMany(f => f.Objects).OfType<GameObject>(),
-            index.Prefab, index.Dependencies.GetCabNames(source))
-            ?? throw new InvalidDataException("Prefab root not found in loaded source.");
+            new VirtualAssetFile(args[3], resourceRecords), sourceCabs);
+        if (!resourceMode && root == null)
+            throw new InvalidDataException("Prefab root not found in loaded source.");
         var hierarchy = new HashSet<string>();
-        Visit(root, hierarchy);
+        if (root != null) Visit(root, hierarchy);
         Directory.CreateDirectory(output);
         var rows = new List<object>();
         var components = manager.assetsFileList.SelectMany(f => f.Objects).OfType<MonoBehaviour>()
@@ -103,6 +109,7 @@ internal static class PrefabComponentProbe
                 pathId = component.m_PathID, componentName = component.m_Name,
                 owner = owner == null ? null : Identity(owner), ownerPath = OwnerPath(owner),
                 inSelectedPrefab = owner != null && hierarchy.Contains(Identity(owner)),
+                inSelectedResourceFile = sourceCabs.Contains(component.assetsFile.fileName),
                 script = script == null ? null : new
                 {
                     identity = Identity(script), assembly = script.m_AssemblyName,
@@ -132,18 +139,46 @@ internal static class PrefabComponentProbe
         {
             purpose = "raw-component-evidence-not-a-physics-package", prefab = args[3],
             vfsFingerprint = archive.Fingerprint, source, closure,
+            indexedRecords = resourceRecords,
             files = manager.assetsFileList.Select(f => new
             {
                 cab = f.fileName, f.unityVersion,
                 externals = f.m_Externals.Select((x, i) => new { fileId = i + 1, cab = x.fileName })
             }),
-            components = rows, transforms
+            components = rows, transforms,
+            materials = manager.assetsFileList.SelectMany(f => f.Objects).OfType<Material>().Select(m => new
+            {
+                identity = Identity(m), name = m.Name, inSelectedResourceFile = sourceCabs.Contains(m.assetsFile.fileName),
+                shader = Pointer(m.assetsFile, m.m_Shader.m_FileID, m.m_Shader.m_PathID),
+                floats = m.m_SavedProperties.m_Floats.Select(p => new { name = p.Key, value = p.Value }),
+                textures = m.m_SavedProperties.m_TexEnvs.Select(p => new
+                { name = p.Key, texture = Pointer(m.assetsFile, p.Value.m_Texture.m_FileID, p.Value.m_Texture.m_PathID) })
+            }).ToArray(),
+            renderers = manager.assetsFileList.SelectMany(f => f.Objects).OfType<Renderer>().Select(r =>
+            {
+                r.m_GameObject.TryGet(out var owner);
+                var mesh = r is SkinnedMeshRenderer smr ? Pointer(r.assetsFile, smr.m_Mesh.m_FileID, smr.m_Mesh.m_PathID) : null;
+                return new { identity = Identity(r), type = r.type.ToString(), ownerPath = OwnerPath(owner), mesh,
+                    inSelectedPrefab = owner != null && hierarchy.Contains(Identity(owner)),
+                    materials = r.m_Materials.Select(p => Pointer(r.assetsFile, p.m_FileID, p.m_PathID)).ToArray() };
+            }).ToArray(),
+            meshFilters = manager.assetsFileList.SelectMany(f => f.Objects).OfType<MeshFilter>().Select(m =>
+                new { identity = Identity(m), mesh = Pointer(m.assetsFile, m.m_Mesh.m_FileID, m.m_Mesh.m_PathID) }).ToArray()
         });
         Console.WriteLine($"Saved {rows.Count} MonoBehaviour records to {output}");
         return 0;
     }
 
     private static string Identity(AssetObject obj) => obj.assetsFile.fileName + ":" + obj.m_PathID;
+
+    private static object Pointer(SerializedFile file, int fileId, long pathId)
+    {
+        var cab = fileId == 0 ? file.fileName : fileId > 0 && fileId <= file.m_Externals.Count
+            ? file.m_Externals[fileId - 1].fileName : null;
+        new PPtr<AssetObject>(fileId, pathId, file).TryGet(out var target);
+        return new { fileId, pathId, cab, identity = pathId == 0 || cab == null ? null : cab + ":" + pathId,
+            resolved = target != null, type = target?.type.ToString(), name = (target as NamedObject)?.Name };
+    }
 
     private static void Visit(GameObject obj, HashSet<string> seen)
     {
@@ -200,7 +235,7 @@ internal static class PrefabComponentProbe
                 {
                     field, fileId, pathId, isNull = pointer.IsNull, resolved = target != null,
                     identity = target == null ? null : Identity(target),
-                    type = target?.type.ToString(), ownerPath = OwnerPath(owner)
+                    type = target?.type.ToString(), name = (target as NamedObject)?.Name, ownerPath = OwnerPath(owner)
                 });
                 return;
             }

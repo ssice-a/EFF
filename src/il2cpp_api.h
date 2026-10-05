@@ -12,6 +12,7 @@ void Log(const char *fmt, ...);
   static t_##name name = nullptr
 D(void *, il2cpp_domain_get);
 D(void *, il2cpp_thread_attach, void *);
+D(void, il2cpp_thread_detach, void *);
 D(void **, il2cpp_domain_get_assemblies, void *, size_t *);
 D(void *, il2cpp_assembly_get_image, void *);
 D(const char *, il2cpp_image_get_name, void *);
@@ -52,6 +53,7 @@ D(void *, il2cpp_class_get_type, void *);
 D(int32_t, il2cpp_class_value_size, void *, uint32_t *);
 D(void *, il2cpp_type_get_object, void *);
 D(void *, il2cpp_object_new, void *);
+D(void *, il2cpp_value_box, void *, void *);
 D(void *, il2cpp_array_new_specific, void *, size_t);
 D(void *, il2cpp_array_new, void *, size_t);
 D(uint32_t, il2cpp_gchandle_new, void *, bool);
@@ -120,6 +122,7 @@ static bool Resolve() {
 #define R(n) n = (t_##n)GetProcAddress(hGA, #n)
   R(il2cpp_domain_get);
   R(il2cpp_thread_attach);
+  R(il2cpp_thread_detach);
   R(il2cpp_domain_get_assemblies);
   R(il2cpp_assembly_get_image);
   R(il2cpp_image_get_name);
@@ -159,6 +162,7 @@ static bool Resolve() {
   R(il2cpp_class_value_size);
   R(il2cpp_type_get_object);
   R(il2cpp_object_new);
+  R(il2cpp_value_box);
   R(il2cpp_array_new_specific);
   R(il2cpp_array_new);
   R(il2cpp_gchandle_new);

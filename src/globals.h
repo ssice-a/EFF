@@ -56,7 +56,8 @@ static constexpr UINT_PTR kEiemVisibilityForceOffTimer = 0xE156;
 
 static HANDLE g_logHandle = INVALID_HANDLE_VALUE;
 static CRITICAL_SECTION g_logLock;
-#if defined(EIEM_NATIVE_MESH_DESERIALIZE_TRACE_BUILD)
+#if defined(EIEM_NATIVE_MESH_DESERIALIZE_TRACE_BUILD) || \
+    defined(EIEM_NATIVE_MESH_METADATA_TRACE_BUILD)
 static uint64_t g_meshDeserializeDiagnosticLogBytes = 0;
 static constexpr uint64_t kMeshDeserializeDiagnosticLogLimit =
     16ull * 1024ull * 1024ull;
@@ -81,7 +82,8 @@ void Log(const char *fmt, ...) {
   // indefinitely on a damaged/stuck callback.
   if (!TryEnterCriticalSection(&g_logLock))
     return;
-#if defined(EIEM_NATIVE_MESH_DESERIALIZE_TRACE_BUILD)
+#if defined(EIEM_NATIVE_MESH_DESERIALIZE_TRACE_BUILD) || \
+    defined(EIEM_NATIVE_MESH_METADATA_TRACE_BUILD)
   if (g_meshDeserializeDiagnosticLogBytes + static_cast<uint64_t>(len) >
       kMeshDeserializeDiagnosticLogLimit) {
     LeaveCriticalSection(&g_logLock);
@@ -90,7 +92,8 @@ void Log(const char *fmt, ...) {
 #endif
   DWORD written;
   WriteFile(g_logHandle, buf, len, &written, NULL);
-#if defined(EIEM_NATIVE_MESH_DESERIALIZE_TRACE_BUILD)
+#if defined(EIEM_NATIVE_MESH_DESERIALIZE_TRACE_BUILD) || \
+    defined(EIEM_NATIVE_MESH_METADATA_TRACE_BUILD)
   g_meshDeserializeDiagnosticLogBytes += written;
 #endif
   LeaveCriticalSection(&g_logLock);

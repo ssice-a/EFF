@@ -1041,6 +1041,12 @@ static DWORD WINAPI InitThread(LPVOID) {
           FindMethod(meshDataClass, "CopyAttributeIntoPtr", 5);
       g_meshData_CopyIndicesIntoPtr =
           FindMethod(meshDataClass, "CopyIndicesIntoPtr", 5);
+      // Some player revisions use an enum/UInt32 parameter here, so the
+      // strict metadata lookup above can miss the method even though the ABI
+      // is still one integer argument.  The resource diagnostic can safely
+      // use the unique name/arity fallback.
+      if (!g_meshData_GetIndexCount)
+        g_meshData_GetIndexCount = FindMethod(meshDataClass, "GetIndexCount", 1);
     }
     if (meshDataArrayClass) {
       g_meshDataArray_get_Item = FindMethod(meshDataArrayClass, "get_Item", 1);

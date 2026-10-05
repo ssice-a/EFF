@@ -285,9 +285,19 @@ static void EnableGfxTraceBeforeVulkanStarts()
     // The game loads this proxy before it creates its Vulkan instance. Enable the
     // registered GfxTrace implicit layer here so the normal launcher path works
     // without relying on an inherited shell environment or late DLL injection.
-    SetDefaultEnvironmentVariable(L"ENABLE_VULKAN_GFXTRACE_CAPTURE", L"1");
+    // An intentional capture build must also override disable variables that
+    // may have been inherited from a previous diagnostic launch. Keep only
+    // one capture layer active in the process.
+    SetEnvironmentVariableW(L"DISABLE_VULKAN_GFXTRACE_CAPTURE_1_46", nullptr);
+    SetEnvironmentVariableW(L"ENABLE_VULKAN_GFXTRACE_CAPTURE", L"1");
+    SetEnvironmentVariableW(L"ENABLE_VULKAN_RENDERDOC_CAPTURE", L"0");
+    SetEnvironmentVariableW(L"DISABLE_VULKAN_RENDERDOC_CAPTURE_1_45", L"1");
     SetDefaultEnvironmentVariable(L"GFXTRACE_CAPTURE_FRAME", L"off");
+#if defined(EIEM_GFXTRACE_CAPTURE_PATH)
+    SetEnvironmentVariableW(L"GFXTRACE_CAPTURE_PATH", EIEM_GFXTRACE_CAPTURE_PATH);
+#else
     SetDefaultEnvironmentVariable(L"GFXTRACE_CAPTURE_PATH", L"E:\\renderdoc\\captures\\Endfield\\endfield");
+#endif
 }
 
 // The Vulkan loader evaluates implicit layers before the game creates its
