@@ -53,7 +53,7 @@ internal static class PrefabMeshReferenceProbe
         var manager = new AssetsManager
         {
             Game = GameManager.GetGameByType(GameType.ArknightsEndfield),
-            SpecifyUnityVersion = "2021.3.34f5", ResolveDependencies = false
+            SpecifyUnityVersion = ProbeUnityVersion.Override, ResolveDependencies = false
         };
         Console.WriteLine($"Inspecting {paths.Count} source bundles, without dependency payload loading.");
         manager.LoadFiles(paths.ToArray(), mergeSplitAssets: false);

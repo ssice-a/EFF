@@ -1,0 +1,81 @@
+#pragma once
+#include "eiem_mesh_frame_storage.h"
+#include <unordered_map>
+
+// Offline-proven reconstruction. Large bytes remain in the game's members or
+// author resources. The descriptor carries spans and small changed metadata.
+namespace EiemResourceRecipe {
+using namespace EiemNativeInput;
+enum Kind : unsigned { Original, Author, ExpandedFrame, Literal };
+struct Span {Kind kind=Literal;std::string source;size_t offset=0,size=0;Bytes literal;};
+struct Member {std::string name,hash;uint32_t flags=0;size_t size=0;std::vector<Span> spans;};
+struct Frame {std::string resource,hash;size_t offset=0,size=0,count=0;std::array<size_t,4> stride{},start{};};
+inline std::string Digest(const Bytes& bytes){auto hash=Sha(bytes.data(),bytes.size());return Hex(hash.data(),hash.size());}
+inline Bytes ExpandFrame(const Frame& frame,const Bytes& resource){
+ Require(frame.count&&frame.stride[0]==16&&frame.start[0]==0&&frame.offset<=resource.size()&&frame.size<=resource.size()-frame.offset,"recipe author frame range differs");
+ MeshVertexLayout after;after.count=frame.count;after.stride[0]=40;
+ for(size_t s=0;s<4;++s){
+  Require(frame.start[s]<=frame.size&&MultiplySize(frame.count,frame.stride[s])<=frame.size-frame.start[s],"recipe frame stream range differs");
+  if(s)after.stride[s]=frame.stride[s];after.start[s]=after.bytes;
+  after.bytes=AlignSize(AddSize(after.bytes,MultiplySize(after.count,after.stride[s])),16);
+ }
+ Bytes bytes(after.bytes);const auto* input=resource.data()+frame.offset;
+ for(size_t v=0;v<frame.count;++v){uint32_t word=0;std::memcpy(&word,input+v*16+12,4);auto decoded=DecodePackedMeshFrame(word);std::memcpy(bytes.data()+v*40,input+v*16,12);std::memcpy(bytes.data()+v*40+12,decoded.data(),28);}
+ for(size_t s=1;s<4;++s)std::memcpy(bytes.data()+after.start[s],input+frame.start[s],frame.count*frame.stride[s]);
+ Require(frame.hash.empty()||Digest(bytes)==frame.hash,"recipe expanded author frame digest differs");return bytes;
+}
+inline std::vector<Frame> DescribeFrames(const Package& package,const std::map<std::array<unsigned char,16>,Type>& schemas){
+ std::vector<Frame> frames;std::set<std::string> seen;
+ for(const auto& mesh:package.meshes){if(mesh.second.shapes.empty()||!seen.insert(mesh.second.resource).second)continue;
+  const auto& resource=*package.resources.at(mesh.second.resource);const auto& type=schemas.at(resource.type);size_t node=SIZE_MAX;
+  for(auto child:type.nodes.at(0).children)if(type.nodes.at(child).name=="m_VertexData")node=child;
+  Require(node!=SIZE_MAX,"recipe Mesh vertex field absent");const auto& block=resource.blocks.at("m_VertexData");
+  Bytes field(resource.bytes.begin()+block.offset,resource.bytes.begin()+block.offset+block.size);auto vertex=DecodeValue(type,node,field);auto layout=DescribeMeshVertexStorage(type,vertex);
+  const auto& channels=ArrayValue(type,Child(type,vertex,"m_Channels")).children;
+  if(layout.stride[0]==40&&Integer(Child(type,channels.at(1),"dimension"))==3&&Integer(Child(type,channels.at(2),"dimension"))==4)continue;
+  Require(layout.stride[0]==16&&Integer(Child(type,channels.at(1),"dimension"))==0x31,"recipe shaped frame convention differs");
+  const auto& raw=Child(type,vertex,"m_DataSize").raw;auto data=std::search(field.begin(),field.end(),raw.begin(),raw.end());Require(!raw.empty()&&data!=field.end(),"recipe author vertex bytes absent");
+  Frame frame;frame.resource=mesh.second.resource;frame.offset=block.offset+size_t(data-field.begin());frame.size=raw.size();frame.count=layout.count;
+  for(size_t s=0;s<4;++s){frame.stride[s]=layout.stride[s];frame.start[s]=layout.start[s];}
+  frame.hash=Digest(ExpandFrame(frame,resource.bytes));frames.push_back(std::move(frame));
+ }return frames;
+}
+struct Buffer {Kind kind=Original;std::string name;const Bytes* bytes=nullptr;};
+struct Location {size_t buffer=0,offset=0;};
+inline uint64_t Anchor(const unsigned char* bytes){uint64_t value=1469598103934665603ull;for(size_t i=0;i<32;++i)value=(value^bytes[i])*1099511628211ull;return value;}
+struct Dictionary {
+ std::vector<Buffer> buffers;std::unordered_map<uint64_t,Location> anchors;
+ explicit Dictionary(std::vector<Buffer> sources):buffers(std::move(sources)){
+  for(size_t i=0;i<buffers.size();++i){const auto& bytes=*buffers[i].bytes;if(bytes.size()<32)continue;
+   for(size_t p=0;p<=bytes.size()-32;p+=64)anchors.emplace(Anchor(bytes.data()+p),Location{i,p});
+  }
+ }
+ size_t Match(const Bytes& bytes,size_t offset,uint64_t hash,Location& location)const{
+  auto found=anchors.find(hash);if(found==anchors.end())return 0;const auto& source=*buffers[found->second.buffer].bytes;auto limit=std::min(bytes.size()-offset,source.size()-found->second.offset);size_t length=0;
+  while(length<limit&&bytes[offset+length]==source[found->second.offset+length])++length;
+  if(length<32)return 0;location=found->second;return length;
+ }
+};
+inline Member Describe(const EndfieldInput::Member& output,const Dictionary& original,const Dictionary& author){
+ Member member;member.name=output.name;member.flags=output.flags;member.size=output.bytes.size();member.hash=Digest(output.bytes);
+ auto literal=[&](unsigned char byte){if(member.spans.empty()||member.spans.back().kind!=Literal)member.spans.push_back({});auto& span=member.spans.back();span.literal.push_back(byte);++span.size;};
+ for(size_t p=0;p<output.bytes.size();){size_t length=0;Location old,edit;const Dictionary* dictionary=nullptr;Location location;
+  if(output.bytes.size()-p>=32){auto hash=Anchor(output.bytes.data()+p);auto a=original.Match(output.bytes,p,hash,old),b=author.Match(output.bytes,p,hash,edit);if(a||b){dictionary=a>=b?&original:&author;location=a>=b?old:edit;length=std::max(a,b);}}
+  if(!length){literal(output.bytes[p++]);continue;}const auto& source=dictionary->buffers[location.buffer];
+  if(!member.spans.empty()&&member.spans.back().kind==source.kind&&member.spans.back().source==source.name&&AddSize(member.spans.back().offset,member.spans.back().size)==location.offset)member.spans.back().size=AddSize(member.spans.back().size,length);
+  else member.spans.push_back({source.kind,source.name,location.offset,length,{}});p+=length;
+ }return member;
+}
+inline Bytes Apply(const Member& member,const std::map<std::string,const Bytes*>& originals,const Package& package,const std::map<std::string,Bytes>& frames){
+ Bytes output;Require(member.size<=output.max_size(),"recipe output size cannot be represented");output.reserve(member.size);
+ for(const auto& span:member.spans){Require(span.size&&span.size<=member.size-output.size(),"recipe output span extent differs");const Bytes* source=nullptr;
+  switch(span.kind){case Original:Require(originals.count(span.source),"recipe original member absent");source=originals.at(span.source);break;
+   case Author:Require(package.resources.count(span.source),"recipe author resource absent");source=&package.resources.at(span.source)->bytes;break;
+   case ExpandedFrame:Require(frames.count(span.source),"recipe expanded frame absent");source=&frames.at(span.source);break;
+   case Literal:Require(span.offset==0&&span.source.empty()&&span.literal.size()==span.size,"recipe literal extent differs");source=&span.literal;break;
+   default:Require(false,"recipe source kind differs");}
+  Require(span.offset<=source->size()&&span.size<=source->size()-span.offset,"recipe source span extent differs");output.insert(output.end(),source->begin()+span.offset,source->begin()+span.offset+span.size);
+ }
+ Require(output.size()==member.size&&Digest(output)==member.hash,"recipe reconstructed member digest differs");return output;
+}
+} // namespace EiemResourceRecipe

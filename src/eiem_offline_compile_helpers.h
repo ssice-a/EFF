@@ -33,13 +33,13 @@ inline void ParallelInputs(size_t count,const std::function<void(size_t)>& work,
 struct Stage {Bytes bytes;size_t first=0,second=0,third=0;};
 inline bool ReadStage(const std::filesystem::path& cache,const std::string& key,Stage& result){
   if(cache.empty()||!std::filesystem::exists(cache/(key+".tsv")))return false;
-  auto data=Read(cache/(key+".tsv"),1024);std::string text(data.begin(),data.end());auto end=text.rfind("sha256\t");
+  auto data=Read(cache/(key+".tsv"));std::string text(data.begin(),data.end());auto end=text.rfind("sha256\t");
   Require(end!=text.npos&&end&&text[end-1]=='\n',"compile stage descriptor incomplete");
   Require(Trim(text.substr(end+7))==Digest(Bytes(data.begin(),data.begin()+end)),"compile stage descriptor changed");
   std::istringstream rows(text.substr(0,end));std::string header,hash,extra;uint64_t size=0;
-  Require(bool(std::getline(rows,header))&&header=="EFF_COMPILE_STAGE\t1\t"+key,"compile stage identity differs");
-  Require(bool(rows>>size>>hash>>result.first>>result.second>>result.third)&&!(rows>>extra)&&size<=512ull*1024*1024&&result.first<=100000&&result.second<=100000&&result.third<=100000,"compile stage counts invalid");
-  result.bytes=Read(cache/(key+".vfs"),512ull*1024*1024);
+  Require(bool(std::getline(rows,header))&&TableIdentity(Trim(header),"EFF_COMPILE_STAGE",key),"compile stage identity differs");
+  Require(bool(rows>>size>>hash>>result.first>>result.second>>result.third)&&!(rows>>extra),"compile stage counts invalid");
+  result.bytes=Read(cache/(key+".vfs"));
   Require(result.bytes.size()==size&&Digest(result.bytes)==hash,"compile stage payload changed");return true;
 }
 inline void AtomicSave(const std::filesystem::path& path,const Bytes& bytes){

@@ -10,7 +10,7 @@ namespace EiemNativeInput {
 using NativeReference = std::pair<std::string, int64_t>;
 using MeshSchemaIndex = std::map<std::array<unsigned char, 16>, Type>;
 inline Value EmptyValue(const Type& type, size_t index, unsigned depth = 0) {
-  Require(index < type.nodes.size() && depth < 128, "new serialized value schema limit");
+  Require(index < type.nodes.size() && depth < type.nodes.size(), "new serialized value schema limit");
   Value value;
   value.node = index;
   const auto& node = type.nodes[index];
@@ -251,7 +251,7 @@ class RendererMemberBuilder {
     std::set<int64_t> visiting;
     std::function<void(int64_t)> visit = [&](int64_t id) {
       if (roots.count(id)) return;
-      Require(visiting.size() < 512 && visiting.insert(id).second, "Transform hierarchy cycle/depth");
+      Require(visiting.insert(id).second, "Transform hierarchy cycle/depth");
       auto parent = parents.at(id);
       if (parent) {
         visit(parent);
@@ -423,7 +423,8 @@ public:
         SetReference(type, Child(type, renderer, "m_Mesh"), {nativeMesh->cab, nativeMesh->id}, layout, cab);
         auto& materials = ArrayValue(type, Child(type, renderer, "m_Materials"));
         auto materialPointer = ArrayElement(type, materials);
-        SetReference(type, materialPointer, {material->second.cab, material->second.pathId}, layout, cab);
+        auto materialId=AllocateMaterialId(material->second.cab,package,part.material);
+        SetReference(type, materialPointer, {material->second.cab, materialId}, layout, cab);
         materials.children = {materialPointer}; materials.count = 1;
         auto& palette = ArrayValue(type, Child(type, renderer, "m_Bones"));
         palette.children.clear();
@@ -455,9 +456,9 @@ public:
         if (i) Add(newRid, rid, renderer);
         else { Tree(rid) = std::move(renderer); changed.insert(rid); }
         rendererExpansion[rid].push_back(newRid);
-        dependencies.insert({nativeMesh->cab, nativeMesh->id}); dependencies.insert({material->second.cab, material->second.pathId});
+        dependencies.insert({nativeMesh->cab, nativeMesh->id}); dependencies.insert({material->second.cab, materialId});
         result.parts.push_back({cab, ruleId, pid, nativeMesh->cab, material->second.cab,
-            rid, newRid, gid, newTid, tid, nativeMesh->id, material->second.pathId, std::move(bones)});
+            rid, newRid, gid, newTid, tid, nativeMesh->id, materialId, std::move(bones)});
       }
       preloadExpansion[rid] = {dependencies.begin(), dependencies.end()};
     }
@@ -538,7 +539,7 @@ public:
 inline void AddMeshSchemas(MeshSchemaIndex& schemas, const Bytes& input) {
   auto bundle = EndfieldInput::Decode(input);
   for (const auto& member : bundle.members) {
-    if (member.bytes.size() < 48 || member.bytes[8] || member.bytes[9] || member.bytes[10] || member.bytes[11] != 22) continue;
+    if (!SerializedHeader(member.bytes)) continue;
     auto layout = ParseSerialized(member.bytes);
     for (const auto& type : layout.types) if (type.classId == 43) schemas.emplace(type.hash, type);
   }
@@ -552,7 +553,7 @@ inline RendererInputBuild BuildRendererInput(const Bytes& source, const Package&
   RendererBoundsCache localBounds;auto& bounds=sharedBounds?*sharedBounds:localBounds;
   RendererInputBuild result;
   for (auto& member : bundle.members) {
-    if (member.bytes.size() < 48 || member.bytes[8] || member.bytes[9] || member.bytes[10] || member.bytes[11] != 22) continue;
+    if (!SerializedHeader(member.bytes)) continue;
     RendererMemberBuilder builder(member.bytes, member.name, package, assets, meshParts);
     builder.SetMeshSchemas(schemas);
     builder.SetBoundsCache(bounds);

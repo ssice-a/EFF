@@ -23,7 +23,7 @@ extern "C" __declspec(dllexport) unsigned EFF_AuthorAbi() { return 1; }
 extern "C" __declspec(dllexport) void EFF_FreeAuthorResult(void* value) { std::free(value); }
 extern "C" __declspec(dllexport) char* EFF_SourceSchema(const unsigned char* data, size_t size) {
   try {
-    EiemDirectory::Require(data && size >= 48 && size <= 1024ULL*1024*1024, "author source input extent");
+    EiemDirectory::Require(data && size >= 48, "author source input extent");
     EiemDirectory::Bytes input(data, data + size);
     const auto layout = EiemNativeInput::ParseSerialized(input);
     std::ostringstream out; out << "{\"abi\":1,\"types\":[";

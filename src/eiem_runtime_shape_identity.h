@@ -9,7 +9,10 @@ inline std::string RuntimeShapeName(const Package& package, const std::string& p
   const auto& mesh = package.meshes.at(part.mesh);
   const auto& resource = *package.resources.at(mesh.resource);
   auto digest = Sha(resource.bytes.data(), resource.bytes.size());
-  auto label = package.id + "\n" + partId + "\n" + target.path + "\n" + target.asset + "\n" + Hex(digest.data(),digest.size());
+  auto owner=package.partOwners.find(partId);
+  const auto& mod=owner==package.partOwners.end()?package.id:owner->second.first;
+  const auto& partName=owner==package.partOwners.end()?partId:owner->second.second;
+  auto label = mod + "\n" + partName + "\n" + target.path + "\n" + target.asset + "\n" + Hex(digest.data(),digest.size());
   auto token = Sha((const unsigned char*)label.data(),label.size());
   return target.asset + "__EFF_SHAPE_" + Hex(token.data(),token.size());
 }

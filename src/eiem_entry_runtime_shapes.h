@@ -56,8 +56,7 @@ struct Api {
   void *getWeight = nullptr, *setWeight = nullptr, *instantiate = nullptr, *clear = nullptr;
   void *setChannel = nullptr, *recalculateBounds = nullptr, *destroy = nullptr;
   void *frame = nullptr, *elapsed = nullptr;
-  void *getEnabled = nullptr, *findRenderers = nullptr, *rendererType = nullptr;
-  bool findIncludesInactive = false;
+  void *getEnabled = nullptr, *modelRenderers = nullptr, *rendererType = nullptr;
   void* vec3Class = nullptr;
   void (*clearIcall)(void*) = nullptr;
   void *bindPoses = nullptr, *boneWeights = nullptr, *indices = nullptr;
@@ -69,7 +68,7 @@ struct Api {
 std::atomic<bool> enabled{false};
 std::atomic<unsigned> boundCount{0};
 unsigned packageGeneration = 0, checkedGeneration = 0;
-float discoveryElapsed = 1;
+bool registrationPaused = false;
 bool visibilityWriting = false;
 using EnabledSetterFn = void (*)(void*,bool);
 EnabledSetterFn originalEnabledSetter = nullptr;
@@ -232,7 +231,7 @@ void Bind(void* renderer, void* mesh, const Spec& spec) {
 Cached& Read(void* mesh, const Spec& spec) {
   auto existing = cached.find(mesh);
   if (existing != cached.end() && existing->second.mesh.Get() == mesh) return existing->second;
-  Require(cached.size() < 64 && Scalar<unsigned char>(api.readable,mesh), "runtime shape source not readable/cache limit");
+  Require(Scalar<unsigned char>(api.readable,mesh), "runtime shape source not readable/cache limit");
   Cached c; c.mesh = Ref::Make(mesh,true);
   c.base.positions = Array<Vec3>(Call(api.vertices,mesh),spec.vertices);
   c.base.normals = Array<Vec3>(Call(api.normals,mesh),spec.vertices);
@@ -240,7 +239,7 @@ Cached& Read(void* mesh, const Spec& spec) {
   for (size_t channelIndex=0;channelIndex<spec.channels.size();++channelIndex) {
     int index=int(channelIndex); void* indexArgs[] = {&index};
     int frames = Scalar<int>(api.frameCount,mesh,indexArgs);
-    Require(frames > 0 && frames <= 256, "runtime shape native frame count");
+    Require(frames > 0, "runtime shape native frame count");
     Channel channel{spec.channels[channelIndex],{}};
     for (int f=0;f<frames;++f) {
       void* weightArgs[] = {&index,&f};
@@ -398,7 +397,7 @@ EiemCaptureSkin::Palette CapturePaletteFor(void* renderer,void* mesh) {
   return EiemCaptureSkin::Build(rootWorld,inverse,world,bindPoses);
 }
 void* SnapshotFor(void* renderer, void* source, const Spec& spec) {
-  Require(scope && liveSnapshots < 512, "runtime shape snapshot budget");
+  Require(bool(scope), "runtime shape snapshot budget");
   auto ready = scope->ready.find(renderer);
   Require(ready != scope->ready.end() && ready->second, "runtime shape native skin matrices not finished");
   auto duplicate = scope->supplied.find(renderer);
@@ -545,22 +544,10 @@ void ApplyVisibility(void* renderer,Bound& binding,const Spec& spec) {
       spec.package.c_str(),spec.part.c_str(),renderer,int(authorVisible),int(binding.nativeEnabled),int(target));
 }
 void RegisterRenderer(void* renderer,void* mesh) {
+  if (registrationPaused) return;
   if (auto spec=Match(mesh)) {
     Bind(renderer,mesh,*spec);
     ApplyVisibility(renderer,bound.at(renderer),*spec);
-  }
-}
-// Init covers new actor instances and inactive consumers. Periodic public scene
-// discovery also covers active UI/NPC instances that use a different controller.
-void Discover() {
-  if (!api.findRenderers || !api.rendererType) return;
-  unsigned char inactive=1;void* args[]={api.rendererType,&inactive};
-  auto objects=Ref::Make(Call(api.findRenderers,nullptr,args),false);size_t count=0;
-  Require(ArrayLength(objects.Get(),&count) && count<=65536,"runtime renderer discovery range");
-  for (size_t i=0;i<count;++i) {
-    void* renderer=nullptr;
-    Require(CopyRaw((char*)objects.Get()+32+i*sizeof(void*),&renderer,sizeof(renderer)),"runtime renderer discovery element");
-    if (Alive(renderer)) RegisterRenderer(renderer,SourceMesh(renderer));
   }
 }
 bool CurrentGeneration() {
@@ -578,6 +565,20 @@ bool CurrentGeneration() {
   Log("[CONTROL-RUNTIME-GENERATION] generation=%u unchangedPackage=1 currentValuesRetained=1",current);
   return true;
 }
+// The game's model completion callback supplies this exact instance root.
+// Include inactive children so later visibility/LOD changes need no scene scan.
+void RegisterModel(void* root) {
+  if (!enabled || registrationPaused || !Main() || !Alive(root) || !CurrentGeneration()) return;
+  Require(api.modelRenderers && api.rendererType,"runtime model registration unavailable");
+  unsigned char inactive=1;void* args[]={api.rendererType,&inactive};
+  auto objects=Ref::Make(Call(api.modelRenderers,root,args),false);size_t count=0;
+  Require(ArrayLength(objects.Get(),&count),"runtime model renderer array absent");
+  for (size_t i=0;i<count;++i) {
+    void* renderer=nullptr;
+    Require(CopyRaw((char*)objects.Get()+32+i*sizeof(void*),&renderer,sizeof(renderer)),"runtime model renderer element");
+    if (Alive(renderer)) RegisterRenderer(renderer,SourceMesh(renderer));
+  }
+}
 void Update() {
   if (!enabled || !Main()) return;
   int frame = Scalar<int>(api.frame);
@@ -592,10 +593,9 @@ void Update() {
   double elapsed = Scalar<float>(api.elapsed);
   Require(std::isfinite(elapsed) && elapsed >= 0, "runtime shape frame delta");
   auto window = GetForegroundWindow(); DWORD pid=0; GetWindowThreadProcessId(window,&pid);
-  bool focused = pid == GetCurrentProcessId();
+  bool focused = active.load() && pid == GetCurrentProcessId();
+  PanelCommands(focused);
   PollControls(focused,elapsed);
-  discoveryElapsed+=float(elapsed);
-  if (discoveryElapsed>=1) {discoveryElapsed=0;Discover();}
   if (traceBoundaries && frame%300==0)
     Log("[DEBUG-shape-v24-INPUT] frame=%d focusPid=%lu focused=%d packages=%zu bound=%zu delta=%.9g",
         frame,pid,int(focused),keys.size(),bound.size(),elapsed);
@@ -640,7 +640,7 @@ void Init(void* self, void* renderers, void* configs, void* custom, bool skip, v
   if(ReloadObservation::ShareMaterialInit()) ReloadObservation::Material(self,renderers,configs,custom,skip,info);
   else originalInit(self,renderers,configs,custom,skip,info);
   try {
-    if (!enabled || !renderers || !Main()) return;
+    if (!enabled || registrationPaused || !renderers || !Main()) return;
     auto klass=il2cpp_object_get_class(renderers); void *iterator=nullptr,*itemsField=nullptr,*sizeField=nullptr;
     while (auto f=il2cpp_class_get_fields(klass,&iterator)) {
       auto name=il2cpp_field_get_name(f);
@@ -650,7 +650,7 @@ void Init(void* self, void* renderers, void* configs, void* custom, bool skip, v
     Require(itemsField && sizeField,"runtime shape renderer list metadata");
     void* items=nullptr; int size=0; size_t capacity=0;
     il2cpp_field_get_value(renderers,itemsField,&items); il2cpp_field_get_value(renderers,sizeField,&size);
-    Require(size>=0 && size<=2048 && ArrayLength(items,&capacity) && size_t(size)<=capacity,"runtime shape renderer list range");
+    Require(size>=0 && ArrayLength(items,&capacity) && size_t(size)<=capacity,"runtime shape renderer list range");
     for (int i=0;i<size;++i) {
       void* renderer=nullptr; Require(CopyRaw((char*)items+32+i*sizeof(void*),&renderer,sizeof(renderer)),"runtime shape renderer list element");
       if (!Alive(renderer)) continue;
@@ -660,22 +660,21 @@ void Init(void* self, void* renderers, void* configs, void* custom, bool skip, v
       auto mesh=SourceMesh(renderer);
       RegisterRenderer(renderer,mesh);
     }
-    Update();
   } catch(const std::exception& e) { Log("[SHAPE-RUNTIME-GAP] registration=%s",e.what()); }
 }
 void InstallOptional(void** assemblies,size_t count) {
   // Format-2 controls are a normal feature. Diagnostic markers only govern
   // probes and GPU captures, not whether author keys work.
   auto graph=std::atomic_load(&published);
-  if (!graph || graph->empty()) return;
+  if (!graph) return;
   bool needed=false;
   for (const auto& package:*graph) needed|=!package.parts.empty();
-  if (!needed) return;
+  if (!needed && !std::filesystem::exists(gameDirectory/"plugin/tools/eff_resource_pack.exe") && !std::filesystem::exists(gameDirectory/"plugin/resource-reload-baseline/baseline.tsv")) return;
   try {
     Require(il2cpp_resolve_icall,"runtime shape icall resolver unavailable");
     Require(bool(graph),"runtime control package graph unavailable");
     LoadControls(graph);
-    Require(!specs.empty(),"runtime controls absent");
+    Require(!needed || !specs.empty(),"runtime controls absent");
     auto object=FindClass("UnityEngine","Object",assemblies,count), mesh=FindClass("UnityEngine","Mesh",assemblies,count);
     auto skin=FindClass("UnityEngine","SkinnedMeshRenderer",assemblies,count), time=FindClass("UnityEngine","Time",assemblies,count);
     api.vec3Class=FindClass("UnityEngine","Vector3",assemblies,count);
@@ -686,13 +685,11 @@ void InstallOptional(void** assemblies,size_t count) {
     auto renderer=FindClass("UnityEngine","Renderer",assemblies,count);
     api.getEnabled=Exact(renderer,"get_enabled",{},"System.Boolean",false);
     Require(api.getEnabled,"runtime Renderer enabled getter unavailable");
-    api.findRenderers=Exact(object,"FindObjectsOfType",{"System.Type","System.Boolean"},"UnityEngine.Object[]",true);
-    api.findIncludesInactive=api.findRenderers!=nullptr;
-    if (!api.findRenderers) api.findRenderers=Exact(object,"FindObjectsOfType",{"System.Type"},"UnityEngine.Object[]",true);
-    Require(api.findRenderers && il2cpp_class_get_type && il2cpp_type_get_object,"runtime public renderer discovery unavailable");
+    api.modelRenderers=Exact(FindClass("UnityEngine","GameObject",assemblies,count),"GetComponentsInChildren",{"System.Type","System.Boolean"},"UnityEngine.Component[]",false);
+    Require(api.modelRenderers && il2cpp_class_get_type && il2cpp_type_get_object,"runtime model renderer registration unavailable");
     api.rendererType=il2cpp_type_get_object(il2cpp_class_get_type(skin));
     Require(api.rendererType,"runtime SkinnedMeshRenderer type missing");
-    Log("[CONTROL-RUNTIME-DISCOVERY] publicSceneObjects=1 includeInactive=%d controllerInit=1 intervalSeconds=1",int(api.findIncludesInactive));
+    Log("[CONTROL-RUNTIME-REGISTRATION] modelCompletion=1 includeInactive=1 controllerInit=1 sceneRendererDiscovery=0");
     api.vertexCount=Exact(mesh,"get_vertexCount",{},"System.Int32",false);
     api.vertices=Exact(mesh,"get_vertices",{},"UnityEngine.Vector3[]",false);
     api.normals=Exact(mesh,"get_normals",{},"UnityEngine.Vector3[]",false);

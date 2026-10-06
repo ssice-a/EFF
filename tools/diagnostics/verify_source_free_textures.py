@@ -72,7 +72,7 @@ def run(game, evidence):
     report = {'format': 'EFF_SOURCE_FREE_TEXTURE_VERIFICATION', 'tests': []}
 
     def compile_and_inspect(author, label):
-        elapsed, _ = invoke([compiler, author, baseline, cache, game/'GameAssembly.dll'], evidence/(label+'-compile.log'))
+        elapsed, _ = invoke([compiler, author, baseline, cache], evidence/(label+'-compile.log'))
         key, digest = (cache/'current.tsv').read_text().splitlines()[1].split('\t')
         generation = cache/'generations'/key
         _, checked = invoke([inspector, generation, author.parent, baseline], evidence/(label+'-native.txt'))

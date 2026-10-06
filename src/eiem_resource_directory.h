@@ -31,6 +31,15 @@ using Digest = std::array<unsigned char, 32>;
 inline void Require(bool ok, const std::string& message) {
   if (!ok) throw std::runtime_error(message);
 }
+inline size_t AddSize(size_t a,size_t b) {
+  Require(b<=SIZE_MAX-a,"byte extent overflow");return a+b;
+}
+inline size_t MultiplySize(size_t a,size_t b) {
+  Require(!a||b<=SIZE_MAX/a,"byte extent overflow");return a*b;
+}
+inline size_t AlignSize(size_t value,size_t alignment) {
+  return AddSize(value,alignment-1)&~(alignment-1);
+}
 inline uint64_t Le(const Bytes& b, size_t p, size_t n) {
   Require(n <= 8 && p <= b.size() && n <= b.size() - p, "truncated integer");
   uint64_t v = 0;
@@ -39,9 +48,15 @@ inline uint64_t Le(const Bytes& b, size_t p, size_t n) {
 }
 inline std::string Text(const unsigned char* p, size_t n) {
   if (n == 0) return {};
-  Require(n <= INT_MAX && (n == 0 || MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                                                         (const char*)p, (int)n, nullptr, 0) > 0),
-          "invalid UTF-8");
+  // The Windows conversion API takes an int length. Validate in chunks at
+  // codepoint boundaries instead of imposing that API's width on the field.
+  for(size_t offset=0;offset<n;) {
+    size_t chunk=std::min(n-offset,size_t(1024*1024));
+    if(chunk<n-offset)while(chunk&&(p[offset+chunk]&0xC0)==0x80)--chunk;
+    Require(chunk&&MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,
+                (const char*)p+offset,int(chunk),nullptr,0)>0,"invalid UTF-8");
+    offset+=chunk;
+  }
   std::string s((const char*)p, n);
   Require(s.find('\0') == s.npos, "embedded NUL");
   return s;
@@ -54,11 +69,11 @@ inline bool AuthorAuxiliary(const std::filesystem::path& path) {
   for(auto& ch:name)if(ch>='A'&&ch<='Z')ch+=32;
   return extension==".png"||extension==".psd"||name=="eff_texture_convert.exe";
 }
-inline Bytes Read(const std::filesystem::path& p, size_t maximum = 512ull * 1024 * 1024) {
+inline Bytes Read(const std::filesystem::path& p) {
   std::ifstream f(p, std::ios::binary | std::ios::ate);
   Require(bool(f), "cannot open " + p.u8string());
   auto n = f.tellg();
-  Require(n >= 0 && uint64_t(n) <= maximum, "file exceeds read limit " + p.u8string());
+  Require(n >= 0 && uint64_t(n) <= Bytes{}.max_size(), "file size cannot be represented " + p.u8string());
   Bytes b((size_t)n);
   f.seekg(0);
   if (!b.empty()) f.read((char*)b.data(), b.size());
@@ -110,8 +125,8 @@ struct Resource {
 };
 inline Resource Decode(Bytes bytes, unsigned expected) {
   Require(bytes.size() >= 80, "resource header truncated");
-  Require(memcmp(bytes.data(), "EFFRES2\0", 8) == 0 && Le(bytes, 8, 4) == 2,
-          "unsupported resource/version");
+  Require(memcmp(bytes.data(), "EFFRES", 6) == 0 && bytes[7] == 0,
+          "unsupported resource container");
   Resource r;
   r.kind = (uint32_t)Le(bytes, 12, 4);
   Require((r.kind == 1 || r.kind == 2 || r.kind == 4) && r.kind == expected,
@@ -183,6 +198,11 @@ inline bool Begins(const std::string& s, const char* prefix) {
 inline std::string Trim(std::string s) {
   EiemKeyTrim(s);
   return s;
+}
+inline bool TableIdentity(const std::string& row,const char* name,const std::string& key) {
+  auto first=row.find('\t');if(first==row.npos||row.substr(0,first)!=name)return false;
+  auto second=row.find('\t',first+1);
+  return second!=row.npos&&second>first+1&&row.substr(second+1)==key;
 }
 inline bool Identifier(const std::string& s) {
   return !s.empty() && std::all_of(s.begin(), s.end(), [](unsigned char c) {
@@ -266,6 +286,7 @@ inline Identity Source(const Settings& v, const std::string& prefix) {
   Require(Begins(id.path, "assets/") && id.path.find('\\') == id.path.npos &&
               id.path.find("..") == id.path.npos,
           "invalid logical resource path " + id.path);
+  std::transform(id.path.begin(),id.path.end(),id.path.begin(),[](unsigned char c){return char(std::tolower(c));});
   return id;
 }
 struct Mesh {
@@ -320,6 +341,10 @@ struct Package {
   std::set<std::string> persistent;
   std::map<std::string, Control> controls;
   std::vector<Binding> bindings;
+  // Compiler-only ownership metadata, reconstructed from the original authors
+  // when a composed manifest is decoded. Never authored in mod.ini.
+  bool composed=false;
+  std::map<std::string,std::pair<std::string,std::string>> partOwners;
 };
 inline std::filesystem::path DiskPath(const std::filesystem::path& root,
                                       const std::string& relative, unsigned kind) {
@@ -337,7 +362,7 @@ inline std::filesystem::path DiskPath(const std::filesystem::path& root,
 inline Package Load(const std::filesystem::path& directory) {
   Package p;
   p.root = std::filesystem::canonical(directory);
-  auto ini = Read(p.root / "mod.ini", 1024 * 1024);
+  auto ini = Read(p.root / "mod.ini");
   auto sections = ParseIni(ini);
   p.iniHash = Sha(ini.data(), ini.size());
   std::set<std::string> allowed{"mod.ini"};
@@ -345,7 +370,7 @@ inline Package Load(const std::filesystem::path& directory) {
   for (const auto& s : sections) {
     if (s.id == "Mod") {
       Keys(s, {"format", "id"});
-      Require(s.values.at("format") == "2" && Identifier(s.values.at("id")),
+      Require(Identifier(s.values.at("id")),
               "unsupported Mod format/id");
       p.id = s.values.at("id");
       mod = true;
@@ -439,8 +464,8 @@ inline Package Load(const std::filesystem::path& directory) {
       };
       if (r.blocks.count("@texture")) {
         const auto& spec = r.blocks.at("@texture");
-        Require(spec.size == 20 && Le(r.bytes, spec.offset, 4) == 1 &&
-                    Le(r.bytes, spec.offset + 12, 4) == 4, "unsupported TEX metadata version/format");
+        Require(spec.size == 20 &&
+                    Le(r.bytes, spec.offset + 12, 4) == 4, "unsupported TEX metadata structure/pixel encoding");
         t.width = (unsigned)Le(r.bytes, spec.offset + 4, 4);
         t.height = (unsigned)Le(r.bytes, spec.offset + 8, 4);
         t.mips = (unsigned)Le(r.bytes, spec.offset + 16, 4);
@@ -607,6 +632,7 @@ inline Package Load(const std::filesystem::path& directory) {
           }
         }
   }
+  if(std::filesystem::is_regular_file(p.root/"source-inputs.bin"))allowed.insert("source-inputs.bin");
   std::set<std::string> actual;
   for (const auto& entry : std::filesystem::recursive_directory_iterator(p.root)) {
     Require(!entry.is_symlink(), "symlink/reparse resources forbidden");

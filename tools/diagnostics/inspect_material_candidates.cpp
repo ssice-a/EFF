@@ -70,14 +70,14 @@ int main(int argc,char** argv){
   std::vector<Input> inputs;EiemLoadingGeneration::Names names;
   for(int i=6;i<argc;++i){
     std::filesystem::path leaf=std::filesystem::u8path(argv[i]);Require(leaf==leaf.filename()&&leaf.extension()==".vfs","input is not a flat VFS filename");
-    Input input;input.name=leaf.u8string();input.oldBytes=Read(oldRoot/leaf,256ull*1024*1024);input.newBytes=Read(newRoot/leaf,256ull*1024*1024);
+    Input input;input.name=leaf.u8string();input.oldBytes=Read(oldRoot/leaf);input.newBytes=Read(newRoot/leaf);
     std::filesystem::path pristinePath;
     for(const auto& prefix:{pristineRoot,pristineRoot/"sources",pristineRoot/"consumers"})if(std::filesystem::is_regular_file(prefix/leaf)){
       Require(pristinePath.empty(),"ambiguous pristine input");pristinePath=prefix/leaf;
     }
-    Require(!pristinePath.empty(),"pristine input absent");input.pristineBytes=Read(pristinePath,256ull*1024*1024);
-    input.pristineBundle=EndfieldInput::Decode(input.pristineBytes,256ull*1024*1024);
-    input.oldBundle=EndfieldInput::Decode(input.oldBytes,256ull*1024*1024);input.newBundle=EndfieldInput::Decode(input.newBytes,256ull*1024*1024);
+    Require(!pristinePath.empty(),"pristine input absent");input.pristineBytes=Read(pristinePath);
+    input.pristineBundle=EndfieldInput::Decode(input.pristineBytes);
+    input.oldBundle=EndfieldInput::Decode(input.oldBytes);input.newBundle=EndfieldInput::Decode(input.newBytes);
     for(const auto& member:input.oldBundle.members){
       auto cab=member.name.substr(0,36);Require(cab.size()==36&&cab.rfind("CAB-",0)==0,"unexpected candidate member grammar");
       names.members.emplace(member.name,"CAB-"+EiemLoadingGeneration::Token(key,cab,32)+member.name.substr(36));

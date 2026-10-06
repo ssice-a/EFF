@@ -19,7 +19,6 @@ class EiemEntrySettings {
       std::ofstream out(path,std::ios::binary);out<<kEiemDefaultGlobalConfig;
       if (!out) throw std::runtime_error("cannot create default eff.ini");
     }
-    if (std::filesystem::file_size(path)>65536) throw std::runtime_error("eff.ini exceeds 64 KiB");
     std::ifstream input(path,std::ios::binary);EiemGlobalConfig next;std::string error;
     if (!input || !EiemParseGlobalConfig(input,&next,error)) throw std::runtime_error("eff.ini: "+(error.empty()?std::string("read failed"):error));
     return next;

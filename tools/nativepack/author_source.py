@@ -10,8 +10,6 @@ from .hashing import sha256_bytes
 class AuthorCore:
     def __init__(self, path):
         self.dll = ctypes.CDLL(str(Path(path).resolve()))
-        self.dll.EFF_AuthorAbi.restype = ctypes.c_uint
-        require(self.dll.EFF_AuthorAbi() == 1, 'unsupported author core ABI')
         self.dll.EFF_SourceSchema.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
         self.dll.EFF_SourceSchema.restype = ctypes.c_void_p
         self.dll.EFF_FreeAuthorResult.argtypes = [ctypes.c_void_p]
@@ -30,8 +28,15 @@ class AuthorSource:
         self.package = Path(package).resolve()
         self.core = core
         self.manifest = json.loads((self.package/'source/manifest.json').read_text('utf-8-sig'))
-        require((self.manifest['format'], self.manifest['version']) == ('EFFSOURCE', 1), 'unsupported source baseline')
-        self.rows = {f['cab']: f for f in self.manifest['serializedFiles']}
+        require(self.manifest.get('format') == 'EFFSOURCE' and isinstance(self.manifest.get('serializedFiles'), list) and isinstance(self.manifest.get('resources'), list), 'unsupported source baseline structure')
+        self.rows = {}
+        identities = set()
+        for row in self.manifest['serializedFiles']:
+            cab = row['cab']
+            require(isinstance(cab, str) and cab and cab.casefold() not in identities,
+                    'duplicate/empty source CAB identity')
+            identities.add(cab.casefold())
+            self.rows[cab] = row
         self.files = {}
     def resolve(self, kind, path, asset):
         values = [r for r in self.manifest['resources'] if

@@ -23,6 +23,8 @@
     <Compile Include="..\AnimeStudio\AnimeStudio.GUI\EndfieldIndexStore.cs" Link="EndfieldIndexStore.cs" />
     <Compile Include="..\AnimeStudio\AnimeStudio.GUI\VirtualAssetPathIndex.cs" Link="VirtualAssetPathIndex.cs" />
     <Compile Include="..\AnimeStudio\AnimeStudio.GUI\EndfieldPrefabDocument.cs" Link="EndfieldPrefabDocument.cs" />
+    <Compile Include="..\AnimeStudio\AnimeStudio.GUI\EiemPackageIdentity.cs" Link="EiemPackageIdentity.cs" />
+    <Compile Include="..\AnimeStudio\AnimeStudio.GUI\EiemPackageValidator.cs" Link="EiemPackageValidator.cs" />
     <None Include="..\AnimeStudio\AnimeStudio.Libraries\AnimeStudio.FBXNative.dll" Link="AnimeStudio.FBXNative.dll" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

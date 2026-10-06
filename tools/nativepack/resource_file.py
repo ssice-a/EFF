@@ -100,7 +100,7 @@ def encode_resource(kind, native_type_hash, blocks):
 def decode_resource(data, expected_kind):
     require(len(data) >= HEADER.size, "resource header truncated")
     magic, version, kind, count, directory_size, type_hash, total, checksum = HEADER.unpack_from(data)
-    require(magic == MAGIC and version == VERSION, "unsupported resource format/version")
+    require(magic[:6] == MAGIC[:6] and magic[7:] == b"\0", "unsupported resource format/version")
     require(kind in (MESH, MATERIAL, PIXELS), "unsupported resource kind")
     require(kind == expected_kind, "resource kind mismatch")
     require(total == len(data), "resource size mismatch")

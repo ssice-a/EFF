@@ -16,12 +16,15 @@
 #include "eiem_mesh_input_builder.h"
 #include "eiem_resource_reload_plan.h"
 #include "eiem_offline_resource_package.h"
+#include "eiem_prefab_resource_rules.h"
 #include "eiem_loading_input_substitution.h"
 #include "eiem_resource_directory.h"
 #include "il2cpp_api.h"
 #include "eiem_capture_skin_palette.h"
 #include "eiem_entry_settings.h"
 #include "eiem_camera_fade_core.h"
+#include "eiem_package_protocol.h"
+#include "eiem_control_panel_win32.h"
 #if defined(EIEM_SHAPE_CAPTURE_GFXTRACE)
 #include "../deps/renderdoc/renderdoc_app.h"
 #endif
@@ -103,6 +106,9 @@ void Frame(int);
 std::shared_ptr<const std::vector<Package>> published;
 std::shared_ptr<const EiemNativeInput::InputSubstitutions> substitutions;
 std::filesystem::path initialInputTable;
+std::shared_ptr<EiemPrefabRules::Context> resourceRules;
+void* LoadRuleInput(void* path,uint32_t crc,uint64_t offset,bool asynchronous,bool& matched);
+void CompleteRuleInput(void* request,void* bundle);
 std::shared_ptr<EiemNativeInput::InputSubstitutions> pendingSubstitutions;
 std::atomic<unsigned long long> submittedInputs{0}, completedInputs{0}, loadedAssets{0};
 std::mutex submissionMutex;
@@ -216,7 +222,7 @@ bool CopyRaw(const void *input, void *output, size_t bytes) {
 }
 bool ArrayLength(void *array, size_t *length) {
   uint64_t n = 0;
-  if (!array || !CopyRaw((char *)array + 24, &n, 8) || n > 512ull * 1024 * 1024)
+  if (!array || !CopyRaw((char *)array + 24, &n, 8))
     return false;
   *length = (size_t)n;
   return true;
@@ -402,18 +408,17 @@ bool Install(void *klass, const char *name,
       address);
   return true;
 }
+std::vector<std::filesystem::path> DiscoverModRoots() {
+  return EiemComposedPackage::Roots(gameDirectory/"plugin/mods");
+}
+bool InstalledAuthorsMatch(const std::vector<Package>& graph) {
+ return EiemComposedPackage::Matches(gameDirectory/"plugin/mods",graph);
+}
 std::shared_ptr<const std::vector<Package>> ReadPackages() {
   auto next = std::make_shared<std::vector<Package>>();
   std::set<Identity> targets;
   std::set<std::string> ids;
-  auto mods = gameDirectory / "plugin" / "mods";
-  Require(std::filesystem::exists(mods), "Mod directory missing");
-  std::vector<std::filesystem::path> roots;
-  for (const auto &entry : std::filesystem::directory_iterator(mods))
-    if (entry.is_directory() &&
-        std::filesystem::exists(entry.path() / "mod.ini"))
-      roots.push_back(entry.path());
-  std::sort(roots.begin(), roots.end());
+  const auto roots = DiscoverModRoots();
   for (const auto &root : roots) {
     auto p = Load(root);
     Require(ids.insert(p.id).second, "duplicate Mod id: " + p.id);
@@ -432,21 +437,31 @@ std::shared_ptr<const std::vector<Package>> ReadPackages() {
         p.resources.size(), bytes);
     next->push_back(std::move(p));
   }
-  return next;
+  EiemComposedPackage::Compose(*next,true);return next;
 }
+bool initialComposed=false;
 void LoadInitialPackages() {
   auto config=EiemEntrySettings::Read(gameDirectory);
   std::shared_ptr<const std::vector<Package>> next;
   auto cache=gameDirectory/"plugin/resource-reload-cache";
   if(std::filesystem::exists(cache/"current.tsv")){
+   try{
     auto pointer=EiemOfflinePackage::ReadCurrent(cache);
     auto manifest=EiemOfflinePackage::ReadManifest(cache,pointer,gameDirectory/"plugin/mods");
-    Require(manifest.assembly==EiemResourceReloadPlan::Hash(EiemDirectory::Read(gameDirectory/"GameAssembly.dll")),"offline startup belongs to another game version");
+    auto authors=EiemOfflinePackage::Authors(manifest);
+    Require(InstalledAuthorsMatch(authors),"offline generation author set differs from installed Mods");
     initialInputTable=cache/"generations"/pointer.key/"loading-inputs.tsv";
-    Require(std::filesystem::exists(initialInputTable),"latest offline generation lacks startup loading inputs");
-    next=std::make_shared<const std::vector<Package>>(std::vector<Package>{std::move(manifest.package)});
+    if(manifest.plan.rulesOnly){auto plan=std::make_shared<const EiemResourceReloadPlan::Plan>(std::move(manifest.plan));resourceRules=std::make_shared<EiemPrefabRules::Context>(plan,std::move(manifest.package));initialInputTable.clear();}
+    else Require(std::filesystem::exists(initialInputTable),"latest offline generation lacks startup loading inputs");
+    initialComposed=manifest.composed;
+    next=std::make_shared<const std::vector<Package>>(std::move(authors));
     Log("[ENTRY-PACKAGE] compiledStartup=1 authorINIParsed=0 latestCompleteGeneration=1 key=%s",pointer.key.c_str());
-  }else next=ReadPackages();
+   }catch(const std::exception& e){
+    initialInputTable.clear();initialComposed=false;
+    Log("[ENTRY-STARTUP-PENDING] reason=%s authorINIParsed=1 staticSourcePreparationFailed=1",e.what());
+   }
+  }
+  if(!next)next=ReadPackages();
   for(const auto& p:*next) for(const auto& key:p.bindings)
     Require(key.key.vk!=config.reload.vk && key.key.vk!=config.gui.vk,"Mod key overlaps reserved global shortcut: "+p.id+"/"+key.id);
   settings.Publish(config);
@@ -457,38 +472,39 @@ void LoadInitialPackages() {
 void CompileCurrentMod(){
  auto executable=gameDirectory/"plugin/tools/eff_resource_pack.exe";
  Require(std::filesystem::exists(executable),"offline compiler unavailable");
- auto graph=std::atomic_load(&published);std::filesystem::path mod;
- if(graph&&!graph->empty()){Require(graph->size()==1,"offline reload currently supports one Mod");mod=graph->front().root;}
- else for(const auto& entry:std::filesystem::directory_iterator(gameDirectory/"plugin/mods"))if(entry.is_directory()&&std::filesystem::exists(entry.path()/"mod.ini")){
-  Require(mod.empty(),"offline startup currently supports one Mod");mod=entry.path();
- }
- Require(!mod.empty(),"offline Mod directory unavailable");
+ auto mod=gameDirectory/"plugin/mods";DiscoverModRoots();
  auto quote=[](const std::filesystem::path& p){auto text=p.wstring();Require(text.find(L'\"')==text.npos,"offline path contains quote");return L"\""+text+L"\"";};
- auto command=quote(executable)+L" "+quote(mod)+L" "+quote(gameDirectory/"plugin/resource-reload-baseline")+L" "+quote(gameDirectory/"plugin/resource-reload-cache")+L" "+quote(gameDirectory/"GameAssembly.dll");
+ auto command=quote(executable)+L" --mods "+quote(mod)+L" "+quote(gameDirectory/"plugin/resource-reload-baseline")+L" "+quote(gameDirectory/"plugin/resource-reload-cache");
  STARTUPINFOW startup{};startup.cb=sizeof(startup);PROCESS_INFORMATION process{};
  Require(CreateProcessW(executable.c_str(),command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,gameDirectory.c_str(),&startup,&process)!=0,"offline build process launch failed");
- CloseHandle(process.hThread);auto begin=GetTickCount64();DWORD result=0;
- while(WaitForSingleObject(process.hProcess,1000)==WAIT_TIMEOUT){if(GetTickCount64()-begin>120000){CloseHandle(process.hProcess);throw std::runtime_error("offline compiler exceeded two minutes; no native model mutation submitted");}}
+ CloseHandle(process.hThread);auto begin=GetTickCount64();DWORD result=0,wait=WAIT_TIMEOUT;
+ while((wait=WaitForSingleObject(process.hProcess,1000))==WAIT_TIMEOUT){if(!active){TerminateProcess(process.hProcess,1);CloseHandle(process.hProcess);throw std::runtime_error("offline compilation cancelled during shutdown");}}
  bool completed=GetExitCodeProcess(process.hProcess,&result)!=0;CloseHandle(process.hProcess);
- Require(completed&&result==0,"offline compilation failed; previous native model retained");
+ Require(wait==WAIT_OBJECT_0&&completed&&result==0,"offline compilation failed; previous native model retained; retry F10 after fixing the package");
  Log("[OFFLINE-CURRENT] externalCompiler=1 UnityCalls=0 elapsedMs=%llu",(unsigned long long)(GetTickCount64()-begin));
 }
 void PrepareInputSubstitutions() {
+  if(std::atomic_load(&resourceRules)){Log("[ENTRY-PREFAB-RULES] startup=1 fullPrefabFiles=0 originalDependenciesCopied=0");return;}
   auto path = initialInputTable.empty()?gameDirectory / "plugin" / "resource-input-substitutions.tsv":initialInputTable;
   if (!std::filesystem::exists(path)) {
     Log("[ENTRY-SUBSTITUTIONS] absent mode=diagnostic-only nativeSubmission=0");
     return;
   }
   auto packages = std::atomic_load(&published);
-  Require(packages && packages->size() == 1, "prepared loading input requires one validated Mod generation");
+  Require(bool(packages), "prepared loading input requires a validated Mod graph");
   Require(il2cpp_string_new && il2cpp_gchandle_new && il2cpp_gchandle_get_target,
           "prepared loading path lifetime exports unavailable");
   auto next = std::make_shared<EiemNativeInput::InputSubstitutions>(
-      EiemNativeInput::ReadInputSubstitutions(path, gameDirectory, packages->front()));
+      EiemNativeInput::ReadInputSubstitutions(path, gameDirectory, EiemComposedPackage::Compose(*packages,initialComposed||packages->size()!=1)));
   next->generation = generation.load();
   // Root paths for the process lifetime. Async native jobs may keep opening
   // these files after the managed wrapper has returned; neither is removed.
   for (auto& row : next->entries) {
+    row.second.file=std::make_shared<EiemNativeInput::FileHold>(row.second.output);
+    auto bytes=row.second.file->BytesLocked();
+    auto hash=EiemDirectory::Sha(bytes.data(),bytes.size());
+    Require(bytes.size()==row.second.outputBytes && EiemDirectory::Hex(hash.data(),hash.size())==row.second.outputHash,
+            "startup input changed before lifetime lock");
     auto string = il2cpp_string_new(row.second.output.u8string().c_str());
     Require(string, "prepared loading path string allocation failed");
     row.second.pathHandle = il2cpp_gchandle_new(string, false);
@@ -573,13 +589,14 @@ void CaptureMemory(const char *kind, void *array) {
   SetEvent(queueEvent);
 }
 void QueueFileSnapshot(const char *kind, void *path, uint64_t offset) {
-  if (!active.load() || !queueEvent || fileSnapshotRequests.load() >= 12)
+  if (!active.load() || !queueEvent || selectedSnapshots.empty() || fileSnapshotRequests.load() >= 12)
     return;
   auto text = String(path);
   auto physical = std::filesystem::u8path(text);
   Require(physical.is_absolute(), "file input path is not absolute");
   SnapshotKey key{SnapshotPath(text), offset};
   auto selected = selectedSnapshots.find(key);
+  if (selected == selectedSnapshots.end()) return;
   {
     std::lock_guard<std::mutex> lock(snapshotMutex);
     if (queuedSnapshots.count(key) ||
@@ -690,6 +707,7 @@ ReadFn read = nullptr;
 SpanFn readSpan = nullptr;
 FileFn file = nullptr, fileAsync = nullptr;
 FileFn filePublic = nullptr, fileAsyncPublic = nullptr;
+void* ObservePublicFile(const char* kind,size_t index,FileFn call,void* path,uint32_t crc,uint64_t offset,void* info);
 RequestBundleFn requestBundle = nullptr;
 LoadAssetFn loadAsset = nullptr;
 HelperFn helper = nullptr, helperAsync = nullptr;
@@ -698,12 +716,19 @@ HelperLeafFn helperStream = nullptr, helperStreamAsync = nullptr,
 MemoryFn memory = nullptr, memoryAsync = nullptr;
 StreamFn stream = nullptr, streamAsync = nullptr;
 
+// A pointer is kept only for comparison, never dereferenced or used to invoke
+// a method. The witness is per thread and only records completed sync loads.
+struct VfsLoadWitness {void* instance=nullptr;int64_t hash=0;};
+thread_local VfsLoadWitness lastVfsSync;
+
 void *__fastcall Vfs(void *self, int64_t path, void *info) {
   ++vfsCalls;
   std::string text;
   Observe([&] { text = HashEvent("VFS.sync", path, hashLoadSamples); });
   Context c(text.c_str());
-  return vfs(self, path, info);
+  auto result=vfs(self, path, info);
+  if(result)lastVfsSync={self,path};
+  return result;
 }
 void *__fastcall VfsAsync(void *self, int64_t path, void *info) {
   ++vfsCalls;
@@ -718,7 +743,9 @@ void *__fastcall VfsPos(void *self, int64_t path, void *pos, uint32_t crc,
   std::string text;
   Observe([&] { text = HashEvent("VFS.syncPos", path, hashLoadSamples); });
   Context c(text.c_str());
-  return vfsPos(self, path, pos, crc, info);
+  auto result=vfsPos(self, path, pos, crc, info);
+  if(result)lastVfsSync={self,path};
+  return result;
 }
 void *__fastcall VfsAsyncPos(void *self, int64_t path, void *pos, uint32_t crc,
                              void *info) {
@@ -823,13 +850,13 @@ int __fastcall ReadSpan(void *self, void *span, void *info) {
 void *__fastcall File(void *path, uint32_t crc, uint64_t offset, void *info) {
   ++fileCalls;
   Observe([&] { PathEvent("Unity.LoadFromFile", path); });
-  return file(path, crc, offset, info);
+  return ObservePublicFile("Unity.LoadFromFile.internal",0,file,path,crc,offset,info);
 }
 void *__fastcall FileAsync(void *path, uint32_t crc, uint64_t offset,
                            void *info) {
   ++fileCalls;
   Observe([&] { PathEvent("Unity.LoadFromFileAsync", path); });
-  return fileAsync(path, crc, offset, info);
+  return ObservePublicFile("Unity.LoadFromFileAsync.internal",1,fileAsync,path,crc,offset,info);
 }
 template <class F>
 void *ObserveHelper(const char *kind, size_t index, void *dir, void *name,
@@ -938,7 +965,9 @@ void *ObservePublicFile(const char *kind, size_t index, FileFn call, void *path,
         entry.output.u8string().c_str(), entry.outputBytes, int(index % 2),
         graph->control.empty() ? "replacement" : graph->control.c_str());
   });
-  auto result = call(selectedPath, crc, selectedOffset, info);
+  bool ruleMatched=false;void* ruleResult=nullptr;
+  Observe([&]{if(active.load())ruleResult=LoadRuleInput(path,crc,offset,bool(index%2),ruleMatched);});
+  auto result = ruleMatched?ruleResult:call(selectedPath, crc, selectedOffset, info);
   Observe([&] {
     if (!selectedInput.empty()) {
       Log("[ENTRY-SUBMIT-RETURN] input=%s result=%p async=%d "
@@ -960,6 +989,7 @@ void *ObservePublicFile(const char *kind, size_t index, FileFn call, void *path,
 }
 void* __fastcall RequestBundle(void* self, void* info) {
   auto result = requestBundle(self, info);
+  CompleteRuleInput(self,result);
   Observe([&] {
     if(LoadingObservation::Active()){LoadingObservation::Completed(self,result,"managed.get_assetBundle");return;}
     std::lock_guard<std::mutex> lock(submissionMutex);
@@ -1038,11 +1068,28 @@ void *__fastcall StreamAsync(void *input, uint32_t crc, uint32_t bufferSize,
 #include "eiem_entry_camera_fade.h"
 #include "eiem_entry_reload_observation.h"
 #include "eiem_entry_loading_observation.h"
-#include "eiem_entry_native_candidate.h"
+#include "eiem_native_bundle_loader.h"
+void CompleteRuleInput(void* request,void* bundle){NativeBundle::CompleteMemory(request,bundle);}
+void* LoadRuleInput(void* path,uint32_t callerCrc,uint64_t offset,bool asynchronous,bool& matched){
+ auto rules=std::atomic_load(&resourceRules);if(!rules)return nullptr;auto label=EiemNativeInput::InputPath(String(path));
+ for(size_t i=0;i<rules->plan->originals.size();++i){const auto& source=rules->plan->originals[i];if(source.offset!=offset||EiemNativeInput::InputPath(source.physical.u8string())!=label)continue;
+  Require(callerCrc==0,"runtime rules require caller CRC zero");Require(NativeBundle::enabled,"runtime rule memory bindings not ready");auto bytes=rules->Materialize(i,false);auto array=NativeBundle::Array(bytes);auto result=NativeBundle::LoadMemory(array.Get(),0,asynchronous);
+  Require(result,"runtime rule Bundle load returned null");
+  Observe([&]{{std::lock_guard<std::mutex> lock(submissionMutex);if(asynchronous)submittedRequests[result]=source.file;else{submittedBundles[result]=source.file;++completedInputs;}}++submittedInputs;
+   LoadingObservation::Submitted(result,source.file,generation.load(),asynchronous,rules->plan->startupHashes.at(i));});
+  Log("[ENTRY-RULE-SUBMIT] input=%s rendererRules=%zu sourceBytes=%llu nativeBytes=%zu fullPrefabFile=0 archiveMemoryStream=1 async=%d",source.file.c_str(),rules->plan->rendererRules[i].size(),source.size,bytes.size(),int(asynchronous));matched=true;return result;
+ }return nullptr;
+}
 #include "eiem_entry_full_resource_reload.h"
 #include "eiem_entry_reload.h"
 
 void InstallHooks(void **assemblies, size_t count) {
+  RuntimeShapes::InstallOptional(assemblies,count);
+  // Arm depends on the capture completion trampoline. Finish that binding
+  // before enabling controls, memory submission, or file interception.
+  CaptureObservation::InstallOptional(assemblies, count);
+  RuntimeShapes::Arm();
+  NativeBundle::Install(assemblies,count);
   auto vfsClass =
       FindClass("Beyond.VFS", "VirtualFileSystem", assemblies, count);
   auto readClass =
@@ -1171,26 +1218,24 @@ void InstallHooks(void **assemblies, size_t count) {
     std::atomic_store(&substitutions, immutable);
     pendingSubstitutions.reset();
     Log("[ENTRY-SUBSTITUTIONS] published=%zu nativeSubmission=armed controlsBound=0 "
-        "dynamicRegistrationVerified=0 F10NativeRebuild=0 mode=%s", immutable->entries.size(),
+        "dynamicRegistrationVerified=0 shortcutNativeRebuild=0 mode=%s", immutable->entries.size(),
         immutable->control.empty() ? "replacement" : immutable->control.c_str());
   }
   // Optional diagnostics must never prevent validated inputs from being
   // published, nor unwind the production startup and thread-detach sequence.
-  RuntimeShapes::InstallOptional(assemblies, count);
-  CaptureObservation::InstallOptional(assemblies, count);
-  RuntimeShapes::Arm();
   EntryCameraFade::InstallOptional(assemblies,count);
   ReloadObservation::InstallOptional(assemblies,count);
   LoadingObservation::InstallOptional(assemblies,count);
-  NativeCandidate::InstallOptional(assemblies,count);
   FullResourceReload::Install(assemblies,count);
   SkinningObservation::StartOptionalReadback([&] {
     SkinningObservation::InstallReadback(assemblies, count);
   });
   auto armed = std::atomic_load(&substitutions);
+  auto rules = std::atomic_load(&resourceRules);
+  const bool ruleArmed = rules && NativeBundle::enabled;
   Log("[ENTRY-READY] installed=%zu vfs=%d memory=%d file=%d stream=%d read=%d "
       "publicFile=%d helper=%d "
-      "replacementArmed=%d controlArmed=%d "
+      "replacementArmed=%d controlArmed=%d ruleMemoryArmed=%d "
       "RenderDocRequested=0",
       installed.size(), !!vfsPos || !!vfs, !!memory || !!memoryAsync,
       !!file || !!fileAsync || !!filePublic || !!fileAsyncPublic,
@@ -1198,7 +1243,8 @@ void InstallHooks(void **assemblies, size_t count) {
       !!filePublic || !!fileAsyncPublic,
       !!helper || !!helperAsync || !!helperStream || !!helperStreamAsync ||
           !!helperPersist || !!helperPersistAsync,
-      armed && armed->control.empty(), armed && !armed->control.empty());
+      (armed && armed->control.empty()) || ruleArmed,
+      armed && !armed->control.empty(), int(ruleArmed));
 }
 DWORD WINAPI ProcessJobs(void *) {
   FullResourceReload::StartOfflineCompiler();
@@ -1208,7 +1254,7 @@ DWORD WINAPI ProcessJobs(void *) {
       if(FullResourceReload::configured) {
         if(FullResourceReload::enabled) FullResourceReload::Prepare();
         else Log("[FULL-RELOAD-REJECT] phase=trigger reason=requiredNativeBindingsUnavailable configurationFallbackRefused=1");
-      } else {EntryReload::Prepare();NativeCandidate::Prepare();}
+      } else {EntryReload::Prepare();}
     }
     if(FullResourceReload::configured) FullResourceReload::PollOffline();
     for (;;) {
@@ -1341,9 +1387,9 @@ DWORD StartImpl() {
     return 1;
   }
   logMirror = OpenLog(gameDirectory / "plugin" / "eff_log.txt");
-  Log("[BUILD] resource-directory-entry-v35c-native-prefab-consumers %s %s pid=%lu "
+  Log("[BUILD] resource-directory-entry %s %s pid=%lu abi=%u compiler=%s "
       "mode=serialized-loading-input startup=initializing replacement=not-yet-armed",
-      __DATE__, __TIME__, GetCurrentProcessId());
+      __DATE__, __TIME__, GetCurrentProcessId(), EiemPackageProtocol::abi, EiemPackageProtocol::compiler);
   Log("[ENTRY-LOG] session=%s mirror=%d readers=shared writers=exclusive",
       logPath.u8string().c_str(), !!logMirror);
   while (!GetModuleHandleW(L"GameAssembly.dll"))
@@ -1388,13 +1434,11 @@ DWORD StartImpl() {
     return 1;
   }
   // Preserve the verified publication-before-observation startup order.
-  if(std::filesystem::exists(gameDirectory/"plugin/resource-reload-baseline/baseline.tsv")){
+  if(std::filesystem::exists(gameDirectory/"plugin/tools/eff_resource_pack.exe")){
     try{CompileCurrentMod();}catch(const std::exception& e){
-      // LoadInitialPackages still verifies ABI, game version and the complete
-      // previous publication. An author-side error must not silently disable
-      // a valid installed Mod at startup.
-      Require(std::filesystem::exists(gameDirectory/"plugin/resource-reload-cache/current.tsv"),e.what());
-      Log("[OFFLINE-STARTUP-REJECT] reason=%s attemptingPreviousCompleteGeneration=1",e.what());
+      // A previous candidate is usable only if its author graph and actual
+      // source bytes still pass the normal loading-input validation.
+      Log("[OFFLINE-STARTUP-REJECT] reason=%s staticSourcePreparationFailed=1",e.what());
     }
   }
   LoadInitialPackages();
@@ -1402,6 +1446,10 @@ DWORD StartImpl() {
   Observe([] { LoadSnapshotSelection(); });
   InstallHooks(assemblies, count);
   managed.Detach();
+  if(!RuntimeControls::panel.Read()) RuntimeControls::PublishPanel();
+  HANDLE panelThread=CreateThread(nullptr,0,EiemControlPanel::Window::Run,&RuntimeControls::panel,0,nullptr);
+  if(panelThread) {CloseHandle(panelThread);Log("[CONTROL-PANEL] workerStarted=1 shortcut=gui selectedModOnly=1");}
+  else {RuntimeControls::panel.failed=true;Log("[CONTROL-PANEL-GAP] workerStartFailed=%lu",GetLastError());}
   Log("[ENTRY-LIFETIME] startup thread detached; poller=Win32-only "
       "worker=native-parser-only");
   HANDLE worker = CreateThread(nullptr, 0, ProcessJobs, nullptr, 0, nullptr);
@@ -1409,24 +1457,33 @@ DWORD StartImpl() {
     CloseHandle(worker);
   else
     Log("[ENTRY-FATAL] evidence worker failed err=%lu", GetLastError());
-  bool held = false;
-  EiemKeyChord sampledShortcut=settings.Get().reload;
+  EiemControlPanel::Shortcut reloadKey, guiKey;
   ULONGLONG report = GetTickCount64();
   for (;;) {
     HWND window = GetForegroundWindow();
     DWORD process = 0;
     if (window)
       GetWindowThreadProcessId(window, &process);
+    if(process==GetCurrentProcessId() && window!=RuntimeControls::panel.window.load() &&
+       !(GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_TOOLWINDOW)) RuntimeControls::panel.gameWindow=window;
+    auto gui=settings.Get().gui;
+    bool guiPhysical=RuntimeControls::Down(gui);
+    if(guiKey.Press(gui,guiPhysical,active && process==GetCurrentProcessId())) {
+      if(RuntimeControls::panel.failed) Log("[CONTROL-PANEL-GAP] unavailable=1 restartRequired=1");
+      else {
+        RuntimeControls::panel.open=!RuntimeControls::panel.open.load();
+        Log("[CONTROL-PANEL] requestedOpen=%d vk=%u modifiers=%u",int(RuntimeControls::panel.open.load()),gui.vk,gui.modifiers);
+      }
+    }
+    if(!active) RuntimeControls::panel.open=false;
     auto shortcut=settings.Get().reload;
     bool physical=RuntimeControls::Down(shortcut);
-    if (!(shortcut==sampledShortcut)) {sampledShortcut=shortcut;held=physical;}
-    if (process == GetCurrentProcessId() && physical && !held) {
-      reloadClock.store(NativeCandidate::Clock());
+    if (reloadKey.Press(shortcut,physical,active && process==GetCurrentProcessId())) {
+      reloadClock.store(NativeBundle::Clock());
       reload.store(true);
       SetEvent(queueEvent);
       Log("[ENTRY-RELOAD] requested vk=%u modifiers=%u transaction=queued",shortcut.vk,shortcut.modifiers);
     }
-    held=physical;
     auto now = GetTickCount64();
     if (now - report >= 10000) {
       report = now;
@@ -1496,6 +1553,7 @@ APPLEPIE_PLUGIN_EXPORT bool AP_PluginEnable() {
 }
 APPLEPIE_PLUGIN_EXPORT bool AP_PluginDisable() {
   Entry::active = false;
+  Entry::RuntimeControls::panel.open=false;
   Log("[ENTRY] disabled");
   Entry::EntryCameraFade::Report();
   return true;
@@ -1509,13 +1567,17 @@ APPLEPIE_PLUGIN_EXPORT bool AP_ReloadConfig() {
 APPLEPIE_PLUGIN_EXPORT int AP_GetHotkeys(AP_HotkeyInfo *output, int maximum) {
   if (maximum > 0 && output) {
     output[0] = {"Reload Mod configuration", "reload", int(Entry::settings.Get().reload.vk)};
+    if(maximum>1) {
+      output[1]={"Open Mod controls", "gui", int(Entry::settings.Get().gui.vk)};
+      return 2;
+    }
     return 1;
   }
   return 0;
 }
 APPLEPIE_PLUGIN_EXPORT void AP_SetLanguage(const char *) {}
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
-  if (reason == DLL_PROCESS_DETACH) Entry::RuntimeShapes::managedAlive=false;
+  if (reason == DLL_PROCESS_DETACH) {Entry::RuntimeShapes::managedAlive=false;Entry::RuntimeControls::panel.stopping=true;}
   if (reason == DLL_PROCESS_ATTACH) {
     DisableThreadLibraryCalls(module);
     HANDLE thread = CreateThread(nullptr, 0, Entry::Start, nullptr, 0, nullptr);

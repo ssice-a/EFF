@@ -70,7 +70,7 @@ class Graph {
  }
  NativeReference Mesh(int64_t renderer)const{return NullableReference(Schema(renderer),Child(Schema(renderer),Tree(renderer),"m_Mesh"),layout,cab);}
  private:
- void Index(int64_t tid){Require(visiting.size()<512&&visiting.insert(tid).second,"assembly hierarchy cycle/depth");
+ void Index(int64_t tid){Require(visiting.insert(tid).second,"assembly hierarchy cycle/depth");
   const auto& schema=Schema(tid);std::map<std::string,unsigned> ordinal;
   for(const auto& entry:ConstArray(schema,Child(schema,Tree(tid),"m_Children")).children){auto child=Local(schema,entry);Require(Pointer(child,"m_Father")==tid,"assembly child/parent differs");auto name=Name(Pointer(child,"m_GameObject"));Require(paths.emplace(child,Path(tid)+Segment(name,ordinal[name]++)).second,"assembly repeated hierarchy child");Index(child);}
   visiting.erase(tid);

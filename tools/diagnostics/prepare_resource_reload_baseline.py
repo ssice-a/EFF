@@ -4,11 +4,6 @@ import hashlib
 import json
 from pathlib import Path
 
-ROOTS = [
-    "assets/beyond/dynamicassets/gameplay/actors/postmodels/characters/chr_0032_lizhiyan_postmodel.prefab",
-    "assets/beyond/dynamicassets/gameplay/prefabs/uimodels/chr_0032_lizhiyan_uimodel.prefab",
-]
-
 def sha(data):
     return hashlib.sha256(data).hexdigest().upper()
 
@@ -17,7 +12,14 @@ def main():
     parser.add_argument("pristine", type=Path)
     parser.add_argument("assembly", type=Path)
     parser.add_argument("new_output", type=Path)
+    parser.add_argument("--root", action="append", required=True,
+                        help="精确的源 GameObject 容器路径；每个世界/UI/其他根分别传入")
     args = parser.parse_args()
+    roots = sorted(set(args.root))
+    if len(roots) != len(args.root) or not roots or any(
+            not root.startswith('assets/') or '..' in root or '\\' in root or
+            any(ch in root for ch in '\r\n\t') for root in roots):
+        raise ValueError('Root paths must be unique nonempty exact assets/ container paths')
     if args.new_output.exists():
         raise ValueError("Refusing to overwrite an existing baseline")
     snapshots = json.loads((args.pristine / "snapshots.json").read_text("utf8"))
@@ -45,7 +47,7 @@ def main():
         with (args.new_output / "inputs" / name).open("xb") as f:
             f.write(data)
         rows.append("input\t" + name + "\t" + sha(data))
-    for root in ROOTS:
+    for root in roots:
         rows.append("root\t" + root + "\tGameObject")
     with args.assembly.open("rb") as f:
         assembly_hash = hashlib.file_digest(f, "sha256").hexdigest().upper()

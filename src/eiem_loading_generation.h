@@ -12,12 +12,25 @@ struct Names {
   std::map<std::string, std::string> members, bundles;
 };
 inline std::string Token(const std::string& key, const std::string& identity, size_t size) {
-  Require(!key.empty() && size <= 64, "candidate namespace key/width");
+  Require(!key.empty(), "candidate namespace key absent");
   auto label = key + "\n" + identity;
-  auto digest = Sha((const unsigned char*)label.data(), label.size());
-  auto token = Hex(digest.data(), digest.size()).substr(0, size);
+  std::string token;
+  for (size_t block = 0; token.size() < size; ++block) {
+    auto input = block ? label + "\n" + std::to_string(block) : label;
+    auto digest = Sha((const unsigned char*)input.data(), input.size());
+    token += Hex(digest.data(), digest.size()).substr(0, size - token.size());
+  }
   for (auto& c : token) if (c >= 'A' && c <= 'F') c += 'a' - 'A';
   return token;
+}
+inline std::string BundleIdentity(const std::string& key, const std::string& original) {
+  Require(!original.empty(), "candidate Bundle identity absent");
+  auto slash = original.find_last_of('/');
+  auto start = slash == original.npos ? size_t(0) : slash + 1;
+  auto dot = original.find_last_of('.');
+  auto end = dot != original.npos && dot > start ? dot : original.size();
+  Require(end > start, "candidate Bundle identity has no file stem");
+  return original.substr(0, start) + Token(key, "bundle:" + original, end - start) + original.substr(end);
 }
 inline bool Cab(const std::string& name) {
   if (name.size() != 36 || name.substr(0,4) != "CAB-") return false;
@@ -35,6 +48,15 @@ inline std::string RemapPath(const std::string& path, const Names& names) {
   return "archive:/" + replacement + "/" + found->second;
 }
 struct Patch { size_t offset = 0; std::string before, after; };
+inline Bytes ApplyProven(const Bytes& bytes,const std::string& hash,std::vector<Patch> patches){
+  auto digest=Sha(bytes.data(),bytes.size());Require(Hex(digest.data(),digest.size())==hash,"namespace recipe source digest differs");
+  std::sort(patches.begin(),patches.end(),[](const auto& a,const auto& b){return a.offset<b.offset;});size_t end=0;
+  for(const auto& patch:patches){
+    Require(patch.before.size()==patch.after.size()&&patch.offset>=end&&patch.offset<=bytes.size()&&patch.before.size()<=bytes.size()-patch.offset,"namespace recipe patch range/width/overlap differs");
+    Require(std::equal(patch.before.begin(),patch.before.end(),bytes.begin()+patch.offset),"namespace recipe original field differs");end=patch.offset+patch.before.size();
+  }
+  Bytes result=bytes;for(const auto& patch:patches)std::copy(patch.after.begin(),patch.after.end(),result.begin()+patch.offset);return result;
+}
 inline void AddPatch(std::vector<Patch>& patches, const Bytes& bytes, size_t offset,
                      const std::string& before, const std::string& after) {
   if (before == after) return;
@@ -175,11 +197,11 @@ inline Result PrepareSerializedCached(const Bytes& bytes,const Names& names,
   identity+="\nbundles";for(const auto& row:names.bundles)identity+='\n'+row.first;
   auto key=digest(Bytes(identity.begin(),identity.end()));auto file=cache/(key+".tsv");
   if(std::filesystem::exists(file)){
-    auto data=Read(file,16*1024*1024);std::string text(data.begin(),data.end());auto end=text.rfind("sha256\t");
+    auto data=Read(file);std::string text(data.begin(),data.end());auto end=text.rfind("sha256\t");
     Require(end!=text.npos&&end&&text[end-1]=='\n',"namespace recipe checksum absent");
     auto hash=Trim(text.substr(end+7));Require(hash==digest(Bytes(data.begin(),data.begin()+end)),"namespace recipe descriptor changed");
     std::istringstream rows(text.substr(0,end));std::string row;
-    Require(bool(std::getline(rows,row))&&row=="EFF_NAMESPACE_RECIPE\t1\t"+key,"namespace recipe identity differs");
+    Require(bool(std::getline(rows,row))&&TableIdentity(Trim(row),"EFF_NAMESPACE_RECIPE",key),"namespace recipe identity differs");
     Require(bool(std::getline(rows,row)),"namespace recipe counts absent");std::istringstream counts(row);std::string tag;Result result;
     Require(bool(counts>>tag>>result.externalPaths>>result.streamPaths>>result.bundleNames>>result.opaqueObjectsPreserved)&&tag=="counts","namespace recipe counts invalid");
     std::vector<Patch> patches;

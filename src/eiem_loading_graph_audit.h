@@ -15,9 +15,9 @@ inline std::string Basename(const std::string& path) {
 }
 inline std::vector<External> ReadExternals(const Bytes& bytes, const SerializedLayout& layout) {
   Reader reader(bytes, layout.tableEnd, false, 48 + layout.metadataSize);
-  auto scripts = reader.Count(1000000);
+  auto scripts = reader.Count();
   reader.Skip(scripts * 12);
-  auto count = reader.Count(1000000);
+  auto count = reader.Count();
   Require(count == layout.externals.size(), "audit external count differs");
   std::vector<External> result;
   for (size_t i = 0; i < count; ++i) {
@@ -64,14 +64,13 @@ inline const Value* Find(const Type& type, const Value& value, const std::string
 inline void Walk(const Type& type, size_t index, Reader& reader, size_t base,
                  const std::vector<bool>& interesting, References& result,
                  int64_t objectId, int32_t classId, const std::string& field,
-                 size_t& budget, unsigned depth = 0) {
-  Require(depth < 128 && budget, "audit reference traversal limit");
-  --budget;
+                 unsigned depth = 0) {
+  Require(depth < type.nodes.size(), "audit reference schema cycle");
   const auto& node = type.nodes.at(index);
   if (!interesting.at(index)) { SkipValue(type, index, reader, base, depth); return; }
   if (ReferenceNode(node)) {
     auto start = reader.p;
-    auto value = ReadValue(type, index, reader, base, budget, depth);
+    auto value = ReadValue(type, index, reader, base, depth);
     if (node.type.rfind("PPtr<", 0) == 0) {
       auto file = Find(type, value, "m_FileID"), id = Find(type, value, "m_PathID");
       Require(file && id && file->raw.size() == 4 && id->raw.size() == 8,
@@ -102,15 +101,14 @@ inline void Walk(const Type& type, size_t index, Reader& reader, size_t base,
     Require(node.children.size() == 2 && type.nodes[node.children[0]].name == "size",
             "audit array schema differs");
     auto count = reader.Count(reader.limit - reader.p);
-    Require(count <= budget, "audit array traversal limit");
     for (size_t i = 0; i < count; ++i)
       Walk(type, node.children[1], reader, base, interesting, result, objectId, classId,
-           field + "[" + std::to_string(i) + "]", budget, depth + 1);
+           field + "[" + std::to_string(i) + "]", depth + 1);
   } else {
     Require(!node.children.empty(), "audit interesting leaf lacks schema");
     for (auto child : node.children)
       Walk(type, child, reader, base, interesting, result, objectId, classId,
-           field + "." + type.nodes[child].name, budget, depth + 1);
+           field + "." + type.nodes[child].name, depth + 1);
   }
   if (node.align || node.type == "string")
     reader.Skip((size_t(0) - (reader.p - base)) & 3);
@@ -126,7 +124,6 @@ inline References ReadReferences(const Bytes& bytes, const SerializedLayout& lay
     }
     masks.push_back(std::move(mask));
   }
-  size_t budget = 8000000;
   for (const auto& entry : layout.objects) {
     const auto& object = entry.second;
     const auto& type = layout.types.at(object.type);
@@ -134,7 +131,7 @@ inline References ReadReferences(const Bytes& bytes, const SerializedLayout& lay
     References objectReferences;
     try {
       Walk(type, 0, reader, object.offset, masks.at(object.type), objectReferences, object.id,
-           type.classId, type.nodes.at(0).name, budget);
+           type.classId, type.nodes.at(0).name);
       Require(reader.p == reader.limit, "audit object payload suffix");
       result.pointers.insert(result.pointers.end(), objectReferences.pointers.begin(), objectReferences.pointers.end());
       result.streams.insert(result.streams.end(), objectReferences.streams.begin(), objectReferences.streams.end());

@@ -213,8 +213,7 @@ inline MeshInputBuild BuildMeshInput(const Bytes& source, const Package& package
   auto bundle = EndfieldInput::Decode(source);
   MeshInputBuild result;
   for (auto& member : bundle.members) {
-    if (member.bytes.size() < 48 || member.bytes[8] || member.bytes[9] ||
-        member.bytes[10] || member.bytes[11] != 22) continue;
+    if (!SerializedHeader(member.bytes)) continue;
     auto rebuilt = BuildMeshMember(member.bytes, member.name, package);
     result.matches += rebuilt.matches;
     result.skipped += rebuilt.skipped;

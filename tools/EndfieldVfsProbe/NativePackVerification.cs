@@ -30,6 +30,7 @@ internal static partial class NativePackProbe
             var source = build.GetProperty("sourcePackage").GetString();
             using var baselineDoc = JsonDocument.Parse(File.ReadAllText(Path.Combine(source, "source", "manifest.json")));
             var baseline = baselineDoc.RootElement;
+            manager.StrippedUnityVersionResolver = ProbeUnityVersion.FromManifest(baseline);
             var bundles = build.GetProperty("bundles").EnumerateArray().ToArray();
             var paths = new List<string>();
             foreach (var row in bundles)

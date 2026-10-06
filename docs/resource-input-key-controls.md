@@ -1,135 +1,165 @@
 # Format-2 runtime key controls
 
 The serialized-input entry registers all `[Key...]` declarations automatically
-for every authored part, including constant `visible=` expressions. Diagnostic/GfxTrace markers are not required for controls.
+for authored parts, including constant `visible=` expressions. Diagnostic or
+GfxTrace markers are not required for controls. Current entry and resource
+transactions are described in [the architecture](code-architecture.md).
 
 ## Input and state
 
 - `cycle`: advances through the declared ordered values once per physical press.
 - `press`: assigns one target once per physical press.
 - `hold`: moves toward one target at `speed` units per Unity game-time second.
-- Ctrl/Alt/Shift chords use the existing key parser. Sampling occurs once per
+- Ctrl/Alt/Shift chords use the shared key parser. Sampling occurs once per
   Unity frame while the game owns the foreground window. Focus changes do not
   manufacture cycle/press edges from already-held chords.
-- All instances of the same Mod share variables. Each controlled Renderer has
-  its own validated binding. New instances receive current visibility during
-  controller registration; public scene discovery covers other actor/UI/NPC
-  consumers once per second, including inactive objects when that public
-  overload is available.
-- Declared `persist` values are stored as numeric `[Values]` entries in
-  `state.ini`. Cycle domains and shape ranges are checked on load; malformed
-  saved data uses the declared defaults and reports an error. The Win32 poller
-  batches atomic writes every 250 ms without holding the input lock during I/O.
+- Physical bindings apply only to the selected Mod. Every Mod's physical
+  edges are still sampled while unselected, disabled or covered by the panel.
+- Instances of the same Mod share variables. Each controlled Renderer has its
+  own validated binding. New instances receive current visibility during
+  registration. The game's model completion callback registers only that model's
+  children, including inactive renderers; native material-controller Init also
+  registers its explicit list. F10 registers rebuilt models immediately after
+  the new control graph is published and restores bindings during rollback.
+  No periodic scene-wide Renderer discovery is used.
+- Declared `persist` values are numeric `[Values]` entries in `state.ini`.
+  Cycle domains and shape ranges are checked on load; malformed saved values
+  use defaults and report an error. The poller batches atomic writes without
+  holding the input lock during I/O. Hot additions/readditions read saved values
+  in a read-only candidate preview; commit preserves valid live values for the
+  same ID/directory. Saved files carry an optional Mod ID comment, with legacy
+  untagged files still readable; a runtime ID change cannot inherit untagged
+  values from the previous owner. Pending saves check the current author ID.
 - `state.ini` and its numeric PID temporary file are preferences, excluded from
-  the author resource list and package digest by both C++ and Python readers.
+  the author resource list and package digest by C++ and Python readers.
 
-## Visibility and native ownership
+## Visibility, shapes and ownership
 
-Each authored Mesh part has a serialized provenance marker
-derived from Mod ID, part, source path/asset and author Mesh digest. Shape-free
-parts use `__EFF_PART_`; Mesh-native shape channels keep `__EFF_SHAPE_`, independently of current runtime bindings. Source
-geometry, indices, bindposes, weights, materials and texture references remain
-unchanged during provenance preparation.
+Each authored part has a serialized provenance marker derived from Mod ID,
+part, source path/asset and author Mesh digest. Shape-free parts use
+`__EFF_PART_`; Mesh-native shape channels keep `__EFF_SHAPE_`. Marker preparation
+preserves geometry, indices, bindposes, weights and resource references.
 
-The renderer binding evaluates `Part.visible` against the shared Mod state and
-combines it with the game's native enabled request through the public
-`Renderer.enabled` binding. Showing a part cannot re-enable a Renderer that the
-game requested disabled. No GameObject activation, bone changes, base Mesh
-replacement or private Renderer/Job writes are performed during a switch.
-Registration always inspects the original source getter, including inside the
-afterimage capture scope. Shape snapshots and native palettes retain v24's
-`skinningRoot` frame and lifetime behavior.
+The binding evaluates `Part.visible` against shared Mod state and combines it
+with the game's native enabled request through public `Renderer.enabled`.
+Showing a part cannot re-enable a Renderer that the game requested disabled.
+Switches do not activate GameObjects, change bones or rebuild base resources.
+Shape controls write only their declared channels through public bindings.
+Registration inspects the original source getter, including during afterimage
+capture. Immutable capture snapshots retain their native palette, frame and
+lifetime until actual native Release.
 
-## LZY current bindings
+## LZY bindings
 
 | Key | Controlled Mesh suffixes | Declared cycle |
-| --- | --- | --- |
+|---|---|---|
 | NUMPAD5 | cloth03.lian, cloth04.lian, cloth06.baohsi | 0/1 |
 | NUMPAD2 | cloth03.neiku, cloth04.neiku | 0/1 |
 | NUMPAD3 | cloth03.bar, cloth04.bar | 0/1 |
 | NUMPAD4 | cloth03.dou | 0/1 |
 | NUMPAD1 | cloth03.xiu | 0/1/2 |
 
-The current INI shows `xiu` only at value 1, so values 0 and 2 intentionally
-have identical visibility. Arrow shape holds keep their existing assignments.
+The current INI shows `xiu` only at value 1, so values 0 and 2 have identical
+visibility. Arrow shape holds retain their assignments.
 
-## Verification and remaining stage
+## Configuration and resource transactions
 
-The real LZY package integration covers nine controlled garment parts, eighteen
-initial Renderer instances, every cycle, modifiers/press, holds/focus, native
-enabled arbitration, late instances and persistent restart round-trip. A
-reparsed package retains its digest after preference save. The capture bridge
-regression checks frame updates, public shape writes, native matrix requests,
-slot order, skinningRoot frame, exact extents and native snapshot lifetime.
+The reload shortcut comes from game `plugin/eff.ini`. Current source defaults,
+generated configuration, project template and the 2026-10-06 v35 deployment
+use F10 (VK_F10). After editing a binding, use the old active shortcut once
+to publish the new one. Reload and GUI reserve their base keys; Mod bindings
+on either are rejected because modifier sets can overlap. `gui=INSERT` toggles
+the built-in control panel in current source. The separate Lua adapter is still
+not wired to this host.
 
-The user accepted the v25 garment keys and body afterimage. GfxTrace remains off.
-The v26 regression retains the accepted palette/frame/snapshot behavior and
-registers all 43 authored part/LOD identities, including fixed `toushi` and
-cloth06.neiku. The 60 prepared loading inputs are verified against the accepted
-v25 inputs: only three files have different hashes; all geometry, native shape
-fields, Renderer fields, material and texture fields are preserved.
+### Ins control panel
 
-## F10 configuration transaction (v26)
+The built-in Windows panel shows the loaded Mod directory/ID and its authored
+source paths, then exposes binding buttons and declared shape sliders. It does
+not infer the currently active character from a filename or select individual
+instances: all instances of one Mod continue sharing that Mod's values.
 
-The reload shortcut is read from game `plugin/eff.ini`; the default is F10.
-`Ctrl`, `Shift` and `Alt` are supported. After changing the shortcut, invoke the
-old shortcut once to commit it. Reload and GUI reserve their base keys, and a
-Mod binding on either base key is rejected because modifier sets can overlap.
+Selection follows the old manager: initially choose the first Mod with keys,
+otherwise the first with shape controls; retain that selection across successful
+reload while its ID and author directory remain available. If removed, choose
+the next selectable Mod. Selection is session state. It does not enable/disable
+resources, hide other characters or discard their saved values.
 
-The worker reads global settings and all Mod packages, checks identity conflicts
-and the native input contract, and prepares a candidate without publishing it.
-The regular Unity frame consumes that candidate once per frame. It reads the
-existing Renderer properties, prepares all changes, applies public visibility
-and shape setters with readback, and publishes the graph, loading generation
-and settings only after success. Failed writes are rolled back, including the
-attempted write that failed. Rollback failures are reported separately; they
-cannot be claimed to have restored engine appearance.
+While the panel is open, physical Mod keys pause; the panel's buttons and sliders
+remain usable. Closing restores keys only for the selected Mod, subject to the
+panel's keyboard checkbox. GUI holds advance with Unity game delta once per
+frame. Losing focus, closing, changing selection and reloading end GUI holds.
+Held cycle/press chords do not manufacture edges when selection/focus changes.
+The GUI shortcut also samples physical edges across focus/config changes.
 
-Supported live edits:
+The UI worker owns its Windows controls, using immutable snapshots and a bounded
+command queue. Unity applies commands only while focused/open and after checking
+both control-graph and selection revisions. Removed targets, old widgets,
+undeclared slider variables and invalid ranges cannot update another Mod. The
+prepared graph includes its panel snapshot before native/property mutation;
+publication does not allocate after successful writes.
+
+Control isolation is covered with a two-character Mod fixture, including identical
+keys, removal of the selected/last Mod and readdition after an empty set. The
+offline compiler now composes the full installed author set into one generation.
+Resource loading depends on character baseline coverage, and Ins selection does
+not enable/disable a character's Mod. Runtime add/remove/edit commits require F10;
+background disk preparation does not publish the runtime graph or panel list.
+
+With a full-resource package configured, reload selects the complete compiled
+candidate, prepares controls/settings off-thread and commits them together
+with the verified native generation on the Unity thread. Mesh, Material and
+Texture edits use that same resource transaction. Current limitations and
+game evidence are in [the package contract](offline-resource-package-format.md)
+and [hot reload testing](hot-reload-testing.md).
+
+Without a configured full-resource package, `eiem_entry_reload.h` accepts only
+configuration/control edits whose native input contract is unchanged:
 
 - key chords, cycle/press/hold declarations, speeds and value domains;
-- constants, defaults and `persist` declarations;
-- `Part.visible`, including constant/dynamic changes on previously fixed parts;
-- shape-to-variable bindings for channels already present in the authored Mesh;
-- `eff.ini` reload shortcut and independent camera anti fade flag.
+- constants, defaults and persistence;
+- constant/dynamic `Part.visible`;
+- shape bindings for channels already present in the authored Mesh;
+- reload shortcut and camera fade setting.
 
-Valid values of variables that remain persistent survive the commit. Ordinary
-variables start from new defaults; removed persistence or incompatible ranges
-use the new defaults. New held-key edge state is sampled physically to avoid a
-synthetic cycle/press on reload. Formerly controlled native shape channels are
-reset to zero when their binding is removed; other native channels are retained.
-Afterimage adaptation follows the Mesh's native channels, so removing runtime
-bindings does not bypass shaped capture handling. Active immutable capture
-snapshots stay alive until native Release; reloading never clears their groups.
+The worker validates a pending candidate without publishing it. The Unity
+frame prepares property changes, applies public visibility/shape writes with
+readback, then publishes graph/settings after success. Failed writes roll
+back, including the attempted failing write. Restoration gaps are reported
+and are not claimed to preserve engine appearance.
 
-Loading table version 3 binds an explicit native input contract digest instead
-of the full INI digest. Runtime-only edits can reuse the already verified,
-rooted loading paths. Serialized bytes, resource declarations, material/texture
-bindings and sampling fields, Mesh/material references, rule/part ordering,
-source identities, LODs and skip handling remain part of that contract. A change
-to these fields is rejected in v26 and retains the previous graph/settings.
-Legacy table versions remain readable for startup; configuration reload requires
-version 3. The author EFFRES2 resource format remains unchanged.
+Variables that remain persistent and valid survive commit. Other variables
+start from new defaults. Held-key state is sampled to avoid synthetic press
+edges. Removed shape bindings return previously owned channels to zero;
+unowned channels remain unchanged. Active capture snapshots are retained.
 
-## Remaining DLL stage
+Loading table version 3 binds the native input contract separately from the
+full INI digest, allowing control-only edits to reuse verified rooted paths.
+Resource bytes, references, ordering, source identities and LOD/skip fields
+remain in that contract. Changes require a rebuilt full-resource generation;
+the configuration-only entry rejects them. This preserves one resource route.
 
-Full Mesh/material/texture resource hot reload is not implemented by the v26
-configuration transaction. It still needs native input rebuilding, asset/cache
-lifetime management, and migration of existing actor/Renderer instances as one
-verified operation. It must not silently use the old serialized inputs for new
-resources. Finish and verify that DLL path before updating Blender/unpack export.
+## Verification boundary
 
-Game verification of v26 camera fade and F10 is pending. Current-entry tests
-exercise the actual LZY INI/v3 table, live state, native setter failures, frame
-commit/deduplication, invalid/stale/resource/reserved-key rejection and retained
-capture snapshots. The camera fixture installs the production Exact adapter
-with real MinHook and checks per-instance order, MethodInfo, setting/manager
-gates and original exception propagation. Simulation is not game visual proof.
+Earlier format-2 integration checked garment cycles, modifiers, holds/focus,
+native enabled arbitration, late instances and preference restart. The user
+accepted garment keys and body afterimages before the current cleanup. Those
+results are evidence for their deployed versions, not all new source builds.
 
-## Full-resource verification observation (v27)
+Current production fixtures cover default shortcut/discovery, configuration
+rollback, stale candidates, full-resource owner rebuild and native retirement
+with mock APIs. Optional loading/reload observers record evidence without
+establishing native job completion. The world texture update passed on installed
+v35c; reverse reload, the new shortcut, display instances and combined topology
+changes remain in [the current game test](hot-reload-testing.md).
 
-The optional `full-reload-observation.enabled` marker records natural game
-loading, model assembly/release, per-Mesh bone/bindpose counts, and current
-configuration F10 timings. It initiates no resource/model refresh and retains
-the v26 rejection of native input contract changes. GFX remains disabled.
-See [the staged validation protocol](full-resource-reload-validation.md).
+The control-panel fixture exercises the production scope/queue logic and real
+Win32 dropdown/button/trackbar messages. Its UI check injects foreground
+observations because a background test process may not acquire desktop focus.
+The current paired v35 DLL has been deployed; Ins, cursor/focus behavior and
+panel operations still require game acceptance. Build/run the fixture with:
+
+```powershell
+cmd /c tools\diagnostics\build_control_panel_smoke.cmd
+& .\bin\resource-directory-entry\control_panel_smoke.exe --ui-smoke
+```

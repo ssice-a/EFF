@@ -52,7 +52,7 @@ internal static class PrefabComponentProbe
         var manager = new AssetsManager
         {
             Game = GameManager.GetGameByType(GameType.ArknightsEndfield),
-            SpecifyUnityVersion = "2021.3.34f5", ResolveDependencies = false
+            SpecifyUnityVersion = ProbeUnityVersion.Override, ResolveDependencies = false
         };
         manager.LoadFiles(paths, mergeSplitAssets: false);
         var sourceCabs = index.Dependencies.GetCabNames(source).ToHashSet(StringComparer.OrdinalIgnoreCase);

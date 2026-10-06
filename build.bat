@@ -1,181 +1,84 @@
 @echo off
-:: Legacy runtime entry (src/eiem.cpp). For the current format=2 resource-input
-:: plugin deployment, build tools\diagnostics\build_resource_directory_entry.cmd
-:: and deploy bin\resource-directory-entry\eff.dll instead of bin\eff.dll.
-
-setlocal enabledelayedexpansion
-
-echo ==========================================
-echo   EFF Build Script
-echo ==========================================
-echo.
-
-:: Set up MSVC environment
-set "vswhere=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-set "vcvars="
-
-if exist "%vswhere%" (
-    for /f "usebackq tokens=*" %%i in (`"%vswhere%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
-        set "install_path=%%i"
-    )
+setlocal
+pushd "%~dp0"
+rem Production entry: serialized native inputs and generation reload only.
+rem Usage: build.bat [v36|v35] [capture]. No deployment is performed.
+set "entry_abi=v36"
+set "entry_folder=bin\resource-directory-entry"
+set "entry_define="
+set "entry_capture="
+if /i "%~1"=="v35" (
+ set "entry_abi=v35"
+ set "entry_folder=bin\resource-directory-entry-v35"
+ set "entry_define=/DEFF_OFFLINE_PACKAGE_V35=1"
+) else if not "%~1"=="" if /i not "%~1"=="v36" (
+ echo [ERROR] Expected ABI v36 or v35.
+ goto entry_failed
 )
-
-if defined install_path (
-    set "vcvars=!install_path!\VC\Auxiliary\Build\vcvars64.bat"
+if /i "%~2"=="capture" (
+ set "entry_capture=/DEIEM_SHAPE_CAPTURE_GFXTRACE"
+) else if not "%~2"=="" (
+ echo [ERROR] The optional second argument must be capture.
+ goto entry_failed
 )
-
-if defined vcvars if exist "!vcvars!" (
-    echo [INFO] Found MSVC at: "!vcvars!"
-    call "!vcvars!" >nul
-)
-
 where cl >nul 2>nul
-if %errorlevel% neq 0 (
-    echo [WARN] Automatic detection failed.
-    set /p "user_path=Please drag and drop vcvars64.bat here and press Enter: "
-    if exist "!user_path!" (
-        call "!user_path!" >nul
-    )
+if errorlevel 1 (
+ set "entry_vswhere=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+ call :entry_find_msvc
 )
-
 where cl >nul 2>nul
-if %errorlevel% equ 0 (
-    echo [SUCCESS] MSVC Environment Ready.
-) else (
-    echo [ERROR] Failed to set up MSVC environment.
-
-    exit /b 1
+if errorlevel 1 (
+ echo [ERROR] MSVC x64 tools unavailable. Install Visual Studio C++ Build Tools.
+ goto entry_failed
 )
-
-echo [OK] MSVC compiler found
-echo.
-
-if not exist bin mkdir bin
-
-:: Build Lua as C++ so protected Lua errors unwind C++ binding locals safely.
-if not exist bin\lua mkdir bin\lua
-set "lua_sources="
-for %%f in (deps\lua\*.c) do (
-    if /I not "%%~nxf"=="lua.c" if /I not "%%~nxf"=="luac.c" set "lua_sources=!lua_sources! %%f"
-)
-cl /nologo /O2 /MD /EHsc /TP /c /Ideps\lua /Fo"bin\lua\\" !lua_sources!
-if errorlevel 1 exit /b 1
-lib /nologo /out:bin\lua.lib bin\lua\*.obj
-if errorlevel 1 exit /b 1
-
-:: Build eff.dll
-echo [1/4] Compiling version resource ...
-rc /nologo /fo bin\version.res src\version.rc
-
-echo [2/4] Building eff.dll ...
-cl /nologo /utf-8 /O2 /Zi /MD /LD /EHsc /std:c++17 ^
-    /DEIEM_VISIBILITY_CONTROLLER_PROBE_BUILD ^
-    /DEIEM_MATERIAL_LIFECYCLE_PROBE_BUILD ^
-    /DEIEM_NATIVE_VFX_SLOT_ADAPTER_BUILD ^
-    /DEIEM_PRESERVE_NATIVE_VFX_MATERIALS_BUILD ^
-    /DEIEM_PERDRAW_END_RESTORE_BUILD ^
-    /DEIEM_PERDRAW_VFX_FANOUT_BUILD ^
-    /DEIEM_NATIVE_VFX_PASSTHROUGH_TEXTURE_PATCH_BUILD ^
-    /DEIEM_DITHER_PROBE_BUILD ^
-    /DEIEM_MESH_USAGE_GRAPH_BUILD ^
-    /DEIEM_AFTERIMAGE_DIAGNOSTICS_BUILD ^
-    /DEIEM_PERDRAW_MATERIAL_PROBE_BUILD ^
-    /DEIEM_NATIVE_MESH_CLONE_BUILD ^
-    /DEIEM_NATIVE_MESH_RUNTIME_SNAPSHOT_BUILD ^
-    /Fd"bin\eff_compile.pdb" ^
-    /Ideps\minhook_lib\include ^
-    /Ideps\imgui ^
-    /Ideps\lua ^
-    src\eiem.cpp ^
-    deps\imgui\imgui.cpp ^
-    deps\imgui\imgui_draw.cpp ^
-    deps\imgui\imgui_tables.cpp ^
-    deps\imgui\imgui_widgets.cpp ^
-    deps\imgui\imgui_impl_win32.cpp ^
-    deps\imgui\imgui_impl_dx11.cpp ^
-    bin\version.res ^
-    bin\lua.lib ^
-    deps\minhook_lib\lib\libMinHook.x64.lib ^
-    user32.lib ^
-    gdi32.lib ^
-    winmm.lib ^
-    comdlg32.lib ^
-    d3d11.lib ^
-    dxgi.lib ^
-    dwmapi.lib ^
-    ole32.lib ^
-    winhttp.lib ^
-    /Fe"bin\eff.dll" ^
-    /link /DLL /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /PDB:"bin\eff.pdb"
-
-if %errorlevel% neq 0 (
-    echo [ERROR] eff.dll build failed!
-
-    exit /b 1
-)
-echo [OK] eff.dll built successfully
-echo.
-
-:: Build d3dcompiler_47.dll (proxy loader)
-echo [3/4] Building d3dcompiler_47.dll (proxy loader) ...
+if not exist "%entry_folder%" mkdir "%entry_folder%"
+if errorlevel 1 goto entry_failed
+echo [1/5] Building production eff.dll for %entry_abi% ...
+rc /nologo /fo "%entry_folder%\version.res" src\version.rc
+if errorlevel 1 goto entry_failed
+cl /nologo /utf-8 /O2 /Zi /MD /LD /EHsc /std:c++17 /bigobj /W4 ^
+ %entry_define% %entry_capture% /Ideps\minhook_lib\include ^
+ /Fo"%entry_folder%\eff_resource_entry.obj" ^
+ /Fd"%entry_folder%\eff_compile.pdb" ^
+ src\eiem_resource_entry.cpp "%entry_folder%\version.res" ^
+ deps\minhook_lib\lib\libMinHook.x64.lib ^
+ /Fe"%entry_folder%\eff.dll" ^
+ /link /DLL /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO bcrypt.lib user32.lib ^
+ /PDB:"%entry_folder%\eff.pdb"
+if errorlevel 1 goto entry_failed
+echo [2/5] Building DirectX proxy loader ...
 cl /nologo /O2 /MD /LD /EHsc /std:c++17 ^
-    src\proxy_d3dcompiler.cpp ^
-    /Fe"bin\d3dcompiler_47.dll" ^
-    /link /DLL
-
-if %errorlevel% neq 0 (
-    echo [ERROR] d3dcompiler_47.dll build failed!
-
-    exit /b 1
-)
-echo [OK] d3dcompiler_47.dll built successfully
-echo.
-
-:: Build vulkan-1.dll (vulkan proxy loader)
-echo [4/4] Building vulkan-1.dll (vulkan proxy loader) ...
+ /Fo"%entry_folder%\proxy_d3dcompiler.obj" src\proxy_d3dcompiler.cpp ^
+ /Fe"%entry_folder%\d3dcompiler_47.dll" /link /DLL
+if errorlevel 1 goto entry_failed
+echo [3/5] Building Vulkan proxy loader ...
 cl /nologo /O2 /MD /LD /EHsc /std:c++17 ^
-    src\proxy_vulkan_full.cpp ^
-    /Fe"bin\vulkan-1.dll" ^
-    /link /DLL
+ /Fo"%entry_folder%\proxy_vulkan_full.obj" src\proxy_vulkan_full.cpp ^
+ /Fe"%entry_folder%\vulkan-1.dll" /link /DLL
+if errorlevel 1 goto entry_failed
+echo [4/5] Building matching offline compiler ...
+call tools\build_resource_pack.cmd %entry_abi%
+if errorlevel 1 goto entry_failed
+set "entry_pack=bin\resource-pack\eff_resource_pack.exe"
+if /i "%entry_abi%"=="v35" set "entry_pack=bin\resource-pack-v35\eff_resource_pack.exe"
+copy /y "%entry_pack%" "%entry_folder%\eff_resource_pack.exe" >nul
+if errorlevel 1 goto entry_failed
+"%entry_folder%\eff_resource_pack.exe" --protocol > "%entry_folder%\package-protocol.json"
+if errorlevel 1 goto entry_failed
+echo [5/5] Copying distribution configuration ...
+copy /y config\eff.ini "%entry_folder%\eff.ini" >nul
+if errorlevel 1 goto entry_failed
+echo [OK] %entry_folder% contains the %entry_abi% DLL, compiler, proxies and settings.
+echo [INFO] Build output only; installed DLL and configuration were not changed.
+popd
+exit /b 0
 
-if %errorlevel% neq 0 (
-    echo [ERROR] vulkan-1.dll build failed!
-    exit /b 1
-)
-echo [OK] vulkan-1.dll built successfully
-echo.
+:entry_find_msvc
+if not exist "%entry_vswhere%" exit /b 1
+for /f "usebackq tokens=*" %%i in (`"%entry_vswhere%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat" >nul
+exit /b 0
 
-:: Distribution template only; never overwrite the installed user's configuration.
-copy /y config\eff.ini bin\eff.ini >nul
-if %errorlevel% neq 0 exit /b 1
-copy /y deps\lua\LICENSE bin\LUA-LICENSE.txt >nul
-if %errorlevel% neq 0 exit /b 1
-
-:: Clean up intermediate files (CWD .obj + bin\ .exp/.lib)
-del /q eiem.obj 2>nul
-del /q imgui.obj 2>nul
-del /q imgui_draw.obj 2>nul
-del /q imgui_tables.obj 2>nul
-del /q imgui_widgets.obj 2>nul
-del /q imgui_impl_win32.obj 2>nul
-del /q imgui_impl_dx11.obj 2>nul
-del /q proxy_d3dcompiler.obj 2>nul
-del /q proxy_vulkan_full.obj 2>nul
-del /q bin\eff.exp 2>nul
-del /q bin\eff.lib 2>nul
-del /q bin\d3dcompiler_47.exp 2>nul
-del /q bin\d3dcompiler_47.lib 2>nul
-del /q bin\vulkan-1.exp 2>nul
-del /q bin\vulkan-1.lib 2>nul
-
-echo ==========================================
-echo   Build Complete!
-echo ==========================================
-echo.
-echo Output files in bin\:
-echo   - eff.dll                (EFF plugin)
-echo   - d3dcompiler_47.dll     (DX proxy loader)
-echo   - vulkan-1.dll           (Vulkan proxy loader)
-echo   - eff.ini               (global settings template)
-echo.
+:entry_failed
+popd
+exit /b 1
 

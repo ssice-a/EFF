@@ -23,7 +23,7 @@ int main(int argc,char** argv) {
     std::sort(paths.begin(),paths.end());
     std::set<NativeReference> shaped, verified;
     for(auto& path:paths) {
-      auto bundle=EndfieldInput::Decode(Read(path),512ull*1024*1024);
+      auto bundle=EndfieldInput::Decode(Read(path));
       for(auto& member:bundle.members) if(SerializedMember(member.bytes)) {
         auto layout=ParseSerialized(member.bytes);
         // Scope this control to shaped authored parts selected by native asset
@@ -56,7 +56,7 @@ int main(int argc,char** argv) {
     std::filesystem::create_directories(destination);
     size_t meshes=0,renderers=0,changedInputs=0;
     for(auto& path:paths) {
-      auto sourceBytes=Read(path); auto bundle=EndfieldInput::Decode(sourceBytes,512ull*1024*1024);
+      auto sourceBytes=Read(path); auto bundle=EndfieldInput::Decode(sourceBytes);
       bool changed=false;
       for(auto& member:bundle.members) if(SerializedMember(member.bytes)) {
         auto layout=ParseSerialized(member.bytes); std::map<int64_t,Bytes> changes;
@@ -78,7 +78,7 @@ int main(int argc,char** argv) {
         }
         if(!changes.empty()) { member.bytes=BuildSerialized(member.bytes,layout,changes,{}); changed=true; }
       }
-      auto output=changed?EndfieldInput::Encode(sourceBytes,bundle.members,512ull*1024*1024):sourceBytes;
+      auto output=changed?EndfieldInput::Encode(sourceBytes,bundle.members):sourceBytes;
       Save(destination/path.filename(),output); changedInputs+=changed;
     }
     std::cout << "SHAPE-CONTROL inputs=" << paths.size() << " changed=" << changedInputs

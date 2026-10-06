@@ -11,7 +11,7 @@ inline MeshVertexLayout DescribeMeshVertexStorage(const Type& type, const Value&
   result.count = Integer(Child(type, vertex, "m_VertexCount"));
   auto channelValue = Child(type, vertex, "m_Channels");
   const auto& channels = ArrayValue(type, channelValue).children;
-  Require(result.count && result.count <= 4000000 && channels.size() == 14,
+  Require(result.count && channels.size() == 14,
           "Mesh vertex storage count/channel limit");
   static const size_t widths[]{4, 2, 1, 1, 2, 2, 1, 1, 2, 2, 4, 4};
   bool occupied[4][256]{};
@@ -32,7 +32,7 @@ inline MeshVertexLayout DescribeMeshVertexStorage(const Type& type, const Value&
   }
   for (size_t stream = 0; stream < 4; ++stream) {
     if (stream) result.start[stream] = result.bytes;
-    result.bytes = (result.start[stream] + result.count * result.stride[stream] + 15) & ~size_t(15);
+    result.bytes = (AddSize(AddSize(result.start[stream],MultiplySize(result.count,result.stride[stream])),15)) & ~size_t(15);
   }
   Require(Child(type, vertex, "m_DataSize").raw.size() == result.bytes,
           "Mesh vertex storage byte extent");

@@ -22,9 +22,9 @@ struct Reader {
     p += n;
     return v;
   }
-  size_t Count(size_t max = 10000000) {
+  size_t Count(size_t max = SIZE_MAX) {
     auto n = Get(4);
-    Require(n <= max, "native count exceeds limit");
+    Require(n <= max && n <= limit-p, "native count exceeds input extent");
     return (size_t)n;
   }
   void Skip(size_t n) {
@@ -86,7 +86,7 @@ inline size_t Primitive(const std::string& t) {
   return 0;
 }
 inline void SkipValue(const Type& t, size_t index, Reader& r, size_t base, unsigned depth = 0) {
-  Require(index < t.nodes.size() && depth < 128, "native schema recursion");
+  Require(index < t.nodes.size() && depth < t.nodes.size(), "native schema cycle");
   const auto& node = t.nodes[index];
   auto primitive = Primitive(node.type);
   if (primitive)
@@ -263,12 +263,20 @@ inline std::string LocalString(const Bytes& b, size_t base, size_t size, uint32_
   Reader r(b, base + offset, false, base + size);
   return r.Z();
 }
+// Recognise the extended header from its fields. The serialized release label
+// at offset 8 is metadata; it does not prove or disprove this layout.
+inline bool SerializedHeader(const Bytes& b,size_t offset=0,size_t size=SIZE_MAX) {
+  if(offset>b.size())return false;if(size==SIZE_MAX)size=b.size()-offset;
+  if(size<48||size>b.size()-offset||b[offset+16])return false;
+  Reader h(b,offset+20,true,offset+48);auto metadata=h.Get(4),total=h.Get(8),data=h.Get(8);
+  return total==size&&data<=size&&data>=48&&metadata<=data-48;
+}
 inline SerializedLayout ParseSerialized(const Bytes& b) {
   SerializedLayout layout;
   Reader h(b, 0, true);
   Require(b.size() >= 48, "SerializedFile header truncated");
   h.Skip(8);
-  Require(h.Get(4) == 22, "SerializedFile must be v22");
+  h.Skip(4); // Informational format label; validate actual extended fields below.
   h.Skip(4);
   Require(h.Get(1) == 0, "requires little-endian native data");
   h.Skip(3);
@@ -283,8 +291,9 @@ inline SerializedLayout ParseSerialized(const Bytes& b) {
   r.Z();
   r.Skip(4);
   Require(r.Get(1) == 1, "source TypeTree disabled");
-  size_t typeCount = r.Count(100000);
+  size_t typeCount = r.Count();
   auto& types = layout.types;
+  Require(typeCount <= (r.limit-r.p)/35,"native type table truncated");
   types.reserve(typeCount);
   for (size_t i = 0; i < typeCount; ++i) {
     Type t;
@@ -294,7 +303,7 @@ inline SerializedLayout ParseSerialized(const Bytes& b) {
     Require(r.limit - r.p >= 16, "native type hash truncated");
     std::copy_n(b.begin() + r.p, 16, t.hash.begin());
     r.Skip(16);
-    size_t count = r.Count(1000000), strings = r.Count(r.limit - r.p);
+    size_t count = r.Count(), strings = r.Count(r.limit - r.p);
     Require(count <= (r.limit - r.p) / 32, "TypeTree range");
     size_t start = r.p, stringBase = start + count * 32;
     Require(strings <= r.limit - stringBase, "TypeTree string range");
@@ -318,14 +327,15 @@ inline SerializedLayout ParseSerialized(const Bytes& b) {
       stack.push_back(j);
     }
     r.Skip(count * 32 + strings);
-    size_t deps = r.Count(1000000);
+    size_t deps = r.Count();
     r.Skip(deps * 4);
     types.push_back(std::move(t));
   }
   layout.countOffset = r.p;
-  size_t count = r.Count(1000000);
+  size_t count = r.Count();
   if (count) r.Align();
   layout.tableStart = r.p;
+  Require(count <= (r.limit-r.p)/24,"native object table truncated");
   auto& objects = layout.objects;
   for (size_t i = 0; i < count; ++i) {
     r.Align();
@@ -342,9 +352,9 @@ inline SerializedLayout ParseSerialized(const Bytes& b) {
     layout.order.push_back(o.id);
   }
   layout.tableEnd = r.p;
-  size_t scripts = r.Count(1000000);
+  size_t scripts = r.Count();
   r.Skip(scripts * 12);
-  size_t externalCount = r.Count(1000000);
+  size_t externalCount = r.Count();
   auto& externals = layout.externals;
   for (size_t i = 0; i < externalCount; ++i) {
     r.Z();
@@ -375,9 +385,11 @@ inline std::vector<Asset> SerializedAssets(const Bytes& b, const std::string& ca
     const auto& t = types[o.type];
     if (t.classId != 43 && t.classId != 21 && t.classId != 28 && t.classId != 142) continue;
     Require(!t.nodes.empty(), "named asset has no TypeTree");
-    auto fields = Fields(t, 0, b, o.offset, o.offset + o.size, o.offset);
-    auto name = fields.find("m_Name");
-    if (name != fields.end()) names[o.id] = FieldString(b, name->second);
+    // Identity indexing only needs the prefix through m_Name. Walking every
+    // Mesh/Texture payload here couples resource lookup to unrelated codecs.
+    Reader prefix(b,o.offset,false,o.offset+o.size);
+    for(auto child:t.nodes.at(0).children){size_t start=prefix.p;SkipValue(t,child,prefix,o.offset);
+      if(t.nodes[child].name=="m_Name"){names[o.id]=FieldString(b,{child,start,prefix.p-start});break;}}
   }
   std::vector<Asset> assets;
   for (const auto& pair : objects) {
@@ -395,7 +407,7 @@ inline std::vector<Asset> SerializedAssets(const Bytes& b, const std::string& ca
     size_t element = array.children[1];
     Reader entries(b, container->second.offset, false,
                    container->second.offset + container->second.size);
-    size_t n = entries.Count(1000000);
+    size_t n = entries.Count();
     for (size_t i = 0; i < n; ++i) {
       size_t start = entries.p;
       auto pairFields = Fields(t, element, b, start, entries.limit, o.offset);
@@ -408,6 +420,7 @@ inline std::vector<Asset> SerializedAssets(const Bytes& b, const std::string& ca
       Require(file >= 0 && (size_t)file <= externals.size(), "invalid AssetBundle file reference");
       Asset a;
       a.path = FieldString(b, first);
+      std::transform(a.path.begin(),a.path.end(),a.path.begin(),[](unsigned char c){return char(std::tolower(c));});
       a.pathId = id;
       a.cab = file ? externals[file - 1] : cab;
       if (file == 0 && objects.count(id)) {
@@ -428,7 +441,7 @@ inline std::vector<Asset> Serialized(const Bytes& b, const std::string& cab) {
 }
 inline Bytes Lz4(const unsigned char* source, size_t size, size_t expected, bool inverted = false) {
   Bytes out;
-  out.reserve(expected);
+  out.reserve(std::min(expected,size));
   size_t p = 0;
   auto length = [&](size_t base) {
     size_t n = base;
@@ -465,7 +478,7 @@ inline Bytes Lz4(const unsigned char* source, size_t size, size_t expected, bool
   return out;
 }
 inline Bytes Decompress(const Bytes& b, size_t p, size_t size, size_t expected, unsigned flags) {
-  Require(p <= b.size() && size <= b.size() - p && expected <= 512ull * 1024 * 1024,
+  Require(p <= b.size() && size <= b.size() - p,
           "bundle compressed block range");
   unsigned mode = flags & 63;
   if (mode == 0) {
@@ -481,33 +494,34 @@ inline std::vector<Asset> Inspect(const Bytes& b, const std::string& sourceName 
     auto input = EndfieldInput::Decode(b);
     std::vector<Asset> assets;
     for (const auto& member : input.members) {
-      if (member.bytes.size() >= 48 && member.bytes[8] == 0 && member.bytes[9] == 0 &&
-          member.bytes[10] == 0 && member.bytes[11] == 22) {
+      if (SerializedHeader(member.bytes)) {
         auto entries = Serialized(member.bytes, member.name);
         assets.insert(assets.end(), entries.begin(), entries.end());
       }
     }
     return assets;
   }
-  if (b.size() >= 48 && b[8] == 0 && b[9] == 0 && b[10] == 0 && b[11] == 22)
+  if (SerializedHeader(b))
     return Serialized(b, sourceName);
   Require(b.size() >= 8 && memcmp(b.data(), "UnityFS\0", 8) == 0,
           "input is not a plaintext UnityFS/SerializedFile");
   Reader r(b, 8, true);
-  unsigned version = (unsigned)r.Get(4);
-  Require(version == 6 || version == 7, "unsupported UnityFS version");
+  r.Get(4); // Informational format label; determine padding from the byte layout.
   r.Z();
   r.Z();
   Require(r.Get(8) == b.size(), "UnityFS input incomplete");
   size_t compressed = (size_t)r.Get(4), uncompressed = (size_t)r.Get(4);
   unsigned flags = (unsigned)r.Get(4);
   Require(!(flags & 0x200) && !(flags & 0x1000), "unsupported UnityFS flags");
-  if (version >= 7) r.Align(16);
-  size_t infoOffset = flags & 0x80 ? b.size() - std::min(compressed, b.size()) : r.p;
+  const size_t headerEnd = r.p;
+  auto inspectAt = [&](size_t directoryStart) {
+  Require(compressed <= b.size() - directoryStart, "bundle directory extent");
+  size_t infoOffset = flags & 0x80 ? b.size() - compressed : directoryStart;
   Bytes info = Decompress(b, infoOffset, compressed, uncompressed, flags);
-  size_t dataOffset = flags & 0x80 ? r.p : r.p + compressed;
+  size_t dataOffset = flags & 0x80 ? directoryStart : directoryStart + compressed;
   Reader ir(info, 16, true);
-  size_t blockCount = ir.Count(1000000);
+  size_t blockCount = ir.Count();
+  Require(blockCount <= (ir.limit-ir.p)/10, "bundle block table extent");
   struct Chunk {
     size_t decoded, encoded;
     unsigned flags;
@@ -516,11 +530,11 @@ inline std::vector<Asset> Inspect(const Bytes& b, const std::string& sourceName 
   size_t total = 0;
   for (size_t i = 0; i < blockCount; ++i) {
     Chunk c{(size_t)ir.Get(4), (size_t)ir.Get(4), (unsigned)ir.Get(2)};
-    Require(c.decoded <= 512ull * 1024 * 1024 - total, "bundle decoded limit");
-    total += c.decoded;
+    total = AddSize(total,c.decoded);
     chunks.push_back(c);
   }
-  size_t fileCount = ir.Count(1000000);
+  size_t fileCount = ir.Count();
+  Require(fileCount <= (ir.limit-ir.p)/21, "bundle member table extent");
   struct Member {
     size_t offset, size;
     std::string name;
@@ -536,6 +550,15 @@ inline std::vector<Asset> Inspect(const Bytes& b, const std::string& sourceName 
     files.push_back(std::move(m));
   }
   Require(ir.p == info.size(), "bundle info suffix");
+  const size_t dataEnd = flags & 0x80 ? infoOffset : b.size();
+  Require(dataOffset <= dataEnd, "bundle data extent");
+  size_t encodedTotal = 0;
+  for (const auto& chunk : chunks) {
+    encodedTotal = AddSize(encodedTotal, chunk.encoded);
+    Require((chunk.flags&63) != 0 || chunk.decoded == chunk.encoded,
+            "uncompressed bundle block extent");
+  }
+  Require(encodedTotal == dataEnd-dataOffset, "bundle encoded data extent");
   Bytes data;
   data.reserve(total);
   for (const auto& chunk : chunks) {
@@ -549,12 +572,24 @@ inline std::vector<Asset> Inspect(const Bytes& b, const std::string& sourceName 
   Require(dataOffset == (flags & 0x80 ? infoOffset : b.size()), "bundle data suffix");
   std::vector<Asset> assets;
   for (const auto& file : files)
-    if (file.size >= 48 && data[file.offset + 8] == 0 && data[file.offset + 9] == 0 &&
-        data[file.offset + 10] == 0 && data[file.offset + 11] == 22) {
+    if (SerializedHeader(data,file.offset,file.size)) {
       Bytes member(data.begin() + file.offset, data.begin() + file.offset + file.size);
       auto entries = Serialized(member, file.name);
       assets.insert(assets.end(), entries.begin(), entries.end());
     }
   return assets;
+  };
+  // Both packed and 16-byte-padded headers use the same fields. Validate the
+  // directory, block/member ranges and payload instead of trusting the label.
+  try { return inspectAt(headerEnd); }
+  catch (const std::runtime_error& packedError) {
+    const size_t padded = AlignSize(headerEnd,16);
+    if (padded == headerEnd || padded > b.size()) throw;
+    try { return inspectAt(padded); }
+    catch (const std::runtime_error& paddedError) {
+      throw std::runtime_error(std::string("UnityFS field layout invalid: ")+
+          packedError.what()+"; "+paddedError.what());
+    }
+  }
 }
 }  // namespace EiemNativeInput

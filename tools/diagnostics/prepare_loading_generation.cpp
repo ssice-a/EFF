@@ -26,7 +26,7 @@ int main(int argc, char** argv) {
       if (entry.is_regular_file() && entry.path().extension() == ".vfs") files.push_back(entry.path());
     std::sort(files.begin(), files.end()); Require(!files.empty(), "empty prepared loading graph");
     for (const auto& path : files) {
-      auto bundle = EndfieldInput::Decode(Read(path), 512ull * 1024 * 1024);
+      auto bundle = EndfieldInput::Decode(Read(path));
       for (const auto& member : bundle.members) {
         Require(sourceNames.insert(member.name).second, "duplicate source member identity");
         if (!Serialized(member.bytes)) continue;
@@ -71,7 +71,7 @@ int main(int argc, char** argv) {
     report << "},\"files\":["; first = true;
     size_t externalPaths = 0, streamPaths = 0, bundleNames = 0, opaque = 0;
     for (const auto& path : files) {
-      auto sourceBytes = Read(path); auto bundle = EndfieldInput::Decode(sourceBytes, 512ull * 1024 * 1024);
+      auto sourceBytes = Read(path); auto bundle = EndfieldInput::Decode(sourceBytes);
       size_t fileExternals = 0, fileStreams = 0, fileOpaque = 0;
       for (auto& member : bundle.members) {
         if (Serialized(member.bytes)) {
@@ -83,8 +83,8 @@ int main(int argc, char** argv) {
         }
         member.name = names.members.at(member.name);
       }
-      auto bytes = EndfieldInput::Encode(sourceBytes, bundle.members, 512ull * 1024 * 1024);
-      auto decoded = EndfieldInput::Decode(bytes,512ull * 1024 * 1024);
+      auto bytes = EndfieldInput::Encode(sourceBytes, bundle.members);
+      auto decoded = EndfieldInput::Decode(bytes);
       Require(decoded.members.size() == bundle.members.size(), "candidate encoded member coverage differs");
       for (size_t i = 0; i < bundle.members.size(); ++i)
         Require(decoded.members[i].name == bundle.members[i].name && decoded.members[i].flags == bundle.members[i].flags &&

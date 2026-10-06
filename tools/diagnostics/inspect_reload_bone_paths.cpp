@@ -15,16 +15,16 @@ int main(int argc,char** argv) {
   Require(argc>=6,"inspect_reload_bone_paths <author> <generation> <new-report> <input files...>");
   auto package=Load(std::filesystem::u8path(argv[1]));auto directory=std::filesystem::u8path(argv[2]),output=std::filesystem::u8path(argv[3]);
   Require(!std::filesystem::exists(output),"bone path report exists");
-  auto readyBytes=Read(directory/"ready.tsv",256*1024);std::istringstream ready(Text(readyBytes.data(),readyBytes.size()));std::string row;
+  auto readyBytes=Read(directory/"ready.tsv");std::istringstream ready(Text(readyBytes.data(),readyBytes.size()));std::string row;
   Require(bool(std::getline(ready,row)),"ready header missing");auto header=TabFields(row);Require(header.size()==5&&header[0]=="EFF_RESOURCE_RELOAD_GENERATION"&&header[1]=="1"&&header[3]==PackageDigest(package),"ready author/header differs");
   std::map<std::string,std::string> hashes;while(std::getline(ready,row)){auto fields=TabFields(row);Require(fields.size()==3&&fields[0]=="input"&&hashes.emplace(fields[1],fields[2]).second,"ready row differs");}
   std::map<std::string,std::pair<std::string,std::vector<std::string>>> authors;
   for(const auto& rule:package.rules)if(!rule.second.skip)for(const auto& target:rule.second.targets)for(const auto& id:rule.second.parts){
    const auto& mesh=package.meshes.at(package.parts.at(id).mesh);Require(authors.emplace(RuntimePartName(package,id,target.second),std::make_pair(id,mesh.bones)).second,"duplicate author marker");}
   std::map<NativeReference,AuditNode> nodes;std::map<NativeReference,NativeReference> transforms;std::ostringstream inputs;
-  for(int i=4;i<argc;++i){auto leaf=std::filesystem::u8path(argv[i]);Require(leaf==leaf.filename()&&leaf.extension()==".vfs","non-flat input name");auto bytes=Read(directory/leaf,inputLimit);auto hash=Hash(bytes);Require(hashes.at(leaf.u8string())==hash,"candidate SHA differs");
+  for(int i=4;i<argc;++i){auto leaf=std::filesystem::u8path(argv[i]);Require(leaf==leaf.filename()&&leaf.extension()==".vfs","non-flat input name");auto bytes=Read(directory/leaf);auto hash=Hash(bytes);Require(hashes.at(leaf.u8string())==hash,"candidate SHA differs");
    if(i!=4)inputs<<',';inputs<<"{\"file\":"<<Quote(leaf.u8string())<<",\"sha256\":"<<Quote(hash)<<'}';
-   auto bundle=EndfieldInput::Decode(bytes,inputLimit);for(const auto& member:bundle.members){if(!Serialized(member.bytes))continue;auto layout=ParseSerialized(member.bytes);
+   auto bundle=EndfieldInput::Decode(bytes);for(const auto& member:bundle.members){if(!Serialized(member.bytes))continue;auto layout=ParseSerialized(member.bytes);
     for(const auto& object:layout.objects){const auto& type=layout.types.at(object.second.type);auto kind=type.classId;if(kind!=1&&kind!=4&&kind!=43&&kind!=137)continue;
      auto tree=ObjectValue(member.bytes,layout,object.first);AuditNode node;node.kind=kind;auto ref=[&](const char* field){return Reference(type,Child(type,tree,field),layout,member.name);};
      if(kind==1||kind==43)node.name=Name(type,tree);

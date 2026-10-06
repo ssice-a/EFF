@@ -23,7 +23,7 @@ def texture_metadata(resource, values):
     if '@texture' in blocks:
         require(len(blocks['@texture']) == 20, 'invalid TEX metadata length')
         version, width, height, format_id, mips = struct.unpack('<5I', blocks['@texture'])
-        require(version == 1 and format_id == 4, 'unsupported TEX metadata version/format')
+        require(format_id == 4, 'unsupported TEX metadata version/format')
         return dict(width=width, height=height, format='RGBA32', mipCount=mips)
     require(all(key in values for key in ('width', 'height', 'format', 'mip_count')),
             'legacy TEX needs INI dimensions; re-export once')

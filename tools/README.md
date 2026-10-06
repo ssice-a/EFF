@@ -14,6 +14,12 @@ git submodule update --init --recursive
 It does not require a 53 GB decrypted `.ab` tree or a separately generated
 AssetMap.
 
+## Static Mod sources
+
+Blender invokes the paired source tool before publishing a Mod. It reuses the existing index to write selected ranges in `source-inputs.bin`; the compiler verifies all exact Mesh/Prefab consumers and publishes compressed rules with author payload references. It does not persist complete Prefabs or original dependency copies. The DLL applies these known rules to pristine bytes before Unity resource creation. The global author index stays on the preparation machine. See [the flow](../docs/runtime-resource-discovery.md).
+
+Build the deployable source tool with `tools/build_static_sources.ps1`; the output in `bin/static-sources` includes its .NET runtime, so a game installation does not need a separate SDK.
+
 ## Run
 
 ```text
@@ -73,11 +79,10 @@ E:\EFF_Workspace\sample_export\chr_0031_mifu_deco_1
 ```
 
 The browser/export workflow ends at Blender-readable files. An edited FBX is
-not itself a Unity runtime asset. Returning edits to the game still requires a
-compatible plaintext AssetBundle at the original logical path; EFF's runtime
-DLL already redirects `LoadBundleFromFile` to
-`plugin\mods\override\<logical path>` and falls back to the original VFS on a
-miss or failed load.
+not itself a Unity runtime asset. The current EFF route exports a format-2
+author package from Blender, compiles it against the pristine game baseline
+with the paired offline compiler, then lets the DLL consume validated native
+loading inputs and manifests. See the [package contract](../docs/offline-resource-package-format.md).
 
 For the EFF workflow use `Export -> Format specific -> EFF`. This writes a
 per-asset exchange directory containing an FBX (or OBJ for a standalone Mesh),

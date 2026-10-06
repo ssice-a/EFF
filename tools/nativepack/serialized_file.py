@@ -1,7 +1,7 @@
-"""Version-22 SerializedFile object-table rebuild, retaining source metadata.
+"""Extended-header SerializedFile object-table rebuild, retaining source metadata.
 
 No type/external table guessing: added objects use existing source types and
-references use existing dependencies. Other format versions are rejected.
+references use existing dependencies. The source label is retained; compatibility follows header/table/schema fields.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ class SerializedFile:
         self.original, self.manifest, self.cab = data, manifest, manifest["cab"]
         require(len(data) == manifest["snapshot"]["size"] and
                 sha256_bytes(data).hex().upper() == manifest["snapshot"]["sha256"], "source snapshot hash")
-        require(struct.unpack_from(">I", data, 8)[0] == 22 and data[16] == 0, "requires v22 little-endian SerializedFile")
+        require(len(data) >= 48 and data[16] == 0, "requires extended little-endian SerializedFile header")
         self.metadata_size, self.file_size, self.data_offset = struct.unpack_from(">Iqq", data, 20)
         require(self.file_size == len(data) and self.data_offset == manifest["header"]["dataOffset"], "source header")
         self.schemas = {t["index"]: Schema.compile(t["nodes"]) for t in schema["types"] if t["nodes"]}

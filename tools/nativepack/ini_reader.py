@@ -48,7 +48,6 @@ def read_package(root, resource_cache=None):
 
     require("Mod" in ini and "Constants" in ini, "Mod/Constants sections are required")
     mod = keys("Mod", ("format", "id"))
-    require(mod["format"] == "2", "unsupported INI format; no legacy fallback")
     identifier(mod["id"])
     known = {"Mod", "Constants"}
     states, persistence = {}, set()
@@ -202,6 +201,8 @@ def read_package(root, resource_cache=None):
             control = shape_controls[variable]
             require(all(control["minimum"] <= v <= control["maximum"] for b in bindings if b["variable"] == variable for v in b["values"]),
                     "shape key target outside control range")
+    if (root / "source-inputs.bin").is_file():
+        allowed.add("source-inputs.bin")
     actual = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()
               and not re.fullmatch(r"state\.ini(?:\.tmp-[0-9]+)?", p.relative_to(root).as_posix())
               and p.suffix.lower() not in (".png", ".psd") and p.name.lower() != "eff_texture_convert.exe"}

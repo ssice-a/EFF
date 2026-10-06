@@ -1,58 +1,49 @@
-﻿# EFF 文档索引与当前状态
+# EFF 文档索引与当前状态
 
+2026-10-06。生产源码已整理为 `eiem_resource_entry.cpp` 单入口，默认 v36，也可构建 v35 配套 DLL/编译器。旧运行时与其替换执行器已移除；构建只写本地输出。本轮经用户授权，把当前源码的 v35 DLL、编译器和协议文件部署至游戏目录，已完整编译安装的 Mod 集合。
 
-2026-10-05 当前安装为 v35c 生命周期探针 v2，主源码 v36 装配清单尚未部署。Blender 与 DLL 使用配套离线编译器，首次替换随游戏资源加载；重载直接请求当前 Mod 的 Mesh/材质/贴图/配置。最新实机已通过同路径身体贴图正向更新：候选提交成功，用户确认青绿色贴图、动作、残影和头饰正常。当前重载键已改为小键盘减号（`reload=NUMPADMINUS`），下次启动生效；反向恢复与新键待验证，完整热重载尚未验收。具体状态与下一轮步骤见 [当前热重载测试](hot-reload-testing.md)。Blender 支持全部或分资源导出，无需手动 PNG 转换器。完整目标见 [渲染装配契约](full-render-assembly-reload.md)；离线范围和 persistent pool 边界见 [离线包契约](offline-resource-package-format.md)、[实施结果](offline-resource-reload-plan.md)、[完整重载验证](full-resource-reload-validation.md)。以下表格还包含旧执行器历史，不替代本次验收。
+历史 v35c 实机通过同路径身体贴图正向更新：世界实例提交 generation 2，用户确认青绿色贴图、动作、残影和头饰正常。请求到提交 919.54 ms，提交帧主线程约 63.97 ms。当前游戏配置已改为 `reload=F10`、`gui=INSERT`；修正版尚未启动游戏验收。多角色集合热重载、反向恢复、展示和完整装配的验收边界见[热重载测试](hot-reload-testing.md)。
 
-## 当前状态
+最新待处理反馈为 body 残影消失，当前 PNG/TEX 已恢复原图；优先冷启动检查权重 0 与非零形态下的平 A，并收集已准备的捕获观察。历史青绿色会话通过不代表此反馈已修复，见[残影复查](../diagnostics/body-afterimage-review-20261006/README.md)。
+
+## 当前能力与验证边界
 
 | 能力 | 当前实现 | 验证边界 |
 |---|---|---|
-| 静态 Mesh 替换 | 按原 Mesh 身份命中；替换 Mesh 在游戏原生装配边界进入现有 Renderer；不创建 Partner | 大世界手动 50 次 F10 未躺地；最新 NPC 反馈正常；本轮候选仍待三端实机验收 |
-| LOD 模板导出 | Blender 从已导入资源发现 LOD0-4；一份选中 Mesh 由各目标 LOD 的精确 Render 规则共同引用，缺失级别不生成规则 | 真实 Blender 5.0.1 回归通过；模板的权重、bindpose 与源骨骼槽不会被目标 LOD 的原生槽顺序重新解释 |
-| 多 submesh / 多材质 | Blender 选择导出生成一个合并 Mesh，保留多个 submesh 和对应材质槽 | 当前 Typhoea 测试包已实机显示；材质和贴图随静态替换生效 |
-| 三端实例 | 世界、角色 UI、NPC 共享资源规则，各自沿游戏原生 owner、装配和 LOD 生命周期运行 | 资源命中与实例隔离已验证；随机姿态仍需覆盖全部 owner 并确认最终装配边界 |
-| 蒙皮槽位 | EFFMESH v6 逐槽记录“源 Mesh 身份 + 原始槽号候选”；每个模型实例复用游戏已装配的原生 Transform | 已覆盖世界、UI、NPC PFB 中同槽位骨骼名称不同的情况；完整 v6 映射不依赖角色名、骨骼名或层级路径 |
-| 诊断 Hook | 无关高频探针默认关闭；插件创建的蒙皮 Mesh 四槽校验和写入在普通构建启用 | 普通候选待三端实机验收 |
-| 按键显隐 | Mod 按键使用独立的最小窗口调度器；在同一 Mesh 对象上原地隐藏/恢复目标 submesh 索引，不进入 Partner/Physics 生命周期 | 世界、角色 UI、NPC 实机通过；Mesh、Renderer、骨骼与 LOD 身份保持不变 |
-| 按住形态键 | `[Key] type=hold` 按独立采样节奏向目标值连续移动；`type=cycle` 仍是一按一切换 | DLL、INI 解析和 Blender 形态键导出已实现，见 [按住按键](hold-keys.md) |
-| F10 热重载 | 新配置先完整解析为候选代际；解析失败时不恢复 Renderer、不发布新代际；现有实例使用统一执行器回放 | 历史版本有成功样本；当前候选仍需验证 UI、NPC、冷启动及手动 100 次 F10 |
-| Skeleton / Physics / 碰撞体 | 保留已有格式和研究证据，生产链等待原生工厂与三端能力验证 | 属于后续重构阶段，不纳入当前静态替换验收 |
+| 作者与离线输入 | 格式 2 独立资源；Blender 全部/分资源导出调用配套离线编译器 | 来源、对象图、hash 和原生字段已有离线证据；不等于所有资源变化的实机验收 |
+| 首次替换 | 读取最新完整代际，沿游戏原加载入口提交保留原 CAB/Bundle 命名的输入；作者工具生成每个 Mod 的静态来源描述，编译器确认所有 Mesh 消费者 | LZY 已有样本；新的[静态来源发布](runtime-resource-discovery.md)已真实数据构建，实机验收另记 |
+| 完整候选加载 | 隔离命名的 Bundle/PFB、闭包与 Mesh/Material/Texture 核验 | v35c 世界 owner 无改动与贴图正向更新通过；其他变化待测 |
+| 装配身份 | v36 校验序列化 Renderer 地址、目标 marker 与逐 Mesh 骨骼；v35 使用 marker/骨骼校验 | v36 为源码及本地测试能力，未部署；0/1/N 完整迁移尚未验收 |
+| 实例迁移 | 现有实现使用已记录的游戏世界/展示 owner 重建及后续创建路由 | 世界贴图正向更新通过；展示、隐藏、池和所有消费者覆盖未完成 |
+| 按键、显隐与形态 | cycle/press/hold、表达式、Renderer 原生 enabled 仲裁、形态绑定与玩家数值持久化 | 历史按键/残影已有用户验收；新代际组合与反向重载仍需覆盖 |
+| Ins 控制面板 | 内置 Windows 面板、所选 Mod 按键限制、按键按钮与形态滑块、跨线程版本校验 | 两 Mod 同键隔离及真实控件消息测试通过（前台观察注入）；已部署 v35，游戏 UI/鼠标仍待验收 |
+| 缓存与多角色 Mod | 当前源码组合完整 0/1/N 作者集合；F10 提交增删/修改，Ins 只限制按键目标；集合缓存绑定 mods 目录 | 无对应 Mod 的角色保持原版；每个 Mod 自带来源描述，基线按需扩展；当前真实样本为 LZY；已部署 v35，实机待验收 |
+| 旧代退休 | 卸载 Bundle 容器时保留存活资源引用，未知所有权隔离 | 不宣称完整 native job fence、persistent pool 或多代资源回收已验证 |
+| Lua UI、Skeleton、Physics | 保留适配器及作者编解码 | 尚未接入当前生产宿主的完整运行链 |
 
-v1.0.0 是功能参照，不能替代当前 DLL 的稳定性证明。**历史姿态和 UI 闪退已有故障样本；最新 NPC 反馈正常，本轮候选仍需重新实机验收**。Skeleton、Physics 和碰撞体保留为后续阶段，不作为本问题的修复依据。
+完整目标以[渲染装配契约](full-render-assembly-reload.md)为准。单项贴图成功不能替代部件增删改名、不同骨骼槽、多实例回滚和旧代引用退休。
 
-## 现行文档
+## 阅读顺序与文档职责
 
 | 主题 | 入口 | 职责 |
 |---|---|---|
-| 项目术语 | [CONTEXT](../CONTEXT.md) | 核心对象与跨模块约束 |
-| 代码架构 | [DLL 代码模块](code-architecture.md) | 模块职责、依赖方向和分阶段整理顺序 |
-| 架构审查 | [本轮问题与修正](architecture-review-20260926.md) | owner 集合、输入合并、蒙皮刷新及尚待处理的事务边界 |
-| 仓库边界 | [三仓库架构](repository-architecture.md) | DLL、Blender、AnimeStudio 的所有权、协议和发布关系 |
-| 本地项目管理 | [三仓库整理状态](project-management-20260926.md) | 工作目录、核对结果和发布候选提交；外部发布状态以 GitHub 为准 |
-| 更新检查 | [三端 Release 检查](release-update-checks.md) | 各端版本、提示入口、忽略状态和发布约束 |
-| 重构基线 | [资源替换重构](refactor-resource-replacement.md) | 目标架构、验证顺序、禁止事项和当前进度 |
-| 原生装配链 | [模型创建链路](model-assembly-chain.md) | 世界、UI、NPC 的装配边界与蒙皮条件 |
-| Blender LOD 导出 | [LOD 导出](blender-lod-export.md) | 从已导入资源发现 LOD；多个精确 Render 命中共享一份模板 Mesh 与切换状态 |
-| 输入与配置 | [条件与按键](conditional-keys.md) | INI、表达式、状态与更新顺序 |
-| Blender 网格工具 | [切换作者流程](blender-switches.md) | 选择、显隐、状态和导出 |
-| Blender 分资源导出 | [分资源导出](blender-scoped-resource-export.md) | 默认全部资源；仅 Mesh、材质与贴图、贴图更新已有完整 Mod；自动离线编译 |
-| 顶点通道 | [顶点数据契约](vertex-data-contract.md) | 原生通道保留与缺失切线生成 |
-| 蒙皮 | [共享骨架绑定](shared-skeleton-binding.md) | EFFMESH v6 源 Mesh/槽位候选、bind pose、实例隔离和回退边界 |
-| 统一装配当前状态 | [候选与验收](unified-assembly-status-20260926.md) | 四槽实验、三端缺口、代码边界、候选 DLL 与验证门槛 |
-| 调查归档 | [CPU 蒙皮调查](archive/cpu-skin-random-pose-current-20260925.md)、[GPU 蒙皮证据](archive/gpu-skinning-evidence.md) | 当时的证据和失败假设；当前状态以本页及装配状态为准 |
-| 形态键 | [形态键控制](shape-controls.md) | 作者通道、实例权重与游戏通道归属 |
-| 作者状态 | [默认值、持久化与材质](author-state-materials.md) | `.blend` 数据、`state.ini` 和材质导入 |
-| 历史贴图工具 | [PNG 转换工具](manual-png-texture-conversion.md) | 已由 Blender 导出取代；保留辅助工具记录 |
-| Mod UI | [Lua UI](lua-ui.md) | 脚本 API、窗口和变量事务 |
-| 相机 | [反虚化契约](camera-fade.md) | CameraMono 原评估后清理 |
-| 物理设计 | [三端物理契约](physics-authoring-design.md) | 解包、Blender、DLL 的完整链路要求 |
-| 物理文件 | [作者格式](physics-authoring-v5.md)、[源图格式](physics-authoring-v2.md) | 当前作者 v5 与独立的原生源图 v2 |
-| 物理运行时边界 | [Physics 运行时重构](physics-runtime-redesign.md) | 所有权边界、禁止操作、P0-P5 取证与实施计划 |
-| 工具运行 | [资源浏览器](../tools/README.md)、[Blender 插件](https://github.com/ssice-a/EFF-blender/blob/main/README.md) | 启动、安装和开发操作 |
+| 项目术语 | [CONTEXT](../CONTEXT.md) | 作者、基线、代际、owner 和消费者边界 |
+| 代码与构建 | [代码架构](code-architecture.md)、[源码地图](../src/README.md) | 当前入口、模块职责、v35/v36 配套构建及回归命令 |
+| 实机进度 | [热重载测试](hot-reload-testing.md) | 已通过用例、安装版本与下一轮操作 |
+| 完整目标 | [渲染装配热重载](full-render-assembly-reload.md) | 0/1/N、登记切换、回滚、未来实例及退休契约 |
+| 离线包 | [包契约](offline-resource-package-format.md) | ABI、缓存发布、编译与原生加载 |
+| 作者声明 | [INI 格式 2](mod-ini-resource-format-v2.md) | Replace/Part、资源、表达式与二进制格式 |
+| 控制与偏好 | [资源输入按键](resource-input-key-controls.md) | 显隐、形态、数值状态及配置事务 |
+| Blender 导出 | [分资源导出](blender-scoped-resource-export.md) | 全部/仅 Mesh/材质与贴图/贴图及运行中发布 |
+| 源基线 | [导出基线](exporter-source-baseline.md) | pristine 来源与作者数据隔离 |
+| 顶点通道 | [顶点数据契约](vertex-data-contract.md) | 原生通道、形变布局与切线生成 |
+| 相机 | [反虚化契约](camera-fade.md) | CameraMono 原评估后的清理与验证边界 |
+| 后续物理 | [三端设计](physics-authoring-design.md)、[作者 v5](physics-authoring-v5.md)、[源图 v2](physics-authoring-v2.md) | 目标及作者文件，不能代替运行时能力 |
+| 仓库与工具 | [三仓库架构](repository-architecture.md)、[资源浏览器](../tools/README.md)、[Blender 插件](https://github.com/ssice-a/EFF-blender/blob/main/README.md) | 所有权、协议、开发与发布关系 |
 
 ## 维护规则
 
-1. “已实现”“构建通过”“已部署”“游戏内验收”是四种不同状态，文档必须明确区分。
-2. 现行文档描述契约和当前能力，不追加每次 DLL 哈希、启动日志或失败尝试。
-3. 身份、装配和高频资源探针默认关闭，只在有明确问题和退出条件的验证阶段临时启用。
-4. 静态替换、按键、F10、Skeleton 和 Physics 分阶段验收；一个阶段通过不能替代另一阶段的实机结果。
+1. 明确区分已实现、构建通过、已部署、游戏验收四种状态；历史版本成功不自动归属当前源码。
+2. 当前文档描述现有契约和边界；具体日志、哈希和失败尝试留在 `diagnostics/`。
+3. 已退休代码和文档不再作为现行入口，源码清理记录不证明游戏能力。
+4. 身份、装配及高频探针只在有明确问题和退出条件时启用；独立离线检查继续推进。

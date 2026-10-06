@@ -20,6 +20,12 @@ int main() {
     Bytes bytes{1,2,3,4}; bytes.insert(bytes.end(),path.begin(),path.end()); bytes.push_back(5);
     std::vector<Patch> patches; AddPatch(patches,bytes,4,path,mapped);
     auto out=Apply(bytes,patches,names);
+    auto digest=Sha(bytes.data(),bytes.size());auto hash=Hex(digest.data(),digest.size());
+    Require(ApplyProven(bytes,hash,patches)==out,"offline-proven recipe differs from full schema-audited namespace output");
+    Rejects([&]{auto changed=bytes;changed[0]^=1;ApplyProven(changed,hash,patches);},"changed source reused offline namespace proof");
+    Rejects([&]{auto changed=patches;changed.front().offset=SIZE_MAX;ApplyProven(bytes,hash,changed);},"namespace proof offset overflow accepted");
+    Rejects([&]{auto changed=patches;changed.front().before[0]^=1;ApplyProven(bytes,hash,changed);},"namespace proof wrong original field accepted");
+    Rejects([&]{auto changed=patches;changed.push_back(changed.front());ApplyProven(bytes,hash,changed);},"overlapping namespace proof accepted");
     Require(out.size()==bytes.size() && std::equal(bytes.begin(),bytes.begin()+4,out.begin()) && out.back()==5,
             "namespace patch changed bytes outside field");
     Require(std::string(out.begin()+4,out.end()-1)==mapped,"namespace field not remapped");
@@ -44,6 +50,13 @@ int main() {
     Rejects([&]{std::vector<Patch> p;AddPatch(p,bytes,4,"wrong",next);},"wrong source/width accepted");
     auto first=Token("key-A",old,32), same=Token("key-A",old,32), second=Token("key-B",old,32);
     Require(first==same && first!=second && Cab("CAB-"+first),"generation token scope differs");
+    for (const auto& identity : {oldBundle, std::string("cutscene/variant.shaderbundle"), std::string(96, 'x')}) {
+      auto renamed=BundleIdentity("key-A",identity);
+      Require(renamed.size()==identity.size()&&renamed!=identity&&renamed==BundleIdentity("key-A",identity),"Bundle field namespace depends on main path grammar");
+      Names generic;generic.bundles.emplace(identity,renamed);Bytes source(identity.begin(),identity.end());std::vector<Patch> edits;
+      AddPatch(edits,source,0,identity,renamed);
+      Require(Apply(source,edits,generic)==Bytes(renamed.begin(),renamed.end()),"generic Bundle field patch differs");
+    }
     std::cout << "LOADING-GENERATION-SMOKE archivePathRemap=1 sharedBuiltinsPreserved=1 outsideFieldBytesPreserved=1 hiddenIdentityRejected=1 laterHiddenCABAndBundleRejected=1 genericFallbackPreserved=1 overlapRejected=1 independentKeys=1\n";
     return 0;
   } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

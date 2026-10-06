@@ -131,6 +131,7 @@ int __fastcall SpanOriginal(void *, void *, void *info) {
   lastInfo = info;
   return result;
 }
+void* vfsResult=(void*)0x34560;
 void *__fastcall VfsOriginal(void *self, int64_t hash, void *info) {
   ++calls;
   lastSelf = self;
@@ -138,7 +139,7 @@ void *__fastcall VfsOriginal(void *self, int64_t hash, void *info) {
   lastInfo = info;
   Require(Entry::bundleContext != nullptr,
           "VFS context absent during original");
-  return (void *)0x34560;
+  return vfsResult;
 }
 void *__fastcall VfsPosOriginal(void *self, int64_t hash, void *pos,
                                 uint32_t crc, void *info) {
@@ -320,167 +321,6 @@ int main(int argc, char **argv) {
       std::cout << "PASS bounded readback: managed getter exceptions preserve Renderer/controller/bone callback arguments exactly once\n";
     }
     {
-      using namespace Entry::SkinningObservation::NativeUpload;
-      using namespace EiemNativeInput;
-      // Real native packing layout: column-ordered float4x4 -> row float3x4.
-      std::vector<float> matrix(32), packed(24);
-      for (size_t i = 0; i < matrix.size(); ++i) matrix[i] = float(i) + .25f;
-      for (size_t bone = 0; bone < 2; ++bone)
-        for (size_t row = 0; row < 3; ++row) for (size_t col = 0; col < 4; ++col)
-          packed[bone * 12 + row * 4 + col] = matrix[bone * 16 + row + col * 4];
-      Require(!Compare(matrix, packed).packedBitMismatches && !Compare(matrix, packed).maxElementError,
-              "native upload valid column-to-row packing rejected");
-      packed[7] += 3;
-      Require(Compare(matrix, packed).packedBitMismatches == 1 && Compare(matrix, packed).maxElementError == 3,
-              "native upload missed wrong packed matrix element");
-      uint32_t nanBits = 0x7FC01234;
-      memcpy(&matrix[0], &nanBits, 4); memcpy(&packed[0], &nanBits, 4);
-      Require(Compare(matrix, packed).inputNonFinite == 1 && Compare(matrix, packed).outputNonFinite == 1,
-              "native upload missed nonfinite matrix");
-      rejects([&] { Compare(matrix, std::vector<float>(23)); }, "comparison extent");
-      originalUpload = Fixture::MatrixUpload;
-      ready = false;
-      auto calls = Fixture::calls;
-      Upload((void *)0x101, matrix.data(), 2);
-      Require(Fixture::calls == calls + 1 && Fixture::lastSelf == (void *)0x101 && Fixture::lastArray == matrix.data() &&
-                  Fixture::lastMatrixCount == 2, "disabled native upload observation changed original call");
-      Bytes nativeRenderer(0x400), nativeMesh(0x400), meshData(0x120);
-      std::vector<float> output(12 + 24);
-      auto rendererAddress = (uintptr_t)nativeRenderer.data(), meshAddress = (uintptr_t)nativeMesh.data();
-      WriteInteger(nativeRenderer, 0x298, meshAddress, 8);
-      WriteInteger(nativeRenderer, 0x388, (uintptr_t)output.data(), 8);
-      WriteInteger(nativeMesh, 0, unityBase + meshVtableRva, 8);
-      WriteInteger(nativeMesh, 0x38, (uintptr_t)meshData.data(), 8);
-      WriteInteger(nativeMesh, 0x1C8, 4, 4);
-      WriteInteger(meshData, 0x100, 2, 4);
-      targets[rendererAddress] = {meshAddress, 2, 9, 0, 0, "fixture-part"};
-      ready = true;
-      auto checkForwarded = [&](uint64_t count) {
-        auto previous = Fixture::calls;
-        Upload(nativeRenderer.data(), matrix.data(), count);
-        Require(Fixture::calls == previous + 1 && Fixture::lastSelf == nativeRenderer.data() &&
-                    Fixture::lastArray == matrix.data() && Fixture::lastMatrixCount == count,
-                "native upload observation exception changed original ABI/call count");
-      };
-      checkForwarded(257); // Before throws, the original still receives 257.
-      Require(targets.at(rendererAddress).captures == 0, "invalid count consumed native observation budget");
-      auto oldDirectory = Entry::sessionDirectory;
-      Entry::sessionDirectory = std::filesystem::temp_directory_path() /
-          ("eff-upload-fixture-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
-      Require(!std::filesystem::exists(Entry::sessionDirectory), "native upload fixture directory exists");
-      std::filesystem::create_directories(Entry::sessionDirectory);
-      Fixture::packMatrixOutput = true;
-      auto unchangedMatrix = matrix;
-      checkForwarded(2);
-      Require(matrix == unchangedMatrix || !memcmp(matrix.data(), unchangedMatrix.data(), matrix.size() * 4),
-              "native upload observation modified matrix input");
-      Require(records.load() == 1 && targets.at(rendererAddress).captures == 1 &&
-                  std::filesystem::exists(Entry::sessionDirectory / "skin-upload-1-packed3x4.bin"),
-              "native upload valid boundary snapshot absent");
-      auto beforeCapture = Before(nativeRenderer.data(), matrix.data(), 2);
-      Require(!beforeCapture.seq, "native upload repeated-frame cadence ignored");
-      targets.at(rendererAddress).captures = 0;
-      Fixture::packMatrixOutput = false;
-      WriteInteger(nativeRenderer, 0x388, 0, 8);
-      checkForwarded(2); // After throws, original was already called exactly once.
-      Require(records.load() == 2, "native upload After failure test did not sample");
-      targets.at(rendererAddress).captures = perTargetLimit;
-      Require(!Before(nativeRenderer.data(), matrix.data(), 2).seq, "native upload target budget exceeded");
-      // Explicitly resolved, task-owned temporary fixture directory only.
-      Require(std::filesystem::weakly_canonical(Entry::sessionDirectory).parent_path() ==
-                  std::filesystem::weakly_canonical(std::filesystem::temp_directory_path()) &&
-                  Entry::sessionDirectory.filename().u8string().find("eff-upload-fixture-") == 0,
-              "native upload fixture cleanup escaped temporary target directory");
-      std::filesystem::remove_all(Entry::sessionDirectory);
-      Entry::sessionDirectory = oldDirectory;
-      targets.clear(); records = 0; gaps = 0; ready = false; originalUpload = nullptr;
-      std::cout << "PASS native matrix upload observation: exact original ABI/call count despite Before/After failure; "
-                   "column4x4-to-row3x4 comparison; nonfinite/mismatch detection; snapshots; cadence and bounded budget; input untouched\n";
-    }
-    {
-      using namespace Entry::SkinningObservation::NativeRender;
-      using EiemNativeInput::WriteInteger;
-      originalRecord = Fixture::NativeRecord;
-      originalFormat = Fixture::NativeFormat;
-      recordReady = false; formatReady = false;
-      auto calls = Fixture::calls;
-      Require(Record((void *)0x1234) == 0xCAFEBABEDEADBEEFull && Fixture::calls == calls + 1 &&
-                  Fixture::lastSelf == (void *)0x1234, "disabled native record changed call/64-bit result");
-      Bytes vertexData(0xA0), output(28);
-      WriteInteger(vertexData, 0x70, 100, 4);
-      uint32_t changed = 0;
-      auto checkFormat = [&](void *selected, uint32_t *mask) {
-        auto beforeCalls = Fixture::calls;
-        auto result = Format((void *)0x2345, vertexData.data(), selected, mask);
-        Require(result == 0xC0FFEEAABBCCDDEEull && Fixture::calls == beforeCalls + 1 &&
-                    Fixture::lastSelf == (void *)0x2345 && Fixture::lastArray == vertexData.data() &&
-                    Fixture::lastName == selected && Fixture::lastInfo == mask,
-                "format observation changed native call arguments/count/64-bit result");
-      };
-      checkFormat(output.data(), &changed);
-      Require(formats.empty(), "disabled format probe retained data");
-      formatReady = true;
-      auto unchanged = vertexData;
-      checkFormat(output.data(), &changed);
-      Require(vertexData == unchanged && changed == 0x1003 &&
-                  formats.at((uintptr_t)vertexData.data()).selected == std::array<unsigned char, 28>{
-                    0x34,0x34,0x34,0x34,0x34,0x34,0x34,0x34,0x34,0x34,0x34,0x34,0x34,0x34,
-                    0x34,0x34,0x34,0x34,0x34,0x34,0x34,0x34,0x34,0x34,0x34,0x34,0x34,0x34},
-              "format observation changed input or native output");
-      WriteInteger(vertexData, 0x70, 1000001, 4);
-      checkFormat(output.data(), &changed); // Before fails; native call still occurs.
-      WriteInteger(vertexData, 0x70, 100, 4);
-      checkFormat(nullptr, &changed); // After fails; native return still preserved.
-      recordReady = true;
-      Entry::SkinningObservation::NativeUpload::ready = true;
-      Bytes renderer(0x400);
-      auto rendererPtr = (uintptr_t)renderer.data();
-      Entry::SkinningObservation::NativeUpload::targets[rendererPtr] = {1, 2, 3, 0, 0, "record-fixture"};
-      auto beforeCalls = Fixture::calls;
-      Require(Record(renderer.data()) == 0xCAFEBABEDEADBEEFull && Fixture::calls == beforeCalls + 1 &&
-                  Fixture::lastSelf == renderer.data(), "record observation failure changed original call/result");
-      Entry::SkinningObservation::NativeUpload::targets.clear();
-      Entry::SkinningObservation::NativeUpload::ready = false;
-      // Two feature descriptors precede the skin record descriptor. Each Mesh
-      // keeps its own handle's slot and block; they must not share a row base.
-      Bytes store(0x30), table(64), block(0x240), recordBuffer(1024);
-      WriteInteger(store, 0, (uintptr_t)block.data(), 8);
-      WriteInteger(store, 0x20, (uintptr_t)table.data(), 8);
-      WriteInteger(table, 16 + 4, 2, 4);
-      WriteInteger(table, 32 + 4, 3, 4);
-      WriteInteger(block, 0x10, (1ull << 18) | (1ull << 16) | (1ull << 5), 8);
-      WriteInteger(block, 0x20, (uintptr_t)recordBuffer.data(), 8);
-      WriteInteger(block, 0x30, 4, 4);
-      WriteInteger(block, 0x52, 96, 2); WriteInteger(block, 0x54, 8, 4);
-      Require(ResolveRecord((uintptr_t)store.data(), 1) == (uintptr_t)recordBuffer.data() + 224 &&
-                  ResolveRecord((uintptr_t)store.data(), 2) == (uintptr_t)recordBuffer.data() + 320,
-              "native record lookup conflated independent slots");
-      WriteInteger(table, 16 + 4, 4, 4);
-      rejects([&] { ResolveRecord((uintptr_t)store.data(), 1); }, "allocation extent");
-      WriteInteger(table, 16 + 4, 2, 4);
-      WriteInteger(block, 0x52, 0xFFFF, 2);
-      rejects([&] { ResolveRecord((uintptr_t)store.data(), 1); }, "allocation extent");
-      WriteInteger(block, 0x10, 0, 8);
-      Require(!ResolveRecord((uintptr_t)store.data(), 1), "missing record feature produced a pointer");
-      rejects([&] { ResolveRecord((uintptr_t)store.data(), 0x1000000); }, "handle bound");
-      Bytes ring(0x30), palette(8192);
-      WriteInteger(ring, 0x28, (uintptr_t)palette.data(), 8);
-      WriteInteger(ring, 8, 300, 4); WriteInteger(ring, 12, 1000, 4);
-      auto link = LinkRing((uintptr_t)ring.data(), 1024, 84, (uintptr_t)palette.data() + 24 * 16);
-      Require(link.inRange && link.pointerMatches &&
-                  !LinkRing((uintptr_t)ring.data(), 1024, 84, (uintptr_t)palette.data() + 27 * 16).pointerMatches &&
-                  !LinkRing((uintptr_t)ring.data(), 999, 84, 0).inRange &&
-                  !LinkRing((uintptr_t)ring.data(), 1024, 100, 0).inRange,
-              "native ring association missed offset/root reservation/range errors");
-      const unsigned char prefix[]{0x40,0x57,0x48,0x83,0xEC,0x20};
-      Require(Prefix((uintptr_t)prefix, "40574883ec20") && !Prefix((uintptr_t)prefix, "40574883ec21"),
-              "native prologue gate accepted an altered prefix");
-      formats.clear(); cadence.clear(); layoutsSeen.clear(); records = 0; gaps = 0;
-      recordReady = false; formatReady = false; originalRecord = nullptr; originalFormat = nullptr;
-      std::cout << "PASS native render evidence: original ABI/count/64-bit results preserved across read failures; "
-                   "vertex input untouched; per-handle record lookup and ring origin/root/range checks; exact prefix gate\n";
-    }
-    {
       using namespace EiemNativeInput;
       Type type;
       type.nodes = {{"Base", "Base", false, {1, 2, 3, 4}},
@@ -506,7 +346,7 @@ int main(int argc, char **argv) {
       rejects([&] { DecodeValue(type, 0, source); }, "complete value");
       source.pop_back();
       WriteInteger(source, 12, 1000000, 4);
-      rejects([&] { DecodeValue(type, 0, source); }, "count exceeds limit");
+      rejects([&] { DecodeValue(type, 0, source); }, "count exceeds input extent");
     }
     il2cpp_thread_attach = Fixture::Attach;
     il2cpp_thread_detach = Fixture::Detach;
@@ -839,6 +679,13 @@ int main(int argc, char **argv) {
                 Fixture::lastHash == pathHash && Fixture::lastInfo == method &&
                 Entry::bundleContext == nullptr,
             "VFS hash value/call/result or TLS restore changed");
+    Require(Entry::lastVfsSync.instance==owner&&Entry::lastVfsSync.hash==pathHash,
+            "completed sync load did not record its query context");
+    Fixture::vfsResult=nullptr;
+    Require(Entry::Vfs((void*)0x99880,42,method)==nullptr&&
+                Entry::lastVfsSync.instance==owner&&Entry::lastVfsSync.hash==pathHash,
+            "failed sync load replaced the successful query context");
+    Fixture::vfsResult=(void*)0x34560;
     for (auto hook : {Entry::VfsPos, Entry::VfsAsyncPos}) {
       unsigned char pos = 0;
       Fixture::calls = 0;
@@ -1227,8 +1074,8 @@ int main(int argc, char **argv) {
       for (const auto& input : inputs) {
         auto built = BuildTextureInput(input.second, package, index);
         if (!built.textures.empty()) {
-          auto before = EndfieldInput::Decode(input.second, textureOutputLimit);
-          auto after = EndfieldInput::Decode(built.bytes, textureOutputLimit);
+          auto before = EndfieldInput::Decode(input.second);
+          auto after = EndfieldInput::Decode(built.bytes);
           for (const auto& texture : built.textures) {
             auto find = [&](const auto& members) -> const Bytes& {
               auto row = std::find_if(members.begin(), members.end(),
@@ -1251,7 +1098,7 @@ int main(int argc, char **argv) {
         if (built.bytes.size() > 64ull * 1024 * 1024) {
           largeOutput = true;
           rejects([&] { EndfieldInput::Decode(built.bytes); }, "size exceeds bounds");
-          Require(!EndfieldInput::Decode(built.bytes, textureOutputLimit).members.empty(),
+          Require(!EndfieldInput::Decode(built.bytes).members.empty(),
                   "explicit bounded Texture output cannot decode");
         }
         if (!built.textures.empty() && !streamRejection) {

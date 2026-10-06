@@ -161,11 +161,17 @@ class DirectoryTests(unittest.TestCase):
         (self.root / "textures" / "old.texture").write_bytes(b"old sidecar")
         with self.assertRaisesRegex(ValueError, "unreferenced/source"): read_package(self.root)
 
-    def test_shared_cycle_domain_and_legacy_rejection(self):
+    def test_shared_cycle_domain_and_structure_compatibility(self):
+        original = (self.root/'mod.ini').read_bytes()
         self.edit_ini(lambda text: text + "\n[KeyBad]\nkey=NUMPAD2\ntype=cycle\n$mode=0,4\n")
         with self.assertRaisesRegex(ValueError, "same cycle domain"): read_package(self.root)
-        self.edit_ini(lambda text: text.replace("format=2", "format=1"))
-        with self.assertRaisesRegex(ValueError, "no legacy fallback"): read_package(self.root)
+        (self.root/'mod.ini').write_bytes(original)
+        self.edit_ini(lambda text: text.replace("format=2", "format=999"))
+        self.assertEqual(read_package(self.root)['modId'], self.package['modId'])
+        for path in self.root.rglob('*'):
+            if path.suffix not in ('.mesh', '.mat', '.tex'): continue
+            data = bytearray(path.read_bytes());data[6] = ord('9');data[8:12] = (999).to_bytes(4,'little');path.write_bytes(data)
+        self.assertEqual(read_package(self.root)['modId'], self.package['modId'])
 
     def test_same_path_pixel_update_preserves_ini_and_other_resources(self):
         before = {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}

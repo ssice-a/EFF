@@ -26,11 +26,12 @@ jobs:
       uses: actions/checkout@v4
       with:
         ref: ${{ env.RELEASE_TAG }}
+        submodules: recursive
 
     - name: Verify release tag matches DLL version
       shell: pwsh
       run: |
-        $header = Get-Content src/globals.h -Raw
+        $header = Get-Content src/eiem_version.h -Raw
         $parts = foreach ($part in 'MAJOR', 'MINOR', 'PATCH') {
           $match = [regex]::Match($header, "(?m)^#define EIEM_VERSION_$part\s+(\d+)\s*$")
           if (-not $match.Success) { throw "Missing EIEM_VERSION_$part" }
@@ -45,7 +46,16 @@ jobs:
 
     - name: Build Project
       run: |
-        cmd /c build.bat
+        cmd /c build.bat v36
+
+    - name: Set up source tool runtime
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Build static source tool
+      shell: pwsh
+      run: tools/build_static_sources.ps1
 
     - name: Package Release
       shell: pwsh
@@ -63,8 +73,13 @@ jobs:
 
         # Install the runtime DLL and both game-root proxy loaders. Symbols and
         # diagnostic/build artifacts stay out of the distribution archive.
-        Copy-Item bin\eff.dll, bin\eff.ini -Destination $pluginRoot
-        Copy-Item bin\d3dcompiler_47.dll, bin\vulkan-1.dll -Destination $gameRoot
+        $buildRoot = "bin/resource-directory-entry"
+        Copy-Item "$buildRoot/eff.dll", "$buildRoot/eff.ini", "$buildRoot/package-protocol.json" -Destination $pluginRoot
+        Copy-Item "$buildRoot/d3dcompiler_47.dll", "$buildRoot/vulkan-1.dll" -Destination $gameRoot
+        $toolsRoot = Join-Path $pluginRoot "tools"
+        New-Item -ItemType Directory -Force -Path $toolsRoot | Out-Null
+        Copy-Item "$buildRoot/eff_resource_pack.exe" -Destination $toolsRoot
+        Copy-Item "bin/static-sources" -Destination $toolsRoot -Recurse
         $archivePath = "EFF_${tag}_dll.zip"
         Compress-Archive -Path "$gameRoot\*" -DestinationPath $archivePath -Force
         Add-Type -AssemblyName System.IO.Compression

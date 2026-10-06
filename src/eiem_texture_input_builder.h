@@ -4,7 +4,6 @@
 namespace EiemNativeInput {
 // Pixel conversion is an export-time task. This writer consumes RGBA32/mips
 // described by TEX metadata and preserves existing stream prefixes.
-constexpr size_t textureOutputLimit = 256ull * 1024 * 1024;
 using AssetIndex = std::map<Identity, Asset>;
 inline void AddAssets(AssetIndex& index, const Bytes& input) {
   for (auto& asset : Inspect(input)) {
@@ -59,6 +58,9 @@ inline int64_t AllocateTextureId(const std::string& cab, const Package& package,
 }
 using TextureReference = std::pair<std::string, int64_t>;
 using TextureExpansion = std::map<TextureReference, std::vector<int64_t>>;
+inline int64_t AllocateMaterialId(const std::string& cab,const Package& package,const std::string& section){
+ auto label=cab+":"+package.id+":material:"+section;auto hash=Sha((const unsigned char*)label.data(),label.size());uint64_t id=0;for(size_t i=0;i<8;++i)id|=uint64_t(hash[i])<<(8*i);Require(id,"allocated Material PathID is zero");return int64_t(id);
+}
 inline bool ExpandTexturePreloads(const Type& type, Value& bundle,
     const SerializedLayout& layout, const std::string& cab,
     const TextureExpansion& expansion, std::set<TextureReference>& referenced) {
@@ -174,15 +176,13 @@ inline Value ApplyTexture(const Type& type, Value value, const Texture& texture,
   size_t expected = 0;
   unsigned width = texture.width, height = texture.height;
   for (unsigned i = 0; i < texture.mips; ++i) {
-    Require(uint64_t(width) * height <= UINT_MAX / 4, "Texture mip exceeds native byte limit");
-    expected += (size_t)width * height * 4;
+    expected = AddSize(expected,MultiplySize(MultiplySize(width,height),4));
     width = std::max(1u, width / 2);
     height = std::max(1u, height / 2);
   }
-  Require(expected == pixels.size && expected <= UINT_MAX, "Texture pixels differ from INI mip size");
-  size_t offset = (member->bytes.size() + 15) & ~size_t(15);
-  Require(offset <= textureOutputLimit && pixels.size <= textureOutputLimit - offset,
-          "Texture stream output exceeds limit");
+  Require(expected == pixels.size, "Texture pixels differ from INI mip size");
+  size_t offset = AlignSize(member->bytes.size(),16);
+  AddSize(offset,pixels.size);
   member->bytes.resize(offset);
   member->bytes.insert(member->bytes.end(), resource.bytes.begin() + pixels.offset,
                        resource.bytes.begin() + pixels.offset + pixels.size);
@@ -271,10 +271,10 @@ inline TextureInputBuild BuildTextureInput(const Bytes& source, const Package& p
     expansion[{asset->second.cab, asset->second.pathId}].push_back(
         AllocateTextureId(asset->second.cab, package, texture.first, texture.second));
   }
+  for(const auto& material:package.materials){const auto& asset=index.at(material.second.source);expansion[{asset.cab,asset.pathId}].push_back(AllocateMaterialId(asset.cab,package,material.first));}
   bool changedPreloads = false;
   for (auto& member : bundle.members) {
-    if (member.bytes.size() < 48 || member.bytes[8] || member.bytes[9] ||
-        member.bytes[10] || member.bytes[11] != 22) continue;
+    if (!SerializedHeader(member.bytes)) continue;
     auto layout = ParseSerialized(member.bytes);
     auto assets = SerializedAssets(member.bytes, member.name, layout);
     std::map<int64_t, Bytes> changes;
@@ -301,12 +301,11 @@ inline TextureInputBuild BuildTextureInput(const Bytes& source, const Package& p
         auto bytes = EncodeValue(type, ApplyMaterial(type, std::move(value),
             *package.resources.at(selected.resource), selected, package, index,
             layout, member.name, result.textureBindings));
-        Bytes original(member.bytes.begin() + object.offset,
-                       member.bytes.begin() + object.offset + object.size);
-        if (bytes != original) {
-          changes.emplace(asset.pathId, std::move(bytes));
-          ++result.changedMaterials;
-        }
+        auto declaration=std::find_if(package.materials.begin(),package.materials.end(),[&](const auto& item){return &item.second==material->second;});
+        auto id=AllocateMaterialId(member.name,package,declaration->first);
+        Require(!layout.objects.count(id)&&std::none_of(added.begin(),added.end(),[&](const AddedObject& row){return row.id==id;}),"additional Material PathID collision");
+        added.push_back({id,object.type,std::move(bytes)});++result.changedMaterials;
+        requiredPreloads.insert({member.name,asset.pathId});
       } else {
         // Preserve the original object and stream bytes for unedited users.
         // Distinct declarations can use one native template independently.
@@ -342,8 +341,8 @@ inline TextureInputBuild BuildTextureInput(const Bytes& source, const Package& p
     member.bytes = BuildSerialized(member.bytes, layout, changes, added);
   }
   result.bytes = result.textures.empty() && !result.changedMaterials && !changedPreloads
-      ? source : EndfieldInput::Encode(source, bundle.members, textureOutputLimit);
-  auto checked = EndfieldInput::Decode(result.bytes, textureOutputLimit);
+      ? source : EndfieldInput::Encode(source, bundle.members);
+  auto checked = EndfieldInput::Decode(result.bytes);
   Require(checked.members.size() == bundle.members.size(), "rebuilt Texture input member count");
   for (size_t i = 0; i < bundle.members.size(); ++i)
     Require(checked.members[i].name == bundle.members[i].name &&

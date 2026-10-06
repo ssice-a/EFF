@@ -28,12 +28,14 @@ def current(cache):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ('compiler', 'reference', 'author', 'baseline', 'assembly', 'output'):
+    for name in ('compiler', 'reference', 'author', 'baseline', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--seed-geometry', type=Path)
     args = parser.parse_args()
-    root = args.output.resolve(); root.mkdir(parents=True, exist_ok=False)
-    source = args.author.resolve(); author = root / 'LZY'; shutil.copytree(source, author)
+    root = args.output.resolve()
+    assert shutil.disk_usage(root.parent).free >= 16 * 1024**3, 'real-input regression needs 16 GiB of free temporary space'
+    root.mkdir(parents=True, exist_ok=False)
+    source = args.author.resolve(); author = root / source.name; shutil.copytree(source, author)
     protected = {p.relative_to(source).as_posix(): digest(p) for p in source.rglob('*') if p.is_file()}
     original = {p.relative_to(author): p.read_bytes() for p in author.rglob('*') if p.is_file()}
     fast, reference = root / 'cache', root / 'reference-cache'
@@ -44,7 +46,7 @@ def main():
     def compile(exe, cache, label, expect_success=True):
         start = time.perf_counter()
         run = subprocess.run([str(exe.resolve()), str(author), str(args.baseline.resolve()),
-                              str(cache), str(args.assembly.resolve())], capture_output=True,
+                              str(cache)], capture_output=True,
                              text=True, encoding='utf8', errors='replace', timeout=180,
                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         elapsed = time.perf_counter() - start
@@ -61,6 +63,7 @@ def main():
         assert len(files) == 136
         for file in files:
             assert digest(file) == digest(b / file.relative_to(a)), str(file)
+        assert (a / 'manifest.bin').read_bytes() == (b / 'manifest.bin').read_bytes(), 'compiled manifests differ'
         stats = dict((name, int(value)) for name, value in re.findall(r'(\w+(?:Hits|Misses))=(\d+)', output))
         results.append(dict(label=label, fastSeconds=fast_seconds, referenceSeconds=ref_seconds,
                             key=a.name, filesIdentical=136, caches=stats))
@@ -73,6 +76,11 @@ def main():
         path.write_bytes(encode_resource(kind, data['nativeTypeHash'], blocks))
 
     compare('baseline-cold')
+    # Keep the recipes actually used for the original author. After the edits,
+    # glob order can select a stage belonging only to a different Mesh/pixel
+    # generation; corrupting that unused entry does not exercise rejection.
+    baseline_appearances = sorted((fast / 'appearance').glob('*.vfs'))
+    baseline_recipes = sorted((fast / 'namespace').glob('*.tsv'))
     tex = author / 'textures/body.tex'
     def pixels(blocks):
         changed = bytearray(blocks['pixels']); changed[0] ^= 0xFF; blocks['pixels'] = changed
@@ -107,11 +115,11 @@ def main():
     for path, data in original.items(): (author / path).write_bytes(data)
     # Corrupted committed cache payloads/descriptors must never be accepted.
     (author / 'mod.ini').write_bytes(raw.replace(b'label=VaginaOpen', b'label=CacheCorruptionWitness', 1))
-    cache_payload = next((fast / 'appearance').glob('*.vfs')); payload = cache_payload.read_bytes()
+    cache_payload = baseline_appearances[0]; payload = cache_payload.read_bytes()
     broken = bytearray(payload); broken[-1] ^= 1; cache_payload.write_bytes(broken)
     compile(args.compiler, fast, 'corrupt-cache', False); assert (fast / 'current.tsv').read_bytes() == before
     cache_payload.write_bytes(payload)
-    recipe = next((fast / 'namespace').glob('*.tsv')); descriptor = recipe.read_bytes()
+    recipe = baseline_recipes[0]; descriptor = recipe.read_bytes()
     broken = bytearray(descriptor); broken[20] ^= 1; recipe.write_bytes(broken)
     compile(args.compiler, fast, 'corrupt-namespace-recipe', False); assert (fast / 'current.tsv').read_bytes() == before
     recipe.write_bytes(descriptor)

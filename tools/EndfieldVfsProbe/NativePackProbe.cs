@@ -56,6 +56,7 @@ internal static partial class NativePackProbe
         var temp = Path.Combine(Path.GetTempPath(), "EFFNativeSchema-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(temp);
         var manager = NewManager();
+        manager.StrippedUnityVersionResolver = ProbeUnityVersion.FromManifest(manifest);
         try
         {
             foreach (var row in manifest.GetProperty("serializedFiles").EnumerateArray())
@@ -109,7 +110,7 @@ internal static partial class NativePackProbe
         Logger.Default = new ConsoleLogger();
         Logger.Flags = LoggerEvent.Error;
         return new AssetsManager { Game = GameManager.GetGameByType(GameType.ArknightsEndfield),
-            SpecifyUnityVersion = "2021.3.34f5", ResolveDependencies = false, FilterData = new() { Items = new() } };
+            SpecifyUnityVersion = ProbeUnityVersion.Override, ResolveDependencies = false, FilterData = new() { Items = new() } };
     }
 
     private static void Copy(string package, string temp, string member, JsonElement snapshot)

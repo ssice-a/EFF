@@ -22,7 +22,8 @@ internal static class SourceBaselineProbe
         Directory.CreateDirectory(fixture);
         var manager = new AssetsManager
         {
-            Game = GameManager.GetGameByType(GameType.ArknightsEndfield), SpecifyUnityVersion = "2021.3.34f5",
+            Game = GameManager.GetGameByType(GameType.ArknightsEndfield), SpecifyUnityVersion = ProbeUnityVersion.Override,
+            StrippedUnityVersionResolver = ProbeUnityVersion.FromManifest(manifest),
             ResolveDependencies = false, FilterData = new() { Items = new() }
         };
         try

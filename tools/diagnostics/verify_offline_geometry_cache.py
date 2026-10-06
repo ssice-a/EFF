@@ -50,7 +50,7 @@ def main():
     def run(label, geometry_reused):
         read_package(author)
         result = subprocess.run([str(compiler), str(author), str(args.game / 'plugin/resource-reload-baseline'),
-                                 str(cache), str(args.game / 'GameAssembly.dll')], capture_output=True, text=True)
+                                 str(cache)], capture_output=True, text=True)
         (evidence / ('compile-' + label + '.log')).write_text(result.stdout + result.stderr, 'utf8')
         assert result.returncode == 0, result.stderr
         assert ('phase=geometry-reused' in result.stdout) == geometry_reused, result.stdout
@@ -101,7 +101,7 @@ def main():
     previous = (cache / 'current.tsv').read_bytes()
     bad = bytearray(pixel.read_bytes()); bad[-1] ^= 1; pixel.write_bytes(bad)
     result = subprocess.run([str(compiler), str(author), str(args.game / 'plugin/resource-reload-baseline'),
-                             str(cache), str(args.game / 'GameAssembly.dll')], capture_output=True, text=True)
+                             str(cache)], capture_output=True, text=True)
     assert result.returncode != 0 and (cache / 'current.tsv').read_bytes() == previous
     (evidence / 'compile-reject.log').write_text(result.stdout + result.stderr, 'utf8')
     for path, data in original.items():

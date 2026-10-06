@@ -32,7 +32,7 @@ struct Header {
   size_t bytes = 0, compressedInfo = 0, decodedInfo = 0, prefix = 0;
   uint32_t flags = 0, encFlags = 0;
 };
-inline Header ReadHeader(const Bytes &b, size_t maximum = 64ull * 1024 * 1024) {
+inline Header ReadHeader(const Bytes &b) {
   Require(b.size() >= 48 && Recognized(b),
           "unsupported Endfield release header");
   Reader r(b, 8, true);
@@ -52,15 +52,14 @@ inline Header ReadHeader(const Bytes &b, size_t maximum = 64ull * 1024 * 1024) {
   h.decodedInfo = Size32(u1, u2);
   h.flags = f1 ^ f2 ^ 0xA7F49310;
   h.encFlags = enc ^ f2;
-  // This revision is proven by observed disk ranges and independent member
-  // decoding. Older CBT/header revisions are deliberately rejected.
+  // These flags select the implemented field and encryption layout. Release
+  // labels are irrelevant; different flag semantics need a matching decoder.
   Require(h.encFlags == 8 && !(h.flags & ~0x2FFu),
-          "unverified Endfield header revision/flags");
+          "unsupported Endfield header field/encryption flags");
   h.prefix = 48;
-  Require(maximum <= 512ull * 1024 * 1024 && h.bytes >= h.prefix && h.bytes <= maximum &&
-              h.compressedInfo && h.compressedInfo <= 16ull * 1024 * 1024 &&
-              h.decodedInfo && h.decodedInfo <= 16ull * 1024 * 1024,
-          "Endfield input/header size exceeds bounds");
+  Require(h.bytes >= h.prefix && h.compressedInfo && h.decodedInfo &&
+              h.compressedInfo <= h.bytes-h.prefix,
+          "Endfield input/header byte extent invalid");
   return h;
 }
 // Uses an independent read handle at an observed loader offset. This produces
@@ -240,13 +239,12 @@ inline uint32_t Count(Reader &r, uint32_t mask, uint32_t finalMask) {
   auto low = uint16_t(encoded), high = uint16_t(encoded >> 16);
   auto count =
       Rol32((uint32_t(uint16_t(low ^ high)) << 16) | low, 14) ^ finalMask;
-  Require(count <= 1000000, "Endfield directory/block count exceeds limit");
   return count;
 }
-inline Bundle Decode(const Bytes &b, size_t maximum = 64ull * 1024 * 1024) {
+inline Bundle Decode(const Bytes &b) {
   Bundle bundle;
   auto &h = bundle.header;
-  h = ReadHeader(b, maximum);
+  h = ReadHeader(b);
   Require(h.bytes == b.size(), "Endfield input incomplete");
   Require(h.compressedInfo <= b.size() - h.prefix, "Endfield directory range");
   size_t infoOffset = h.flags & 0x80 ? b.size() - h.compressedInfo : h.prefix;
@@ -261,6 +259,7 @@ inline Bundle Decode(const Bytes &b, size_t maximum = 64ull * 1024 * 1024) {
     Require(info.size() == h.decodedInfo, "Endfield directory size mismatch");
   Reader r(info, 0, true);
   auto blockCount = Count(r, 0x23F77B8A, 0x91CE0A4F);
+  Require(blockCount <= (r.limit-r.p)/10,"Endfield block directory truncated");
   struct Chunk {
     size_t decoded, encoded;
     uint16_t flags;
@@ -277,12 +276,13 @@ inline Bundle Decode(const Bytes &b, size_t maximum = 64ull * 1024 * 1024) {
                          Rol16(uint16_t((uint16_t(lo ^ hi) << 8) | lo), 14) ^
                          0x523F)};
     Require((chunk.flags == 0 || chunk.flags == 5) && chunk.decoded &&
-                chunk.encoded && chunk.decoded <= 512ull * 1024 * 1024 - total,
+                chunk.encoded,
             "unsupported Endfield block flags/range");
-    total += chunk.decoded;
+    total = AddSize(total,chunk.decoded);
     chunks.push_back(chunk);
   }
   auto memberCount = Count(r, 0x6B0AE55D, 0xE4C1D9F2);
+  Require(memberCount <= (r.limit-r.p)/22,"Endfield member directory truncated");
   struct Entry {
     uint64_t offset, size;
     uint32_t flags;
@@ -298,7 +298,6 @@ inline Bundle Decode(const Bytes &b, size_t maximum = 64ull * 1024 * 1024) {
       auto byte = (unsigned char)r.Get(1);
       if (!byte)
         break;
-      Require(name.size() < 64, "Endfield member name too long");
       byte ^= (unsigned char)(name.size() ^ 0x97);
       Require(byte && byte < 128, "unsupported Endfield member name encoding");
       name += char(byte);
@@ -319,6 +318,14 @@ inline Bundle Decode(const Bytes &b, size_t maximum = 64ull * 1024 * 1024) {
   if (!(h.flags & 0x80))
     dataOffset += h.flags & 0x200 ? (h.compressedInfo + 15) & ~size_t(15)
                                   : h.compressedInfo;
+  const size_t dataEnd=h.flags&0x80?infoOffset:b.size();
+  Require(dataOffset<=dataEnd,"Endfield data extent");
+  size_t encodedTotal=0;
+  for(const auto& chunk:chunks) {
+    encodedTotal=AddSize(encodedTotal,chunk.encoded);
+    Require(chunk.flags!=0||chunk.decoded==chunk.encoded,"Endfield uncompressed block extent");
+  }
+  Require(encodedTotal==dataEnd-dataOffset,"Endfield encoded data extent");
   Bytes data;
   data.reserve(total);
   for (const auto &chunk : chunks) {
@@ -374,30 +381,27 @@ inline uint32_t EncodeCount(uint32_t count, uint32_t mask, uint32_t finalMask) {
 // Offline/native-input writer: retains member identities and native format.
 // Uncompressed block mode is supported by the format reader; acceptance of a
 // rebuilt file by the actual game's loader is a separate required check.
-inline Bytes Encode(const Bytes &source, const std::vector<Member> &members,
-                    size_t maximum = 64ull * 1024 * 1024) {
-  // Hot-reload candidates may be prepared native inputs larger than 64 MiB.
-  // Honor the same explicitly bounded contract for the source and the output.
-  ReadHeader(source, maximum);
-  Require(maximum <= 512ull * 1024 * 1024, "Endfield output limit exceeds decoded limit");
-  Require(!members.empty() && members.size() <= 1000000,
+inline Bytes Encode(const Bytes &source, const std::vector<Member> &members) {
+  ReadHeader(source);
+  Require(!members.empty() && members.size() <= UINT32_MAX,
           "Endfield output member count");
   Bytes data;
   std::vector<size_t> offsets;
   for (const auto &member : members) {
-    Require(!member.name.empty() && member.name.size() <= 64 &&
-                data.size() <= maximum && member.bytes.size() <= maximum - data.size(),
-            "Endfield output member/byte limit");
-    data.resize((data.size() + 15) & ~size_t(15));
-    Require(data.size() <= maximum && member.bytes.size() <= maximum - data.size(),
-            "Endfield output alignment exceeds limit");
+    Require(!member.name.empty(),"Endfield output member name empty");
+    data.resize(AlignSize(data.size(),16));
+    AddSize(data.size(),member.bytes.size());
     offsets.push_back(data.size());
     data.insert(data.end(), member.bytes.begin(), member.bytes.end());
   }
   Require(!data.empty(), "Endfield output data is empty");
   Bytes info;
-  Append(info, EncodeCount(1, 0x23F77B8A, 0x91CE0A4F), 4);
-  auto block = Encode32(uint32_t(data.size()));
+  auto blocks=data.size()/UINT32_MAX+(data.size()%UINT32_MAX!=0);
+  Require(blocks<=UINT32_MAX,"Endfield block count field overflow");
+  Append(info, EncodeCount(uint32_t(blocks), 0x23F77B8A, 0x91CE0A4F), 4);
+  for(size_t offset=0;offset<data.size();){
+  auto size=uint32_t(std::min(data.size()-offset,size_t(UINT32_MAX)));
+  auto block = Encode32(size);
   auto flagsValue = Rol16(uint16_t(block.second ^ 0x523F), 2);
   auto lo = uint8_t(flagsValue), hi = uint8_t((flagsValue >> 8) ^ lo);
   Append(info, block.first, 2);
@@ -405,6 +409,8 @@ inline Bytes Encode(const Bytes &source, const std::vector<Member> &members,
   Append(info, block.second, 2);
   Append(info, ((uint16_t(hi) << 8) | lo) ^ 0x9CD6, 2);
   Append(info, block.second, 2);
+  offset+=size;
+  }
   Append(info, EncodeCount(uint32_t(members.size()), 0x6B0AE55D, 0xE4C1D9F2),
          4);
   for (size_t i = 0; i < members.size(); ++i) {
@@ -424,10 +430,9 @@ inline Bytes Encode(const Bytes &source, const std::vector<Member> &members,
     Append(info, 0, 1);
     Append(info, size.second, 4);
   }
-  size_t paddedInfo = (info.size() + 15) & ~size_t(15);
-  Require(paddedInfo <= 16ull * 1024 * 1024 &&
-              48 + paddedInfo + data.size() <= maximum,
-          "Endfield output exceeds input limit");
+  Require(info.size()<=UINT32_MAX,"Endfield directory size field overflow");
+  size_t paddedInfo = AlignSize(info.size(),16);
+  AddSize(AddSize(48,paddedInfo),data.size());
   Bytes output(source.begin(), source.begin() + 48);
   output.insert(output.end(), info.begin(), info.end());
   output.resize(48 + paddedInfo);

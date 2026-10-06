@@ -24,7 +24,7 @@ int main(int argc,char** argv) {
     for (const auto& path:std::filesystem::directory_iterator(source)) if(path.is_regular_file() && path.path().extension()==".vfs") paths.push_back(path.path());
     std::sort(paths.begin(),paths.end());
     for(const auto& path:paths) {
-      auto bundle=EndfieldInput::Decode(Read(path),512ull*1024*1024);
+      auto bundle=EndfieldInput::Decode(Read(path));
       for(const auto& member:bundle.members) if(SerializedMember(member.bytes)) {
         auto layout=ParseSerialized(member.bytes);
         for(const auto& asset:SerializedAssets(member.bytes,member.name,layout)) {
@@ -56,7 +56,7 @@ int main(int argc,char** argv) {
     std::filesystem::create_directories(destination);
     size_t meshCount=0,changedInputs=0;
     for(const auto& path:paths) {
-      auto sourceBytes=Read(path);auto bundle=EndfieldInput::Decode(sourceBytes,512ull*1024*1024);bool changed=false;
+      auto sourceBytes=Read(path);auto bundle=EndfieldInput::Decode(sourceBytes);bool changed=false;
       for(auto& member:bundle.members) if(SerializedMember(member.bytes)) {
         auto layout=ParseSerialized(member.bytes);std::map<int64_t,Bytes> changes;
         for(const auto& row:layout.objects) {
@@ -81,7 +81,7 @@ int main(int argc,char** argv) {
         }
         if(!changes.empty()) { member.bytes=BuildSerialized(member.bytes,layout,changes,{});changed=true; }
       }
-      auto output=changed?EndfieldInput::Encode(sourceBytes,bundle.members,512ull*1024*1024):sourceBytes;
+      auto output=changed?EndfieldInput::Encode(sourceBytes,bundle.members):sourceBytes;
       if (verify) Require(Read(destination/path.filename())==output,"prepared control input differs from verified rebuild");
       else Save(destination/path.filename(),output);changedInputs+=changed;
     }

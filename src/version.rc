@@ -1,5 +1,5 @@
 #include <winver.h>
-#include "globals.h"
+#include "eiem_version.h"
 
 VS_VERSION_INFO VERSIONINFO
 FILEVERSION EIEM_VERSION_MAJOR,EIEM_VERSION_MINOR,EIEM_VERSION_PATCH,0

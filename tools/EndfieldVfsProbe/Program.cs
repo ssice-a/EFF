@@ -3,6 +3,18 @@ using System.Security.Cryptography;
 using AnimeStudio;
 using AnimeStudio.GUI;
 
+args = ProbeUnityVersion.ReadOption(args);
+if (args.Length > 0 && args[0] == "--prepare-static-sources")
+{
+    try { return StaticModSourceCommand.Run(args); }
+    catch (Exception error) { Console.Error.WriteLine("STATIC-SOURCES-REJECT reason=" + error.Message); return 1; }
+}
+if (args.Length == 1 && args[0] == "--test-package-contracts")
+{
+    try { return PackageContractTests.Run(); }
+    catch (Exception error) { Console.Error.WriteLine("PACKAGE-CONTRACTS failed: " + error.Message); return 1; }
+}
+
 if (args.Length > 0 && args[0] == "--inspect-observed-inputs")
     return ObservedInputProbe.Run(args);
 if (args.Length > 0 && args[0] == "--resolve-target-input-ranges")
@@ -132,16 +144,19 @@ if (args.Length == 6 && args[0] == "--inspect-mesh")
     var manager = new AssetsManager
     {
         Game = GameManager.GetGameByType(GameType.ArknightsEndfield),
+        SpecifyUnityVersion = ProbeUnityVersion.Override,
         ResolveDependencies = false,
     };
     manager.LoadFiles(cachePaths, mergeSplitAssets: false);
-    var mesh = manager.assetsFileList.SelectMany(x => x.Objects).OfType<Mesh>()
-        .FirstOrDefault(x => x.m_PathID == targetPathId);
-    if (mesh == null)
+    var sourceCabs = loadedIndex.Dependencies.GetCabNames(record.Source).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    var meshes = manager.assetsFileList.Where(file => sourceCabs.Contains(file.fileName))
+        .SelectMany(file => file.Objects).OfType<Mesh>().Where(mesh => mesh.m_PathID == targetPathId).ToArray();
+    if (meshes.Length != 1)
     {
-        Console.Error.WriteLine("target Mesh not found");
+        Console.Error.WriteLine("Expected one exact Mesh in the source Bundle; found " + meshes.Length);
         return 1;
     }
+    var mesh = meshes[0];
 
     Console.WriteLine($"mesh={mesh.Name} pathId={mesh.m_PathID} cab={mesh.assetsFile.fileName} " +
                       $"vertices={mesh.m_VertexCount} indices={mesh.m_Indices.Count} " +
@@ -207,6 +222,7 @@ if (args.Length == 6 && args[0] == "--inspect-closure")
     var manager = new AssetsManager
     {
         Game = GameManager.GetGameByType(GameType.ArknightsEndfield),
+        SpecifyUnityVersion = ProbeUnityVersion.Override,
         ResolveDependencies = false,
     };
     manager.LoadFiles(cachePaths, mergeSplitAssets: false);
@@ -235,6 +251,7 @@ if (args.Length == 6 && args[0] == "--inspect-prefab")
     var manager = new AssetsManager
     {
         Game = GameManager.GetGameByType(GameType.ArknightsEndfield),
+        SpecifyUnityVersion = ProbeUnityVersion.Override,
         ResolveDependencies = false,
     };
     manager.LoadFiles(cachePaths, mergeSplitAssets: false);
@@ -272,7 +289,7 @@ if (args.Length == 7 && args[0] == "--export-model")
     var bundlePaths = dependencyIndex.ResolveBundleClosure(logicalPath);
     var cachePaths = bundlePaths.Select(path => closureArchive.ExtractToCache(path, args[4])).ToArray();
     var game = GameManager.GetGameByType(GameType.ArknightsEndfield);
-    var manager = new AssetsManager { Game = game, ResolveDependencies = false };
+    var manager = new AssetsManager { Game = game, SpecifyUnityVersion = ProbeUnityVersion.Override, ResolveDependencies = false };
     manager.LoadFiles(cachePaths, mergeSplitAssets: false);
     var sourceCabs = dependencyIndex.GetCabNames(logicalPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
     var gameObject = manager.assetsFileList.Where(x => sourceCabs.Contains(x.fileName))

@@ -8,6 +8,8 @@ inline void WriteInteger(Bytes& bytes, size_t offset, uint64_t value, size_t siz
                          bool big = false) {
   Require(size <= 8 && offset <= bytes.size() && size <= bytes.size() - offset,
           "serialized integer write range");
+  if(size<8){auto mask=(uint64_t(1)<<(size*8))-1;
+    Require(value<=mask || (value|mask)==UINT64_MAX,"serialized integer field width overflow");}
   for (size_t i = 0; i < size; ++i)
     bytes[offset + i] = (unsigned char)(value >> (8 * (big ? size - i - 1 : i)));
 }
@@ -23,10 +25,9 @@ struct Value {
   std::vector<Value> children;
 };
 inline Value ReadValue(const Type& type, size_t index, Reader& reader,
-                       size_t base, size_t& budget, unsigned depth = 0) {
-  Require(index < type.nodes.size() && depth < 128 && budget,
-          "serialized value recursion/allocation limit");
-  --budget;
+                       size_t base, unsigned depth = 0) {
+  Require(index < type.nodes.size() && depth < type.nodes.size(),
+          "serialized value schema cycle");
   const auto& node = type.nodes[index];
   Value value;
   value.node = index;
@@ -51,17 +52,16 @@ inline Value ReadValue(const Type& type, size_t index, Reader& reader,
       reader.Skip(value.count * step);
       value.raw.assign(reader.b.begin() + start, reader.b.begin() + reader.p);
     } else {
-      Require(value.count <= budget, "serialized structured array allocation limit");
-      value.children.reserve(value.count);
+      // Append decoded elements; a corrupt count cannot preallocate a huge tree.
       for (size_t i = 0; i < value.count; ++i)
-        value.children.push_back(ReadValue(type, element, reader, base, budget, depth + 1));
+        value.children.push_back(ReadValue(type, element, reader, base, depth + 1));
     }
   } else {
     Require(!node.children.empty(), "unsupported serialized leaf: " + node.type);
     std::set<std::string> names;
     for (size_t child : node.children) {
       Require(names.insert(type.nodes[child].name).second, "duplicate serialized struct field");
-      value.children.push_back(ReadValue(type, child, reader, base, budget, depth + 1));
+      value.children.push_back(ReadValue(type, child, reader, base, depth + 1));
     }
   }
   if (node.align || node.type == "string") {
@@ -73,14 +73,13 @@ inline Value ReadValue(const Type& type, size_t index, Reader& reader,
 }
 inline Value DecodeValue(const Type& type, size_t node, const Bytes& bytes) {
   Reader reader(bytes);
-  size_t budget = 4000000;
-  auto value = ReadValue(type, node, reader, 0, budget);
+  auto value = ReadValue(type, node, reader, 0);
   Require(reader.p == bytes.size(), "serialized TypeTree does not consume complete value");
   return value;
 }
 inline void WriteValue(const Type& type, const Value& value, Bytes& output,
                        unsigned depth = 0) {
-  Require(value.node < type.nodes.size() && depth < 128,
+  Require(value.node < type.nodes.size() && depth < type.nodes.size(),
           "serialized output schema recursion");
   const auto& node = type.nodes[value.node];
   auto primitive = Primitive(node.type);
@@ -124,7 +123,6 @@ inline void WriteValue(const Type& type, const Value& value, Bytes& output,
     else
       output.resize(output.size() + size);
   }
-  Require(output.size() <= 64ull * 1024 * 1024, "serialized output value limit");
 }
 inline Bytes EncodeValue(const Type& type, const Value& value) {
   Bytes bytes;
@@ -187,13 +185,13 @@ inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout
               layout.tableStart >= layout.countOffset + 4, "serialized writer metadata range");
   for (const auto& change : replacements)
     Require(layout.objects.count(change.first), "serialized replacement PathID absent");
-  size_t count = layout.order.size() + added.size();
-  Require(count <= 1000000, "serialized output object count");
+  size_t count = AddSize(layout.order.size(),added.size());
+  Require(count <= UINT32_MAX, "serialized object count field overflow");
   Bytes metadata(source.begin() + 48, source.begin() + layout.tableStart);
   WriteInteger(metadata, layout.countOffset - 48, count, 4);
   metadata.resize((metadata.size() + 3) & ~size_t(3));
   size_t table = metadata.size();
-  metadata.resize(table + count * 24);
+  metadata.resize(AddSize(table,MultiplySize(count,24)));
   metadata.insert(metadata.end(), source.begin() + layout.tableEnd,
                   source.begin() + 48 + layout.metadataSize);
   size_t dataOffset = (48 + metadata.size() + 15) & ~size_t(15);
@@ -213,8 +211,7 @@ inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout
     WriteInteger(output, row + 8, offset, 8);
     WriteInteger(output, row + 16, size, 4);
     WriteInteger(output, row + 20, type, 4);
-    Require(output.size() <= 64ull * 1024 * 1024 &&
-                size <= 64ull * 1024 * 1024 - output.size(), "serialized output file limit");
+    AddSize(output.size(),size);
     output.insert(output.end(), bytes.begin() + begin, bytes.begin() + begin + size);
   };
   size_t index = 0;

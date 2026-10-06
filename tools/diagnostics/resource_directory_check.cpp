@@ -162,7 +162,7 @@ int main(int argc, char** argv) {
     if (argc == 5 && std::string(argv[1]) == "--packed-uv-probe") {
       using namespace EiemNativeInput;
       auto package = Load(std::filesystem::u8path(argv[2]));
-      auto source = Read(std::filesystem::u8path(argv[3]), textureOutputLimit);
+      auto source = Read(std::filesystem::u8path(argv[3]));
       auto path = std::filesystem::u8path(argv[4]);
       Require(!std::filesystem::exists(path), "refusing to overwrite packed-UV probe");
       std::set<std::string> names;
@@ -172,7 +172,7 @@ int main(int argc, char** argv) {
         for (const auto &target : rule.targets) for (size_t i = 0; i < rule.parts.size(); ++i)
           names.insert(target.second.asset + (i ? "__EFF_" + package.id + "_" + rule.parts[i] : ""));
       }
-      auto bundle = EndfieldInput::Decode(source, textureOutputLimit);
+      auto bundle = EndfieldInput::Decode(source);
       size_t meshes = 0, members = 0;
       for (auto &member : bundle.members) {
         if (member.bytes.size() < 48 || member.bytes[8] || member.bytes[9] ||
@@ -194,8 +194,8 @@ int main(int argc, char** argv) {
           ++members;
         }
       }
-      auto output = members ? EndfieldInput::Encode(source, bundle.members, textureOutputLimit) : source;
-      auto checked = EndfieldInput::Decode(output, textureOutputLimit);
+      auto output = members ? EndfieldInput::Encode(source, bundle.members) : source;
+      auto checked = EndfieldInput::Decode(output);
       Require(checked.members.size() == bundle.members.size(), "packed-UV member count changed");
       for (size_t i = 0; i < checked.members.size(); ++i)
         Require(checked.members[i].name == bundle.members[i].name && checked.members[i].flags == bundle.members[i].flags &&
@@ -211,7 +211,7 @@ int main(int argc, char** argv) {
       // and author resources stay unchanged; no runtime Mesh setter is used.
       using namespace EiemNativeInput;
       auto package = Load(std::filesystem::u8path(argv[2]));
-      auto source = Read(std::filesystem::u8path(argv[3]), textureOutputLimit);
+      auto source = Read(std::filesystem::u8path(argv[3]));
       auto path = std::filesystem::u8path(argv[4]);
       Require(!std::filesystem::exists(path), "refusing to overwrite geometry-readback probe");
       std::set<std::string> names;
@@ -221,7 +221,7 @@ int main(int argc, char** argv) {
         for (const auto &target : rule.targets) for (size_t i = 0; i < rule.parts.size(); ++i)
           names.insert(target.second.asset + (i ? "__EFF_" + package.id + "_" + rule.parts[i] : ""));
       }
-      auto bundle = EndfieldInput::Decode(source, textureOutputLimit);
+      auto bundle = EndfieldInput::Decode(source);
       size_t meshes = 0, changedMembers = 0;
       for (auto &member : bundle.members) {
         if (member.bytes.size() < 48 || member.bytes[8] || member.bytes[9] ||
@@ -244,8 +244,8 @@ int main(int argc, char** argv) {
           ++changedMembers;
         }
       }
-      auto output = changedMembers ? EndfieldInput::Encode(source, bundle.members, textureOutputLimit) : source;
-      auto checked = EndfieldInput::Decode(output, textureOutputLimit);
+      auto output = changedMembers ? EndfieldInput::Encode(source, bundle.members) : source;
+      auto checked = EndfieldInput::Decode(output);
       Require(checked.members.size() == bundle.members.size(), "geometry-readback member count changed");
       for (size_t i = 0; i < checked.members.size(); ++i)
         Require(checked.members[i].name == bundle.members[i].name && checked.members[i].flags == bundle.members[i].flags &&
@@ -258,10 +258,10 @@ int main(int argc, char** argv) {
     }
     if (argc == 4 && std::string(argv[1]) == "--object-order-probe") {
       using namespace EiemNativeInput;
-      auto source = Read(std::filesystem::u8path(argv[2]), textureOutputLimit);
+      auto source = Read(std::filesystem::u8path(argv[2]));
       auto path = std::filesystem::u8path(argv[3]);
       Require(!std::filesystem::exists(path), "refusing to overwrite object-order probe");
-      auto bundle = EndfieldInput::Decode(source, textureOutputLimit);
+      auto bundle = EndfieldInput::Decode(source);
       size_t changed = 0, objects = 0;
       for (auto& member : bundle.members) {
         if (member.bytes.size() < 48 || member.bytes[8] || member.bytes[9] ||
@@ -271,8 +271,8 @@ int main(int argc, char** argv) {
         objects += ParseSerialized(sorted).order.size();
         member.bytes = std::move(sorted);
       }
-      auto output = changed ? EndfieldInput::Encode(source, bundle.members, textureOutputLimit) : source;
-      auto checked = EndfieldInput::Decode(output, textureOutputLimit);
+      auto output = changed ? EndfieldInput::Encode(source, bundle.members) : source;
+      auto checked = EndfieldInput::Decode(output);
       Require(checked.members.size() == bundle.members.size(), "object-order probe member count changed");
       for (size_t i = 0; i < bundle.members.size(); ++i)
         Require(checked.members[i].name == bundle.members[i].name &&
@@ -745,7 +745,7 @@ int main(int argc, char** argv) {
       auto inputPath = std::filesystem::u8path(argv[2]);
       auto outputPath = std::filesystem::u8path(argv[3]);
       Require(!std::filesystem::exists(outputPath), "refusing to overwrite Endfield member report");
-      auto bundle = EiemNativeInput::EndfieldInput::Decode(Read(inputPath), EiemNativeInput::textureOutputLimit);
+      auto bundle = EiemNativeInput::EndfieldInput::Decode(Read(inputPath));
       std::filesystem::create_directories(outputPath);
       for (const auto& member : bundle.members) {
         auto name = std::filesystem::u8path(member.name);

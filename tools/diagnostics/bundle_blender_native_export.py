@@ -5,35 +5,120 @@ of truth under tools/nativepack; bundled copies are build artifacts.
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import shutil
 
-ROOT=Path(__file__).resolve().parents[2]
-MODULES=('author_source','serialized_file','type_tree','mesh','delta_apply',
-         'resource_file','ini_package','ini_reader','texture_fields','state_rules','payload')
+ROOT = Path(__file__).resolve().parents[2]
 
-def bundle(destination):
-    destination=Path(destination).resolve()
-    if destination.exists(): raise FileExistsError('Blender bundle exists: '+str(destination))
+# These are the importable nativepack modules used by the add-on.  ``hashing``
+# is deliberately listed: author_source, serialized_file and resource_file
+# import it, and an old bundle silently failed only when an export first
+# touched a SHA-256 path.
+MODULES = (
+    'author_source', 'serialized_file', 'type_tree', 'mesh', 'delta_apply',
+    'resource_file', 'ini_package', 'ini_reader', 'texture_fields',
+    'state_rules', 'payload', 'hashing',
+)
+
+
+# The exact same probe protects both author exports and release bundles. Import
+# the pure invocation module directly: importing tools.Blender would require
+# bpy and start the UI module as a side effect.
+_protocol_spec = importlib.util.spec_from_file_location(
+    '_eiem_bundle_offline_protocol', ROOT / 'tools/Blender/eiem_offline_reload.py')
+_protocol_module = importlib.util.module_from_spec(_protocol_spec)
+_protocol_spec.loader.exec_module(_protocol_module)
+_protocol = _protocol_module._compiler_protocol
+
+
+
+
+def _choose_compiler(explicit=None, abi=35):
+    candidates = []
+    if explicit:
+        candidates.append(Path(explicit))
+    # Build aliases only influence preference; protocols are checked by fields.
+    candidates.extend((
+        ROOT / ('bin/resource-pack-v35' if abi == 35 else 'bin/resource-pack') / 'eff_resource_pack.exe',
+        ROOT / ('bin/resource-pack' if abi == 35 else 'bin/resource-pack-v35') / 'eff_resource_pack.exe',
+        ROOT / 'tools/Blender/nativepack/eff_resource_pack.exe',
+    ))
+    seen = set()
+    errors = []
+    for candidate in candidates:
+        candidate = candidate.resolve()
+        if candidate in seen or not candidate.is_file():
+            continue
+        seen.add(candidate)
+        try:
+            return candidate, _protocol(candidate)
+        except (OSError, ValueError) as error:
+            errors.append(str(error))
+            if explicit:
+                break
+    detail = '; '.join(errors) or '未找到资源编译器'
+    raise ValueError('无法选择与生产 DLL 匹配的资源编译器：' + detail)
+
+
+def bundle(destination, compiler=None, abi=35):
+    destination = Path(destination).resolve()
+    if destination.exists():
+        raise FileExistsError('Blender bundle exists: ' + str(destination))
+    compiler, protocol = _choose_compiler(compiler, abi)
     destination.mkdir(parents=True)
-    for path in (ROOT/'tools/Blender').glob('*.py'):
-        if path.name=='__init__.py' or path.name.startswith('eiem_'): shutil.copy2(path,destination/path.name)
-    core=destination/'nativepack';core.mkdir()
-    (core/'__init__.py').write_text('',encoding='utf-8')
-    for name in MODULES: shutil.copy2(ROOT/'tools/nativepack'/(name+'.py'),core/(name+'.py'))
-    shutil.copy2(ROOT/'bin/author-core/eff_author_core.dll',core/'eff_author_core.dll')
-    shutil.copy2(ROOT/'bin/resource-pack/eff_resource_pack.exe',core/'eff_resource_pack.exe')
-    vendor=ROOT/'bin/author-core/vendor'
-    if not (vendor/'PIL').is_dir(): raise FileNotFoundError('Install Pillow for the target Blender Python into bin/author-core/vendor')
-    shutil.copytree(vendor,destination/'vendor',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
-    return dict(format='EFF_BLENDER_NATIVE_EXPORT_BUNDLE',version=1,path=str(destination),
-                sourceGeometryCore='tools/nativepack',sourceParser='src/eiem_native_input.h',
-                files={p.relative_to(destination).as_posix():hashlib.sha256(p.read_bytes()).hexdigest().upper()
-                       for p in destination.rglob('*') if p.is_file()})
+    for path in (ROOT / 'tools/Blender').glob('*.py'):
+        if path.name == '__init__.py' or path.name.startswith('eiem_'):
+            shutil.copy2(path, destination / path.name)
+    core = destination / 'nativepack'
+    core.mkdir()
+    (core / '__init__.py').write_text('', encoding='utf-8')
+    for name in MODULES:
+        source = ROOT / 'tools/nativepack' / (name + '.py')
+        if not source.is_file():
+            raise FileNotFoundError('canonical nativepack module missing: ' + str(source))
+        shutil.copy2(source, core / (name + '.py'))
+    author_core = ROOT / 'bin/author-core/eff_author_core.dll'
+    if not author_core.is_file():
+        raise FileNotFoundError('missing author core DLL: ' + str(author_core))
+    shutil.copy2(author_core, core / 'eff_author_core.dll')
+    shutil.copy2(compiler, core / 'eff_resource_pack.exe')
+    (core / 'package-protocol.json').write_text(json.dumps(protocol, indent=2) + '\n', 'utf-8')
+    if protocol.get('staticSourceInputs') == _protocol_module.STATIC_SOURCE_INPUTS:
+        static_tool = ROOT / 'bin/static-sources'
+        if not (static_tool / 'EndfieldVfsProbe.exe').is_file():
+            raise FileNotFoundError('Build the static source tool with tools/build_static_sources.ps1')
+        shutil.copytree(static_tool, core / 'static-sources',
+                        ignore=shutil.ignore_patterns('*.pdb', '*.xml'))
+    vendor = ROOT / 'bin/author-core/vendor'
+    if not (vendor / 'PIL').is_dir():
+        raise FileNotFoundError(
+            'Install Pillow for the target Blender Python into bin/author-core/vendor')
+    shutil.copytree(vendor, destination / 'vendor',
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    return dict(
+        format='EFF_BLENDER_NATIVE_EXPORT_BUNDLE', version=2,
+        path=str(destination), compilerProtocol=protocol,
+        sourceGeometryCore='tools/nativepack', sourceParser='src/eiem_native_input.h',
+        files={
+            p.relative_to(destination).as_posix():
+            hashlib.sha256(p.read_bytes()).hexdigest().upper()
+            for p in destination.rglob('*') if p.is_file()
+        },
+    )
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output',type=Path,required=True)
-    args=parser.parse_args();report=bundle(args.output)
-    args.output.with_suffix('.bundle.json').write_text(json.dumps(report,indent=2)+'\n','utf-8')
-    print(json.dumps(dict(path=report['path'],files=len(report['files']))))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--compiler', type=Path,
+                        help='显式指定声明兼容数据结构的 eff_resource_pack.exe')
+    parser.add_argument('--abi', type=int, choices=(35, 36), default=35,
+                        help='构建布局别名；仅决定默认查找顺序')
+    args = parser.parse_args()
+    report = bundle(args.output, args.compiler, args.abi)
+    args.output.with_suffix('.bundle.json').write_text(
+        json.dumps(report, indent=2, ensure_ascii=False) + '\n', 'utf-8')
+    print(json.dumps(dict(path=report['path'], files=len(report['files']),
+                          compiler=report['compilerProtocol']['compiler']),
+                     ensure_ascii=False))

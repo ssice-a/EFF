@@ -1,6 +1,6 @@
 #pragma once
 #include "eiem_offline_resource_package.h"
-// F10 resource transaction: offline manifest -> preloaded isolated graph ->
+// Resource reload transaction: offline manifest -> preloaded isolated graph ->
 // native graph -> exact prefab content/owner preflight -> game-owned rebuild.
 // No Renderer Mesh setters or private native/job memory writes are used.
 namespace FullResourceReload {
@@ -8,7 +8,7 @@ using RuntimeShapes::Ref;
 using Plan=EiemResourceReloadPlan::Plan;
 using namespace EiemNativeInput;
 struct Lease {Ref pathHash,handle,source;bool done=false,disposed=false,shared=false;};
-struct Bundle {Ref path,request,object;std::shared_ptr<NativeCandidate::FileHold> file;int id=0;bool done=false,owned=false,unloadCalled=false;};
+struct Bundle {Ref path,request,object,bytes;std::shared_ptr<NativeBundle::FileHold> file;int id=0;bool done=false,owned=false,unloadCalled=false;};
 struct Asset {Ref label,request,prefab;bool done=false;};
 struct Owner {Ref entity,component,root,pathHash;std::string path;int oldRootId=0;std::map<std::string,std::pair<unsigned,int>> originalMeshes;bool viewPart=false;Ref config;
  Ref animation,animationData,weapons,audio;};
@@ -31,10 +31,12 @@ inline const EiemResourceReloadPlan::Root* FindRoot(const Plan& plan,const std::
 }
 struct Prepared {
  std::shared_ptr<const Plan> plan;RuntimeControls::State controls;EiemEntrySettings::Snapshot config;
- std::map<size_t,std::shared_ptr<NativeCandidate::FileHold>> files;
+ std::map<size_t,std::shared_ptr<NativeBundle::FileHold>> files;
+ std::shared_ptr<EiemPrefabRules::Context> rules;std::map<size_t,std::shared_ptr<const Bytes>> ruleInputs;
  EiemOfflinePackage::Pointer pointer;
  std::shared_ptr<const std::vector<Package>> graph;
  std::map<std::filesystem::path,EiemNativeInput::InputFileStamp> authorFiles;
+ std::map<uint64_t,size_t> rootHashes;
  unsigned base=0;bool testAuthor=false;
 };
 enum class Phase {Leases,Bundles,Assets,Verify,Ready,Owners,Rebuild,Passed,Reject,Drained,AwaitRequest};
@@ -46,26 +48,31 @@ struct Attempt {
  std::shared_ptr<VerifyWalk> verifier;
  uint64_t requestClock=0;std::map<int,double> costs;bool quarantined=false;
  ULONGLONG nativeStarted=0;
+ std::set<size_t> selectedRoots;
+ uint64_t selectionRevision=0;
 };
 struct NativeEnum {uint64_t bits=0;size_t width=0;void* Data(){return &bits;}};
 struct ObjectField {void* field=nullptr;bool isStatic=false;};
 struct Api {
- void *pathClass=nullptr,*handleClass=nullptr,*toPath=nullptr,*load=nullptr,*done=nullptr,*error=nullptr,*get=nullptr,*dispose=nullptr;
+ void *pathClass=nullptr,*handleClass=nullptr,*toPath=nullptr,*load=nullptr,*done=nullptr,*error=nullptr,*get=nullptr,*dispose=nullptr,*handlePath=nullptr,*assetSync=nullptr;
  NativeEnum rootCategory,priority;
- void *prefabType=nullptr,*rendererType=nullptr,*helperType=nullptr;
- void *components=nullptr,*parentHelper=nullptr,*materials=nullptr,*texture=nullptr,*shader=nullptr,*width=nullptr,*height=nullptr,*mips=nullptr;
- void *modelClass=nullptr,*getModel=nullptr,*getPath=nullptr,*getHelper=nullptr,*modelCom=nullptr,*released=nullptr;
+ void *prefabType=nullptr,*rendererType=nullptr;
+ void *components=nullptr,*materials=nullptr,*texture=nullptr,*textureIds=nullptr,*textureById=nullptr,*shader=nullptr,*width=nullptr,*height=nullptr,*mips=nullptr;
+ void *getModel=nullptr,*getPath=nullptr,*modelCom=nullptr,*modelEntity=nullptr,*delegateTarget=nullptr,*released=nullptr;
  void *instance=nullptr,*discard=nullptr,*remove=nullptr,*loadModel=nullptr,*follow=nullptr;
  ObjectField modelManager,effectManager;
  void *animationCom=nullptr,*animationData=nullptr,*animationChange=nullptr,*animationAnimator=nullptr,*animationValid=nullptr;
- void *weaponCom=nullptr,*weaponUnload=nullptr,*weaponReload=nullptr,*weaponMounts=nullptr,*audioCom=nullptr,*audioInvalidate=nullptr;
+ void *weaponCom=nullptr,*weaponUnload=nullptr,*weaponReload=nullptr,*weaponMounts=nullptr,*componentLookup=nullptr,*audioInvalidate=nullptr;
  void *instanceId=nullptr,*parent=nullptr,*isChild=nullptr,*goTransform=nullptr;
  void *childCount=nullptr,*getChild=nullptr,*componentGo=nullptr,*directComponents=nullptr;
  void *partRelease=nullptr,*partLoad=nullptr,*partSetup=nullptr;
+ void *proxyAsset=nullptr,*proxyHash=nullptr,*proxyGet=nullptr,*pathHashField=nullptr;
+ void *handleUntrackedField=nullptr,*handleUntrackedClass=nullptr,*untrackedAssetGet=nullptr;
 } api;
 std::atomic<bool> configured{false},enabled{false},busy{false};std::mutex mutex;
+void StartOfflineCompiler();
 std::atomic<bool> testAuthorCommitted{false};
-std::shared_ptr<Prepared> pending;std::unique_ptr<Attempt> attempt;
+std::shared_ptr<Prepared> pending;std::shared_ptr<Attempt> attempt,activeNative;
 struct Ticket {EiemOfflinePackage::Pointer pointer;uint64_t clock=0;RuntimeControls::State controls;EiemEntrySettings::Snapshot config;};
 std::shared_ptr<const Ticket> requested;
 std::shared_ptr<const EiemOfflinePackage::Pointer> latest;
@@ -76,7 +83,18 @@ std::shared_ptr<Prepared> diskPrepared;
 // dependencies. Generations unload their own Bundle containers with false;
 // Unity retains objects referenced by live Renderers/capture consumers.
 std::map<std::string,Lease> sourceLeases;
-std::vector<std::unique_ptr<Attempt>> retained;
+std::vector<std::shared_ptr<Attempt>> retained;
+std::map<std::string,Ref> observedPrefabs;
+uint64_t ownerRevision=0;
+using ResourceGetFn=void*(*)(void*,void*);
+ResourceGetFn originalResourceGet=nullptr;
+thread_local bool readingSource=false;
+void* ResourceGet(void* self,void* info);
+thread_local bool proxyContext=false;thread_local uint64_t proxyPathHash=0;
+thread_local void* proxySource=nullptr;
+using ProxyPreloadFn=void(*)(void*,bool,void*);ProxyPreloadFn originalProxyPreload=nullptr;
+void ProxyPreload(void* self,bool asynchronous,void* info);
+void* RouteProxySource(void* source);
 struct Route {Ref source,candidate;int sourceId=0,candidateId=0;};
 using Routes=std::vector<Route>;
 std::shared_ptr<const Routes> routes=std::make_shared<Routes>();
@@ -89,12 +107,15 @@ CloneParentFn originalInstantiateImmediate=nullptr;InstantiateAsyncFn originalIn
 thread_local Attempt* rebuilding=nullptr;
 void* Routed(void* source,const char* entry="clone") noexcept {
  try{
-  auto current=std::atomic_load(&routes);for(const auto& r:*current)if(r.source.Get()==source){
+  auto current=std::atomic_load(&routes);for(const auto& r:*current){
+   if(rebuilding&&r.candidate.Get()==source&&RuntimeShapes::Alive(source)&&RuntimeShapes::Scalar<int>(api.instanceId,source)==r.candidateId){++rebuilding->cloneCount;return source;}
+   if(r.source.Get()!=source)continue;
    if(!RuntimeShapes::Alive(source)||RuntimeShapes::Scalar<int>(api.instanceId,source)!=r.sourceId||
       !RuntimeShapes::Alive(r.candidate.Get())||RuntimeShapes::Scalar<int>(api.instanceId,r.candidate.Get())!=r.candidateId)return source;
    if(rebuilding){++rebuilding->cloneCount;Log("[FULL-RELOAD-ROUTE] entry=%s sourceId=%d candidateId=%d",entry,r.sourceId,r.candidateId);}return r.candidate.Get();
   }
- }catch(...){}return source;
+  if(proxyContext)return RouteProxySource(source);
+ }catch(const std::exception& e){if(proxyContext)Log("[FULL-RELOAD-PROXY-GAP] reason=%s gameSourcePreserved=1",e.what());}catch(...){}return source;
 }
 void* Clone(void* source){return originalClone(Routed(source));}
 void* CloneParent(void* source,void* parent,bool world){return originalCloneParent(Routed(source),parent,world);}
@@ -109,25 +130,39 @@ void* Method(void* klass,const char* name,std::initializer_list<const char*> par
  std::string signature=identity+"::"+name+"(";for(auto parameter:parameters){if(signature.back()!='(')signature+=",";signature+=parameter;}
  throw std::runtime_error("reload exact managed signature absent: "+signature+")->"+result+" static="+std::to_string(int(isStatic)));
 }
+void BindMaterialTextureProperties(void* material){
+ // IL2CPP can strip the allocating names overload while retaining the public
+ // ID API. IDs enumerate every property without constructing a managed List
+ // or guessing texture names from the current author declarations.
+ api.textureIds=Method(material,"GetTexturePropertyNameIDs",{},"System.Int32[]",false);
+ api.textureById=Method(material,"GetTexture",{"System.Int32"},"UnityEngine.Texture",false);
+}
 int Id(void* p){Require(RuntimeShapes::Alive(p),"reload native object retired");return RuntimeShapes::Scalar<int>(api.instanceId,p);}
 void* Self(const Ref& value,void* expected){auto p=value.Get();Require(p&&il2cpp_object_get_class(p)==expected,"reload boxed value type differs");return il2cpp_object_unbox(p);}
 Ref Path(const std::string& path){auto text=Ref::Make(il2cpp_string_new(path.c_str()),false);void* args[]={text.Get()};return Ref::Make(Call(api.toPath,nullptr,args),false);}
 Ref Type(void* klass){Require(klass,"reload type absent");return Ref::Make(il2cpp_type_get_object(il2cpp_class_get_type(klass)),false);}
-Ref prefabType,rendererType,helperType;
+Ref prefabType,rendererType,characterAudioType;
 using PartFinishedFn=void(*)(void*,void*);
 PartFinishedFn originalPartFinished=nullptr;
-struct LivePart {Ref part,root;std::string path;bool persistent=false;};
+PartFinishedFn originalBasePartFinished=nullptr,originalPartReleased=nullptr;
+using PartLoadingFn=void(*)(void*,void*,void*,void*);
+PartLoadingFn originalPartLoading=nullptr;
+using PartConfiguredFn=void(*)(void*,void*,void*);
+PartConfiguredFn originalPartConfigured=nullptr;
+using PartAddedFn=void(*)(void*,void*,void*);
+PartAddedFn originalPartAdded=nullptr;
+struct LivePart {Ref part,root;std::string path;bool persistent=false;Ref model;std::string ownershipError;bool ownerRecorded=false;};
 std::map<void*,LivePart> liveParts;
 std::vector<void*> ReferenceArray(void* array,size_t expected=SIZE_MAX) {
- size_t count=0;Require(ArrayLength(array,&count)&&count<=4096&&(expected==SIZE_MAX||count==expected),"reload native reference array coverage/limit");
+ size_t count=0;Require(ArrayLength(array,&count)&&(expected==SIZE_MAX||count==expected),"reload native reference array coverage/limit");
  std::vector<void*> values(count);Require(!count||CopyRaw((char*)array+32,values.data(),count*sizeof(void*)),"reload native reference array read");return values;
 }
 void* Field(void* klass,const char* name,const char* expected,bool isStatic=false){
  for(unsigned d=0;klass&&d<32;++d,klass=il2cpp_class_get_parent(klass)){void* it=nullptr;while(auto f=il2cpp_class_get_fields(klass,&it)){
   auto n=il2cpp_field_get_name(f);if(!n||strcmp(n,name))continue;auto t=il2cpp_type_get_name(il2cpp_field_get_type(f));
   auto flags=il2cpp_field_get_flags(f);std::string actual=t?t:"<missing type>";if(t)il2cpp_free((void*)t);
-  Require(actual==expected&&!!(flags&0x10)==isStatic,"reload field type/static contract differs: "+std::string(name)+
-          " expected="+expected+" static="+std::to_string(int(isStatic))+" actual="+actual+" flags="+std::to_string(flags));return f;
+  Require((!expected||actual==expected)&&!!(flags&0x10)==isStatic,"reload field type/static contract differs: "+std::string(name)+
+          " expected="+(expected?expected:"<structural check>")+" static="+std::to_string(int(isStatic))+" actual="+actual+" flags="+std::to_string(flags));return f;
  }}throw std::runtime_error("reload typed field absent: "+std::string(name));
 }
 void* ReadObject(void* obj,const char* name,const char* type){Require(obj,"reload owner object absent");void* value=nullptr;il2cpp_field_get_value(obj,Field(il2cpp_object_get_class(obj),name,type),&value);return value;}
@@ -151,19 +186,88 @@ void* ReadManager(const ObjectField& field){
 Ref PartConfig(void* part){
  auto f=Field(il2cpp_object_get_class(part),"m_cfg","Beyond.Gameplay.View.BaseModelViewPartData");
  auto c=il2cpp_class_from_type(il2cpp_field_get_type(f));uint32_t alignment=0;auto size=il2cpp_class_value_size(c,&alignment);
- Require(size>0&&size<=512,"model part config size differs");Bytes bytes(size);il2cpp_field_get_value(part,f,bytes.data());
+ Require(size>0,"model part config size differs");Bytes bytes(size);il2cpp_field_get_value(part,f,bytes.data());
  return Ref::Make(il2cpp_value_box(c,bytes.data()),false);
 }
-void PartFinished(void* self,void* info){
- originalPartFinished(self,info);
+bool InheritsClass(void* klass,const char* ns,const char* name){
+ for(;klass;klass=il2cpp_class_get_parent(klass)){
+  auto n=il2cpp_class_get_name(klass),space=il2cpp_class_get_namespace(klass);if(n&&space&&!strcmp(n,name)&&!strcmp(space,ns))return true;
+ }return false;
+}
+bool Inherits(void* object,const char* ns,const char* name){return InheritsClass(object?il2cpp_object_get_class(object):nullptr,ns,name);}
+std::string PartCallbackType(void* basePart){
+ auto type=il2cpp_field_get_type(Field(basePart,"m_loadFinishCb",nullptr));auto klass=il2cpp_class_from_type(type);
+ Require(InheritsClass(klass,"System","Delegate"),"reload model load callback is not a delegate");
+ Method(klass,"Invoke",{"System.Boolean","Beyond.Gameplay.View.BaseModelViewPart"},"System.Void",false);
+ auto text=il2cpp_type_get_name(type);Require(text,"reload model callback type absent");std::string name=text;il2cpp_free((void*)text);return name;
+}
+void RecordPartLoad(void* self,void* callback){
+ // OnLoadFinish clears m_loadFinishCb before the component's completion
+ // chain calls PostDealLoadedModel. Capture the public delegate Target at
+ // LoadModel entry, while it still identifies the actual game owner.
+ try{if(RuntimeShapes::Main()){
+  LivePart live;live.part=Ref::Make(self,true);live.ownerRecorded=true;
+  auto previous=liveParts.find(self);
+  if(previous!=liveParts.end()&&previous->second.model.handle){auto model=previous->second.model.Get();
+   // CreateMainPart adds the main part before SetupData; SyncInit then calls
+   // StartSyncLoad without a delegate. Keep that authoritative attachment.
+   // A retired owner stays fail-closed instead of becoming a display part.
+   if(!model||ReadObject(model,"m_mainPart","Beyond.Gameplay.View.ComplexModelViewPart")==self)live.model=previous->second.model;
+  }
+  liveParts[self]=std::move(live);
+  if(callback){Require(Inherits(callback,"System","Delegate"),"reload model callback object differs");
+   auto target=Ref::Make(Call(api.delegateTarget,callback),false);
+   if(Inherits(target.Get(),"Beyond.Gameplay.View","BaseModelComponent"))liveParts.at(self).model=Ref::Make(target.Get(),true);
+  }
+ }}catch(const std::exception& e){liveParts[self].ownershipError=e.what();Log("[FULL-RELOAD-PART-GAP] reason=%s",e.what());}
+}
+void PartAdded(void* self,void* part,void* info){
+ originalPartAdded(self,part,info);
+ try{if(!RuntimeShapes::Main()||ReadObject(self,"m_mainPart","Beyond.Gameplay.View.ComplexModelViewPart")!=part)return;
+  Require(Inherits(self,"Beyond.Gameplay.View","BaseModelComponent"),"reload main-part owner type differs");
+  auto& live=liveParts[part];live.part=Ref::Make(part,true);live.model=Ref::Make(self,true);live.ownerRecorded=true;live.ownershipError.clear();
+ }catch(const std::exception& e){liveParts[part].ownershipError=e.what();Log("[FULL-RELOAD-PART-GAP] reason=%s",e.what());}
+}
+void PartLoading(void* self,void* data,void* callback,void* info){
+ RecordPartLoad(self,callback);originalPartLoading(self,data,callback,info);
+}
+void PartConfigured(void* self,void* data,void* info){
+ // Display callers also use SetupData -> StartSyncLoad directly, without
+ // LoadModel's callback. Record this real game entry before completion.
+ RecordPartLoad(self,nullptr);originalPartConfigured(self,data,info);
+}
+void RecordPartFinished(void* self){
  try{if(!RuntimeShapes::Main())return;auto root=ReadObject(self,"m_model","UnityEngine.GameObject");if(!RuntimeShapes::Alive(root)){liveParts.erase(self);return;}
   auto cfg=PartConfig(self);auto path=String(ReadObject(cfg.Get(),"modelPath","System.String"));
   unsigned char persistent=0;il2cpp_field_get_value(cfg.Get(),Field(il2cpp_object_get_class(cfg.Get()),"usePersistentPool","System.Boolean"),&persistent);
-  liveParts[self]={Ref::Make(self,true),Ref::Make(root,true),path,persistent!=0};
+  auto& live=liveParts[self];live.part=Ref::Make(self,true);live.root=Ref::Make(root,true);live.path=path;live.persistent=persistent!=0;
+  ++ownerRevision;
+  RuntimeShapes::RegisterModel(root);
  }catch(const std::exception& e){Log("[FULL-RELOAD-PART-GAP] reason=%s",e.what());}
 }
+void PartFinished(void* self,void* info){originalPartFinished(self,info);RecordPartFinished(self);}
+void BasePartFinished(void* self,void* info){
+ originalBasePartFinished(self,info);
+ // Complex parts are recorded after their own post-processing completes.
+ // Other game view parts also use the base completion lifecycle.
+ if(!Inherits(self,"Beyond.Gameplay.View","ComplexModelViewPart"))RecordPartFinished(self);
+}
+std::vector<Ref> Components(void* root);
+void PartReleased(void* self,void* info){
+ std::vector<Ref> renderers;
+ try{if(RuntimeShapes::Main()&&!RuntimeShapes::bound.empty()){
+  auto root=ReadObject(self,"m_model","UnityEngine.GameObject");if(RuntimeShapes::Alive(root))renderers=Components(root);
+ }}catch(const std::exception& e){Log("[FULL-RELOAD-PART-GAP] releaseControlRegistration=%s",e.what());}
+ originalPartReleased(self,info);
+ if(!RuntimeShapes::Main())return;
+ // ReleaseModel can return a still-alive root to the game's path pool.
+ // It is no longer a live owner; native captures retain their own snapshots.
+ for(const auto& renderer:renderers)RuntimeShapes::bound.erase(renderer.Get());
+ RuntimeShapes::boundCount.store(unsigned(RuntimeShapes::bound.size()));liveParts.erase(self);++ownerRevision;
+}
 void* CurrentRoot(const Owner& owner){return owner.viewPart?ReadObject(owner.component.Get(),"m_model","UnityEngine.GameObject"):Call(api.getModel,owner.component.Get());}
-void RemoveOwner(const Owner& owner){Call(owner.viewPart?api.partRelease:api.remove,owner.component.Get());}
+void RemoveOwner(const Owner& owner){auto component=owner.component.Get();auto method=owner.viewPart?il2cpp_object_get_virtual_method(component,api.partRelease):api.remove;
+ Require(method,"reload actual model part release override unavailable");Call(method,component);}
 void LoadOwner(const Owner& owner){if(owner.viewPart){
  Require(owner.config.Get(),"display part config snapshot absent");void* args[]={il2cpp_object_unbox(owner.config.Get())};Call(api.partSetup,owner.component.Get(),args);
  Require(RuntimeShapes::Scalar<unsigned char>(api.partLoad,owner.component.Get())!=0,"display part synchronous load failed");
@@ -187,29 +291,38 @@ NativeEnum Enum(void* klass,const char* name){
  Log("[FULL-RELOAD-ENUM] type=%s underlying=%s bytes=%zu literal=%s bits=%016llX",enumType.c_str(),underlying.c_str(),result.width,name,(unsigned long long)result.bits);return result;
 }
 std::vector<Ref> Components(void* root){unsigned char inactive=1;void* args[]={rendererType.Get(),&inactive};auto array=Ref::Make(Call(api.components,root,args),false);size_t count=0;
- Require(ArrayLength(array.Get(),&count)&&count<=512,"reload Renderer discovery coverage/limit");std::vector<Ref> values;values.reserve(count);
+ Require(ArrayLength(array.Get(),&count),"reload Renderer discovery coverage/limit");std::vector<Ref> values;values.reserve(count);
  for(auto value:ReferenceArray(array.Get(),count))values.push_back(Ref::Make(value,false));return values;}
 std::map<std::string,std::pair<unsigned,int>> MeshProfile(void* root) {
- std::map<std::string,std::pair<unsigned,int>> profile;
- for(const auto& rendererRef:Components(root)){auto renderer=rendererRef.Get();auto meshRef=Ref::Make(RuntimeShapes::SourceMesh(renderer),false);auto mesh=meshRef.Get();if(!RuntimeShapes::Alive(mesh))continue;
-  auto marker=String(Call(RuntimeShapes::api.name,mesh));if(!RuntimeControls::specs.count(marker))continue;
-  auto& value=profile[marker];++value.first;auto id=Id(mesh);Require(!value.second||value.second==id,"reload source Mesh marker aliases two native Meshes");value.second=id;
- }Require(!profile.empty(),"reload owner has no recorded authored native Meshes");return profile;
+ std::map<std::string,std::pair<unsigned,int>> profile,authored;
+ size_t ordinal=0;
+ for(const auto& rendererRef:Components(root)){auto renderer=rendererRef.Get();auto meshRef=Ref::Make(RuntimeShapes::SourceMesh(renderer),false);auto mesh=meshRef.Get();
+  // Public traversal order and native instance IDs also cover vanilla owners.
+  // Names cannot establish identity when adding the first or removing a Mod.
+  profile.emplace("renderer/"+std::to_string(ordinal++),std::make_pair(1u,RuntimeShapes::Alive(mesh)?Id(mesh):0));
+  if(RuntimeShapes::Alive(mesh)){auto marker=String(Call(RuntimeShapes::api.name,mesh));if(RuntimeControls::specs.count(marker)){
+   auto& value=authored[marker];++value.first;auto id=Id(mesh);Require(!value.second||value.second==id,"reload source Mesh marker aliases two native Meshes");value.second=id;
+  }}
+ }
+ // Authored provenance scopes rollback to the model assets already controlled
+ // by EFF, excluding mounted game attachments. A vanilla owner has no such
+ // provenance and uses its full public Mesh profile after consumers rebind.
+ return authored.empty()?profile:authored;
 }
 struct BoneHierarchy {
  Ref root;std::map<void*,Ref> nodes;std::map<void*,void*> parents;std::map<void*,std::string> names;
  explicit BoneHierarchy(void* gameObject):root(Ref::Make(Call(api.goTransform,gameObject),false)){
   Require(RuntimeShapes::Alive(root.Get()),"reload prefab root Transform absent");Hold(root.Get());
  }
- void Hold(void* node){Require(RuntimeShapes::Alive(node),"reload bone hierarchy Transform retired");
-  if(!nodes.count(node)){Require(nodes.size()<4096,"reload native bone hierarchy limit");nodes.emplace(node,Ref::Make(node,false));}}
+ void Hold(void* node){if(nodes.count(node))return;
+  Require(RuntimeShapes::Alive(node),"reload bone hierarchy Transform retired");nodes.emplace(node,Ref::Make(node,false));}
  void* Parent(void* node){Hold(node);auto found=parents.find(node);if(found!=parents.end())return found->second;
   auto parent=Call(api.parent,node);if(parent)Hold(parent);parents.emplace(node,parent);return parent;}
  const std::string& Name(void* node){Hold(node);auto found=names.find(node);if(found==names.end()){
    auto name=String(Call(RuntimeShapes::api.name,node));Require(!name.empty()&&name.find('/')==std::string::npos,"reload ambiguous bone path component");found=names.emplace(node,std::move(name)).first;
   }return found->second;}
  std::vector<void*> Chain(void* node){std::vector<void*> chain;std::set<void*> seen;
-  for(auto current=node;current;current=Parent(current)){Hold(current);Require(chain.size()<512&&seen.insert(current).second,"reload native bone hierarchy cycle/depth");
+  for(auto current=node;current;current=Parent(current)){Hold(current);Require(seen.insert(current).second,"reload native bone hierarchy cycle/depth");
    chain.push_back(current);if(current==root.Get())return chain;}
   throw std::runtime_error("reload bone/Renderer Transform outside owning prefab root");
  }
@@ -243,9 +356,9 @@ struct AssemblyTree {
   Require(RuntimeShapes::Alive(root.Get()),"reload assembly root Transform absent");Index(root.Get(),"",0);
  }
  void Index(void* node,const std::string& path,unsigned depth){
-  Require(depth<512&&nodes.size()<16384&&seen.insert(node).second,"reload assembly hierarchy cycle/limit");
+  Require(seen.insert(node).second,"reload assembly hierarchy cycle/limit");
   Require(nodes.emplace(path,Ref::Make(node,false)).second,"reload assembly duplicate address");
-  int count=RuntimeShapes::Scalar<int>(api.childCount,node);Require(count>=0&&count<=4096,"reload assembly child extent");
+  int count=RuntimeShapes::Scalar<int>(api.childCount,node);Require(count>=0,"reload assembly child extent");
   std::map<std::string,unsigned> ordinals;
   for(int i=0;i<count;++i){void* args[]={&i};auto child=Call(api.getChild,node,args);
    Require(RuntimeShapes::Alive(child),"reload assembly child retired");
@@ -288,8 +401,9 @@ struct VerifyWalk {
  VerifyWalk(void* value,const Plan& p,const EiemResourceReloadPlan::Root& expected,bool isLive=false):root(Ref::Make(value,false)),plan(p),expectedRoot(expected),live(isLive),renderers(Components(value)),hierarchy(value){}
  bool Step(){
  if(cursor==renderers.size()){
-  Require(checked>0&&found==expectedRoot.markers,"reload native prefab Renderer coverage differs from serialized root");
-  VerifyAssemblyPrefab(root.Get(),expectedRoot);
+  Require((checked>0 || plan.composed&&expectedRoot.markers.empty())&&found==expectedRoot.markers,"reload native prefab Renderer coverage differs from serialized root");
+  if(!expectedRoot.assembly.sources.empty())VerifyAssemblyPrefab(root.Get(),expectedRoot);
+  else Log("[FULL-RELOAD-ASSEMBLY] markerCoverageVerified=1 perMeshBonesVerified=1 serializedAddressMapAvailable=0");
   Log("[FULL-RELOAD-PREFAB] prefab=%p nativeId=%d renderers=%zu authored=%zu textureProperties=%zu perMeshBonesVerified=1 nativeShapesPreserved=1",root.Get(),Id(root.Get()),renderers.size(),checked,textureChecks);return true;
  }
  auto renderer=renderers.at(cursor++).Get();auto meshRef=Ref::Make(RuntimeShapes::SourceMesh(renderer),false);auto mesh=meshRef.Get();if(!RuntimeShapes::Alive(mesh))return false;
@@ -317,38 +431,116 @@ struct VerifyWalk {
 void VerifyPrefab(void* root,const Plan& plan,const EiemResourceReloadPlan::Root& expectedRoot,bool live=false){
  VerifyWalk walk(root,plan,expectedRoot,live);while(!walk.Step()){}
 }
+struct SourceReadScope {bool previous=readingSource;SourceReadScope(){readingSource=true;}~SourceReadScope(){readingSource=previous;}};
+Lease LeaseObserved(const std::string& path,void* source){
+ auto it=sourceLeases.find(path);if(it!=sourceLeases.end()&&RuntimeShapes::Alive(it->second.source.Get()))return it->second;
+ // This is a lease of the prefab the game has just returned, not a request
+ // for unvisited roots. Its existing ResourceManager cache owns dependencies.
+ SourceReadScope scope;Lease l;l.pathHash=Path(path);void* args[]={Self(l.pathHash,api.pathClass),prefabType.Get(),api.rootCategory.Data(),api.priority.Data()};
+ l.handle=Ref::Make(Call(api.load,nullptr,args),false);Require(l.handle.Get(),"observed prefab dependency lease null");
+ l.done=RuntimeShapes::Scalar<unsigned char>(api.done,Self(l.handle,api.handleClass))!=0;l.source=Ref::Make(source,false);l.shared=true;sourceLeases[path]=l;return l;
+}
+void RouteObserved(Attempt& a,size_t index,void* source){
+ auto& asset=a.assets.at(index);Require(RuntimeShapes::Alive(source)&&RuntimeShapes::Alive(asset.prefab.Get())&&Id(source)!=Id(asset.prefab.Get()),"observed prefab candidate aliases source");
+ auto next=std::make_shared<Routes>(*std::atomic_load(&routes));auto it=std::find_if(next->begin(),next->end(),[&](const auto& r){return r.source.Get()==source;});
+ Route route{Ref::Make(source,false),asset.prefab,Id(source),Id(asset.prefab.Get())};if(it==next->end())next->push_back(std::move(route));else *it=std::move(route);
+ std::atomic_store(&routes,std::shared_ptr<const Routes>(next));
+}
+void* CandidateForObserved(Attempt& a,size_t index,void* source){
+ const auto& expected=a.prepared->plan->roots.at(index);auto& asset=a.assets.at(index);
+ if(!RuntimeShapes::Alive(asset.prefab.Get())){
+  auto lease=LeaseObserved(expected.path,source);a.leases.at(index)=lease;
+  auto label=Ref::Make(il2cpp_string_new(expected.path.c_str()),false);void* args[]={label.Get(),prefabType.Get()};
+  auto candidate=Ref::Make(Call(api.assetSync,a.bundles.at(expected.input).object.Get(),args),false);
+  Require(RuntimeShapes::Alive(candidate.Get()),"observed candidate prefab absent");VerifyPrefab(candidate.Get(),*a.prepared->plan,expected);
+  asset.prefab=std::move(candidate);asset.done=true;
+  Log("[FULL-RELOAD-LAZY-PREFAB] path=%s existingGameRequest=1 offlineTarget=1",expected.path.c_str());
+ }
+ RouteObserved(a,index,source);return asset.prefab.Get();
+}
+void* RouteProxySource(void* source){
+ if(source!=proxySource)return source;
+ auto current=std::atomic_load(&activeNative);if(!current||current->phase!=Phase::Passed)return source;
+ auto root=current->prepared->rootHashes.find(proxyPathHash);if(root==current->prepared->rootHashes.end())return source;
+ return CandidateForObserved(*current,root->second,source);
+}
+void ProxyPreload(void* self,bool asynchronous,void* info){
+ // The game's prefab proxy reads its AssetProxy directly; IL2CPP may inline
+ // FAssetProxyHandle.Get. Scope the actual sync/async instantiate entry too.
+ struct Scope {bool prior=proxyContext;uint64_t hash=proxyPathHash;void* source=proxySource;Ref held;~Scope(){proxyContext=prior;proxyPathHash=hash;proxySource=source;}}scope;
+ proxyContext=false;
+ try{auto asset=Call(api.proxyAsset,self);if(Inherits(asset,"","AssetProxy")){auto source=Call(api.proxyGet,asset);
+   if(Inherits(source,"UnityEngine","GameObject")&&RuntimeShapes::Alive(source)){scope.held=Ref::Make(source,false);proxySource=source;proxyPathHash=RuntimeShapes::Scalar<uint64_t>(api.proxyHash,asset);proxyContext=true;}}}
+ catch(const std::exception& e){proxyContext=false;Log("[FULL-RELOAD-PROXY-GAP] reason=%s gameFlowPreserved=1",e.what());}
+ originalProxyPreload(self,asynchronous,info);
+}
+void* ResourceGet(void* self,void* info){
+ auto source=originalResourceGet(self,info);if(readingSource||!enabled||!RuntimeShapes::Main()||!source)return source;
+ try{
+  // Exact resource path comes from the game's existing handle. Offline roots
+  // define every eligible target; no name guessing or scene traversal.
+  if(!Inherits(source,"UnityEngine","GameObject"))return source;
+  // The same handle also returns already-instantiated GameObjects. Route
+  // raw AssetProxy prefabs only; an instance handle must keep its instance.
+  auto boxed=Ref::Make(il2cpp_value_box(api.handleClass,self),false);uint32_t alignment=0;
+  auto size=il2cpp_class_value_size(api.handleUntrackedClass,&alignment);Require(size>0,"untracked resource handle size differs");
+  Bytes untracked(size);il2cpp_field_get_value(boxed.Get(),api.handleUntrackedField,untracked.data());
+  if(!Inherits(Call(api.untrackedAssetGet,untracked.data()),"","AssetProxy"))return source;
+  auto path=NormalizeAssetPath(String(Call(api.handlePath,self)));auto current=std::atomic_load(&activeNative);
+  auto rules=std::atomic_load(&resourceRules);const Plan* plan=current?current->prepared->plan.get():rules?rules->plan.get():nullptr;
+  if(!plan||!FindRoot(*plan,path))return source;
+  auto observed=observedPrefabs.find(path);if(observed==observedPrefabs.end()||observed->second.Get()!=source){observedPrefabs[path]=Ref::Make(source,true);++ownerRevision;}
+  if(rebuilding)return Routed(source,"resource-handle");
+  if(!current||current->phase!=Phase::Passed)return source;
+  auto expected=FindRoot(*current->prepared->plan,path);return CandidateForObserved(*current,size_t(expected-current->prepared->plan->roots.data()),source);
+ }catch(const std::exception& e){Log("[FULL-RELOAD-RESOURCE-GAP] reason=%s gameResourcePreserved=1",e.what());return source;}
+}
 // Disk worker: lightweight descriptor/file validation only. Never calls Build.
 bool AuthorMatches(const Package& package){
- auto ini=EiemDirectory::Read(package.root/"mod.ini",1024*1024);
+ if(!std::filesystem::is_regular_file(package.root/"mod.ini"))return false;
+ auto ini=EiemDirectory::Read(package.root/"mod.ini");
  if(Sha(ini.data(),ini.size())!=package.iniHash)return false;
- for(const auto& resource:package.resources){auto bytes=EiemDirectory::Read(package.root/std::filesystem::u8path(resource.first));
+ for(const auto& resource:package.resources){auto path=package.root/std::filesystem::u8path(resource.first);if(!std::filesystem::is_regular_file(path))return false;auto bytes=EiemDirectory::Read(path);
   if(bytes.size()!=resource.second->bytes.size()||EiemResourceReloadPlan::Hash(bytes)!=EiemResourceReloadPlan::Hash(resource.second->bytes))return false;
  }return true;
+}
+bool AuthorMatches(const std::vector<Package>& packages){
+ if(!InstalledAuthorsMatch(packages))return false;
+ for(const auto& p:packages)if(!AuthorMatches(p))return false;return true;
 }
 std::map<std::filesystem::path,InputFileStamp> AuthorFiles(const Package& package){
  std::map<std::filesystem::path,InputFileStamp> files;files.emplace(package.root/"mod.ini",FileStamp(package.root/"mod.ini"));
  for(const auto& resource:package.resources){auto path=package.root/std::filesystem::u8path(resource.first);files.emplace(path,FileStamp(path));}return files;
 }
-bool AuthorFilesUnchanged(const std::map<std::filesystem::path,InputFileStamp>& files){for(const auto& file:files)if(!SameStamp(FileStamp(file.first),file.second))return false;return !files.empty();}
-bool AuthorFilesUnchanged(const Prepared& p){return AuthorFilesUnchanged(p.authorFiles);}
+std::map<std::filesystem::path,InputFileStamp> AuthorFiles(const std::vector<Package>& packages){
+ std::map<std::filesystem::path,InputFileStamp> result;for(const auto& p:packages){auto files=AuthorFiles(p);result.merge(files);}return result;
+}
+bool AuthorFilesUnchanged(const std::map<std::filesystem::path,InputFileStamp>& files){for(const auto& file:files)if(!std::filesystem::is_regular_file(file.first)||!SameStamp(FileStamp(file.first),file.second))return false;return true;}
+bool AuthorFilesUnchanged(const Prepared& p){return (!p.graph||InstalledAuthorsMatch(*p.graph))&&AuthorFilesUnchanged(p.authorFiles);}
 RuntimeControls::State CompiledControls(const std::shared_ptr<const std::vector<Package>>& graph,const Plan& plan,const EiemGlobalConfig& config){
- Require(graph&&graph->size()==1,"offline control graph unavailable");const auto& package=graph->front();RuntimeControls::State state;state.graph=graph;
- state.variables[package.id]=package.defaults;state.keys[package.id]=package.bindings;
- for(const auto& key:package.bindings)Require(key.key.vk!=config.reload.vk&&key.key.vk!=config.gui.vk,"Mod key overlaps reserved global shortcut: "+package.id+"/"+key.id);
+ Require(bool(graph),"offline control graph unavailable");RuntimeControls::State state;state.graph=graph;
+ std::map<std::string,std::pair<const Package*,std::string>> owners;
+ for(const auto& package:*graph){
+  state.variables[package.id]=package.defaults;state.keys[package.id]=package.bindings;
+  for(const auto& key:package.bindings)Require(key.key.vk!=config.reload.vk&&key.key.vk!=config.gui.vk,"Mod key overlaps reserved global shortcut: "+package.id+"/"+key.id);
+  for(const auto& part:package.parts)Require(owners.emplace(plan.composed?EiemComposedPackage::Name(package.id,part.first):part.first,std::make_pair(&package,part.first)).second,"compiled part owner collision");
+ }
  // Provenance markers were already computed by the compiler. Do not hash the
  // same Mesh payload again for each LOD on every F10 control preparation.
- for(const auto& row:plan.parts){const auto& expected=row.second;const auto& part=package.parts.at(expected.id);const auto& mesh=package.meshes.at(part.mesh);
-  Require(expected.marker==row.first&&expected.vertices==mesh.vertices&&expected.bones==mesh.bones&&expected.shapes==mesh.shapes&&expected.material==part.material,"offline controls/part descriptor differs");
-  RuntimeControls::Spec spec{package.id,expected.id,expected.marker,mesh.vertices,mesh.shapes,part.shapes,part.visible};
+ for(const auto& row:plan.parts){const auto& expected=row.second;auto owner=owners.at(expected.id);const auto& package=*owner.first;const auto& part=package.parts.at(owner.second);const auto& mesh=package.meshes.at(part.mesh);
+  Require(expected.marker==row.first&&expected.vertices==mesh.vertices&&expected.bones==mesh.bones&&expected.shapes==mesh.shapes&&(plan.composed||expected.material==part.material),"offline controls/part descriptor differs");
+  RuntimeControls::Spec spec{package.id,owner.second,expected.marker,mesh.vertices,mesh.shapes,part.shapes,part.visible};
   Require(state.specs.emplace(spec.marker,std::move(spec)).second,"offline control provenance collision");
- }return state;
+ }RuntimeControls::PreviewPreferences(state);RuntimeControls::PreparePanel(state);return state;
 }
-void PollOffline(bool trigger=false){
+void PollOffline(bool trigger=false,bool allowBuild=true){
  if(!enabled||!active)return;
- static std::string assemblyHash,baselineHash,lastError;
- auto clock=trigger&&reloadClock.load()?reloadClock.load():NativeCandidate::Clock();
+ static std::string baselineHash,lastError;
+ auto clock=trigger&&reloadClock.load()?reloadClock.load():NativeBundle::Clock();
  try{
   auto cache=gameDirectory/"plugin/resource-reload-cache";
+  if(trigger&&allowBuild&&!std::filesystem::exists(cache/"current.tsv"))CompileCurrentMod();
+  if(!std::filesystem::exists(cache/"current.tsv")&&DiscoverModRoots().empty())return;
   auto pointer=EiemOfflinePackage::ReadCurrent(cache);
   std::atomic_store(&latest,std::make_shared<const EiemOfflinePackage::Pointer>(pointer));
   auto ticket=std::atomic_load(&requested);bool waiting=ticket&&ticket->pointer.key.empty();
@@ -358,33 +550,37 @@ void PollOffline(bool trigger=false){
   if(pointer!=lastPrepared||retry||trigger||waiting){
    EiemOfflinePackage::Manifest manifest;
    if(pointer!=lastPrepared||retry||!diskPrepared){manifest=EiemOfflinePackage::ReadManifest(cache,pointer,gameDirectory/"plugin/mods");}
-   const auto& package=manifest.plan.key.empty()?diskPrepared->graph->front():manifest.package;
-   bool matches=manifest.plan.key.empty()?AuthorFilesUnchanged(*diskPrepared):AuthorMatches(package);
+   auto packages=manifest.plan.key.empty()?*diskPrepared->graph:EiemOfflinePackage::Authors(manifest);
+   bool matches=manifest.plan.key.empty()?AuthorFilesUnchanged(*diskPrepared):AuthorMatches(packages);
    std::map<std::filesystem::path,InputFileStamp> authorFiles;
    // A converter may rename a .tex and update INI in the same publication.
    // Detect the changed INI first; missing old resource paths then mean a new
    // author build, rather than an exception that skips F10's build request.
-   if(matches){authorFiles=manifest.plan.key.empty()?diskPrepared->authorFiles:AuthorFiles(package);matches=AuthorFilesUnchanged(authorFiles);}
+   if(matches){authorFiles=manifest.plan.key.empty()?diskPrepared->authorFiles:AuthorFiles(packages);matches=InstalledAuthorsMatch(packages)&&AuthorFilesUnchanged(authorFiles);}
    if(trigger){
     auto next=std::make_shared<Ticket>();next->clock=clock;if(matches)next->pointer=pointer;
     std::atomic_store(&requested,std::shared_ptr<const Ticket>(next));
     Log("[FULL-RELOAD-REQUEST] key=%s offlineOnly=1 awaitingAuthorBuild=%d",pointer.key.c_str(),int(!matches));
-   }else if(ticket&&matches&&ticket->pointer!=pointer){auto next=std::make_shared<Ticket>(*ticket);next->pointer=pointer;std::atomic_store(&requested,std::shared_ptr<const Ticket>(next));}
-   if(!matches){if(trigger){Log("[FULL-RELOAD-BUILD] reason=currentModChanged externalCompiler=1 oldModelVisible=1");CompileCurrentMod();PollOffline(true);}return;}
+   }else if(ticket&&matches&&ticket->pointer!=pointer){auto next=std::make_shared<Ticket>();next->clock=ticket->clock;next->pointer=pointer;std::atomic_store(&requested,std::shared_ptr<const Ticket>(next));}
+   if(!matches){std::atomic_store(&latest,std::shared_ptr<const EiemOfflinePackage::Pointer>{});
+    if(trigger){Require(allowBuild,"author still changing after compilation; retry F10 after export finishes");Log("[FULL-RELOAD-BUILD] reason=currentModChanged externalCompiler=1 oldModelVisible=1");CompileCurrentMod();PollOffline(true,false);}
+    else if(ticket)std::atomic_compare_exchange_strong(&requested,&ticket,std::shared_ptr<const Ticket>{});
+    return;}
    if(pointer!=lastPrepared||retry){
-    if(assemblyHash.empty()){assemblyHash=EiemResourceReloadPlan::Hash(EiemDirectory::Read(gameDirectory/"GameAssembly.dll"));baselineHash=EiemResourceReloadPlan::Hash(EiemDirectory::Read(gameDirectory/"plugin/resource-reload-baseline/baseline.tsv"));}
-    Require(manifest.assembly==assemblyHash&&manifest.baseline==baselineHash,"offline candidate belongs to another game/baseline version");
+    baselineHash=EiemResourceReloadPlan::Hash(EiemDirectory::Read(gameDirectory/"plugin/resource-reload-baseline/baseline.tsv"));
+    Require(manifest.baseline==baselineHash,"offline candidate source baseline content differs");
     prepared=std::make_shared<Prepared>();prepared->base=generation.load();prepared->pointer=pointer;
-    auto graph=std::make_shared<const std::vector<Package>>(std::vector<Package>{std::move(manifest.package)});prepared->graph=graph;
+    auto graph=std::make_shared<const std::vector<Package>>(std::move(packages));prepared->graph=graph;
     prepared->authorFiles=std::move(authorFiles);Require(AuthorFilesUnchanged(*prepared),"author changed during offline validation");
     auto config=EiemEntrySettings::Read(gameDirectory);prepared->controls=CompiledControls(graph,manifest.plan,config);prepared->config=EiemEntrySettings::Prepare(config);
     auto plan=std::make_shared<Plan>(std::move(manifest.plan));
-    for(auto index:plan->closure){auto hold=std::make_shared<NativeCandidate::FileHold>(plan->inputs.at(index).path);
-     Require(EiemResourceReloadPlan::Hash(hold->BytesLocked(EiemResourceReloadPlan::inputLimit))==plan->inputs.at(index).hash,"offline native input SHA differs");prepared->files.emplace(index,std::move(hold));}
+    if(plan->rulesOnly){prepared->rules=std::make_shared<EiemPrefabRules::Context>(plan,std::move(manifest.package));for(auto index:plan->closure)prepared->ruleInputs.emplace(index,std::make_shared<const Bytes>(prepared->rules->Materialize(index,true)));}
+    else for(auto index:plan->closure){auto hold=std::make_shared<NativeBundle::FileHold>(plan->inputs.at(index).path);
+     Require(EiemResourceReloadPlan::Hash(hold->BytesLocked())==plan->inputs.at(index).hash,"offline native input SHA differs");prepared->files.emplace(index,std::move(hold));}
     Require(EiemOfflinePackage::ReadCurrent(cache)==pointer&&AuthorFilesUnchanged(*prepared),"offline publication/author changed during validation");prepared->plan=std::move(plan);
     {std::lock_guard<std::mutex> lock(mutex);pending=prepared;}
     lastPrepared=pointer;diskPrepared=prepared;
-    Log("[FULL-RELOAD-PREPARED] key=%s workerMs=%.6f offlineCompiled=1 runtimeRebuild=0 nativeSubmission=pendingUnityFrame",pointer.key.c_str(),NativeCandidate::Ms(clock));
+    Log("[FULL-RELOAD-PREPARED] key=%s workerMs=%.6f offlineValidated=1 rulesMaterializedOnWorker=%d nativeSubmission=pendingUnityFrame",pointer.key.c_str(),NativeBundle::Ms(clock),int(bool(prepared->rules)));
    }
    auto wanted=std::atomic_load(&requested);if(wanted&&wanted->pointer==pointer&&diskPrepared){
     auto next=std::make_shared<Ticket>(*wanted);auto config=EiemEntrySettings::Read(gameDirectory);
@@ -395,27 +591,36 @@ void PollOffline(bool trigger=false){
   lastError.clear();
  }catch(const std::exception& e){
   // A failed/new publication must never make F10 commit an older ready graph.
-  if(trigger){auto next=std::make_shared<Ticket>();next->clock=clock;std::atomic_store(&requested,std::shared_ptr<const Ticket>(next));}
+  std::atomic_store(&latest,std::shared_ptr<const EiemOfflinePackage::Pointer>{});
+  auto wanted=std::atomic_load(&requested);
+  if(trigger)std::atomic_store(&requested,std::shared_ptr<const Ticket>{});
+  else if(wanted)std::atomic_compare_exchange_strong(&requested,&wanted,std::shared_ptr<const Ticket>{});
   if(trigger||lastError!=e.what()){lastError=e.what();Log("[FULL-RELOAD-REJECT] phase=offline-manifest reason=%s previousGenerationRetained=%u",e.what(),generation.load());}
  }
 }
-void Prepare(){PollOffline(true);}
+void Prepare(){
+ std::atomic_store(&latest,std::shared_ptr<const EiemOfflinePackage::Pointer>{});std::atomic_store(&requested,std::shared_ptr<const Ticket>{});
+ try{PollOffline(true,true);}
+ catch(const std::exception& e){Log("[FULL-RELOAD-REJECT] phase=static-compile reason=%s previousGenerationRetained=1",e.what());}
+}
 void StartOfflineCompiler(){
  if(!configured)return;
+ static bool started=false;if(started||!std::filesystem::exists(gameDirectory/"plugin/resource-reload-baseline/baseline.tsv"))return;
  try{
-  auto graph=std::atomic_load(&published);Require(graph&&graph->size()==1,"offline watcher requires one Mod");
+  auto graph=std::atomic_load(&published);Require(bool(graph),"offline watcher requires a Mod graph");
+  auto mods=gameDirectory/"plugin/mods";DiscoverModRoots();
   auto executable=gameDirectory/"plugin/tools/eff_resource_pack.exe";Require(std::filesystem::exists(executable),"installed offline compiler missing");
   auto quote=[](const std::filesystem::path& path){auto value=path.wstring();Require(value.find(L'\"')==value.npos,"offline process path quote");return L"\""+value+L"\"";};
-  auto command=quote(executable)+L" "+quote(graph->front().root)+L" "+quote(gameDirectory/"plugin/resource-reload-baseline")+L" "+quote(gameDirectory/"plugin/resource-reload-cache")+L" "+quote(gameDirectory/"GameAssembly.dll")+L" --watch-parent "+std::to_wstring(GetCurrentProcessId());
+  auto command=quote(executable)+L" --mods "+quote(mods)+L" "+quote(gameDirectory/"plugin/resource-reload-baseline")+L" "+quote(gameDirectory/"plugin/resource-reload-cache")+L" --watch-parent "+std::to_wstring(GetCurrentProcessId());
   STARTUPINFOW startup{};startup.cb=sizeof(startup);PROCESS_INFORMATION process{};
   Require(CreateProcessW(executable.c_str(),command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,gameDirectory.c_str(),&startup,&process)!=0,"offline compiler process launch failed");
-  Log("[FULL-RELOAD-OFFLINE-COMPILER] pid=%lu autoWatch=1 gameExitStopsWatcher=1 authorBuildInExternalProcess=1",process.dwProcessId);CloseHandle(process.hThread);CloseHandle(process.hProcess);
+  started=true;Log("[FULL-RELOAD-OFFLINE-COMPILER] pid=%lu autoWatch=1 gameExitStopsWatcher=1 authorBuildInExternalProcess=1",process.dwProcessId);CloseHandle(process.hThread);CloseHandle(process.hProcess);
  }catch(const std::exception& e){Log("[FULL-RELOAD-REJECT] phase=offline-compiler reason=%s oldModelVisible=1",e.what());}
 }
 void Install(void** assemblies,size_t count){
- if(!std::filesystem::exists(gameDirectory/"plugin/resource-reload-baseline/baseline.tsv"))return;
+ if(!std::filesystem::exists(gameDirectory/"plugin/tools/eff_resource_pack.exe")&&!std::filesystem::exists(gameDirectory/"plugin/resource-reload-baseline/baseline.tsv"))return;
  configured=true;
- try{Require(RuntimeShapes::enabled&&NativeCandidate::enabled&&il2cpp_value_box,"reload public runtime/boxing API absent");
+ try{Require(RuntimeShapes::enabled&&NativeBundle::enabled&&il2cpp_value_box,"reload public runtime/boxing API absent");
   auto path=FindClass("Beyond.Resource","StringPathHash",assemblies,count),handle=FindClass("Beyond.Resource","FAssetProxyHandle",assemblies,count);
   Require(path&&handle,"reload resource lease classes absent");
   api.pathClass=path;api.handleClass=handle;uint32_t alignment=0;Require(il2cpp_class_value_size(path,&alignment)>0&&il2cpp_class_value_size(handle,&alignment)>0,"reload resource lease value types absent");
@@ -423,19 +628,33 @@ void Install(void** assemblies,size_t count){
   api.toPath=Method(path,"op_Implicit",{"System.String"},"Beyond.Resource.StringPathHash",true);
   api.load=Method(manager,"LoadAsync",{"Beyond.Resource.StringPathHash","System.Type","Beyond.Resource.RootCategory","Beyond.Resource.EResourceRequestPriority"},"Beyond.Resource.FAssetProxyHandle",true);
   api.done=Method(handle,"get_isDone",{},"System.Boolean",false);api.error=Method(handle,"get_hasError",{},"System.Boolean",false);api.get=Method(handle,"Get",{},"UnityEngine.Object",false);api.dispose=Method(handle,"Dispose",{},"System.Void",false);
+  api.handlePath=Method(handle,"get_pathOrName",{},"System.String",false);
+  api.handleUntrackedField=Field(handle,"m_untrackedHandle","Beyond.Resource.FAssetProxyUntrackedHandle");api.handleUntrackedClass=il2cpp_class_from_type(il2cpp_field_get_type(api.handleUntrackedField));
+  api.untrackedAssetGet=Method(api.handleUntrackedClass,"get_assetProxy",{},"Beyond.Resource.IAssetProxy",false);
+  api.assetSync=Method(FindClass("UnityEngine","AssetBundle",assemblies,count),"LoadAsset",{"System.String","System.Type"},"UnityEngine.Object",false);
+  Require(Entry::Install(handle,"Get",{},"UnityEngine.Object",false,(void*)ResourceGet,(void**)&originalResourceGet),"game prefab resource observation hook unavailable");
+  api.pathHashField=Field(path,"hash",nullptr);auto hashType=il2cpp_type_get_name(il2cpp_field_get_type(api.pathHashField));
+  bool hash64=hashType&&(!strcmp(hashType,"System.Int64")||!strcmp(hashType,"System.UInt64"));if(hashType)il2cpp_free((void*)hashType);Require(hash64,"game prefab path hash is not a 64-bit scalar");
+  auto proxy=FindClass("Beyond.Resource.Runtime","PrefabInstantiateProxy",assemblies,count),assetProxy=FindClass("","AssetProxy",assemblies,count);
+  api.proxyAsset=Method(proxy,"get_assetHandles",{},"Beyond.Resource.IAssetProxy",false);api.proxyGet=Method(assetProxy,"Get",{},"UnityEngine.Object",false);
+  api.proxyHash=Exact(assetProxy,"get_pathOrNameHash",{},"System.Int64",false);if(!api.proxyHash)api.proxyHash=Method(assetProxy,"get_pathOrNameHash",{},"System.UInt64",false);
+  Require(Entry::Install(proxy,"_PreloadPrefab",{"System.Boolean"},"System.Void",false,(void*)ProxyPreload,(void**)&originalProxyPreload),"game prefab instantiate lifecycle hook unavailable");
   api.rootCategory=Enum(FindClass("Beyond.Resource","RootCategory",assemblies,count),"Main");api.priority=Enum(FindClass("Beyond.Resource","EResourceRequestPriority",assemblies,count),"Default");
-  auto go=FindClass("UnityEngine","GameObject",assemblies,count),skin=FindClass("UnityEngine","SkinnedMeshRenderer",assemblies,count),helper=FindClass("Beyond.Gameplay.View","EntityRenderHelper",assemblies,count);
-  prefabType=Type(go);rendererType=Type(skin);helperType=Type(helper);
+  auto go=FindClass("UnityEngine","GameObject",assemblies,count),skin=FindClass("UnityEngine","SkinnedMeshRenderer",assemblies,count);
+  prefabType=Type(go);rendererType=Type(skin);
   api.components=Method(go,"GetComponentsInChildren",{"System.Type","System.Boolean"},"UnityEngine.Component[]",false);api.goTransform=Method(go,"get_transform",{},"UnityEngine.Transform",false);
-  auto component=FindClass("UnityEngine","Component",assemblies,count);api.parentHelper=Method(component,"GetComponentInParent",{"System.Type","System.Boolean"},"UnityEngine.Component",false);
+  auto component=FindClass("UnityEngine","Component",assemblies,count);
   api.componentGo=Method(component,"get_gameObject",{},"UnityEngine.GameObject",false);
   auto renderer=FindClass("UnityEngine","Renderer",assemblies,count),material=FindClass("UnityEngine","Material",assemblies,count);
   api.materials=Method(renderer,"get_sharedMaterials",{},"UnityEngine.Material[]",false);api.texture=Method(material,"GetTexture",{"System.String"},"UnityEngine.Texture",false);api.shader=Method(material,"get_shader",{},"UnityEngine.Shader",false);
+  BindMaterialTextureProperties(material);
   auto texture=FindClass("UnityEngine","Texture",assemblies,count);
   api.width=Method(texture,"get_width",{},"System.Int32",false);api.height=Method(texture,"get_height",{},"System.Int32",false);api.mips=Method(texture,"get_mipmapCount",{},"System.Int32",false);
-  auto entity=FindClass("Beyond.Gameplay.Core","Entity",assemblies,count),model=FindClass("Beyond.Gameplay.View","BaseModelComponent",assemblies,count);api.modelClass=model;
+  auto entity=FindClass("Beyond.Gameplay.Core","Entity",assemblies,count),model=FindClass("Beyond.Gameplay.View","BaseModelComponent",assemblies,count);
   api.modelCom=Method(entity,"get_modelCom",{},"Beyond.Gameplay.View.ModelComponent",false);api.released=Method(entity,"get_markReleased",{},"System.Boolean",false);
-  api.getModel=Method(model,"GetModelGo",{},"UnityEngine.GameObject",false);api.getPath=Method(model,"get_modelPath",{},"System.String",false);api.getHelper=Method(model,"get_entityRenderHelper",{},"Beyond.Gameplay.View.EntityRenderHelper",false);
+  api.modelEntity=Method(FindClass("Beyond.Gameplay.Core","BaseComponent",assemblies,count),"get_entity",{},"Beyond.Gameplay.Core.Entity",false);
+  api.delegateTarget=Method(FindClass("System","Delegate",assemblies,count),"get_Target",{},"System.Object",false);
+  api.getModel=Method(model,"GetModelGo",{},"UnityEngine.GameObject",false);api.getPath=Method(model,"get_modelPath",{},"System.String",false);
   api.remove=Method(model,"RemoveMainPart",{},"System.Void",false);api.loadModel=Method(model,"LoadMainModelSync",{},"System.Void",false);
   auto animation=FindClass("Beyond.Gameplay.View","ComplexAnimatorComponent",assemblies,count);
   api.animationCom=Method(entity,"get_animatorCom",{},"Beyond.Gameplay.View.ComplexAnimatorComponent",false);
@@ -447,14 +666,22 @@ void Install(void** assemblies,size_t count){
   api.weaponUnload=Method(weapon,"UnloadWeapons",{"System.Boolean"},"System.Void",false);
   api.weaponReload=Method(weapon,"ReloadWeapon",{"System.Boolean"},"System.Void",false);api.weaponMounts=Method(weapon,"UpdateAllWeaponMountPoint",{},"System.Void",false);
   auto audio=FindClass("Beyond.Gameplay.Core","CharacterAudioComponent",assemblies,count);
-  api.audioCom=Method(entity,"get_audioCom",{},"Beyond.Gameplay.Core.AudioComponent",false);api.audioInvalidate=Method(audio,"InvalidateTransformReference",{},"System.Void",false);
+  api.componentLookup=Method(entity,"TryGetComponent",{"System.Type","Beyond.Gameplay.Core.BaseComponent&","System.Boolean"},"System.Boolean",false);
+  characterAudioType=Type(audio);api.audioInvalidate=Method(audio,"InvalidateTransformReference",{},"System.Void",false);
   auto instance=FindClass("Beyond.Gameplay","GameInstance",assemblies,count);api.instance=Method(instance,"get_instance",{},"Beyond.Gameplay.GameInstance",true);
   api.modelManager=BindObjectField(instance,"modelManager","Beyond.Gameplay.View.ModelManager");
   api.effectManager=BindObjectField(instance,"effectManager","Beyond.Gameplay.EffectManager");
   auto modelManager=FindClass("Beyond.Gameplay.View","ModelManager",assemblies,count);api.discard=Method(modelManager,"DiscardPooledObjects",{"Beyond.Resource.StringPathHash"},"System.Void",false);
   auto basePart=FindClass("Beyond.Gameplay.View","BaseModelViewPart",assemblies,count),complexPart=FindClass("Beyond.Gameplay.View","ComplexModelViewPart",assemblies,count);
-  api.partRelease=Method(complexPart,"ReleaseModel",{},"System.Void",false);api.partLoad=Method(basePart,"StartSyncLoad",{},"System.Boolean",false);
+  Require(il2cpp_object_get_virtual_method,"reload public virtual dispatch unavailable");
+  api.partRelease=Method(basePart,"ReleaseModel",{},"System.Void",false);api.partLoad=Method(basePart,"StartSyncLoad",{},"System.Boolean",false);
   api.partSetup=Method(basePart,"SetupData",{"Beyond.Gameplay.View.BaseModelViewPartData"},"System.Void",false);
+  Require(Entry::Install(model,"AddPart",{"Beyond.Gameplay.View.BaseModelViewPart"},"System.Void",false,(void*)PartAdded,(void**)&originalPartAdded),"model main-part attachment lifecycle hook unavailable");
+  Require(Entry::Install(basePart,"SetupData",{"Beyond.Gameplay.View.BaseModelViewPartData"},"System.Void",false,(void*)PartConfigured,(void**)&originalPartConfigured),"model part configuration lifecycle hook unavailable");
+  Require(Entry::Install(basePart,"PostDealLoadedModel",{},"System.Void",false,(void*)BasePartFinished,(void**)&originalBasePartFinished),"base view part completion lifecycle hook unavailable");
+  Require(Entry::Install(basePart,"ReleaseModel",{},"System.Void",false,(void*)PartReleased,(void**)&originalPartReleased),"model part release lifecycle hook unavailable");
+  auto callbackType=PartCallbackType(basePart);
+  Require(Entry::Install(basePart,"LoadModel",{"Beyond.Gameplay.View.BaseModelViewPartData",callbackType.c_str()},"System.Void",false,(void*)PartLoading,(void**)&originalPartLoading),"model part owner lifecycle hook unavailable");
   Require(Method(complexPart,"PostDealLoadedModel",{},"System.Void",false),"model part completion method absent");
   Require(Entry::Install(complexPart,"PostDealLoadedModel",{},"System.Void",false,(void*)PartFinished,(void**)&originalPartFinished),"model part lifecycle hook unavailable");
   auto effect=FindClass("Beyond.Gameplay","EffectManager",assemblies,count);api.follow=Method(effect,"ChangeEntityFollowEffect",{"Beyond.Gameplay.Core.Entity"},"System.Void",false);
@@ -462,7 +689,7 @@ void Install(void** assemblies,size_t count){
   auto transform=FindClass("UnityEngine","Transform",assemblies,count);api.isChild=Method(transform,"IsChildOf",{"UnityEngine.Transform"},"System.Boolean",false);api.parent=Method(transform,"get_parent",{},"UnityEngine.Transform",false);
   api.childCount=Method(transform,"get_childCount",{},"System.Int32",false);api.getChild=Method(transform,"GetChild",{"System.Int32"},"UnityEngine.Transform",false);
   api.directComponents=Method(go,"GetComponents",{"System.Type"},"UnityEngine.Component[]",false);
-  for(auto m:{api.toPath,api.load,api.done,api.error,api.get,api.dispose,api.components,api.goTransform,api.parentHelper,api.materials,api.texture,api.shader,api.width,api.height,api.mips,api.modelCom,api.released,api.getModel,api.getPath,api.getHelper,api.remove,api.loadModel,api.instance,api.discard,api.follow,api.instanceId,api.isChild,api.parent,api.childCount,api.getChild,api.componentGo,api.directComponents})Require(m,"reload exact managed signature missing");
+  for(auto m:{api.toPath,api.load,api.done,api.error,api.get,api.dispose,api.components,api.goTransform,api.materials,api.texture,api.shader,api.width,api.height,api.mips,api.modelCom,api.released,api.getModel,api.getPath,api.remove,api.loadModel,api.instance,api.discard,api.follow,api.instanceId,api.isChild,api.parent,api.childCount,api.getChild,api.componentGo,api.directComponents})Require(m,"reload exact managed signature missing");
   Require(Method(object,"Internal_CloneSingle",{"UnityEngine.Object"},"UnityEngine.Object",true)&&Method(object,"Internal_CloneSingleWithParent",{"UnityEngine.Object","UnityEngine.Transform","System.Boolean"},"UnityEngine.Object",true),"reload prefab clone signatures absent");
   Require(LoadingObservation::Hook("UnityEngine.Object::Internal_CloneSingle(UnityEngine.Object)",(void*)Clone,(void**)&originalClone)&&LoadingObservation::Hook("UnityEngine.Object::Internal_CloneSingleWithParent(UnityEngine.Object,UnityEngine.Transform,System.Boolean)",(void*)CloneParent,(void**)&originalCloneParent),"reload registered prefab clone bindings absent");
   Method(object,"Internal_InstantiateSingle_Injected",{"UnityEngine.Object","UnityEngine.Vector3&","UnityEngine.Quaternion&"},"UnityEngine.Object",true);
@@ -473,25 +700,26 @@ void Install(void** assemblies,size_t count){
           LoadingObservation::Hook("UnityEngine.Object::Internal_InstantiateSingleWithParent_Injected(UnityEngine.Object,UnityEngine.Transform,UnityEngine.Vector3&,UnityEngine.Quaternion&)",(void*)InstantiateParent,(void**)&originalInstantiateParent)&&
           LoadingObservation::Hook("UnityEngine.Object::Internal_InstantiateAsyncImmediatelyWithParent(UnityEngine.Object,UnityEngine.Transform,System.Boolean)",(void*)InstantiateImmediate,(void**)&originalInstantiateImmediate)&&
           LoadingObservation::Hook("UnityEngine.Object::Internal_InstantiateAsyncWithParent(UnityEngine.Object,System.Int32,UnityEngine.Transform,System.IntPtr,System.IntPtr)",(void*)InstantiateAsync,(void**)&originalInstantiateAsync),"reload registered prefab Instantiate bindings absent");
-  enabled=true;Log("[FULL-RELOAD-READY] F10=reloadCurrentMod nativeLoadOnF10=1 resources=Mesh-Material-Texture-Prefab stableWorldGate=0 privateNativeWrites=0");
+  enabled=true;Log("[FULL-RELOAD-READY] shortcut=reloadCurrentMod nativePrepareBeforeShortcut=1 unusedRootsLazy=1 nativeMainPartOwners=1 resources=Mesh-Material-Texture-Prefab privateNativeWrites=0");
  }catch(const std::exception& e){Log("[FULL-RELOAD-REJECT] phase=install reason=%s configurationFallbackRefused=1",e.what());}
 }
 void Dispose(Lease& lease){if(lease.shared||lease.disposed||!lease.handle.Get())return;Require(lease.done,"reload lease disposed before completion");
  auto self=Self(lease.handle,api.handleClass);lease.disposed=true;Call(api.dispose,self);}
 void Drain(Attempt& a){
+ if(a.prepared)a.prepared->ruleInputs.clear(); // Native arrays own copies; unsent worker bytes have no native consumer.
  // Never drop requests/file locks while native work can still use them.
  for(auto& l:a.leases)if(l.handle.Get()&&!l.done){if(!RuntimeShapes::Scalar<unsigned char>(api.done,Self(l.handle,api.handleClass)))return;l.done=true;}
- for(auto& b:a.bundles){auto& v=b.second;if(!v.done){if(!v.request.Get()){v.done=true;continue;}if(!RuntimeShapes::Scalar<unsigned char>(NativeCandidate::api.done,v.request.Get()))return;
-   v.object=Ref::Make(Call(NativeCandidate::api.bundle,v.request.Get()),false);v.done=true;
+ for(auto& b:a.bundles){auto& v=b.second;if(!v.done){if(!v.request.Get()){v.done=true;continue;}if(!RuntimeShapes::Scalar<unsigned char>(NativeBundle::api.done,v.request.Get()))return;
+   v.bytes={};v.object=Ref::Make(Call(NativeBundle::api.bundle,v.request.Get()),false);v.done=true;
    // Without a successful ownership audit this Bundle is quarantined.
   }}
- for(auto& v:a.assets)if(v.request.Get()&&!v.done){if(!RuntimeShapes::Scalar<unsigned char>(NativeCandidate::api.done,v.request.Get()))return;v.done=true;}
+ for(auto& v:a.assets)if(v.request.Get()&&!v.done){if(!RuntimeShapes::Scalar<unsigned char>(NativeBundle::api.done,v.request.Get()))return;v.done=true;}
  if(a.exposed){a.quarantined=true;a.phase=Phase::Drained;Log("[FULL-RELOAD-QUARANTINE] candidateWasExposed=1 nativeRequestsDrained=1 bundlesAndLeasesRetained=1");return;}
  bool owned=true;for(const auto& b:a.bundles)owned=owned&&(!b.second.object.Get()||b.second.owned);
  if(!owned){a.quarantined=true;a.phase=Phase::Drained;Log("[FULL-RELOAD-QUARANTINE] ownershipUnverified=1 nativeRequestsDrained=1 bundlesAndLeasesRetained=1");return;}
  for(auto& b:a.bundles)if(!b.second.unloadCalled&&RuntimeShapes::Alive(b.second.object.Get())){
   unsigned char all=0;void* args[]={&all};b.second.unloadCalled=true;
-  try{Call(NativeCandidate::api.unload,b.second.object.Get(),args);}catch(...){a.quarantined=true;a.phase=Phase::Drained;Log("[FULL-RELOAD-QUARANTINE] unloadCallFailed=1 leasesRetained=1 repeatedUnloadRefused=1");throw;}
+  try{Call(NativeBundle::api.unload,b.second.object.Get(),args);}catch(...){a.quarantined=true;a.phase=Phase::Drained;Log("[FULL-RELOAD-QUARANTINE] unloadCallFailed=1 leasesRetained=1 repeatedUnloadRefused=1");throw;}
  }
  for(auto& l:a.leases)try{Dispose(l);}catch(...){a.quarantined=true;a.phase=Phase::Drained;Log("[FULL-RELOAD-QUARANTINE] leaseDisposeCallFailed=1 remainingLeasesRetained=1 repeatedDisposeRefused=1");throw;}
  a.phase=Phase::Drained;
@@ -503,7 +731,7 @@ void RetireGeneration(Attempt& a){
  for(const auto& b:a.bundles)Require(b.second.done&&b.second.owned,"retirement requires completed owned Bundles");
  for(auto& b:a.bundles)if(!b.second.unloadCalled&&RuntimeShapes::Alive(b.second.object.Get())){
   unsigned char destroyObjects=0;void* args[]={&destroyObjects};b.second.unloadCalled=true;
-  Call(NativeCandidate::api.unload,b.second.object.Get(),args);
+  Call(NativeBundle::api.unload,b.second.object.Get(),args);
  }
  for(auto& l:a.leases)Dispose(l);
  a.assets.clear();a.bundles.clear();a.leases.clear();a.owners.clear();a.verifier.reset();a.prepared.reset();
@@ -512,15 +740,10 @@ void RetireGeneration(Attempt& a){
 void RetireSuperseded(){
  auto currentRoutes=std::atomic_load(&routes);
  for(auto it=retained.begin();it!=retained.end();){auto& old=**it;
-  bool used=false;for(const auto& asset:old.assets)for(const auto& route:*currentRoutes)used=used||(asset.prefab.Get()&&route.candidate.Get()==asset.prefab.Get());
+  bool used=std::atomic_load(&activeNative).get()==&old;for(const auto& asset:old.assets)for(const auto& route:*currentRoutes)used=used||(asset.prefab.Get()&&route.candidate.Get()==asset.prefab.Get());
   if(used||old.quarantined){++it;continue;}
   try{RetireGeneration(old);it=retained.erase(it);}catch(const std::exception& e){old.quarantined=true;Log("[FULL-RELOAD-RETIRE-GAP] reason=%s retryUnloadRefused=1",e.what());++it;}
  }
-}
-bool Inherits(void* object,const char* ns,const char* name){
- for(auto klass=object?il2cpp_object_get_class(object):nullptr;klass;klass=il2cpp_class_get_parent(klass)){
-  auto n=il2cpp_class_get_name(klass),space=il2cpp_class_get_namespace(klass);if(n&&space&&!strcmp(n,name)&&!strcmp(space,ns))return true;
- }return false;
 }
 void VerifyAnimation(const Owner& owner,void* root){
  if(!owner.animation.Get())return;
@@ -533,8 +756,13 @@ void CaptureConsumers(Owner& owner){
  if(owner.viewPart)return;
  owner.animation=Ref::Make(Call(api.animationCom,owner.entity.Get()),false);
  if(owner.animation.Get()){owner.animationData=Ref::Make(Call(api.animationData,owner.animation.Get()),false);Require(owner.animationData.Get(),"reload animation data unavailable");VerifyAnimation(owner,owner.root.Get());}
- owner.weapons=Ref::Make(Call(api.weaponCom,owner.entity.Get()),false);auto audio=Call(api.audioCom,owner.entity.Get());
- if(Inherits(audio,"Beyond.Gameplay.Core","CharacterAudioComponent"))owner.audio=Ref::Make(audio,false);
+ owner.weapons=Ref::Make(Call(api.weaponCom,owner.entity.Get()),false);
+ // Entity.audioCom is the separate generic AudioComponent. The game's mode
+ // change queries CharacterAudioComponent through its component registry.
+ void* audio=nullptr;unsigned char quiet=0;void* args[]={characterAudioType.Get(),&audio,&quiet};
+ if(RuntimeShapes::Scalar<unsigned char>(api.componentLookup,owner.entity.Get(),args)){
+  Require(audio&&Inherits(audio,"Beyond.Gameplay.Core","CharacterAudioComponent"),"reload typed character audio query returned another component");owner.audio=Ref::Make(audio,false);
+ }
 }
 void ReleaseConsumers(const Owner& owner){
  if(owner.weapons.Get()){unsigned char all=1;void* args[]={&all};Call(api.weaponUnload,owner.weapons.Get(),args);}
@@ -552,38 +780,61 @@ void ReloadConsumers(const Owner& owner,void* root){
 }
 using AssetIdentity=std::map<std::string,std::pair<int,std::map<std::string,int>>>;
 AssetIdentity PrefabAssetIdentity(void* root,const Plan& plan){
- AssetIdentity identity;
- for(const auto& r:Components(root)){auto renderer=r.Get();auto mesh=Ref::Make(RuntimeShapes::SourceMesh(renderer),false);if(!RuntimeShapes::Alive(mesh.Get()))continue;
-  auto marker=String(Call(RuntimeShapes::api.name,mesh.Get()));auto part=plan.parts.find(marker);if(part==plan.parts.end())continue;
+ AssetIdentity identity;size_t ordinal=0;
+ for(const auto& r:Components(root)){auto renderer=r.Get();auto key="renderer/"+std::to_string(ordinal++);auto mesh=Ref::Make(RuntimeShapes::SourceMesh(renderer),false);
+  if(!RuntimeShapes::Alive(mesh.Get())){identity.emplace(key,std::make_pair(0,std::map<std::string,int>{}));continue;}
+  auto marker=String(Call(RuntimeShapes::api.name,mesh.Get()));auto part=plan.parts.find(marker);
+  if(part==plan.parts.end()){
+   // Renderers outside the candidate's authored part table still need complete
+   // Material/Texture identity checks. Enumerate their public properties.
+   std::map<std::string,int> textures;auto materials=Ref::Make(Call(api.materials,renderer),false);size_t slot=0;
+   for(auto material:ReferenceArray(materials.Get())){auto prefix="material/"+std::to_string(slot++)+"/";
+    if(!RuntimeShapes::Alive(material)){textures.emplace(prefix+"null",0);continue;}
+    auto shader=Call(api.shader,material);textures.emplace(prefix+"shader",RuntimeShapes::Alive(shader)?Id(shader):0);
+    auto ids=Ref::Make(Call(api.textureIds,material),false);size_t count=0;
+    Require(ArrayLength(ids.Get(),&count),"reload public Texture property ID array absent");
+    for(auto property:RuntimeShapes::Array<int32_t>(ids.Get(),count)){void* args[]={&property};auto texture=Call(api.textureById,material,args);
+     Require(textures.emplace(prefix+"textureId/"+std::to_string(property),RuntimeShapes::Alive(texture)?Id(texture):0).second,"reload duplicate public Texture property ID");}
+   }identity.emplace(key,std::make_pair(Id(mesh.Get()),std::move(textures)));continue;
+  }
   auto materials=Ref::Make(Call(api.materials,renderer),false);auto material=ReferenceArray(materials.Get(),1).front();std::map<std::string,int> textures;
   for(const auto& slot:plan.materials.at(part->second.material).slots){if(!slot.local)continue;auto property=Ref::Make(il2cpp_string_new(slot.property.c_str()),false);void* args[]={property.Get()};textures.emplace(slot.property,slot.nonnull?Id(Call(api.texture,material,args)):0);}
-  auto value=std::make_pair(Id(mesh.Get()),std::move(textures));auto inserted=identity.emplace(marker,value);
-  Require(inserted.second||inserted.first->second==value,"reload marker aliases different Mesh/Texture objects");
- }Require(!identity.empty(),"reload prefab asset identity absent");return identity;
+  identity.emplace(key,std::make_pair(Id(mesh.Get()),std::move(textures)));
+ }return identity;
 }
 void DiscoverOwners(Attempt& a){
- std::set<void*> seen,coveredRoots;size_t display=0;
- for(const auto& bound:RuntimeShapes::bound){auto renderer=bound.second.renderer.Get();if(!RuntimeShapes::Alive(renderer))continue;
-  unsigned char inactive=1;void* args[]={helperType.Get(),&inactive};auto helper=Call(api.parentHelper,renderer,args);
-  if(!helper){++display;continue;}auto entity=ReadObject(helper,"m_entity","Beyond.Gameplay.Core.Entity");if(!entity){++display;continue;}
-  Require(!RuntimeShapes::Scalar<unsigned char>(api.released,entity),"reload entity already released");auto model=Call(api.modelCom,entity);if(!model||!seen.insert(model).second)continue;
-  auto path=String(Call(api.getPath,model));auto root=Call(api.getModel,model);if(!RuntimeShapes::Alive(root))continue;
-  auto target=FindRoot(*a.prepared->plan,path);
-  if(!target){Log("[FULL-RELOAD-OWNER-SKIP] modelPath=%s exactPrefabRootAbsent=1",path.c_str());continue;}
-  Require(Call(api.getHelper,model)==helper,"reload helper/model owner differs");
-  auto transform=Call(RuntimeShapes::api.transform,renderer);auto rootTransform=Call(api.goTransform,root);void* childArgs[]={rootTransform};
-  Require(transform==rootTransform||RuntimeShapes::Scalar<unsigned char>(api.isChild,transform,childArgs),"reload Renderer outside owning model root");
+ std::set<void*> seen,coveredRoots;
+ auto world=[&](void* model,void* entity,void* expectedRoot=nullptr,void* expectedPart=nullptr){
+  Require(model&&entity&&Call(api.modelEntity,model)==entity&&Call(api.modelCom,entity)==model,"reload component/entity owner differs");
+  if(!seen.insert(model).second)return;
+  auto path=String(Call(api.getPath,model));auto root=Call(api.getModel,model);if(!RuntimeShapes::Alive(root))return;
+  if(!FindRoot(*a.prepared->plan,path)){Log("[FULL-RELOAD-OWNER-SKIP] modelPath=%s exactPrefabRootAbsent=1",path.c_str());return;}
+  Require(!RuntimeShapes::Scalar<unsigned char>(api.released,entity),"reload entity already released");
   auto part=ReadObject(model,"m_mainPart","Beyond.Gameplay.View.ComplexModelViewPart");Require(part,"reload main model part missing");
-  auto cfgField=Field(il2cpp_object_get_class(part),"m_cfg","Beyond.Gameplay.View.BaseModelViewPartData");auto cfgClass=il2cpp_class_from_type(il2cpp_field_get_type(cfgField));uint32_t alignment=0;auto size=il2cpp_class_value_size(cfgClass,&alignment);
-  Require(size>0&&size<=512,"reload model part config value size differs");Bytes value(size);il2cpp_field_get_value(part,cfgField,value.data());auto cfg=Ref::Make(il2cpp_value_box(cfgClass,value.data()),false);Require(cfg.Get(),"reload model config boxing failed");
-  unsigned char persistent=0;il2cpp_field_get_value(cfg.Get(),Field(cfgClass,"usePersistentPool","System.Boolean"),&persistent);
+  Require((!expectedRoot||expectedRoot==root)&&(!expectedPart||expectedPart==part),"reload recorded model part/root owner differs");
+  Require(ReadObject(part,"m_model","UnityEngine.GameObject")==root,"reload main part/model root differs");
+  auto cfg=PartConfig(part);unsigned char persistent=0;il2cpp_field_get_value(cfg.Get(),Field(il2cpp_object_get_class(cfg.Get()),"usePersistentPool","System.Boolean"),&persistent);
   Require(!persistent,"persistent model pool requires a separate verified invalidation entry");
   Owner owner;owner.entity=Ref::Make(entity,false);owner.component=Ref::Make(model,false);owner.root=Ref::Make(root,false);owner.path=path;owner.pathHash=Path(path);owner.oldRootId=Id(root);owner.originalMeshes=MeshProfile(root);CaptureConsumers(owner);a.owners.push_back(std::move(owner));coveredRoots.insert(root);
- }
- size_t world=a.owners.size();
+ };
+ // Game load callbacks record vanilla and authored instances alike, before
+ // any Mod is added. Enumerate those model parts, never scene Renderers or
+ // helper links from unrelated weapon/effect/capture consumers.
  for(auto it=liveParts.begin();it!=liveParts.end();){auto part=it->second.part.Get(),root=it->second.root.Get();
+  // An asynchronous creation may already be using the previous prefab.
+  // Keep the weak record, but never commit over an affected unfinished load;
+  // otherwise its old root could appear after the new generation publishes.
+  // Other paths are independent and do not block this transaction.
+  if(part&&!it->second.root.handle){auto cfg=PartConfig(part);auto path=String(ReadObject(cfg.Get(),"modelPath","System.String"));
+   Require(!FindRoot(*a.prepared->plan,path),"reload matching model part is still loading; retry F10 after it finishes");++it;continue;
+  }
   if(!part||!RuntimeShapes::Alive(root)||ReadObject(part,"m_model","UnityEngine.GameObject")!=root){it=liveParts.erase(it);continue;}
   auto& live=it++->second;if(coveredRoots.count(root)||!FindRoot(*a.prepared->plan,live.path))continue;
+  Require(live.ownerRecorded,"reload model part load ownership was not recorded");
+  Require(live.ownershipError.empty(),"reload model part ownership unavailable: "+live.ownershipError);
+  if(live.model.handle){auto model=live.model.Get();Require(model,"reload recorded model owner retired");
+   world(model,Call(api.modelEntity,model),root,part);continue;
+  }
   Require(!live.persistent,"display persistent pool invalidation unavailable");
   Owner owner;owner.viewPart=true;owner.component=Ref::Make(part,false);owner.root=Ref::Make(root,false);owner.path=live.path;owner.pathHash=Path(live.path);owner.oldRootId=Id(root);owner.originalMeshes=MeshProfile(root);owner.config=PartConfig(part);a.owners.push_back(std::move(owner));coveredRoots.insert(root);
  }
@@ -593,14 +844,19 @@ void DiscoverOwners(Attempt& a){
   for(auto root:coveredRoots){auto rt=Call(api.goTransform,root);void* args[]={rt};covered=covered||transform==rt||RuntimeShapes::Scalar<unsigned char>(api.isChild,transform,args);}
   Require(covered,"live Renderer has no recorded game model-part lifecycle");
  }
- Log("[FULL-RELOAD-OWNERS] currentWorldOwners=%zu liveDisplayOwners=%zu typedOwnerAndParentVerified=1",world,a.owners.size()-world);
+ auto worlds=std::count_if(a.owners.begin(),a.owners.end(),[](const auto& owner){return !owner.viewPart;});
+ Log("[FULL-RELOAD-OWNERS] currentWorldOwners=%zu liveDisplayOwners=%zu recordedPartOwners=1 sceneRendererDiscovery=0 typedOwnerAndParentVerified=1",size_t(worlds),a.owners.size()-size_t(worlds));
 }
 void* ModelManager(){return ReadManager(api.modelManager);}
 void Follow(const Owner& owner){if(owner.viewPart)return;auto effects=Ref::Make(ReadManager(api.effectManager),false);Require(effects.Get(),"reload EffectManager unavailable");void* args[]={owner.entity.Get()};Call(api.follow,effects.Get(),args);}
 void Rebuild(Attempt& a){
  Require(a.prepared->base==generation.load(),"reload publication generation is stale");
+ // Only directory membership/file metadata is inspected here; native input
+ // parsing and hashing remain on the disk worker. Never publish a set whose
+ // authors were added/removed after F10's offline preflight.
+ Require(AuthorFilesUnchanged(*a.prepared),"reload author set/files changed after preflight");
  auto previous=std::atomic_load(&routes);auto next=std::make_shared<Routes>(*previous);
- for(size_t i=0;i<a.assets.size();++i){auto source=a.leases[i].source.Get(),candidate=a.assets[i].prefab.Get();Require(Id(source)!=Id(candidate),"reload native prefab aliases original");
+ for(size_t i=0;i<a.assets.size();++i){auto source=a.leases[i].source.Get(),candidate=a.assets[i].prefab.Get();if(!candidate)continue;Require(Id(source)!=Id(candidate),"reload native prefab aliases original");
   auto it=std::find_if(next->begin(),next->end(),[&](const auto& r){return r.source.Get()==source;});Route route{Ref::Make(source,false),Ref::Make(candidate,false),Id(source),Id(candidate)};
   if(it==next->end())next->push_back(std::move(route));else *it=std::move(route);
  }
@@ -611,7 +867,8 @@ void Rebuild(Attempt& a){
  std::vector<Ref> poolPaths;for(const auto& root:a.prepared->plan->roots)poolPaths.push_back(Path(root.path));
  for(const auto& owner:a.owners){Require(CurrentRoot(owner)==owner.root.Get()&&Id(owner.root.Get())==owner.oldRootId&&(owner.viewPart||!RuntimeShapes::Scalar<unsigned char>(api.released,owner.entity.Get())),"reload owner changed after preflight");}
  a.exposed=true;std::atomic_store(&routes,std::shared_ptr<const Routes>(next));
- struct Scope {Scope(Attempt* a){rebuilding=a;}~Scope(){rebuilding=nullptr;}}scope(&a);
+ struct Scope {bool paused=RuntimeShapes::registrationPaused;Scope(Attempt* a){rebuilding=a;RuntimeShapes::registrationPaused=true;}
+  void Resume(){rebuilding=nullptr;RuntimeShapes::registrationPaused=paused;}~Scope(){Resume();}}scope(&a);
  try{
   // Release every live owner before invalidating any shared path pool. Also
   // discard matched idle-only paths, so opening the UI later cannot reuse an
@@ -635,22 +892,41 @@ void Rebuild(Attempt& a){
   std::atomic_store(&routes,previous);bool restored=true;
   for(size_t i=0;i<a.mutated;++i)try{
    auto& owner=a.owners[i];void* args[]={Self(owner.pathHash,api.pathClass)};ReleaseConsumers(owner);RemoveOwner(owner);Call(api.discard,manager.Get(),args);LoadOwner(owner);
-   auto restoredRoot=CurrentRoot(owner);Require(RuntimeShapes::Alive(restoredRoot)&&MeshProfile(restoredRoot)==owner.originalMeshes,"reload rollback original native Mesh identity/coverage differs");ReloadConsumers(owner,restoredRoot);Follow(owner);
+   auto restoredRoot=CurrentRoot(owner);Require(RuntimeShapes::Alive(restoredRoot),"reload rollback original root missing");ReloadConsumers(owner,restoredRoot);Follow(owner);
+   Require(MeshProfile(restoredRoot)==owner.originalMeshes,"reload rollback original native Mesh identity/coverage differs");
   }catch(const std::exception& e){restored=false;Log("[FULL-RELOAD-ROLLBACK-GAP] reason=%s rootsAndLeasesRetained=1",e.what());}
+  scope.Resume();
+  for(size_t i=0;i<a.mutated;++i)try{RuntimeShapes::RegisterModel(CurrentRoot(a.owners[i]));}catch(const std::exception& e){restored=false;Log("[FULL-RELOAD-ROLLBACK-GAP] controlRegistration=%s",e.what());}
   Log("[FULL-RELOAD-ROLLBACK] previousRoutesRestored=1 previousControlsRetained=1 ownersRestored=%d",int(restored));throw;
  }
  auto graph=a.prepared->controls.graph;RuntimeControls::Swap(a.prepared->controls);std::atomic_store(&published,graph);settings.PublishPrepared(a.prepared->config);
- RuntimeShapes::bound.clear();RuntimeShapes::cached.clear();RuntimeShapes::boundCount=0;RuntimeShapes::discoveryElapsed=1;
+ RuntimeShapes::bound.clear();RuntimeShapes::cached.clear();RuntimeShapes::boundCount=0;
  // Installed original-namespace substitutions stay frozen. Future instances
  // receive generation prefabs through the exact native source route.
  auto current=a.prepared->base+1;RuntimeShapes::packageGeneration=current;RuntimeShapes::checkedGeneration=current;generation.store(current);
+ scope.Resume();
+ for(const auto& owner:a.owners)try{RuntimeShapes::RegisterModel(CurrentRoot(owner));}catch(const std::exception& e){Log("[CONTROL-RUNTIME-GAP] modelCompletionRegistration=%s",e.what());}
  if(a.prepared->testAuthor)testAuthorCommitted=true;
- a.phase=Phase::Passed;Log("[FULL-RELOAD-COMMIT] generation=%u key=%s nativeRoots=%zu migrated=%zu meshParts=%zu rendererParts=%zu textures=%zu originalDependenciesLeased=1 nativeShapesPreserved=1 oldCaptureConsumersRetained=%zu gfx=0",current,a.prepared->plan->key.c_str(),a.assets.size(),a.owners.size(),a.prepared->plan->meshParts,a.prepared->plan->rendererParts,a.prepared->plan->textures,RuntimeShapes::groups.size());
+ if(a.prepared->rules)std::atomic_store(&resourceRules,a.prepared->rules);
+ if(attempt.get()==&a)std::atomic_store(&activeNative,attempt);
+ auto loadedRoots=std::count_if(a.assets.begin(),a.assets.end(),[](const auto& asset){return bool(asset.prefab.Get());});
+ a.phase=Phase::Passed;Log("[FULL-RELOAD-COMMIT] generation=%u key=%s nativeRoots=%zu offlineRoots=%zu migrated=%zu meshParts=%zu rendererParts=%zu textures=%zu originalDependenciesLeased=1 nativeShapesPreserved=1 oldCaptureConsumersRetained=%zu gfx=0",current,a.prepared->plan->key.c_str(),size_t(loadedRoots),a.assets.size(),a.owners.size(),a.prepared->plan->meshParts,a.prepared->plan->rendererParts,a.prepared->plan->textures,RuntimeShapes::groups.size());
+}
+bool SelectObservedRoots(Attempt& a){
+ if(a.selectionRevision==ownerRevision)return false;a.selectionRevision=ownerRevision;bool added=false;const auto& plan=*a.prepared->plan;
+ for(size_t i=0;i<plan.roots.size();++i){auto observed=observedPrefabs.find(NormalizeAssetPath(plan.roots[i].path));
+  bool needed=observed!=observedPrefabs.end()&&RuntimeShapes::Alive(observed->second.Get());
+  for(const auto& part:liveParts)needed=needed||(RuntimeShapes::Alive(part.second.root.Get())&&SameAssetPath(part.second.path,plan.roots[i].path));
+  if(needed&&a.selectedRoots.insert(i).second){a.leases[i].done=false;a.assets[i].done=false;added=true;}
+ }return added;
 }
 void Begin(std::shared_ptr<Prepared> p){
  Require(p&&p->base==generation.load(),"reload prepared graph stale");
- auto value=std::make_unique<Attempt>();value->prepared=std::move(p);value->started=GetTickCount64();value->leases.resize(value->prepared->plan->roots.size());value->assets.resize(value->leases.size());attempt=std::move(value);
- Log("[FULL-RELOAD-BEGIN] key=%s inputs=%zu closure=%zu directSharedCABs=%zu nativeSubmission=awaitF10",attempt->prepared->plan->key.c_str(),attempt->prepared->plan->inputs.size(),attempt->prepared->plan->closure.size(),attempt->prepared->plan->shared.size());
+ auto value=std::make_shared<Attempt>();value->prepared=std::move(p);value->started=GetTickCount64();value->leases.resize(value->prepared->plan->roots.size());value->assets.resize(value->leases.size());
+ value->prepared->rootHashes.clear();for(size_t i=0;i<value->prepared->plan->roots.size();++i){auto path=Path(value->prepared->plan->roots[i].path);uint64_t hash=0;il2cpp_field_get_value(path.Get(),api.pathHashField,&hash);
+  Require(value->prepared->rootHashes.emplace(hash,i).second,"offline prefab root path hash collision");}
+ value->selectionRevision=~ownerRevision;SelectObservedRoots(*value);attempt=std::move(value);
+ Log("[FULL-RELOAD-BEGIN] key=%s inputs=%zu closure=%zu directSharedCABs=%zu nativeSubmission=awaitShortcut",attempt->prepared->plan->key.c_str(),attempt->prepared->plan->inputs.size(),attempt->prepared->plan->closure.size(),attempt->prepared->plan->shared.size());
 }
 void CheckBundle(Attempt& a,size_t index,Bundle& b){
  Require(RuntimeShapes::Alive(b.object.Get()),"reload candidate Bundle load failed");b.id=Id(b.object.Get());
@@ -664,18 +940,19 @@ void Step(Attempt& a){
  if(a.phase==Phase::Owners||a.phase==Phase::Rebuild){auto current=std::atomic_load(&latest);auto ticket=std::atomic_load(&requested);
   Require(current&&*current==a.prepared->pointer&&(!ticket||ticket->clock<=a.requestClock),"reload candidate/request superseded before live mutation");
  }
- const auto start=NativeCandidate::Clock();auto budget=[&]{return NativeCandidate::Ms(start)<2.;};
+ const auto start=NativeBundle::Clock();auto budget=[&]{return NativeBundle::Ms(start)<2.;};
  switch(a.phase){
  case Phase::AwaitRequest:return;
  case Phase::Leases:{
   size_t completed=0;for(size_t i=0;i<a.leases.size()&&budget();++i){auto& l=a.leases[i];if(l.done){++completed;continue;}
+   if(!a.selectedRoots.count(i)){l.done=true;a.assets[i].done=true;++completed;continue;}
    if(!l.handle.Get()){
     auto existing=sourceLeases.find(plan.roots[i].path);
-    if(existing!=sourceLeases.end()&&RuntimeShapes::Alive(existing->second.source.Get())){l=existing->second;++completed;continue;}
+    if(existing!=sourceLeases.end()&&existing->second.done&&RuntimeShapes::Alive(existing->second.source.Get())){l=existing->second;++completed;continue;}
     l.pathHash=Path(plan.roots[i].path);void* args[]={Self(l.pathHash,api.pathClass),prefabType.Get(),api.rootCategory.Data(),api.priority.Data()};l.handle=Ref::Make(Call(api.load,nullptr,args),false);Require(l.handle.Get(),"reload resource lease handle null");}
    if(!RuntimeShapes::Scalar<unsigned char>(api.done,Self(l.handle,api.handleClass)))continue;
    l.done=true;Require(!RuntimeShapes::Scalar<unsigned char>(api.error,Self(l.handle,api.handleClass)),"reload original prefab game resource lease failed: "+plan.roots[i].path);
-   l.source=Ref::Make(Call(api.get,Self(l.handle,api.handleClass)),false);Require(RuntimeShapes::Alive(l.source.Get()),"reload source prefab missing after game lease");
+   {SourceReadScope scope;l.source=Ref::Make(Call(api.get,Self(l.handle,api.handleClass)),false);}Require(RuntimeShapes::Alive(l.source.Get()),"reload source prefab missing after game lease");
    l.shared=true;sourceLeases[plan.roots[i].path]=l;
    Log("[FULL-RELOAD-LEASE] path=%s sourcePrefabId=%d gameTrackedHandle=1 retained=1",plan.roots[i].path.c_str(),Id(l.source.Get()));++completed;
   }if(completed==a.leases.size()){a.cursor=0;a.phase=Phase::Bundles;}return;
@@ -685,27 +962,30 @@ void Step(Attempt& a){
   // entire dependency closure is registered. No two-frame floor per Bundle.
   size_t inFlight=0;for(const auto& row:a.bundles)if(row.second.request.Get()&&!row.second.done)++inFlight;
   for(auto index:plan.closure){if(!budget())break;auto& b=a.bundles[index];if(b.done)continue;
-   if(b.request.Get()&&RuntimeShapes::Scalar<unsigned char>(NativeCandidate::api.done,b.request.Get())){
-    b.object=Ref::Make(Call(NativeCandidate::api.bundle,b.request.Get()),false);CheckBundle(a,index,b);--inFlight;
+   if(b.request.Get()&&RuntimeShapes::Scalar<unsigned char>(NativeBundle::api.done,b.request.Get())){
+    b.bytes={};b.object=Ref::Make(Call(NativeBundle::api.bundle,b.request.Get()),false);CheckBundle(a,index,b);--inFlight;
    }
   }
   for(auto index:plan.closure){if(!budget()||inFlight>=4)break;auto& b=a.bundles[index];if(b.request.Get())continue;
-   b.file=a.prepared->files.at(index);Require(bool(b.file),"reload candidate worker file lock lost");b.path=Ref::Make(il2cpp_string_new(plan.inputs[index].path.u8string().c_str()),false);
-   uint32_t crc=0;uint64_t offset=0;void* args[]={b.path.Get(),&crc,&offset};b.request=Ref::Make(Call(NativeCandidate::api.load,nullptr,args),false);Require(b.request.Get(),"reload native bundle request null");++inFlight;
+   if(a.prepared->rules){auto bytes=a.prepared->ruleInputs.at(index);b.bytes=NativeBundle::Array(*bytes);b.request=Ref::Make(NativeBundle::LoadMemory(b.bytes.Get(),0,true),false);}
+   else{b.file=a.prepared->files.at(index);Require(bool(b.file),"reload candidate worker file lock lost");b.path=Ref::Make(il2cpp_string_new(plan.inputs[index].path.u8string().c_str()),false);
+    uint32_t crc=0;uint64_t offset=0;void* args[]={b.path.Get(),&crc,&offset};b.request=Ref::Make(Call(NativeBundle::api.load,nullptr,args),false);}
+   Require(b.request.Get(),"reload native bundle request null");a.prepared->ruleInputs.erase(index);++inFlight;
   }
   bool complete=true;for(auto index:plan.closure)complete=complete&&a.bundles.count(index)&&a.bundles.at(index).done;
   if(complete){a.cursor=0;a.phase=Phase::Assets;}return;
  }
  case Phase::Assets:{
   size_t completed=0;for(size_t i=0;i<a.assets.size()&&budget();++i){auto& asset=a.assets[i];if(asset.done){++completed;continue;}
-   if(!asset.request.Get()){asset.label=Ref::Make(il2cpp_string_new(plan.roots[i].path.c_str()),false);void* args[]={asset.label.Get(),prefabType.Get()};asset.request=Ref::Make(Call(NativeCandidate::api.assetLoad,a.bundles.at(plan.roots[i].input).object.Get(),args),false);Require(asset.request.Get(),"reload candidate prefab request null");}
-   if(!RuntimeShapes::Scalar<unsigned char>(NativeCandidate::api.done,asset.request.Get()))continue;
-   asset.prefab=Ref::Make(Call(NativeCandidate::api.result,asset.request.Get()),false);asset.done=true;
+   if(!asset.request.Get()){asset.label=Ref::Make(il2cpp_string_new(plan.roots[i].path.c_str()),false);void* args[]={asset.label.Get(),prefabType.Get()};asset.request=Ref::Make(Call(NativeBundle::api.assetLoad,a.bundles.at(plan.roots[i].input).object.Get(),args),false);Require(asset.request.Get(),"reload candidate prefab request null");}
+   if(!RuntimeShapes::Scalar<unsigned char>(NativeBundle::api.done,asset.request.Get()))continue;
+   asset.prefab=Ref::Make(Call(NativeBundle::api.result,asset.request.Get()),false);asset.done=true;
    Require(RuntimeShapes::Alive(asset.prefab.Get())&&Id(asset.prefab.Get())!=Id(a.leases[i].source.Get()),"reload candidate prefab missing or original cache reused");++completed;
   }if(completed==a.assets.size()){a.cursor=0;a.phase=Phase::Verify;}return;
  }
  case Phase::Verify:{
   while(a.cursor<a.assets.size()&&budget()){
+   if(!a.assets[a.cursor].prefab.Get()){++a.cursor;continue;}
    if(!a.verifier)a.verifier=std::make_shared<VerifyWalk>(a.assets[a.cursor].prefab.Get(),plan,plan.roots.at(a.cursor));
    if(a.verifier->Step()){a.verifier.reset();++a.cursor;}
   }
@@ -719,6 +999,7 @@ void Step(Attempt& a){
 }
 void Frame(){
  if(!enabled||!RuntimeShapes::Main())return;
+ NativeBundle::CollectMemory();
  RetireSuperseded();
  std::shared_ptr<Prepared> next;{std::lock_guard<std::mutex> lock(mutex);next=pending;}
  if(next){
@@ -734,9 +1015,17 @@ void Frame(){
  if(a.phase==Phase::Reject){try{Drain(a);}catch(const std::exception& e){Log("[FULL-RELOAD-DRAIN-GAP] reason=%s nativeRootsRetained=1",e.what());}return;}
  if(a.phase==Phase::Drained)return;
  auto ticket=std::atomic_load(&requested);auto current=std::atomic_load(&latest);
+ if(a.phase!=Phase::Passed&&a.phase!=Phase::Reject&&a.phase!=Phase::Drained&&a.phase!=Phase::Owners&&a.phase!=Phase::Rebuild){
+  if(SelectObservedRoots(a)&&a.phase!=Phase::AwaitRequest){a.cursor=0;a.verifier.reset();a.phase=Phase::Leases;}
+ }
+ if(a.phase==Phase::AwaitRequest&&!liveParts.empty()&&current&&*current==a.prepared->pointer){
+  bool complete=false;for(const auto& part:liveParts)complete=complete||RuntimeShapes::Alive(part.second.root.Get());
+  if(complete){a.nativeStarted=GetTickCount64();a.phase=Phase::Leases;
+   Log("[FULL-RELOAD-PREWARM] key=%s loadedRoots=%zu offlineRoots=%zu resourcesNotPublished=1",a.prepared->pointer.key.c_str(),a.selectedRoots.size(),a.prepared->plan->roots.size());}
+ }
  if(ticket&&ticket->config&&ticket->pointer==a.prepared->pointer&&current&&*current==ticket->pointer&&a.phase==Phase::AwaitRequest){
   a.requestClock=ticket->clock;a.nativeStarted=GetTickCount64();a.phase=Phase::Leases;
-  Log("[FULL-RELOAD-LOAD] key=%s F10Received=1 stableWorldGate=0",a.prepared->pointer.key.c_str());
+  Log("[FULL-RELOAD-LOAD] key=%s reloadShortcutReceived=1 stableWorldGate=0",a.prepared->pointer.key.c_str());
  }
  if(ticket&&ticket->config&&ticket->pointer==a.prepared->pointer&&current&&*current==ticket->pointer&&(a.phase==Phase::Ready||a.phase==Phase::Passed)){
   a.prepared->base=generation.load();a.prepared->controls=ticket->controls;a.prepared->config=ticket->config;
@@ -744,14 +1033,20 @@ void Frame(){
   std::shared_ptr<const Ticket> expected=ticket;std::atomic_compare_exchange_strong(&requested,&expected,std::shared_ptr<const Ticket>{});
  }
  if(a.phase==Phase::Ready||a.phase==Phase::Passed)return;
- auto start=NativeCandidate::Clock();
+ auto start=NativeBundle::Clock();
  try{
-  for(unsigned i=0;i<16&&NativeCandidate::Ms(start)<2.;++i){auto phase=a.phase;auto operation=NativeCandidate::Clock();Step(a);a.costs[int(phase)]+=NativeCandidate::Ms(operation);
+  for(unsigned i=0;i<16&&NativeBundle::Ms(start)<2.;++i){auto phase=a.phase;auto operation=NativeBundle::Clock();Step(a);a.costs[int(phase)]+=NativeBundle::Ms(operation);
    if(a.phase==Phase::Ready||a.phase==Phase::Passed||a.phase==phase)break;
   }
-  if(a.phase==Phase::Passed&&a.requestClock){Log("[FULL-RELOAD-LATENCY] key=%s requestToCommitMs=%.6f frameMainMs=%.6f runtimeRebuild=0",a.prepared->plan->key.c_str(),NativeCandidate::Ms(a.requestClock),NativeCandidate::Ms(start));
+  if(a.phase==Phase::Passed&&a.requestClock){Log("[FULL-RELOAD-LATENCY] key=%s requestToCommitMs=%.6f frameMainMs=%.6f rulesMaterializedOnWorker=%d",a.prepared->plan->key.c_str(),NativeBundle::Ms(a.requestClock),NativeBundle::Ms(start),int(bool(a.prepared->rules)));
    for(const auto& cost:a.costs)Log("[FULL-RELOAD-NATIVE-COST] phase=%d mainMs=%.6f",cost.first,cost.second);a.requestClock=0;}
- }catch(const std::exception& e){a.error=e.what();a.phase=Phase::Reject;std::atomic_store(&failedKey,std::make_shared<const std::string>(a.prepared->pointer.key));Log("[FULL-RELOAD-REJECT] phase=native reason=%s previousGenerationRetained=%u",e.what(),generation.load());}
- auto ms=NativeCandidate::Ms(start);if(ms>4)Log("[FULL-RELOAD-FRAME] phase=%d mainMs=%.6f",int(a.phase),ms);
+ }catch(const std::exception& e){a.error=e.what();
+  // A subsequent F10 can fail owner preflight on an already committed graph.
+  // Its routes, lazy templates and Bundle containers are still the active
+  // generation. Keep them reusable; rebuilding the same CABs would collide.
+  if(std::atomic_load(&activeNative).get()==&a){a.phase=Phase::Passed;a.requestClock=0;a.owners.clear();a.mutated=0;}
+  else{a.phase=Phase::Reject;std::atomic_store(&failedKey,std::make_shared<const std::string>(a.prepared->pointer.key));}
+  Log("[FULL-RELOAD-REJECT] phase=native reason=%s previousGenerationRetained=%u",e.what(),generation.load());}
+ auto ms=NativeBundle::Ms(start);if(ms>4)Log("[FULL-RELOAD-FRAME] phase=%d mainMs=%.6f",int(a.phase),ms);
 }
 } // namespace FullResourceReload

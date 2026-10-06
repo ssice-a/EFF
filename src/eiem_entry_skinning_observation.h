@@ -268,8 +268,6 @@ void ReadGeometry(unsigned seq, void *mesh, const Expected &expected, const Vert
     });
   } else Log("[DEBUG-skin-v12-GAP] seq=%u capability=decoded-indices reason=method-unavailable", seq);
 }
-#include "eiem_entry_native_skin_upload_observation.h"
-#include "eiem_entry_native_render_observation.h"
 void ReadRenderer(void *renderer, const char *phase) {
   if (!enabled || !renderer || samples.load() >= sampleLimit) return;
   // A Renderer passed to _Init may be an ordinary MeshRenderer. Inspect its
@@ -289,8 +287,6 @@ void ReadRenderer(void *renderer, const char *phase) {
   if (!packages) return;
   auto expected = Match(*packages, meshName);
   if (!expected.mesh) return;
-  NativeUpload::Guard([&] { NativeUpload::Remember(renderer, mesh, expected); }, "registration");
-  NativeRender::Guard([&] { NativeRender::Remember(mesh, expected); }, "layout-registration");
   unsigned seq = 0;
   {
     std::lock_guard<std::mutex> lock(sampleMutex);
@@ -468,7 +464,5 @@ void InstallReadback(void **assemblies, size_t count) {
   Require(Install(renderer, "set_bones", {"UnityEngine.Transform[]"}, "System.Void", false,
       (void *)SetBones, (void **)&setBones), "bone setter observation hook absent");
   Log("[DEBUG-skin-v10-READY] maxSamples=%u writes=0 nativeReplacementRoute=serialized-inputs", sampleLimit);
-  NativeUpload::Guard([&] { NativeUpload::Install(object); }, "installation");
-  NativeRender::Guard([&] { NativeRender::Install(); }, "installation");
 }
 } // namespace SkinningObservation

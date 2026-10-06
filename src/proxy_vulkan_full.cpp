@@ -296,7 +296,9 @@ static void EnableGfxTraceBeforeVulkanStarts()
 #if defined(EIEM_GFXTRACE_CAPTURE_PATH)
     SetEnvironmentVariableW(L"GFXTRACE_CAPTURE_PATH", EIEM_GFXTRACE_CAPTURE_PATH);
 #else
-    SetDefaultEnvironmentVariable(L"GFXTRACE_CAPTURE_PATH", L"E:\\renderdoc\\captures\\Endfield\\endfield");
+    // A user-defined path or capture-build override takes precedence. The
+    // portable fallback is relative to the launcher's working directory.
+    SetDefaultEnvironmentVariable(L"GFXTRACE_CAPTURE_PATH", L"endfield");
 #endif
 }
 

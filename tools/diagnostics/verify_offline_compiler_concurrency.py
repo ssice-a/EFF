@@ -19,7 +19,7 @@ def run(args):
     key=before.decode().splitlines()[1].split('\t')[0]
     shutil.copytree(args.cache/'generations'/key,cache/'generations'/key)
     (cache/'current.tsv').write_bytes(before)
-    command=[str(args.compiler.resolve()),str(author),str(args.baseline.resolve()),str(cache),str(args.assembly.resolve())]
+    command=[str(args.compiler.resolve()),str(author),str(args.baseline.resolve()),str(cache)]
     flags=getattr(subprocess,'CREATE_NO_WINDOW',0)
     def once():
         result=subprocess.run(command,capture_output=True,text=True,encoding='utf-8',errors='replace',creationflags=flags,timeout=120)
@@ -73,5 +73,5 @@ def run(args):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
-    for name in ('compiler','author','baseline','cache','assembly','output'):parser.add_argument('--'+name,type=Path,required=True)
+    for name in ('compiler','author','baseline','cache','output'):parser.add_argument('--'+name,type=Path,required=True)
     run(parser.parse_args())

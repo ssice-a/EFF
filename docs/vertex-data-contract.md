@@ -75,7 +75,7 @@
 实现入口：`src/eiem_mesh_frame_storage.h`、`src/eiem_mesh_input_builder.h` 与
 `tools/nativepack/mesh.py` / `delta_apply.py`。真实源 Mesh 回归见
 `tools/diagnostics/shaped_frame_writer_regression.cpp`；抓帧对照与正式部署的验证边界见
-[DLL 原生输入验证](dll-resource-input-validation.md)。
+[当前热重载验收](hot-reload-testing.md)；离线/源码检查入口见[代码架构](code-architecture.md)。
 
 ## 缺失切线导出生成（2026-09-07，0.11.1）
 

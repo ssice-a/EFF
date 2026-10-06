@@ -75,10 +75,11 @@ std::shared_ptr<Candidate> Validate(std::shared_ptr<const std::vector<Package>> 
   result->controls=RuntimeControls::Prepare(next,config);
   result->config=EiemEntrySettings::Prepare(config);
   if(auto inputs=std::atomic_load(&substitutions)) {
-    Require(next->size()==1 && !inputs->inputContractDigest.empty() && inputs->inputContractDigest==EiemNativeInput::InputContractDigest(next->front()),
-            "configuration reload requires a matching version-3 native input table");
+    auto composed=EiemComposedPackage::Compose(*next,inputs->composed);
+    Require(!inputs->inputContractDigest.empty() && inputs->inputContractDigest==EiemNativeInput::InputContractDigest(composed),
+            "configuration reload requires a matching native input contract");
     auto clone=std::make_shared<EiemNativeInput::InputSubstitutions>(*inputs);
-    clone->generation=result->base+1;clone->packageDigest=EiemNativeInput::PackageDigest(next->front());result->inputs=clone;
+    clone->generation=result->base+1;clone->packageDigest=EiemNativeInput::PackageDigest(composed);result->inputs=clone;
   }
   Require(result->base==generation.load(),"reload generation changed during preparation");
   return result;
@@ -124,4 +125,4 @@ void Commit() {
   } catch(const std::exception& e) {Log("[ENTRY-RELOAD] commitRejected reason=%s previousGenerationRetained=%u",e.what(),generation.load());Observe([&]{ReloadObservation::Committed(probeStart,false);});}
 }
 } // namespace EntryReload
-void CommitPendingReload() {EntryReload::Commit();NativeCandidate::Frame();FullResourceReload::Frame();}
+void CommitPendingReload() {EntryReload::Commit();FullResourceReload::Frame();}

@@ -1,8 +1,8 @@
 ﻿# 物理骨骼与碰撞体：三端设计契约
 
-状态：目标设计。当前实现范围以[文档索引](README.md)、[Physics 运行时重构边界](physics-runtime-redesign.md)、[Physics 作者 v5](physics-authoring-v5.md)及[源作者 v2](physics-authoring-v2.md)为准。
+状态：目标设计。当前实现范围以[文档索引](README.md)、[代码架构](code-architecture.md)、[Physics 作者 v5](physics-authoring-v5.md)及[源作者 v2](physics-authoring-v2.md)为准。Physics 编解码保留为作者支持，尚未接入当前生产宿主的游戏模拟链。
 本文描述完整链路要求，不把设计目标、源码草稿或宿主测试当作游戏能力。
-沿用[资源替换职责](refactor-resource-replacement.md)、[共享骨架绑定](shared-skeleton-binding.md)和[作者状态](author-state-materials.md)。
+资源、实例骨骼及玩家数值边界沿用[领域模型](../CONTEXT.md)和[完整装配契约](full-render-assembly-reload.md)。
 
 ## 1. 结论与范围
 
@@ -23,7 +23,7 @@
 
 ## 2. 实现与证据入口
 
-当前实现状态见[文档索引](README.md)。原生方法、序列化样本、索引空间和生命周期证据
+当前实现状态见[文档索引](README.md)。历史原生方法、序列化样本、索引空间和生命周期记录只能证明对应实验；旧运行时已退休，不把后面的历史样本当作现行生产链能力。
 
 ## 3. chain2 / RE 编辑器：参考什么，不参考什么
 
@@ -78,7 +78,7 @@ chain2 的数值、标志位、哈希规则和约束模型都属于 RE 的数据
 已有资源的局部槽位包括零权重槽仍须保留。新使用的源骨骼可追加；全新骨骼还需要创建实例节点、
 生成正确的新 bind pose，并进入实际被游戏消费的动画/蒙皮映射。
 基础索引关系见 [Unity bindposes 文档](https://docs.unity3d.com/6000.0/Documentation/ScriptReference/Mesh-bindposes.html)；
-本项目不同部位绑定空间的实测约束以 [共享骨架记录](shared-skeleton-binding.md) 为准。
+当前逐 Mesh 槽序、实例骨骼与新增节点约束见[完整装配契约](full-render-assembly-reload.md)。
 
 下图是**待验证的接入契约**，不是声称已查明游戏每个函数的实际顺序：
 
@@ -144,7 +144,7 @@ INI 只组织引用，不要求用户填写骨骼索引、team ID 或 AB 包哈�
 
 ### 5.3 Skeleton 文件需先修好的内容
 
-本节描述后续原生 Skeleton/Physics 装配目标。当前静态 Mesh 阶段只复用游戏已装配骨骼，明确支持范围以[共享骨架绑定](shared-skeleton-binding.md)为准。
+本节描述后续原生 Skeleton/Physics 装配目标。当前 Mesh 装配使用游戏原生骨架引用，逐 Mesh 核验槽序；支持边界以[完整装配契约](full-render-assembly-reload.md)为准，不能把本文的新节点目标写成现行能力。
 Physics 引用闭包与整套骨架/动画重绑定仍未完成。
 
 保留同一个资源格式和一套读写语义，但补齐：

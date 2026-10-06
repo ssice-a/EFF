@@ -39,7 +39,7 @@ int main(int argc, char** argv) {
     std::set<std::string> filenames;
     for (const auto& path : paths) {
       Require(filenames.insert(path.filename().u8string()).second, "duplicate input filename");
-      auto bundle = EndfieldInput::Decode(Read(path), 512ull * 1024 * 1024);
+      auto bundle = EndfieldInput::Decode(Read(path));
       for (const auto& member : bundle.members) {
         Require(members.emplace(member.name, std::make_pair(audits.size(), member.bytes.size())).second,
                 "duplicate input member identity");

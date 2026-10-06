@@ -1,5 +1,9 @@
 #pragma once
-#include "eiem_mod_document.h"
+#include "eiem_expression.h"
+#include "eiem_file_io.h"
+#include <cstring>
+#include <vector>
+#include <stdexcept>
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "lua.h"
@@ -280,7 +284,7 @@ public:
   bool LoadFile(const std::string &modIni, const std::string &relative) {
     try {
       namespace fs = std::filesystem;
-      if (!EiemModRelativeFilePath(relative)) throw std::runtime_error("Invalid UI relative path");
+      if (!EiemRelativeFilePath(relative)) throw std::runtime_error("Invalid UI relative path");
       auto root = fs::canonical(fs::absolute(fs::u8path(modIni)).parent_path());
       auto path = fs::canonical(root / fs::u8path(relative));
       auto part = path.begin();

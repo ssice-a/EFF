@@ -56,6 +56,30 @@ inline InputFileStamp FileStamp(const std::filesystem::path& path) {
 inline bool SameStamp(const InputFileStamp& a, const InputFileStamp& b) {
   return a.bytes == b.bytes && a.written == b.written;
 }
+// Native asynchronous loads may reopen frozen startup/generation paths. Hold
+// the verified file against overwrite and deletion for the consumer lifetime.
+struct FileHold {
+  HANDLE handle=INVALID_HANDLE_VALUE;
+  explicit FileHold(const std::filesystem::path& path) {
+    handle=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,
+                       FILE_ATTRIBUTE_NORMAL|FILE_FLAG_SEQUENTIAL_SCAN,nullptr);
+    Require(handle!=INVALID_HANDLE_VALUE,"generation input file lock unavailable");
+  }
+  ~FileHold(){if(handle!=INVALID_HANDLE_VALUE)CloseHandle(handle);}
+  FileHold(const FileHold&)=delete;
+  FileHold& operator=(const FileHold&)=delete;
+  Bytes BytesLocked() {
+    LARGE_INTEGER size{},zero{};
+    Require(GetFileSizeEx(handle,&size)&&size.QuadPart>0&&uint64_t(size.QuadPart)<=Bytes{}.max_size(),"generation locked input size cannot be represented");
+    Require(SetFilePointerEx(handle,zero,nullptr,FILE_BEGIN),"generation input read seek");
+    Bytes bytes(size_t(size.QuadPart));
+    for(size_t offset=0;offset<bytes.size();){
+      DWORD readBytes=0,chunk=DWORD(std::min(bytes.size()-offset,size_t(1024*1024)));
+      Require(ReadFile(handle,bytes.data()+offset,chunk,&readBytes,nullptr)&&readBytes==chunk,"generation locked input read failed");offset+=readBytes;
+    }
+    return bytes;
+  }
+};
 struct InputSubstitution {
   std::filesystem::path source, output;
   uint64_t offset = 0;
@@ -63,12 +87,14 @@ struct InputSubstitution {
   std::string inputHash, outputHash;
   InputFileStamp sourceStamp, outputStamp;
   uint32_t pathHandle = 0;
+  std::shared_ptr<FileHold> file;
 };
 struct InputSubstitutions {
   std::string packageDigest;
   std::string inputContractDigest;
   std::string control;
   unsigned generation = 0;
+  bool composed=false;
   std::map<std::pair<std::string, uint64_t>, InputSubstitution> entries;
 };
 inline std::vector<std::string> TabFields(const std::string& line) {
@@ -81,6 +107,9 @@ inline std::vector<std::string> TabFields(const std::string& line) {
     start = end + 1;
   }
 }
+inline bool TableHeader(const std::string& text,const char* name) {
+  auto fields=TabFields(text);return fields.size()==2&&fields[0]==name&&!fields[1].empty();
+}
 inline uint64_t Decimal(const std::string& value) {
   Require(!value.empty() && value.find_first_not_of("0123456789") == value.npos, "loading input decimal field");
   return std::stoull(value);
@@ -91,20 +120,21 @@ inline bool DigestText(const std::string& value) {
 inline InputSubstitutions ReadInputSubstitutions(const std::filesystem::path& table,
                                                   const std::filesystem::path& game,
                                                   const Package& package) {
-  auto data = Read(table, 1024 * 1024);
+  auto data = Read(table);
   std::istringstream lines(std::string(data.begin(), data.end()));
   std::string line;
   Require(bool(std::getline(lines, line)), "loading input table empty");
   if (!line.empty() && line.back() == '\r') line.pop_back();
   auto header = TabFields(line);
-  bool replacement = header.size() == 4 && header[1] == "1";
-  bool compatible = header.size() == 4 && header[1] == "3";
-  bool control = header.size() == 5 && header[1] == "2" &&
+  bool replacement = header.size() == 4;
+  bool compatible = replacement && header[3] == InputContractDigest(package);
+  bool control = header.size() == 5 &&
       (header[4] == "raw-copy" || header[4] == "reencoded-unchanged");
   Require((replacement || compatible || control) && header[0] == "EFF_LOADING_INPUT_SUBSTITUTIONS" &&
               header[2] == package.id && DigestText(header[3]) && header[3] == (compatible?InputContractDigest(package):PackageDigest(package)),
-          "loading input table version/package generation mismatch");
+          "loading input table structure/package content mismatch");
   InputSubstitutions result;
+  result.composed=package.composed;
   result.packageDigest = PackageDigest(package);
   if (compatible) result.inputContractDigest=header[3];
   if (control) result.control = header[4];
@@ -114,7 +144,7 @@ inline InputSubstitutions ReadInputSubstitutions(const std::filesystem::path& ta
   while (std::getline(lines, line)) {
     if (!line.empty() && line.back() == '\r') line.pop_back();
     auto fields = TabFields(line);
-    Require(fields.size() == 7 && result.entries.size() < 1024, "loading input table row/count");
+    Require(fields.size() == 7, "loading input table row fields");
     InputSubstitution entry;
     entry.source = std::filesystem::canonical(std::filesystem::u8path(fields[0]));
     entry.offset = Decimal(fields[1]); entry.inputBytes = size_t(Decimal(fields[2])); entry.inputHash = fields[3];
@@ -123,12 +153,11 @@ inline InputSubstitutions ReadInputSubstitutions(const std::filesystem::path& ta
     auto sourcePath = InputPath(entry.source.u8string()), outputPath = InputPath(entry.output.u8string());
     Require(sourcePath.rfind(gameRoot + "endfield_data/", 0) == 0 &&
                 (outputPath.rfind(cacheRoot, 0) == 0 || outputPath.rfind(offlineRoot, 0) == 0) &&
-                entry.inputBytes >= 48 && entry.inputBytes <= 64ull * 1024 * 1024 &&
-                entry.outputBytes >= 48 && entry.outputBytes <= 256ull * 1024 * 1024 &&
+                entry.inputBytes >= 48 && entry.outputBytes >= 48 &&
                 DigestText(entry.inputHash) && DigestText(entry.outputHash), "loading input table path/size/digest bounds");
     entry.sourceStamp = FileStamp(entry.source); entry.outputStamp = FileStamp(entry.output);
     auto before = EndfieldInput::Snapshot(entry.source, entry.offset);
-    auto after = Read(entry.output, 256ull * 1024 * 1024);
+    auto after = Read(entry.output);
     auto beforeHash = Sha(before.data(), before.size()), afterHash = Sha(after.data(), after.size());
     Require(before.size() == entry.inputBytes && after.size() == entry.outputBytes &&
                 Hex(beforeHash.data(), beforeHash.size()) == entry.inputHash &&
@@ -137,7 +166,7 @@ inline InputSubstitutions ReadInputSubstitutions(const std::filesystem::path& ta
     Require(result.control == "raw-copy" ? before == after : before != after,
             "loading input control/replacement byte contract mismatch");
     auto original = EndfieldInput::Decode(before);
-    auto rebuilt = EndfieldInput::Decode(after, 256ull * 1024 * 1024);
+    auto rebuilt = EndfieldInput::Decode(after);
     Require(original.members.size() == rebuilt.members.size(), "loading input member count changed");
     for (size_t i = 0; i < original.members.size(); ++i)
       Require(original.members[i].name == rebuilt.members[i].name && original.members[i].flags == rebuilt.members[i].flags,
@@ -151,7 +180,7 @@ inline InputSubstitutions ReadInputSubstitutions(const std::filesystem::path& ta
     Require(result.entries.emplace(std::make_pair(sourcePath, entry.offset), std::move(entry)).second,
             "duplicate loading input file/range");
   }
-  Require(!result.entries.empty(), "loading input table has no substitutions");
+  Require(package.composed || !result.entries.empty(), "loading input table has no substitutions");
   Require(!control || result.entries.size() == 1, "loading input control requires exactly one range");
   return result;
 }

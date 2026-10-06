@@ -2,15 +2,20 @@
 
 [English](README_EN.md)
 
-EFF（Endfield Framework）是《明日方舟：终末地》的游戏内资源替换框架。它按源资源身份替换网格、材质、贴图和声明的材质参数，并为世界角色、角色 UI、NPC 及 LOD 提供统一的 Render 规则。
+EFF（Endfield Framework）是《明日方舟：终末地》的游戏内资源替换框架。它将格式 2 作者声明编译为原生加载输入，按源资源身份替换网格、材质、贴图及材质参数。
+
+当前源码已整理为单一资源入口，默认构建 v36；2026-10-06 游戏目录已部署当前源码的 v35 配套 DLL/编译器，F10 重载、Insert 控制。历史 v35c 世界实例贴图正向更新已通过；修正版、完整装配、反向恢复及池生命周期仍待实机验收。版本与下一步见[文档索引](docs/README.md)和[热重载测试](docs/hot-reload-testing.md)。
 
 ## 功能
 
 - 支持多材质、多 submesh 网格，以及网格、材质、贴图和形态键。
-- 每个 Mod 独立保存按键切换和形态键状态。
-- Insert 打开内置管理器，F10 热重载 Mod；无效 Mod 不会破坏上一次成功加载的结果。
-- 支持冲刺期间的原生材质生命周期和完整 submesh 恢复。
-- 可在全局配置中修改管理器、热重载快捷键和镜头淡出行为。
+- 按键切换、按住形态键与玩家数值持久化；Renderer 保留游戏原生显隐仲裁。
+- 当前源码支持 Ins 控制面板：选择角色对应的 Mod、查看资源目标、按键按钮及形态滑块；物理按键只控制所选 Mod。
+- 离线候选校验完成后请求游戏加载与已适配的 owner 重建；准备失败保留当前代际。
+- 支持多角色各自加载 Mod，没有对应 Mod 的角色保持原版；F10 统一提交 Mod 增删与资源修改。需要对应角色基线，已部署 v35，仍待实机验收。
+- 可修改重载快捷键和镜头淡出行为；Lua UI 适配器尚未接入当前宿主。
+
+每个 Mod 自动带有 `source-inputs.bin`；编译器从 INI 发布小型替换规则，不再写完整 PFB 或原资源副本。DLL 按已知范围读取游戏原字节，在实例创建前应用规则；目标离线确定，见[命中与加载流程](docs/runtime-resource-discovery.md)。
 
 ## 安装
 
@@ -22,19 +27,22 @@ vulkan-1.dll               # Vulkan 代理加载器
 └─ plugin/
    ├─ eff.dll
    ├─ eff.ini              # 全局设置模板
+   ├─ package-protocol.json # DLL/编译器协议
+   ├─ tools/
+   │  └─ eff_resource_pack.exe # 配套离线编译器
    └─ mods/                 # 放置 Mod 文件夹
       └─ ExampleMod/
          ├─ mod.ini
          └─ ...
 ```
 
-把每个**包含 `mod.ini` 的文件夹**直接放入 `plugin/mods/`，不要多套一层目录。代理加载器可能与其他插件冲突；如果已有同名加载器，请先确认当前图形后端和插件加载方式。
+把各角色**包含 `mod.ini` 的文件夹**直接放入 `plugin/mods/`，不要多套一层目录。配套编译器将全部 Mod 组合成同一候选；原生编译合并各 Mod 自动生成的 `source-inputs.bin`，首次作者准备需要已有 AnimeStudio 索引，见[离线包契约](docs/offline-resource-package-format.md)。代理加载器可能与其他插件冲突；如果已有同名加载器，请先确认当前图形后端和插件加载方式。
 
 ## 游戏内使用
 
-1. 进入包含目标角色的场景，匹配的 Mod 会自动应用。
-2. 按 **Insert** 打开 EFF 管理器，选择 Mod 后使用款式按钮和形态键滑块。
-3. 添加或编辑 Mod 后按 **F10** 热重载。
+1. 用配套编译器准备完整集合的替换规则后，启动游戏进入目标角色场景，替换沿资源加载发生。
+2. 按 **Ins** 打开控制面板，选择要控制的 Mod；关闭面板后使用其声明的按键切换款式和形态。默认选中首个可控制 Mod，选择不影响其他角色的资源。当前安装的 v35 已接入此面板，游戏内交互仍待验收。
+3. 新增、删除 Mod 文件夹，或从 Blender 导出修改后，按 **F10** 请求完整集合热重载。离线构建失败保留当前画面；删除最后一个时恢复原版。已安装 DLL 的实际按键仍由游戏 `plugin/eff.ini` 决定。
 
 全局设置位于 `plugin/eff.ini`：
 
@@ -52,9 +60,9 @@ disable_camera_fade=true
 1. 使用 [AnimeStudio](https://github.com/ssice-a/AnimeStudio) 打开游戏 VFS，选择 Prefab 并导出 EFF 源包。
 2. 在 Blender 安装 [EFF Blender 插件](https://github.com/ssice-a/EFF-blender)，导入源包中的 `mod.ini`。
 3. 编辑网格、材质、贴图、款式和形态键，然后导出 Mod 文件夹。
-4. 将导出的文件夹放入 `plugin/mods/`，进游戏按 F10 检查结果。
+4. 导出到 `plugin/mods/` 后等待配套离线编译完成，进游戏按配置的重载键检查结果。
 
-制作时请配套使用当前版本的 AnimeStudio、Blender 插件和 EFF。网格、骨架、材质和物理文件都使用 EFF 格式；导出失败时请重新导出源包和 Mod。
+制作时请配套使用 AnimeStudio、Blender 插件和 EFF 的格式/ABI。当前生产作者包使用独立 Mesh、Material、Texture；Skeleton/Physics 编解码保留为作者支持，尚未接入当前游戏模拟链。分资源导出见[Blender 导出](docs/blender-scoped-resource-export.md)。
 
 ## 致谢与许可
 

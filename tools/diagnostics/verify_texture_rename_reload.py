@@ -39,7 +39,6 @@ def main():
         shutil.copytree(author, plugin / 'mods/LZY')
         shutil.copytree(args.game / 'plugin/resource-reload-baseline', plugin / 'resource-reload-baseline',
                         copy_function=immutable_copy)
-        immutable_copy(args.game / 'GameAssembly.dll', game / 'GameAssembly.dll')
         shutil.copy2(args.game / 'plugin/eff.ini', plugin / 'eff.ini')
         compiler = workspace / 'bin/resource-pack/eff_resource_pack.exe'
         (plugin / 'tools').mkdir()

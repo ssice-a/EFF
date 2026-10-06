@@ -2,17 +2,27 @@
 #include "../../src/eiem_offline_resource_package.h"
 #include <iostream>
 using namespace EiemOfflinePackage;
+Value DiagnosticObject(const Bytes& bytes,const SerializedLayout& layout,int64_t id,const std::string& cab){
+ try{return ObjectValue(bytes,layout,id);}catch(const std::exception& e){throw std::runtime_error("native object cab="+cab+" pathId="+std::to_string(id)+" class="+std::to_string(layout.types.at(layout.objects.at(id).type).classId)+": "+e.what());}
+}
+std::string IdentityName(const Bytes& bytes,const SerializedLayout& layout,int64_t id){
+ const auto& object=layout.objects.at(id);const auto& type=layout.types.at(object.type);
+ EiemNativeInput::Reader prefix(bytes,object.offset,false,object.offset+object.size);
+ for(auto child:type.nodes.at(0).children){auto start=prefix.p;SkipValue(type,child,prefix,object.offset);
+  if(type.nodes.at(child).name=="m_Name")return FieldString(bytes,{child,start,prefix.p-start});}
+ throw std::runtime_error("named resource has no m_Name");
+}
 Bytes BlockBytes(const Resource& r,const std::string& name){const auto& b=r.blocks.at(name);return Bytes(r.bytes.begin()+b.offset,r.bytes.begin()+b.offset+b.size);}
 int wmain(int argc,wchar_t** argv){try{
- Require(argc==3||argc==4,"inspect_compiled_resource_payloads <generation> <mods> [baseline]");auto folder=std::filesystem::path(argv[1]);auto m=Decode(Read(folder/"manifest.bin",manifestLimit),folder,argv[2]);
+ Require(argc==3||argc==4,"inspect_compiled_resource_payloads <generation> <mods> [baseline]");auto folder=std::filesystem::path(argv[1]);auto m=Decode(Read(folder/"manifest.bin"),folder,argv[2]);
  const auto& p=m.package;size_t meshes=0,materials=0,textures=0,originalTextures=0;std::set<std::string> foundMaterials,foundTextures;
- for(const auto& input:m.plan.inputs){auto bundle=EndfieldInput::Decode(Read(folder/"startup"/input.file,inputLimit),inputLimit);
-  if(argc==4){auto pristine=EndfieldInput::Decode(Read(std::filesystem::path(argv[3])/"inputs"/input.file,inputLimit),inputLimit);
+ for(const auto& input:m.plan.inputs){auto bundle=EndfieldInput::Decode(Read(folder/"startup"/input.file));
+  if(argc==4){auto pristine=EndfieldInput::Decode(Read(std::filesystem::path(argv[3])/"inputs"/input.file));
    for(const auto& member:pristine.members)if(Serialized(member.bytes)){auto old=ParseSerialized(member.bytes);
     auto current=std::find_if(bundle.members.begin(),bundle.members.end(),[&](const auto& r){return r.name==member.name;});Require(current!=bundle.members.end(),"original CAB absent");auto now=ParseSerialized(current->bytes);
     for(const auto& row:old.objects)if(old.types.at(row.second.type).classId==28){const auto& object=now.objects.at(row.first);
      Require(object.size==row.second.size&&std::equal(member.bytes.begin()+row.second.offset,member.bytes.begin()+row.second.offset+row.second.size,current->bytes.begin()+object.offset),"original Texture2D modified");
-     const auto& t=old.types.at(row.second.type);auto value=ObjectValue(member.bytes,old,row.first);const auto& stream=Child(t,value,"m_StreamData");const auto& path=Child(t,stream,"path");auto label=Text(path.raw.data(),path.raw.size());auto slash=label.find_last_of("/\\");if(slash!=label.npos)label=label.substr(slash+1);
+     const auto& t=old.types.at(row.second.type);auto value=DiagnosticObject(member.bytes,old,row.first,member.name);const auto& stream=Child(t,value,"m_StreamData");const auto& path=Child(t,stream,"path");auto label=Text(path.raw.data(),path.raw.size());auto slash=label.find_last_of("/\\");if(slash!=label.npos)label=label.substr(slash+1);
      auto size=Integer(Child(t,stream,"size")),offset=Integer(Child(t,stream,"offset"));if(size){auto before=std::find_if(pristine.members.begin(),pristine.members.end(),[&](const auto& r){return r.name==label;});auto after=std::find_if(bundle.members.begin(),bundle.members.end(),[&](const auto& r){return r.name==label;});
       Require(before!=pristine.members.end()&&after!=bundle.members.end()&&offset<=before->bytes.size()&&size<=before->bytes.size()-offset&&offset<=after->bytes.size()&&size<=after->bytes.size()-offset&&std::equal(before->bytes.begin()+offset,before->bytes.begin()+offset+size,after->bytes.begin()+offset),"original Texture pixels modified");
      }++originalTextures;
@@ -21,7 +31,10 @@ int wmain(int argc,wchar_t** argv){try{
   }
   for(const auto& member:bundle.members)if(Serialized(member.bytes)){auto layout=ParseSerialized(member.bytes);
    for(const auto& row:layout.objects){const auto& t=layout.types.at(row.second.type);if(t.classId!=43&&t.classId!=21&&t.classId!=28)continue;
-    auto value=ObjectValue(member.bytes,layout,row.first);auto name=Name(t,value);
+    // Unrelated Mesh encodings need not be understood to verify the declared
+    // authored fields. Check identity first, as the production index does.
+    if(t.classId==43&&!m.plan.parts.count(IdentityName(member.bytes,layout,row.first)))continue;
+    auto value=DiagnosticObject(member.bytes,layout,row.first,member.name);auto name=Name(t,value);
     if(t.classId==43){auto expected=m.plan.parts.find(name);if(expected==m.plan.parts.end())continue;
      const auto& mesh=p.meshes.at(p.parts.at(expected->second.id).mesh);const auto& resource=*p.resources.at(mesh.resource);
      for(const char* field:{"m_IndexBuffer","m_IndexFormat","m_BindPose","m_BoneNameHashes","m_Shapes"})Require(EncodeValue(t,Child(t,value,field))==BlockBytes(resource,field),"compiled Mesh author field differs: "+name+"/"+field);

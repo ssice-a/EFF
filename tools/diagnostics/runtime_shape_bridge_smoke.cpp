@@ -26,7 +26,7 @@ std::map<void*,MeshFacts> meshes;
 std::map<void*,void*> renderMeshes;
 std::map<void*,unsigned char> renderEnabled;
 unsigned enabledWrites=0;
-struct RendererArray {ArrayHeader header;void* values[128]{};} sceneRenderers;
+struct RendererArray {ArrayHeader header;void* values[128]{};} modelRenderers[2];
 void Enabled(void* renderer,bool value) {renderEnabled[renderer]=value;++enabledWrites;}
 void MakeMesh(void* mesh,const RuntimeShapes::Spec& spec) {
   MeshFacts facts;facts.vertices=int(spec.vertices);facts.shapes=int(spec.channels.size());
@@ -52,7 +52,7 @@ void* Invoke(void* method,void* self,void** args,void** exception) {
   if (method==(void*)0x307) return &meshes.at(self).vertices;
   if (method==(void*)0x308) return &renderEnabled.at(self);
   if (method==(void*)0x309) return &meshes.at(self).shapes;
-  if (method==(void*)0x310) return &sceneRenderers;
+  if (method==(void*)0x310) {Require((self==(void*)0x312||self==(void*)0x313)&&args&&args[0]==(void*)0x311&&*(unsigned char*)args[1]==1,"controls queried outside the completed model or omitted inactive children");return &modelRenderers[self==(void*)0x313?1:0];}
   if (method==(void*)0x304) return &weight;
   if (method==(void*)0x305) {weight=*(float*)args[1];++weightWrites;return nullptr;}
   return method==(void*)2?lastRoot:&mainThread;
@@ -257,9 +257,10 @@ int main(int argc,char** argv) {
     // Input sampling continues on regular frames without any Capture call.
     // Check time-based holds, release/focus behavior and cycle edges through
     // the actual polling function used by Update.
-    {
-      const auto variables=RuntimeShapes::variables;
-      const auto keys=RuntimeShapes::keys;const auto held=RuntimeShapes::held;
+      {
+        const auto variables=RuntimeShapes::variables;
+        const auto keys=RuntimeShapes::keys;const auto held=RuntimeShapes::held;
+        const auto selected=RuntimeControls::selected;RuntimeControls::selected="fixture";
       RuntimeShapes::keys.clear();RuntimeShapes::variables.clear();RuntimeShapes::held.clear();
       RuntimeShapes::variables["fixture"]={{"shape",0},{"switch",0}};
       RuntimeShapes::keys["fixture"]={
@@ -281,7 +282,8 @@ int main(int argc,char** argv) {
       Test::downKey=0;RuntimeShapes::PollControls(false,.25,Test::KeyDown);
       Test::downKey=VK_NUMPAD1;RuntimeShapes::PollControls(true,.25,Test::KeyDown);
       Require(RuntimeShapes::variables["fixture"]["switch"]==2,"cycle loses physical release edge");
-      RuntimeShapes::variables=variables;RuntimeShapes::keys=keys;RuntimeShapes::held=held;
+        RuntimeShapes::variables=variables;RuntimeShapes::keys=keys;RuntimeShapes::held=held;
+        RuntimeControls::selected=selected;
     }
     // Exercise the regular frame hook through Update and the actual weight
     // writer/readback. No Capture or capture-controller Tick occurs here.
@@ -316,7 +318,7 @@ int main(int argc,char** argv) {
       RuntimeShapes::boundCount.store(boundCount);
       Require(Test::handles.empty(),"regular frame test leaks managed handles");
     }
-    // Integration against the actual format-2 package: public scene discovery,
+    // Integration against the actual format-2 package: model completion,
     // provenance registration, every switch declaration, per-instance writes,
     // native enable arbitration, physical edges and preference round-trip.
     if (argc==2) {
@@ -340,23 +342,25 @@ int main(int argc,char** argv) {
       Require(RuntimeShapes::keys.at(package.id).size()==package.bindings.size(),"non-shape package bindings omitted");
       RuntimeShapes::api.name=(void*)0x306;RuntimeShapes::api.mesh=(void*)0x303;
       RuntimeShapes::api.vertexCount=(void*)0x307;RuntimeShapes::api.getEnabled=(void*)0x308;
-      RuntimeShapes::api.shapeCount=(void*)0x309;RuntimeShapes::api.findRenderers=(void*)0x310;
+      RuntimeShapes::api.shapeCount=(void*)0x309;RuntimeShapes::api.modelRenderers=(void*)0x310;
       RuntimeShapes::api.rendererType=(void*)0x311;RuntimeShapes::api.alive=(void*)1;
       RuntimeShapes::originalEnabledSetter=Test::Enabled;
       std::set<std::string> parts;std::map<std::string,void*> firstRenderer;
-      Test::sceneRenderers.header.count=0;uintptr_t identity=0x10000;
+      Test::modelRenderers[0].header.count=Test::modelRenderers[1].header.count=0;uintptr_t identity=0x10000;
       for (const auto& row:RuntimeShapes::specs) {
         const auto& spec=row.second;
         if (!spec.visible || !RuntimeVisibility(*spec.visible) || !parts.insert(spec.part).second) continue;
         auto mesh=(void*)identity++;Test::MakeMesh(mesh,spec);
         for(int instance=0;instance<2;++instance) {
           auto renderer=(void*)identity++;Test::renderMeshes[renderer]=mesh;Test::renderEnabled[renderer]=1;
-          Test::sceneRenderers.values[Test::sceneRenderers.header.count++]=renderer;
+          auto& model=Test::modelRenderers[instance];Require(model.header.count<128,"fixture model renderer extent");model.values[model.header.count++]=renderer;
           if (!instance) firstRenderer[spec.part]=renderer;
         }
       }
-      RuntimeShapes::Discover();
-      Require(parts.size()==9 && RuntimeShapes::bound.size()==18,"controlled garment/instance discovery incomplete");
+      RuntimeShapes::RegisterModel((void*)0x312);
+      Require(!parts.empty() && RuntimeShapes::bound.size()==parts.size(),"first model control registration incomplete");
+      RuntimeShapes::RegisterModel((void*)0x313);
+      Require(RuntimeShapes::bound.size()==parts.size()*2,"later model control registration incomplete");
       auto apply=[&] {
         for(auto& binding:RuntimeShapes::bound) RuntimeShapes::ApplyVisibility(binding.first,binding.second,RuntimeShapes::specs.at(binding.second.marker));
       };
