@@ -357,8 +357,67 @@ int main(int argc,char** argv) {
           if (!instance) firstRenderer[spec.part]=renderer;
         }
       }
+      // EntityMaterialController.Init can run before the model part captures
+      // its Renderer enabled baseline. Authored defaults must not contaminate
+      // that native snapshot or later SetRendererVisible will replay them as
+      // native disable requests and permanently suppress hidden parts.
+      auto initializeController=[&] {
+      const auto savedClass=il2cpp_object_get_class;
+      const auto savedFields=il2cpp_class_get_fields;
+      const auto savedParent=il2cpp_class_get_parent;
+      const auto savedFieldName=il2cpp_field_get_name,savedClassName=il2cpp_class_get_name,savedNamespace=il2cpp_class_get_namespace;
+      const auto savedFieldValue=il2cpp_field_get_value;
+      il2cpp_object_get_class=[](void* object)->void*{return Test::renderMeshes.count(object)?(void*)0x314:(void*)0x315;};
+      il2cpp_class_get_fields=[](void*,void** iterator)->void*{auto index=uintptr_t(*iterator);if(index>=2)return nullptr;*iterator=(void*)(index+1);return(void*)(index+1);};
+      il2cpp_field_get_name=[](void* field)->const char*{return field==(void*)1?"_items":"_size";};
+      il2cpp_field_get_value=[](void*,void* field,void* output){if(field==(void*)1)*(void**)output=&Test::modelRenderers[0];else *(int*)output=int(Test::modelRenderers[0].header.count);};
+      il2cpp_class_get_parent=[](void*)->void*{return nullptr;};
+      il2cpp_class_get_name=[](void* klass)->const char*{return klass==(void*)0x314?"SkinnedMeshRenderer":"fixture";};
+      il2cpp_class_get_namespace=[](void* klass)->const char*{return klass==(void*)0x314?"UnityEngine":"fixture";};
+      RuntimeShapes::Init((void*)0x316,(void*)0x317,nullptr,nullptr,false,nullptr);
+      il2cpp_object_get_class=savedClass;il2cpp_class_get_fields=savedFields;il2cpp_class_get_parent=savedParent;
+      il2cpp_field_get_name=savedFieldName;il2cpp_class_get_name=savedClassName;il2cpp_class_get_namespace=savedNamespace;il2cpp_field_get_value=savedFieldValue;
+      };
+      initializeController();
+      Require(RuntimeShapes::bound.size()==parts.size(),"material initialization did not register provisional controls");
+      for(const auto& binding:RuntimeShapes::bound){
+        Require(Test::renderEnabled.at(binding.first),"material Init hid an author part before the game's initial Renderer snapshot");
+        const auto& spec=RuntimeShapes::specs.at(binding.second.marker);
+        RuntimeShapes::ApplyVisibility(binding.first,RuntimeShapes::bound.at(binding.first),spec);
+        Require(Test::renderEnabled.at(binding.first),"a frame before model completion contaminated the native Renderer snapshot");
+        RuntimeShapes::SetEnabled(binding.first,false);
+        Require(!Test::renderEnabled.at(binding.first),"pending model lost a real native disable request");
+        RuntimeShapes::SetEnabled(binding.first,true);
+        Require(Test::renderEnabled.at(binding.first),"pending model filtered a native enable before baseline capture");
+      }
+      auto pendingControls=RuntimeControls::Prepare(graph,settings.Get());
+      EntryReload::ApplyControls(pendingControls,Test::KeyDown);
+      for(const auto& binding:RuntimeShapes::bound)
+        Require(Test::renderEnabled.at(binding.first),"controls-only reload contaminated an unfinished model's enabled snapshot");
+      // Native code can call the resolved Unity setter directly. Completion
+      // must capture the resulting flag, even when our setter hook did not run.
+      auto pendingDisabled=Test::modelRenderers[0].values[0];
+      Test::Enabled(pendingDisabled,false);
+      const auto nativeSnapshot=Test::renderEnabled;
       RuntimeShapes::RegisterModel((void*)0x312);
       Require(!parts.empty() && RuntimeShapes::bound.size()==parts.size(),"first model control registration incomplete");
+      for(const auto& binding:RuntimeShapes::bound) {
+        Require(binding.second.modelReady && binding.second.nativeEnabled==bool(nativeSnapshot.at(binding.first)),
+                "model completion did not capture the game's final native enabled state");
+        RuntimeShapes::SetEnabled(binding.first,nativeSnapshot.at(binding.first)!=0);
+      }
+      Require(!Test::renderEnabled.at(pendingDisabled),"completed model overrode a real native disable");
+      RuntimeShapes::SetEnabled(pendingDisabled,true);
+      // Repeated material init/model callbacks must preserve native intent,
+      // rather than read an authored hidden flag back as native disabled.
+      const auto completedFlags=Test::renderEnabled;
+      std::map<void*,bool> completedIntent;
+      for(const auto& binding:RuntimeShapes::bound) completedIntent[binding.first]=binding.second.nativeEnabled;
+      initializeController();RuntimeShapes::RegisterModel((void*)0x312);
+      Require(Test::renderEnabled==completedFlags,"late material Init changed completed control visibility");
+      for(const auto& binding:RuntimeShapes::bound)
+        Require(binding.second.modelReady && binding.second.nativeEnabled==completedIntent.at(binding.first),
+                "repeated initialization treated authored visibility as native disabled");
       RuntimeShapes::RegisterModel((void*)0x313);
       Require(RuntimeShapes::bound.size()==parts.size()*2,"later model control registration incomplete");
       auto apply=[&] {
@@ -427,7 +486,7 @@ int main(int argc,char** argv) {
       for(const auto& resource:package.resources) {auto path=temp/std::filesystem::u8path(resource.first);std::filesystem::remove(path);folders.insert(path.parent_path());}
       for(const auto& folder:folders) std::filesystem::remove(folder);
       std::filesystem::remove(temp);
-      std::cout<<"PASS actual package key integration: 9 garments, 18 initial instances, all NUMPAD cycles including 3 states, no held repeat, modifier/press, public visibility readback, native enabled intent, late-instance state, unrelated Renderer, persistent restart round-trip/domain rejection\n";
+      std::cout<<"PASS actual package key integration: material Init/frame/controls reload preserve native baseline until model completion; native-disable/repeated-init preserved; 9 garments, 18 initial instances, all NUMPAD cycles including 3 states, no held repeat, modifier/press, public visibility readback, native enabled intent, late-instance state, unrelated Renderer, persistent restart round-trip/domain rejection\n";
     }
     RENDERDOC_API_1_6_0 gpu{};
     gpu.TriggerCapture=Test::TriggerGpu;gpu.GetNumCaptures=Test::GpuCount;gpu.GetCapture=Test::GpuSaved;

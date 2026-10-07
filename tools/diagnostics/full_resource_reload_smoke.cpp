@@ -387,6 +387,7 @@ void BonePathRegression(){
 }
 void BindWorld(){
  RuntimeShapes::Bound binding;binding.renderer=RuntimeShapes::Ref::Make(oldRenderer,true);binding.mesh=RuntimeShapes::Ref::Make(oldMesh,true);binding.marker="marker";
+ binding.modelReady=true;
  RuntimeShapes::bound[oldRenderer]=std::move(binding);RuntimeShapes::boundCount=1;
 }
 void RecordPart(bool world=true){
@@ -456,6 +457,42 @@ void SynchronousOwnerRegression(){
  a=MakeAttempt();a.prepared->base=generation.load();a.owners.clear();DiscoverOwners(a);newRoot=(void*)0x1005;Rebuild(a);
  Require(a.phase==Phase::Passed&&animationRebinds==2&&animationRoot==currentRoot,
          "second F10 lost synchronous main-part ownership");Reset();
+}
+void LoadReleaseOwnershipRegression(){
+ using namespace FullResourceReload;
+ auto saved=originalPartLoading;auto initialNewRoot=newRoot;
+ struct Cleanup {PartLoadingFn saved;void* root;~Cleanup(){originalPartLoading=saved;newRoot=root;Reset();}}cleanup{saved,initialNewRoot};
+ // The real LoadModel calls virtual ReleaseModel before assigning the new
+ // config/callback and entering _DoLoad. SetupData alone does not release.
+ for(bool world:{false,true})for(bool synchronous:{false,true}){
+  newRoot=initialNewRoot;Reset();callbackTarget=world?model:instance;
+  originalPartLoading=[ ](void* self,void*,void*,void*){
+   PartReleased(self,nullptr);
+   if(completePartLoading){currentRoot=NativeCreate(source);PartFinished(self,nullptr);}
+  };
+  completePartLoading=synchronous;PartLoading(mainPart,configBox,loadCallback,nullptr);
+  if(!synchronous){
+   Require(liveParts.count(mainPart)&&liveParts.at(mainPart).ownerRecorded&&!liveParts.at(mainPart).root.handle,
+           "LoadModel's cleanup erased its pending ownership record");
+   auto pending=MakeAttempt();pending.owners.clear();bool refused=false;try{DiscoverOwners(pending);}catch(const std::exception&){refused=true;}
+   Require(refused&&!removeCalls,"F10 accepted a still-loading replacement after ReleaseModel");
+   callbackTarget=nullptr;currentRoot=NativeCreate(source);PartFinished(mainPart,nullptr);
+  }
+  animationRoot=currentRoot;
+  auto a=MakeAttempt();a.owners.clear();DiscoverOwners(a);
+  Require(a.owners.size()==1&&a.owners.front().viewPart!=world,
+          "LoadModel -> ReleaseModel -> completion lost world/display ownership");
+  Require(!world||a.owners.front().animation.Get()==animation,"world replacement skipped animation capture");
+  callbackTarget=world?model:instance;completePartLoading=true;recordPartFinished=true;
+  Rebuild(a);
+  Require(a.phase==Phase::Passed&&generation==3&&(!world||animationRebinds==1&&animationRoot==currentRoot),
+          "first F10 after LoadModel cleanup failed or left the world animation on its previous root");
+  newRoot=(void*)0x1005;a=MakeAttempt();a.prepared->base=generation.load();a.owners.clear();DiscoverOwners(a);Rebuild(a);
+  Require(a.phase==Phase::Passed&&generation==4&&(!world||animationRebinds==2&&animationRoot==currentRoot),
+          "second F10 after LoadModel cleanup lost ownership/animation");
+  PartReleased(mainPart,nullptr);
+  Require(!liveParts.count(mainPart),"standalone ReleaseModel retained an inactive ownership record");
+ }
 }
 void BoneVerificationCostRegression(){
  using namespace FullResourceReload;Reset();auto p=Prepare();BoneHierarchy hierarchy(oldRoot);
@@ -844,6 +881,7 @@ int main(){
 #endif
   auto check=[](const char* name,auto action){try{action();}catch(const std::exception& e){throw std::runtime_error(std::string(name)+": "+e.what());}};
   check("synchronous world owner",SynchronousOwnerRegression);
+  check("LoadModel release ownership",LoadReleaseOwnershipRegression);
   check("bone verification cost",BoneVerificationCostRegression);
   check("background candidate readiness",BackgroundReadyRegression);
   check("enum",EnumRegression);check("bones",BonePathRegression);check("root paths",RootPathRegression);check("managers",ManagerContractRegression);

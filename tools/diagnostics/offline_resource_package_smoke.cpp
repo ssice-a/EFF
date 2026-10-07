@@ -113,9 +113,28 @@ int main(){try{
  try{EiemNativeInput::Inspect(malformedBundle);}catch(const std::exception&){rejected=true;}Require(rejected,"truncated UnityFS structure accepted");
  auto authors=SetFixture(2).packages;auto composed=EiemComposedPackage::Compose(authors,true);
  Require(composed.materials.size()==1&&composed.meshes.size()==2&&composed.targetIndex.size()==2,"distinct character targets/shared Material not composed once");
- bool conflict=false;auto collision=authors;collision[1].materials.at("body").resource="materials/different.mat";auto resource=std::make_shared<Resource>();resource->kind=2;resource->bytes={9};collision[1].resources.emplace("materials/different.mat",resource);
- try{EiemComposedPackage::Compose(collision,true);}catch(const std::exception&){conflict=true;}Require(conflict,"conflicting shared native Material silently replaced");
- collision=authors;collision[1].rules=collision[0].rules;conflict=false;try{EiemComposedPackage::Compose(collision,true);}catch(const std::exception&){conflict=true;}Require(conflict,"conflicting native Mesh targets silently replaced");
+ auto collision=authors;collision[1].materials.at("body").resource="materials/different.mat";auto resource=std::make_shared<Resource>();resource->kind=2;resource->bytes={9};collision[1].resources.emplace("materials/different.mat",resource);
+ auto independent=EiemComposedPackage::Compose(collision,true);
+ auto firstPart=EiemComposedPackage::Name(collision[0].id,"body"),secondPart=EiemComposedPackage::Name(collision[1].id,"body");
+ auto firstMaterial=independent.parts.at(firstPart).material,secondMaterial=independent.parts.at(secondPart).material;
+ Require(independent.materials.size()==2&&firstMaterial!=secondMaterial,"different clones of one source Material were merged");
+ Require(independent.materials.at(firstMaterial).source.path==independent.materials.at(secondMaterial).source.path&&
+         independent.materials.at(firstMaterial).source.asset==independent.materials.at(secondMaterial).source.asset&&
+         independent.resources.at(independent.materials.at(firstMaterial).resource)->bytes==authors[0].resources.at("materials/body.mat")->bytes&&
+         independent.resources.at(independent.materials.at(secondMaterial).resource)->bytes==resource->bytes,"Material clone source or part binding lost");
+ auto cloneManifest=SetFixture(2);cloneManifest.packages=collision;cloneManifest.package=independent;
+ cloneManifest.plan.author=PackageDigest(independent);cloneManifest.plan.contract=InputContractDigest(independent);cloneManifest.plan.materials.clear();cloneManifest.plan.materialMatches=2;
+ for(const auto& material:independent.materials)cloneManifest.plan.materials.emplace(material.first,EiemResourceReloadPlan::Material{"body",{{"_BaseMap",true,false,{}}}});
+ for(auto& part:cloneManifest.plan.parts)part.second.material=independent.parts.at(part.second.id).material;
+ auto cloneBytes=Encode(cloneManifest);auto cloneRead=Decode(cloneBytes,"candidate","mods");
+ Require(cloneRead.package.materials.size()==2&&cloneRead.package.parts.at(firstPart).material!=cloneRead.package.parts.at(secondPart).material&&Encode(cloneRead)==cloneBytes,"shared-template Material copies lost during candidate reader roundtrip");
+ // One Mod can restore the original clothing on one part while keeping an
+ // edited clone of the same game Material on another part.
+ auto clothing=authors[0];clothing.materials.emplace("original",clothing.materials.at("body"));clothing.materials.at("original").resource="materials/original.mat";clothing.resources.emplace("materials/original.mat",resource);
+ clothing.parts.emplace("original",clothing.parts.at("body"));clothing.parts.at("original").material="original";clothing.rules.at("body").parts.push_back("original");
+ auto sameMod=EiemComposedPackage::Compose({clothing},true);
+ Require(sameMod.materials.size()==2&&sameMod.parts.at(EiemComposedPackage::Name(clothing.id,"body")).material!=sameMod.parts.at(EiemComposedPackage::Name(clothing.id,"original")).material,"original/edited clothing Material copies rejected or aliased in one Mod");
+ collision=authors;collision[1].rules=collision[0].rules;bool conflict=false;try{EiemComposedPackage::Compose(collision,true);}catch(const std::exception&){conflict=true;}Require(conflict,"conflicting native Mesh targets silently replaced");
  auto cache=std::filesystem::temp_directory_path()/("eff-offline-smoke-"+std::to_string(GetCurrentProcessId()));auto folder=cache/"generations"/m.plan.key;std::filesystem::create_directories(folder);Save(folder/"manifest.bin",bytes);Pointer pointer{m.plan.key,Hash(bytes)};Publish(cache,pointer);
  Require(ReadCurrent(cache)==pointer&&ReadManifest(cache,pointer,"mods").plan.author==m.plan.author,"atomic publication not readable");bad=bytes;bad.back()^=1;Save(folder/"manifest.bin",bad);rejected=false;try{ReadManifest(cache,pointer,"mods");}catch(const std::exception&){rejected=true;}Require(rejected&&ReadCurrent(cache)==pointer,"changed payload bypassed published SHA");
  Save(folder/"manifest.bin",bytes);auto author=m.package;author.root=cache/"mods/LZY";std::filesystem::create_directories(author.root);

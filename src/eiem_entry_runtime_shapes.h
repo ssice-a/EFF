@@ -36,6 +36,7 @@ struct Bound {
   std::string marker;
   std::map<std::string,int> indices;
   bool nativeEnabled = true;
+  bool modelReady = false;
 };
 struct Snapshot { Ref mesh; };
 struct CaptureScope {
@@ -525,7 +526,7 @@ void SetEnabled(void* renderer,bool nativeRequest) {
         const auto& spec=specs.at(it->second.marker);
         if (spec.visible) {
           it->second.nativeEnabled=nativeRequest;
-          output=nativeRequest && spec.visible->Evaluate(variables.at(spec.package))!=0;
+          output=nativeRequest && (!it->second.modelReady || spec.visible->Evaluate(variables.at(spec.package))!=0);
         }
       }
     }
@@ -533,7 +534,7 @@ void SetEnabled(void* renderer,bool nativeRequest) {
   originalEnabledSetter(renderer,output);
 }
 void ApplyVisibility(void* renderer,Bound& binding,const Spec& spec) {
-  if (!spec.visible) return;
+  if (!spec.visible || !binding.modelReady) return;
   bool authorVisible=spec.visible->Evaluate(variables.at(spec.package))!=0;
   bool target=binding.nativeEnabled && authorVisible;
   if ((Scalar<unsigned char>(api.getEnabled,renderer)!=0)==target) return;
@@ -543,11 +544,18 @@ void ApplyVisibility(void* renderer,Bound& binding,const Spec& spec) {
   Log("[CONTROL-RUNTIME-VISIBILITY] package=%s part=%s renderer=%p authorVisible=%d nativeEnabled=%d enabled=%d",
       spec.package.c_str(),spec.part.c_str(),renderer,int(authorVisible),int(binding.nativeEnabled),int(target));
 }
-void RegisterRenderer(void* renderer,void* mesh) {
+void RegisterRenderer(void* renderer,void* mesh,bool modelReady=true) {
   if (registrationPaused) return;
   if (auto spec=Match(mesh)) {
     Bind(renderer,mesh,*spec);
-    ApplyVisibility(renderer,bound.at(renderer),*spec);
+    auto& binding=bound.at(renderer);
+    if(modelReady && !binding.modelReady) {
+      // Until the game has finished its model initialization, native reads
+      // and writes remain unfiltered so its initial enable snapshot is clean.
+      if(spec->visible) binding.nativeEnabled=Scalar<unsigned char>(api.getEnabled,renderer)!=0;
+      binding.modelReady=true;
+    }
+    ApplyVisibility(renderer,binding,*spec);
   }
 }
 bool CurrentGeneration() {
@@ -658,7 +666,9 @@ void Init(void* self, void* renderers, void* configs, void* custom, bool skip, v
       for (;c;c=il2cpp_class_get_parent(c)) { auto n=il2cpp_class_get_name(c); auto ns=il2cpp_class_get_namespace(c); skin|=n && ns && !strcmp(n,"SkinnedMeshRenderer") && !strcmp(ns,"UnityEngine"); }
       if (!skin) continue;
       auto mesh=SourceMesh(renderer);
-      RegisterRenderer(renderer,mesh);
+      // Material controllers can initialize before BaseModelViewPart saves
+      // Renderer enabled state. Complete-model callbacks activate filtering.
+      RegisterRenderer(renderer,mesh,false);
     }
   } catch(const std::exception& e) { Log("[SHAPE-RUNTIME-GAP] registration=%s",e.what()); }
 }

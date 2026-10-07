@@ -147,6 +147,14 @@ PartFinishedFn originalPartFinished=nullptr;
 PartFinishedFn originalBasePartFinished=nullptr,originalPartReleased=nullptr;
 using PartLoadingFn=void(*)(void*,void*,void*,void*);
 PartLoadingFn originalPartLoading=nullptr;
+struct PartLoadScope {
+ void* part;PartLoadScope* previous;
+ static thread_local PartLoadScope* current;
+ explicit PartLoadScope(void* value):part(value),previous(current){current=this;}
+ ~PartLoadScope(){current=previous;}
+ static bool Contains(void* value){for(auto scope=current;scope;scope=scope->previous)if(scope->part==value)return true;return false;}
+};
+inline thread_local PartLoadScope* PartLoadScope::current=nullptr;
 using PartConfiguredFn=void(*)(void*,void*,void*);
 PartConfiguredFn originalPartConfigured=nullptr;
 using PartAddedFn=void(*)(void*,void*,void*);
@@ -229,7 +237,7 @@ void PartAdded(void* self,void* part,void* info){
  }catch(const std::exception& e){liveParts[part].ownershipError=e.what();Log("[FULL-RELOAD-PART-GAP] reason=%s",e.what());}
 }
 void PartLoading(void* self,void* data,void* callback,void* info){
- RecordPartLoad(self,callback);originalPartLoading(self,data,callback,info);
+ PartLoadScope loading(self);RecordPartLoad(self,callback);originalPartLoading(self,data,callback,info);
 }
 void PartConfigured(void* self,void* data,void* info){
  // Display callers also use SetupData -> StartSyncLoad directly, without
@@ -263,7 +271,14 @@ void PartReleased(void* self,void* info){
  // ReleaseModel can return a still-alive root to the game's path pool.
  // It is no longer a live owner; native captures retain their own snapshots.
  for(const auto& renderer:renderers)RuntimeShapes::bound.erase(renderer.Get());
- RuntimeShapes::boundCount.store(unsigned(RuntimeShapes::bound.size()));liveParts.erase(self);++ownerRevision;
+ RuntimeShapes::boundCount.store(unsigned(RuntimeShapes::bound.size()));
+ auto live=liveParts.find(self);
+ if(PartLoadScope::Contains(self)&&live!=liveParts.end()){
+  // LoadModel releases the old root before starting its replacement. Keep
+  // the incoming load's owner, but retire every reference to the old root.
+  live->second.root={};live->second.path.clear();live->second.persistent=false;
+ }else liveParts.erase(self);
+ ++ownerRevision;
 }
 void* CurrentRoot(const Owner& owner){return owner.viewPart?ReadObject(owner.component.Get(),"m_model","UnityEngine.GameObject"):Call(api.getModel,owner.component.Get());}
 void RemoveOwner(const Owner& owner){auto component=owner.component.Get();auto method=owner.viewPart?il2cpp_object_get_virtual_method(component,api.partRelease):api.remove;

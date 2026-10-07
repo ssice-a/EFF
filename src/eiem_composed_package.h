@@ -63,7 +63,7 @@ inline Package Compose(const std::vector<Package>& authors,bool forceSet=false) 
   std::sort(ordered.begin(),ordered.end(),[](auto a,auto b){return a->id<b->id;});
   std::string identity="EFF_COMPOSED_AUTHOR_1\n";
   std::map<std::string,std::string> textureAliases;
-  std::map<Identity,std::pair<std::string,std::string>> materialSources;
+  std::map<std::pair<Identity,std::string>,std::string> materialCopies;
   for(const auto* source:ordered) {
     const auto& p=*source;const auto prefix=Prefix(p.id);
     identity+=p.id+":"+p.root.filename().u8string()+":"+PackageDigest(p)+"\n";
@@ -80,10 +80,10 @@ inline Package Compose(const std::vector<Package>& authors,bool forceSet=false) 
       auto copy=m.second;copy.resource=resourceName(copy.resource);
       std::string fingerprint=ResourceDigest(*p.resources.at(m.second.resource));
       for(auto& slot:copy.textures) {slot.second=textures.at(slot.second);fingerprint+='\n'+slot.first+":"+slot.second;}
-      auto candidate=prefix+m.first;auto alias=materialSources.emplace(copy.source,std::make_pair(candidate,fingerprint));
-      Require(alias.second || alias.first->second.second==fingerprint,
-              "conflicting shared Material override: "+copy.source.path+" / "+copy.source.asset+" (Mod "+p.id+")");
-      materials[m.first]=alias.first->second.first;
+      // A source Material is a clone template. Only identical authored
+      // copies may share an object; different part bindings stay independent.
+      auto candidate=prefix+m.first;auto alias=materialCopies.emplace(std::make_pair(copy.source,fingerprint),candidate);
+      materials[m.first]=alias.first->second;
       if(alias.second) result.materials.emplace(candidate,std::move(copy));
     }
     for(const auto& part:p.parts) {

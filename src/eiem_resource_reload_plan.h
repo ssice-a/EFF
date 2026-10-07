@@ -307,12 +307,14 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
   auto cab=m.substr(0,36);Require(m==cab+".resS"&&plan.names.members.count(cab),"reload unknown stream grammar");plan.names.members.emplace(m,plan.names.members.at(cab)+".resS");
  }
  std::map<std::string,size_t> memberInput;std::map<NativeReference,Texture> textures;
- std::map<Identity,Material> materials;std::vector<std::tuple<Identity,std::vector<std::pair<std::string,NativeReference>>>> textureRefs;
+ std::map<std::string,Material> materials;std::vector<std::tuple<std::string,std::vector<std::pair<std::string,NativeReference>>>> textureRefs;
+ std::map<Identity,std::vector<std::string>> materialCopies;
+ for(const auto& material:package.materials)materialCopies[material.second.source].push_back(material.first);
  if(stage)stage("metadata",0,rebuilt.size());
  struct Metadata {
   std::vector<Root> roots;std::map<std::string,size_t> members;
-  std::map<NativeReference,Texture> textures;std::map<Identity,Material> materials;
-  std::vector<std::tuple<Identity,std::vector<std::pair<std::string,NativeReference>>>> refs;
+  std::map<NativeReference,Texture> textures;std::map<std::string,Material> materials;
+  std::vector<std::tuple<std::string,std::vector<std::pair<std::string,NativeReference>>>> refs;
  };
  std::vector<Metadata> metadata(rebuilt.size());
  // Discover descriptors independently. Merge in baseline order below so
@@ -332,14 +334,16 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
      local.roots.push_back(std::move(root));
     }
     if(a.classId==21){
-     auto authored=std::find_if(package.materials.begin(),package.materials.end(),[&](const auto& item){return item.second.source.path==a.path&&item.second.source.asset==a.asset;});
-     auto nativeId=authored==package.materials.end()?a.pathId:AllocateMaterialId(m.name,package,authored->first);
+     auto copies=materialCopies.find(Identity{a.path,a.asset});if(copies==materialCopies.end())continue;
+     for(const auto& section:copies->second){
+     auto nativeId=AllocateMaterialId(m.name,package,section);
      const auto& t=l.types.at(l.objects.at(nativeId).type);auto v=ObjectValue(m.bytes,l,nativeId);Material mat;mat.name=Name(t,v);
      std::vector<std::pair<std::string,NativeReference>> refs;
      for(const auto& p:ArrayValue(t,Child(t,Child(t,v,"m_SavedProperties"),"m_TexEnvs")).children){
       const auto& prop=Child(t,p,"first");refs.push_back({Text(prop.raw.data(),prop.raw.size()),Reference(t,Child(t,Child(t,p,"second"),"m_Texture"),l,m.name)});
      }
-     Identity key{a.path,a.asset};local.materials.emplace(key,std::move(mat));local.refs.push_back({key,std::move(refs)});
+     Require(local.materials.emplace(section,std::move(mat)).second,"duplicate authored Material metadata");local.refs.push_back({section,std::move(refs)});
+     }
     }
    }
    for(const auto& row:l.objects)if(l.types.at(row.second.type).classId==28){
@@ -375,7 +379,7 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
  for(const auto& refs:textureRefs){auto& mat=materials.at(std::get<0>(refs));for(const auto& p:std::get<1>(refs)){
   TextureSlot slot;slot.property=p.first;slot.nonnull=p.second.second!=0;auto found=textures.find(p.second);if(found!=textures.end()){slot.local=true;slot.texture=found->second;}mat.slots.push_back(std::move(slot));
  }}
- for(const auto& m:package.materials)plan.materials.emplace(m.first,materials.at(m.second.source));
+ for(const auto& m:package.materials)plan.materials.emplace(m.first,materials.at(m.first));
  std::set<size_t> closure;std::vector<size_t> queue;
  for(const auto& r:plan.roots)queue.push_back(r.input);
  while(!queue.empty()){auto i=queue.back();queue.pop_back();if(!closure.insert(i).second)continue;

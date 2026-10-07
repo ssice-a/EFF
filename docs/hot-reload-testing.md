@@ -6,15 +6,57 @@
 
 当前安装 SHA256：
 
-- `eff.dll`：`97433ABDC410B4B7FA48F0C0EE61AF5C79A40DD919CA89F5EFB5193A1C4D7DD7`
-- 游戏与 Blender 的 `eff_resource_pack.exe`：`382F75328305751A1E1BE264BA957C813466316B52A9327F4824364B531EA4EF`
+- `eff.dll`：`B3411FFD8727550F98BF4F44216AC868C6745A2D1CFB710F96F4C855D113F6A3`
+- 游戏与 Blender 的 `eff_resource_pack.exe`：`5BF111366B6F542CC0285F69584D9795A0368E2D7AD64A119D9488CA018C1015`
 - `package-protocol.json`：`5B63FB0A4AD0AF985BC210A40EAB94514DFC14BC589BF58F38910ECDC43B443F`
 - `mods/LZY/source-inputs.bin`：`002AA6B762053CB8C26664442B0D74349A6F411CBFBFC5F937F7E526B7CB606C`（63,063 字节）
 - 来源工具 `EndfieldVfsProbe.dll`：`0867E41098B69A6803281AB37C3B4422807565AA5BA000589977496BAF3E24B3`
 
-正式 current key：`041F12A6B63236875B259B7F2210BCEED7FE390137D3D19095119CA71364F8BB`；manifest SHA：`17301E70545F5E499E4AC7D059642C8DD4E1908713292D021FE96C3AF0C95D4C`。含离线复制指令的规则 4,414,466 字节（约 4.21 MiB），来源描述 63,063 字节。新代目录只有 manifest 与 8,908 字节 ready 摘要，没有完整 .vfs 或 startup 目录。当前有 15 个作者 Mesh、62 个输入、46 个 PFB 根、1440 个唯一原 Renderer、3055 个 Renderer Part。来源描述 76 个相关范围、60 个反向候选，不复制全局索引。
+正式 current key：`63B98D54F667330E9A2C1E6D70CE715A1774B3676458AC4AA4087BAB3C204198`；manifest SHA：`B3A5ED48C573715F1AC21AA6CB5025E3410493F831F7C940EF227A41F3EAD988`。含离线复制指令的规则 4,416,538 字节（约 4.21 MiB），来源描述 63,063 字节。新代目录只有 manifest 与 ready 摘要，没有完整 .vfs 或 startup 目录。当前有 15 个作者 Mesh、6 个材质、11 个贴图声明、7 组规则。来源描述不复制全局索引。
 
-游戏与 Blender 两处编译器已同步。用户随后自行重新导出，current 更新为上述候选；本轮没有修改或保存 .blend，没有覆盖作者资源。最后一次游戏停止时仅替换 DLL，当前 34 个 Mod、状态、配置、编译器、协议及 current 文件逐一 SHA 核验未变，未写部署备份。
+游戏与 Blender 两处编译器已同步。本轮按用户要求迁移旧 Blender 工程并重新导出 LZY，更新为上述候选。部署 DLL/编译器期间 34 个作者、配置、协议及 current 文件逐一 SHA 核验未变，未写部署备份；随后作者资源及 current 由正常导出流程发布。
+
+## 来源迁移与独立材质副本（2026-10-07）
+
+用户提供新包 `E:/EIEM_Workspace/assets/beyond/dynamicassets/gameplay/actors/postmodels/characters/chr_0032_lizhiyan_postmodel.eff`。旧 `.eiem` 来源目录已不存在。通过 Blender MCP 按精确源 Mesh 身份迁移 80 个对象的来源与骨骼元数据，将 113 处原版贴图属性改为新包短路径；保留自定义 body/clothes PNG。所选 17 个对象、顶点坐标、拓扑数量、网格组与 Armature 绑定核对未变。
+
+`MeshS_actor_lizhiyan_cloth_03_lod0_3.clothes` 单独使用 `MaterialM_actor_lizhiyan_cloth_03_original`。原游戏该材质确实引用 cloth_02 的 D/N/P/M 贴图及通用 ramp；其他部件的作者材质保持独立配置。
+
+第一次完整导出暴露同一来源的两个材质副本被组合器拒绝。回归复现后，组合器按来源与完整副本内容复用相同对象，允许不同副本独立生成；模板查询遍历全部作者副本，序列化构建保留原材质并写出各独立 PathID，热重载材质预期按作者 ID 保存。原 Mesh 目标冲突仍拒绝。相同副本复用、同 Mod 原版/自定义副本、多 Mod 不同副本及冲突 Mesh 回归通过。
+
+重新导出成功：15 个实际部件、6 个材质、11 个贴图声明、7 组替换规则、5 个切换组、LOD0–3。另 2 个选中对象按当前作者设置生成隐藏规则。完整导出含离线编译共 49.203 秒，不作为单独 Blender 编码耗时或 F10 耗时。作者目录完整回读及候选 SHA 核验通过；真实规则重建核对两个材质副本的完整字段、贴图绑定和各自槽元数据，保留原材质/未声明 Renderer，验证错误复制范围拒绝。规则回放载荷总计 411,933,317 字节，未保存完整包。
+
+迁移工程另存为 `G:/zmd/lzy/1-eff.blend`（312,177,120 字节），旧 `1.blend` SHA 核验未变。游戏未自动启动，本轮新服饰材质、启动画面及 F10 实机结果仍待用户验证。此前世界 F10 的用户反馈不能当作本轮新候选的视觉验收。
+
+## 当前工程路径与袖子切换复查（2026-10-07）
+
+用户反馈导出报错，游戏小键盘 1 切换时只缺少 `.xiu` 袖子。当前打开的 `G:/zmd/lzy/1-eff.blend` 中重新发现旧 `.eiem` 对象来源、旧 baseline 目录、116 个缺失原版贴图属性，原版 `.clothes` 独立材质也不在当前场景；尚未确定这些旧值如何恢复。调用正常材质导出校验，在所选 5 个材质上复现 `texture path does not exist`。
+
+按提供的新包精确 Mesh 来源和载荷名称重新迁移 80 个对象及骨骼来源元数据，修复全部 116 个缺失路径，保留现存自定义 PNG，恢复 `.clothes` 的独立原版材质。当前选择 16 个对象，输出 14 个实际部件、2 个隐藏规则、6 个材质、11 个贴图、7 组规则，完整导出及保存 48.922 秒。坐标、顶点/面数量、组名称/索引和选择核对未变。保存工程后用独立后台 Blender 从磁盘重新打开，确认缺失贴图属性为零、`.clothes` 原版材质和 `.xiu` 新来源已持久化；不依赖当前 MCP 场景状态宣称保存成功。
+
+实机 PID 32856 使用上一候选 `284BE5...`。日志确认 `.xiu` 已绑定且初始关闭；10:52:00 小键盘 1 已改变状态为 1，其他衣服关闭，但没有袖子重新启用的记录。因此不能将问题归因于未导出或按键无效。真实 LZY 按键回归通过（三状态、两个实例、原生禁用、晚加入实例、偏好持久化）。曾构建未部署的袖子诊断代码；随后原 DLL 的新日志已显示袖子实际启用/关闭，移除该临时观察，不增加运行时持续日志。袖子画面仍未宣称通过用户验收。
+
+随后用户要求再次导出。MCP 读取当前 17 个选择，所用 6 个材质没有缺失贴图，`.xiu` 包含在 NUMPAD1 状态 1 且没有隐藏导出标记。相同完整导出入口成功，15 个 Mesh、6 个材质、11 张贴图、7 组规则，11.291 秒，选择未变；current 为 `63B98D54F667330E9A2C1E6D70CE715A1774B3676458AC4AA4087BAB3C204198`，manifest SHA `B3A5ED48C573715F1AC21AA6CB5025E3410493F831F7C940EF227A41F3EAD988`。11:04:44 上一候选 F10 已提交 generation 2；11:06:39 新候选 F10 被 `reload model part load ownership was not recorded` 拒绝，仍保留 generation 2。11:06:41–42 袖子 5 个 Renderer 记录了 enabled=1/0 的实际循环，按键与绑定此时有效，尚无用户画面确认。不能将成功导出等同于新候选实机提交，也不能认为全部 F10 已通过。
+
+## LoadModel 清理阶段误删新归属（2026-10-07）
+
+当前游戏文件的只读元数据/原生代码核对：`BaseModelViewPart.LoadModel` 在写入新 config/callback 前，以虚调用槽 23 调用 `ReleaseModel`；Base 与 Complex 的 `ReleaseModel` 均为槽 23。`SetupData` 仅写配置，没有同一释放调用。这些 RVA/槽检查只用于诊断，不进入产品地址解析或角色规则。
+
+DLL 的 `PartLoading` 在原调用前记录新委托所属组件，而 `PartReleased` 无条件删除整个记录；真实清理顺序导致随后完成回调留下 root/path 却没有 ownerRecorded，F10 因而拒绝。此前 mock 的原 LoadModel 没有模拟该内部释放。增加同步/异步、世界/展示四种组合的真实清理顺序回归，先得到 `LoadModel's cleanup erased its pending ownership record` 失败，再修复。加载调用的局部作用域只保留当前新请求的归属；旧 root/path 与控制登记仍退休，独立 ReleaseModel 仍删除完整记录。作用域支持嵌套加载，不按角色、场景、Mod 或路径例外处理。
+
+v35/v36 事务回归通过：异步清理后仍阻止未完成加载，完成后的世界/展示归属正确；每种组合连续两次 F10 提交，世界动画两次重新绑定；独立释放无活跃记录残留。保留缺失归属拒绝检查。当前实机旧日志没有指出具体部件 ID，因此确认的是与拒绝完全一致的 DLL 缺陷及修复回归，尚需新版实机验证是否仍存在其他漏记入口。生产 v35 DLL 构建成功，用户退出游戏后已部署，SHA256 `2A2AAE7173E7C3B4A4576796FEC9406B9EF9D0DAD3F22E4E9E49D757FE75745E`。部署只替换运行时 DLL，36 个 Mod、偏好、配置、两处编译器、协议及 current 文件逐一 SHA 核验未变，无备份；游戏未自动启动。下一步为角色详情/编队页与世界场景连续两次 F10、袖子三状态切换及动画实机核验，不能以 mock 代替。
+
+## 初始显隐污染游戏 Renderer 基线（2026-10-07）
+
+用户冷启动后反馈 NUMPAD1 不显示 `.xiu`、NUMPAD4 无法切换 `.dou`。实机 PID 32200（构建 11:28:48）日志记录两个部件均已绑定、初始作者状态为隐藏；NUMPAD1 的 0/1/2 与 NUMPAD4 的 0/1 按键值正常变化，控制绑定持续为 70，没有相应重新启用记录。此会话未记录 F10 提交，不能作为上一归属修正的连续热重载实机验收。
+
+只读检查当前游戏代码，BaseModelViewPart.PostDealLoadedModel 读取 Renderer.enabled 并保存初始数组，后续显示/恢复依据此数组。原 DLL 在更早的 EntityMaterialController.Init 中就应用作者显隐，有机会使游戏把默认隐藏的部件保存成原生禁用。针对真实 LZY 作者包，回归调用生产 Init，再模拟游戏保存/重放 enabled 状态，先复现 `material Init hid an author part before the game's initial Renderer snapshot`。
+
+修正将材质初始化登记标为尚未完成模型；这一阶段的帧更新、原生 setter 及仅控制配置重载均不施加作者显隐。游戏完成回调登记准确模型根后，采样最终原生 enabled 状态再应用作者规则。重复 Init/完成回调不重新采样作者已隐藏的状态，真正的原生禁用仍保留。此处理没有按角色、部件名或按键例外，也没有新增场景扫描或修改游戏私有初始数组。
+
+真实 LZY 控制回归覆盖提前 Init、完成前帧/配置重载、直接原生禁用、完成时采样、重复初始化，以及两个模型实例的全部 NUMPAD 状态、三值循环、偏好与晚加入实例，均通过；v35/v36 的连续世界/展示重载、动画消费者、回滚和归属回归也通过。生产 v35 构建成功。确认游戏已退出后，仅部署 eff.dll，SHA256 见顶部；39 个作者、偏好、配置、编译器、协议、current 与当前候选文件逐一核验未变，无备份。Blender 工程与导出资源未修改。冷启动的 xiu/dou 视觉以及 F10 后按键/动作仍待用户实机确认，回归通过不能代替画面验收。
+
+用户随后回复“现在没问题了”，确认本轮 xiu/dou 切换问题恢复。新会话 PID 25692 的日志也记录两者 authorVisible=1、nativeEnabled=1、enabled=1，仍为 70 个控制绑定。本次确认不扩大为其他角色/NPC、多 Mod 性能或所有生命周期分支的验收。发布 v1.3.0 构建会更新版本元数据，但不自动覆盖已安装游戏 DLL。
 
 ## 本轮 37 秒与 T pose 修正
 

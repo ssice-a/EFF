@@ -4,20 +4,22 @@
 
 EFF (Endfield Framework) is an in-game resource replacement framework for *Arknights: Endfield*. It compiles format-2 author declarations into native loading inputs and replaces meshes, materials, textures and material parameters by source identity.
 
-Current source uses one resource entry and defaults to v36 builds. On 2026-10-06 the game installation was updated to the current paired v35 DLL/compiler with F10 reload and Insert controls. The historical v35c world-instance texture update passed; the new build, complete assembly changes, reverse reload and pool lifetimes still need game acceptance. See the [documentation index](docs/README.md) and [current game test](docs/hot-reload-testing.md).
+Paired releases: **EFF v1.3.0, EFF Blender v0.40.0, and AnimeStudio v1.3.0**. The default DLL archive uses the v35 layout tested in game; an additional v36 build is available for validation. Compatibility follows actual data structures and tool protocol declarations, rather than application version numbers.
 
 ## Features
 
 - Multiple material slots and submeshes, plus mesh, material, texture, and shape-key resources.
 - Key switches, held shape controls and numeric preferences, with native Renderer visibility arbitration.
 - Validated offline candidates load through native resources and supported game owner lifecycles; preparation failure retains the active generation.
-- Current source composes Mods for multiple characters; characters without a Mod retain original resources. F10 commits additions, removals and edits. Each Mod carries a static source description; game acceptance is pending.
+- Compose Mods for multiple characters; characters without a Mod retain original resources. F10 reads the complete installed set and commits additions, removals and edits.
 - Configurable reload shortcut and camera fade behavior. The Lua UI adapter is not wired to the current host.
-- Current source includes an Insert control panel with a Mod selector, source targets, key buttons and shape sliders. Physical bindings affect only the selected Mod.
+- Insert opens a control panel with a Mod selector, source targets, key buttons and shape sliders. Physical bindings affect only the selected Mod; the first controllable Mod is selected by default.
+
+`mod.ini` is the author rule entry. Offline tools locate every Prefab/Renderer using the declared source Mesh and generate `source-inputs.bin`. The compiler publishes replacement rules referencing author payloads; the DLL applies them before Unity creates resources and instances. Undeclared resources keep their original contents. Players do not need a full game extraction or the author's global index. There is no runtime whole-scene Renderer scan. See the [resource flow](docs/runtime-resource-discovery.md).
 
 ## Install
 
-Download the package from [EFF Releases](https://github.com/ssice-a/EFF/releases). Exit the game and extract the ZIP next to `Endfield.exe`:
+Download `EFF_v1.3.0_dll.zip` from [EFF Releases](https://github.com/ssice-a/EFF/releases). Exit the game and extract the ZIP next to `Endfield.exe`. When upgrading, preserve your `plugin/eff.ini`, `plugin/mods/` and Mod `state.ini` files:
 
 ```text
 d3dcompiler_47.dll         # DirectX proxy loader
@@ -27,20 +29,23 @@ vulkan-1.dll               # Vulkan proxy loader
    ├─ eff.ini              # Global settings template
    ├─ package-protocol.json # DLL/compiler protocol
    ├─ tools/
-   │  └─ eff_resource_pack.exe # Paired offline compiler
+   │  ├─ eff_resource_pack.exe # Paired offline compiler
+   │  └─ static-sources/    # Source tool and bundled runtime
    └─ mods/
       └─ ExampleMod/
          ├─ mod.ini
          └─ ...
 ```
 
-Put each character's folder **containing `mod.ini`** directly in `plugin/mods/`. Do not add another nesting level. The paired compiler combines the full installed set in one candidate. Native compilation uses each Mod's `source-inputs.bin`; initial author preparation reuses an existing AnimeStudio index; see the [package contract](docs/offline-resource-package-format.md). Keep a proxy loader only when it is the loader used by your graphics setup. Applepie Manager is optional.
+Put each character's folder **containing `mod.ini`** directly in `plugin/mods/`. Do not add another nesting level. A complete Mod includes authored Mesh/Material/Texture payloads and `source-inputs.bin`. The paired compiler combines the full installed set in one candidate; see the [package contract](docs/offline-resource-package-format.md). Check your graphics backend and plugin loading method if a proxy loader with the same filename is already installed.
 
 ## In-game use
 
-1. Prepare the complete offline package with the paired compiler, then start the game and enter the target character's scene.
-2. Press **Insert** to select the controlled Mod and use panel buttons/sliders; close the panel to use that Mod's keys. The first controllable Mod is selected automatically. Selection does not disable other characters' resources. The installed v35 DLL includes this panel; game interaction still needs acceptance.
-3. Add or remove Mod folders, or export edits from Blender, then press **F10** to reload the complete set. Failure retains the current generation; removing the last Mod restores original resources. The installed DLL still uses game `plugin/eff.ini` for its actual shortcut.
+1. Install a complete Mod and start the game. Replacement follows the game's resource loading; wait for initial preparation to finish.
+2. Press **Insert** to select the controlled Mod and use panel buttons/sliders; close the panel to use that Mod's keys. Selection does not disable other characters' resources.
+3. Add or remove Mod folders, or export edits from Blender, then press **F10** to reload the complete set. Failure retains the current generation; an empty set restores original resources. The actual shortcut comes from game `plugin/eff.ini`.
+
+F10 updates Mod resources and rules. Updating DLL code requires exiting and restarting the game. A reload affecting an unfinished asynchronous model load is refused; retry once loading completes.
 
 Global settings are stored in `plugin/eff.ini`:
 
@@ -60,7 +65,11 @@ disable_camera_fade=true
 3. Edit meshes, materials, textures, styles, and shape keys, then export the Mod folder.
 4. Export into `plugin/mods/`, wait for the paired offline compiler, then use the configured reload key in game.
 
-Use compatible data structures across AnimeStudio, Blender and EFF. Current production author packages contain independent Mesh, Material and Texture resources. Skeleton/Physics codecs remain author support and are not wired to the current game simulation chain. See [scoped Blender export](docs/blender-scoped-resource-export.md).
+Keep the extracted source package and source index for initial author preparation. Blender generates the per-Mod source description automatically. Newly extracted textures use short filenames; existing hashed filenames remain valid through their own INI/manifest references. Current production author packages contain independent Mesh, Material and Texture resources. Skeleton/Physics codecs remain author support and are not wired to the complete game simulation chain. See [scoped Blender export](docs/blender-scoped-resource-export.md).
+
+## Validation and performance
+
+On 2026-10-07 the user confirmed the current v35 build's sleeve and secondary-part switches work correctly. Native regression tests cover repeated world/display reloads, animation rebinding, multi-Mod composition and rollback. Complete in-game coverage of other characters/NPCs and performance with 20–30 Mods remain unmeasured. All-LOD export can map one authored geometry to several targets; it does not automatically generate lower-poly meshes. See the [game test record](docs/hot-reload-testing.md).
 
 ## Credits and license
 

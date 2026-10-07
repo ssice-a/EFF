@@ -16,8 +16,18 @@ env:
 
 jobs:
   build:
-    name: Build Release
+    name: Build Release (${{ matrix.abi }})
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: v35
+            folder: resource-directory-entry-v35
+            suffix: ''
+          - abi: v36
+            folder: resource-directory-entry
+            suffix: _v36
     permissions:
       contents: write
 
@@ -46,22 +56,35 @@ jobs:
 
     - name: Build Project
       run: |
-        cmd /c build.bat v36
+        cmd /c build.bat ${{ matrix.abi }}
+
+    - name: Verify native reload transaction
+      shell: pwsh
+      run: |
+        cmd /c tools\diagnostics\build_full_resource_reload_smoke.cmd ${{ matrix.abi }}
+        if ($LASTEXITCODE -ne 0) { throw 'Reload test build failed' }
+        & "bin/${{ matrix.folder }}/full_resource_reload_smoke.exe"
+        if ($LASTEXITCODE -ne 0) { throw 'Reload test failed' }
 
     - name: Set up source tool runtime
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '9.0.x'
+        dotnet-version: |
+          9.0.x
+          10.0.x
 
     - name: Build static source tool
       shell: pwsh
-      run: tools/build_static_sources.ps1
+      run: |
+        tools/build_static_sources.ps1
+        & bin/static-sources/EndfieldVfsProbe.exe --test-package-contracts
+        if ($LASTEXITCODE -ne 0) { throw 'Source contracts failed' }
 
     - name: Package Release
       shell: pwsh
       run: |
         $tag = $env:RELEASE_TAG
-        $releaseRoot = "release_pkg"
+        $releaseRoot = "release_pkg_${{ matrix.abi }}"
         $gameRoot = Join-Path $releaseRoot "game"
         $pluginRoot = Join-Path $gameRoot "plugin"
         New-Item -ItemType Directory -Force -Path $pluginRoot | Out-Null
@@ -73,14 +96,15 @@ jobs:
 
         # Install the runtime DLL and both game-root proxy loaders. Symbols and
         # diagnostic/build artifacts stay out of the distribution archive.
-        $buildRoot = "bin/resource-directory-entry"
+        $buildRoot = "bin/${{ matrix.folder }}"
         Copy-Item "$buildRoot/eff.dll", "$buildRoot/eff.ini", "$buildRoot/package-protocol.json" -Destination $pluginRoot
         Copy-Item "$buildRoot/d3dcompiler_47.dll", "$buildRoot/vulkan-1.dll" -Destination $gameRoot
         $toolsRoot = Join-Path $pluginRoot "tools"
         New-Item -ItemType Directory -Force -Path $toolsRoot | Out-Null
         Copy-Item "$buildRoot/eff_resource_pack.exe" -Destination $toolsRoot
         Copy-Item "bin/static-sources" -Destination $toolsRoot -Recurse
-        $archivePath = "EFF_${tag}_dll.zip"
+        Copy-Item README.md,README_EN.md,LICENSE,THIRD_PARTY_NOTICES -Destination $gameRoot
+        $archivePath = "EFF_${tag}_dll${{ matrix.suffix }}.zip"
         Compress-Archive -Path "$gameRoot\*" -DestinationPath $archivePath -Force
         Add-Type -AssemblyName System.IO.Compression
         $archivePathFull = Join-Path (Get-Location) $archivePath
@@ -114,7 +138,7 @@ jobs:
       with:
         tag_name: ${{ env.RELEASE_TAG }}
         files: |
-          EFF_${{ env.RELEASE_TAG }}_dll.zip
+          EFF_${{ env.RELEASE_TAG }}_dll${{ matrix.suffix }}.zip
         body_path: RELEASE_NOTES.md
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

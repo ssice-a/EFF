@@ -211,8 +211,12 @@ inline void ResolveTextureTemplates(Package& package, const std::vector<Bytes>& 
     if (texture.second.source.path.empty()) authored.insert(texture.first);
   if (authored.empty()) return;
   std::map<TextureReference, Identity> identities;
+  std::map<Identity, std::vector<const Material*>> materialCopies;
   std::set<std::string> materialCabs;
-  for (const auto& material : package.materials) materialCabs.insert(index.at(material.second.source).cab);
+  for (const auto& material : package.materials) {
+    materialCabs.insert(index.at(material.second.source).cab);
+    materialCopies[material.second.source].push_back(&material.second);
+  }
   for (const auto& asset : index)
     if (asset.second.classId == 28) identities.emplace(TextureReference{asset.second.cab, asset.second.pathId}, asset.first);
   std::map<std::string, Identity> templates;
@@ -222,16 +226,16 @@ inline void ResolveTextureTemplates(Package& package, const std::vector<Bytes>& 
       if (!materialCabs.count(member.name)) continue;
       auto layout = ParseSerialized(member.bytes);
       for (const auto& asset : SerializedAssets(member.bytes, member.name, layout)) {
-        auto material = std::find_if(package.materials.begin(), package.materials.end(), [&](const auto& item) {
-          return item.second.source.path == asset.path && item.second.source.asset == asset.asset;
-        });
-        if (material == package.materials.end()) continue;
+        auto copies = materialCopies.find(Identity{asset.path, asset.asset});
+        if (copies == materialCopies.end()) continue;
         const auto& type = layout.types.at(layout.objects.at(asset.pathId).type);
         auto value = ObjectValue(member.bytes, layout, asset.pathId);
         for (const auto& pair : ArrayValue(type, Child(type, Child(type, value, "m_SavedProperties"), "m_TexEnvs")).children) {
           const auto& name = Child(type, pair, "first");
-          auto edit = material->second.textures.find(Text(name.raw.data(), name.raw.size()));
-          if (edit == material->second.textures.end() || !authored.count(edit->second)) continue;
+          auto property = Text(name.raw.data(), name.raw.size());
+          for (const auto* material : copies->second) {
+          auto edit = material->textures.find(property);
+          if (edit == material->textures.end() || !authored.count(edit->second)) continue;
           auto pointer = PointerIdentity(type, Child(type, Child(type, pair, "second"), "m_Texture"), layout, member.name);
           auto target = identities.find(pointer);
           Require(target != identities.end(), "Texture2D schema template absent from material slot");
@@ -240,6 +244,7 @@ inline void ResolveTextureTemplates(Package& package, const std::vector<Bytes>& 
                                                found->second.asset == target->second.asset),
                   "one Texture declaration uses different native slot schemas; declare separate Texture IDs sharing the TEX file");
           templates[edit->second] = target->second;
+          }
         }
       }
     }
@@ -257,12 +262,11 @@ inline TextureInputBuild BuildTextureInput(const Bytes& source, const Package& p
   for (const auto& member : bundle.members)
     Require(sourceStreams.emplace(member.name, member.bytes.size()).second,
             "duplicate current input member");
-  std::map<Identity, const Material*> materials;
+  std::map<Identity, std::vector<std::pair<std::string, const Material*>>> materials;
   std::map<Identity, std::vector<std::pair<std::string, const Texture*>>> textures;
   TextureExpansion expansion;
   for (const auto& material : package.materials)
-    Require(materials.emplace(material.second.source, &material.second).second,
-            "multiple Material declarations for one native source");
+    materials[material.second.source].push_back({material.first, &material.second});
   for (const auto& texture : package.textures) {
     textures[texture.second.source].push_back({texture.first, &texture.second});
     auto asset = index.find(texture.second.source);
@@ -292,20 +296,21 @@ inline TextureInputBuild BuildTextureInput(const Bytes& source, const Package& p
       const auto& type = layout.types.at(object.type);
       auto value = ObjectValue(member.bytes, layout, asset.pathId);
       if (material != materials.end()) {
+        for (const auto& authored : material->second) {
         ++result.materialMatches;
-        const auto& selected = *material->second;
+        const auto& selected = *authored.second;
         for (const auto& edit : selected.textures) {
           const auto& target = index.at(package.textures.at(edit.second).source);
           requiredPreloads.insert({target.cab, target.pathId});
         }
-        auto bytes = EncodeValue(type, ApplyMaterial(type, std::move(value),
+        auto bytes = EncodeValue(type, ApplyMaterial(type, value,
             *package.resources.at(selected.resource), selected, package, index,
             layout, member.name, result.textureBindings));
-        auto declaration=std::find_if(package.materials.begin(),package.materials.end(),[&](const auto& item){return &item.second==material->second;});
-        auto id=AllocateMaterialId(member.name,package,declaration->first);
+        auto id=AllocateMaterialId(member.name,package,authored.first);
         Require(!layout.objects.count(id)&&std::none_of(added.begin(),added.end(),[&](const AddedObject& row){return row.id==id;}),"additional Material PathID collision");
         added.push_back({id,object.type,std::move(bytes)});++result.changedMaterials;
         requiredPreloads.insert({member.name,asset.pathId});
+        }
       } else {
         // Preserve the original object and stream bytes for unedited users.
         // Distinct declarations can use one native template independently.

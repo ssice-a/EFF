@@ -38,7 +38,7 @@ void ApplyControls(RuntimeControls::State& next,bool (*sample)(const EiemKeyChor
     Require(old.channels==spec.channels && old.vertices==spec.vertices,"reload live Mesh layout changed");
     const auto& values=next.variables.at(spec.package);
     float before=RuntimeShapes::Scalar<unsigned char>(RuntimeShapes::api.getEnabled,renderer)!=0;
-    float target=b.nativeEnabled && (!spec.visible || spec.visible->Evaluate(values)!=0);
+    float target=b.modelReady ? b.nativeEnabled && (!spec.visible || spec.visible->Evaluate(values)!=0) : before;
     if(before!=target) changes.push_back({renderer,-1,before,target});
     // Formerly owned channels return to zero when their binding is removed.
     // Unowned native channels retain their current value.

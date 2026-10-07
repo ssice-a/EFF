@@ -13,12 +13,28 @@ internal static class PackageContractTests
         Directory.CreateDirectory(testRoot);
         try
         {
-            var first = EiemPackageIdentity.PayloadFileName("meshes", "same", "CAB-a", 42, ".mesh");
-            var second = EiemPackageIdentity.PayloadFileName("meshes", "same", "CAB-b", 42, ".mesh");
+            Dictionary<string, string> Names() => new(StringComparer.OrdinalIgnoreCase);
+            var names = Names();
+            var first = EiemPackageIdentity.PayloadFileName("meshes", "same", "CAB-a", 42, ".mesh", names);
+            Check(Path.GetFileName(first) == "same.mesh", "Unique payload should keep the readable original name");
+            var second = EiemPackageIdentity.PayloadFileName("meshes", "same", "CAB-b", 42, ".mesh", names);
             Check(first != second, "PathID must not collide across CABs");
-            Check(first == EiemPackageIdentity.PayloadFileName("meshes", "same", "cab-A", 42, ".mesh"), "CAB case normalization");
+            Check(Path.GetFileName(second).Length == "same_12345678.mesh".Length, "Only a short suffix is needed on collision");
+            var repeated = Names();
+            Check(first == EiemPackageIdentity.PayloadFileName("meshes", "same", "cab-A", 42, ".mesh", repeated), "CAB case normalization");
+            Check(second == EiemPackageIdentity.PayloadFileName("meshes", "same", "cab-B", 42, ".mesh", repeated), "Stable suffix for the same source and export order");
+            Check(second != EiemPackageIdentity.PayloadFileName("meshes", "SAME", "CAB-c", 42, ".mesh", names), "Case-insensitive filesystem collision");
+            Reject(() => EiemPackageIdentity.PayloadFileName("meshes", "same", "cab-A", 42, ".mesh", names), "Duplicate exact source payload");
+            var occupied = Names();
+            occupied.Add(first, "occupied original"); occupied.Add(second, "occupied suffix");
+            var fallback = EiemPackageIdentity.PayloadFileName("meshes", "same", "CAB-b", 42, ".mesh", occupied);
+            Check(fallback != first && fallback != second && Path.GetFileNameWithoutExtension(fallback).EndsWith("_2"), "Short-hash collision cannot overwrite another payload");
+            var sanitized = Names();
+            Check(EiemPackageIdentity.PayloadFileName("textures", "a:b", "CAB-a", 1, ".png", sanitized) !=
+                EiemPackageIdentity.PayloadFileName("textures", "a?b", "CAB-b", 1, ".png", sanitized), "Sanitized filename collision");
+            Check(Path.GetFileName(EiemPackageIdentity.PayloadFileName("textures", "CON", "CAB-a", 2, ".png", sanitized)) == "_CON.png", "Windows device filename");
             Check(EiemPackageIdentity.SnapshotFileName("a:b") != EiemPackageIdentity.SnapshotFileName("a?b"), "Snapshot sanitation collision");
-            Reject(() => EiemPackageIdentity.PayloadFileName("meshes", "same", "", 42, ".mesh"), "Missing source identity");
+            Reject(() => EiemPackageIdentity.PayloadFileName("meshes", "same", "", 42, ".mesh", Names()), "Missing source identity");
 
             var dependencies = new EndfieldBundleDependencyIndex();
             dependencies.AddCab("CAB-a", "Bundles/a.ab", new[] { "archive:/CAB-b" });

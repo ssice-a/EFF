@@ -45,6 +45,7 @@ void Setup() {
 }
 void Add(void* object,void* mesh,const RuntimeControls::Spec& spec) {
   Renderer r;r.mesh=mesh;RuntimeShapes::Bound b{RuntimeShapes::Ref::Make(object,true),RuntimeShapes::Ref::Make(mesh,false),spec.marker,{}};
+  b.modelReady=true; // This fixture represents an already completed model.
   for(size_t i=0;i<spec.channels.size();++i) {b.indices[spec.channels[i]]=int(i);r.weights[int(i)]=0;}
   renderers[object]=r;RuntimeShapes::bound[object]=std::move(b);
 }
