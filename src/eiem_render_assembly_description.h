@@ -27,7 +27,7 @@ class Graph {
  std::set<int64_t> visiting;int64_t root=0;
  public:
  Graph(const Bytes& b,const std::string& c,int64_t go):bytes(b),cab(c),layout(ParseSerialized(b)){
-  for(auto id:layout.order){int kind=Kind(id);if(kind!=1&&kind!=4&&kind!=137&&kind!=205&&kind!=114)continue;
+  for(auto id:layout.order){int kind=Kind(id);if(kind!=1&&kind!=4&&kind!=137&&kind!=23&&kind!=33&&kind!=205&&kind!=114)continue;
    // Some unrelated script objects have opaque schemas. Do not parse them.
    if(kind==114&&!HasSchemaField(id,"useCustomRenderers"))continue;
    values.emplace(id,ObjectValue(bytes,layout,id));
@@ -36,9 +36,14 @@ class Graph {
   root=transforms.at(go);paths[root]="";Index(root);
   for(const auto& row:values)if(Kind(row.first)==1&&transforms.count(row.first)&&paths.count(transforms.at(row.first))){
    for(const auto& entry:ConstArray(Schema(row.first),Child(Schema(row.first),row.second,"m_Component")).children){
-    auto id=Local(Schema(row.first),Child(Schema(row.first),entry,"component"));components[{row.first,Kind(id)}].push_back(id);
+    auto ref=NullableReference(Schema(row.first),Child(Schema(row.first),entry,"component"),layout,cab);
+    if(ref.first!=cab||!ref.second||!layout.objects.count(ref.second))continue;
+    auto id=ref.second;components[{row.first,Kind(id)}].push_back(id);
+    if(Kind(id)==23||Kind(id)==137)components[{row.first,0}].push_back(id);
    }
   }
+  // Preserve existing SMR ordinals when a native node also has a MeshRenderer.
+  for(auto& row:components)if(row.first.second==0)std::stable_partition(row.second.begin(),row.second.end(),[&](int64_t id){return Kind(id)==137;});
  }
  int Kind(int64_t id)const{return layout.types.at(layout.objects.at(id).type).classId;}
  bool HasSchemaField(int64_t id,const char* name)const{const auto& t=Schema(id);for(auto i:t.nodes.at(0).children)if(t.nodes.at(i).name==name)return true;return false;}
@@ -49,26 +54,27 @@ class Graph {
  std::string Name(int64_t go)const{const auto& n=Child(Schema(go),Tree(go),"m_Name");return Text(n.raw.data(),n.raw.size());}
  bool Contains(int64_t id)const{return values.count(id)&&paths.count(Kind(id)==4?id:transforms.at(Pointer(id,"m_GameObject")));}
  std::string Path(int64_t transform)const{return paths.at(transform);}
- Address At(int64_t component)const{auto go=Pointer(component,"m_GameObject");const auto& list=components.at({go,Kind(component)});auto it=std::find(list.begin(),list.end(),component);Require(it!=list.end(),"assembly component absent from owner");return {Path(transforms.at(go)),unsigned(it-list.begin())};}
+ Address At(int64_t component)const{auto go=Pointer(component,"m_GameObject");auto kind=Kind(component);const auto& list=components.at({go,(kind==23||kind==137)?0:kind});auto it=std::find(list.begin(),list.end(),component);Require(it!=list.end(),"assembly component absent from owner");return {Path(transforms.at(go)),unsigned(it-list.begin())};}
  Address HelperAt(int64_t component)const{auto a=At(component);a.component=0;auto go=Pointer(component,"m_GameObject");for(auto id:components.at({go,114})){if(id==component)return a;if(HasSchemaField(id,"useCustomRenderers"))++a.component;}throw std::runtime_error("assembly helper component absent");}
  std::vector<int64_t> Objects(int kind)const{std::vector<int64_t> result;for(const auto& row:values)if(Kind(row.first)==kind&&Contains(row.first))result.push_back(row.first);return result;}
+ std::vector<int64_t> Renderers()const{auto list=Objects(137);auto other=Objects(23);list.insert(list.end(),other.begin(),other.end());return list;}
  std::vector<int64_t> RendererChildren(int64_t anchor)const{
   std::vector<int64_t> result;auto tid=transforms.at(Pointer(anchor,"m_GameObject"));
-  for(auto id:Objects(137))if(Pointer(transforms.at(Pointer(id,"m_GameObject")),"m_Father")==tid)result.push_back(id);
+  for(auto id:Renderers())if(Pointer(transforms.at(Pointer(id,"m_GameObject")),"m_Father")==tid)result.push_back(id);
   return result;
  }
  Target ReadTarget(int64_t renderer,bool extension)const{
   Target t;t.renderer=At(renderer);t.extension=extension;const auto& schema=Schema(renderer);const auto& tree=Tree(renderer);
-  for(const auto& b:ConstArray(schema,Child(schema,tree,"m_Bones")).children)t.bones.push_back(Path(Local(schema,b)));
-  auto pointer=[&](const char* field,std::string& path,bool& present){auto id=Pointer(renderer,field);present=id!=0;if(present)path=Path(id);};
-  pointer("m_RootBone",t.root,t.hasRoot);pointer("m_SkinningRoot",t.skin,t.hasSkin);
+  if(Kind(renderer)==137)for(const auto& b:ConstArray(schema,Child(schema,tree,"m_Bones")).children)t.bones.push_back(Path(Local(schema,b)));
+  auto pointer=[&](const char* field,std::string& path,bool& present){if(!HasSchemaField(renderer,field))return;auto id=Pointer(renderer,field);present=id!=0;if(present)path=Path(id);};
+  if(Kind(renderer)==137){pointer("m_RootBone",t.root,t.hasRoot);pointer("m_SkinningRoot",t.skin,t.hasSkin);}
   pointer("m_ProbeAnchor",t.probe,t.hasProbe);pointer("m_PerRendererLightingAnchor",t.lighting,t.hasLighting);return t;
  }
  bool Enabled(int64_t renderer)const{return Integer(Child(Schema(renderer),Tree(renderer),"m_Enabled"))!=0;}
  void RequirePure(int64_t renderer)const{auto go=Pointer(renderer,"m_GameObject"),tid=transforms.at(go);const auto& componentsList=ConstArray(Schema(go),Child(Schema(go),Tree(go),"m_Component"));
-  Require(componentsList.children.size()==2&&ConstArray(Schema(tid),Child(Schema(tid),Tree(tid),"m_Children")).children.empty(),"assembly extension contains native scripts/bone children");
+  Require(componentsList.children.size()==(Kind(renderer)==23?3:2)&&ConstArray(Schema(tid),Child(Schema(tid),Tree(tid),"m_Children")).children.empty(),"assembly extension contains native scripts/bone children");
  }
- NativeReference Mesh(int64_t renderer)const{return NullableReference(Schema(renderer),Child(Schema(renderer),Tree(renderer),"m_Mesh"),layout,cab);}
+ NativeReference Mesh(int64_t renderer)const{if(Kind(renderer)==23){auto it=components.find({Pointer(renderer,"m_GameObject"),33});if(it==components.end())return {cab,0};Require(it->second.size()==1,"assembly static Renderer has multiple MeshFilters");renderer=it->second.front();}return NullableReference(Schema(renderer),Child(Schema(renderer),Tree(renderer),"m_Mesh"),layout,cab);}
  private:
  void Index(int64_t tid){Require(visiting.insert(tid).second,"assembly hierarchy cycle/depth");
   const auto& schema=Schema(tid);std::map<std::string,unsigned> ordinal;
@@ -78,23 +84,26 @@ class Graph {
 };
 inline Description Build(const Bytes& pristine,const Bytes& candidate,const std::string& cab,int64_t root,
                          const Package& package,const AssetIndex& assets,const std::map<NativeReference,std::string>& markers){
- Graph before(pristine,cab,root),after(candidate,cab,root);Description d;std::set<int64_t> native;
- for(auto id:before.Objects(137))native.insert(id);
+ Graph before(pristine,cab,root),after(candidate,cab,root);Description d;std::set<int64_t> native,claimed;
+ for(auto id:before.Renderers())native.insert(id);
  for(auto id:native){Source source{cab,id,before.At(id),{}};Require(source.renderer==after.At(id),"assembly native anchor address changed");
- auto ref=before.Mesh(id);bool skip=false;
-  for(const auto& selected:package.targetIndex){auto a=assets.find(selected.first);if(a!=assets.end()&&ref==NativeReference{a->second.cab,a->second.pathId}){skip=package.rules.at(selected.second).skip;break;}}
+ auto ref=before.Mesh(id);bool skip=false;const Rule* rule=nullptr;
+  for(const auto& selected:package.targetIndex){auto a=assets.find(selected.first);if(a!=assets.end()&&ref==NativeReference{a->second.cab,a->second.pathId}){rule=&package.rules.at(selected.second);skip=rule->skip;break;}}
   if(!skip){auto target=after.ReadTarget(id,false);auto marker=markers.find(after.Mesh(id));if(marker!=markers.end())target.marker=marker->second;source.targets.push_back(std::move(target));}
-  for(auto extra:after.RendererChildren(id))if(!native.count(extra)){
+  auto children=after.RendererChildren(id);
+  if(rule&&!skip)for(size_t i=1;i<rule->parts.size();++i){auto extra=RendererObjectId(cab,package,"renderer",id,rule->parts[i]);
+   Require(std::find(children.begin(),children.end(),extra)!=children.end()&&!native.count(extra)&&claimed.insert(extra).second,"assembly extension source ownership differs");
    after.RequirePure(extra);
    auto target=after.ReadTarget(extra,true);auto marker=markers.find(after.Mesh(extra));Require(marker!=markers.end(),"assembly unowned extra Renderer");target.marker=marker->second;
    // The compiler creates pure visual nodes only; native bones/scripts survive.
    Require(after.Name(after.Pointer(extra,"m_GameObject")).find("__EFF_"+package.id+"_")!=std::string::npos,"assembly extension provenance absent");source.targets.push_back(std::move(target));
   }d.sources.push_back(std::move(source));
  }
+ for(auto id:after.Renderers())Require(native.count(id)||claimed.count(id),"assembly unowned extra Renderer");
  for(auto id:after.Objects(205)){Lod lod;lod.group=after.At(id);const auto& t=after.Schema(id);
   for(const auto& level:ConstArray(t,Child(t,after.Tree(id),"m_LODs")).children){LodLevel l;auto height=Optional(t,level,"screenRelativeHeight");if(!height)height=Optional(t,level,"screenRelativeTransitionHeight");Require(height,"assembly LOD height field absent");l.height=float(FloatValue(t,*height));
    if(auto fade=Optional(t,level,"fadeTransitionWidth"))l.fade=float(FloatValue(t,*fade));
-   for(const auto& item:ConstArray(t,Child(t,level,"renderers")).children){auto rid=after.Local(t,Child(t,item,"renderer"));Require(after.Kind(rid)==137,"assembly LOD non-SMR requires explicit descriptor");l.renderers.push_back(after.At(rid));}lod.levels.push_back(std::move(l));
+   for(const auto& item:ConstArray(t,Child(t,level,"renderers")).children){auto rid=after.Local(t,Child(t,item,"renderer"));Require(after.Kind(rid)==137||after.Kind(rid)==23,"assembly LOD Renderer type unsupported");l.renderers.push_back(after.At(rid));}lod.levels.push_back(std::move(l));
   }d.lods.push_back(std::move(lod));
  }
  for(auto id:after.Objects(114))if(after.HasSchemaField(id,"useCustomRenderers")){Helper h;h.component=after.HelperAt(id);const auto& t=after.Schema(id);h.custom=Integer(Child(t,after.Tree(id),"useCustomRenderers"))!=0;

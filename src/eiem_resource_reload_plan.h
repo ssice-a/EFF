@@ -52,7 +52,7 @@ struct Plan {
  std::vector<std::vector<MemberNamespaceRecipe>> namespaceRecipes;
  bool spanRecipes=false;std::vector<EiemResourceRecipe::Frame> frameRecipes;std::vector<std::vector<EiemResourceRecipe::Member>> memberRecipes;
 };
-inline std::vector<Source> ReadBaseline(const std::filesystem::path& directory,std::vector<std::string>& roots) {
+inline std::vector<Source> ReadBaseline(const std::filesystem::path& directory,std::vector<std::string>& roots,const std::filesystem::path& game={}) {
  auto bytes=Read(directory/"baseline.tsv");std::istringstream lines(Text(bytes.data(),bytes.size()));
  std::string line;Require(bool(std::getline(lines,line)),"reload baseline header absent");if(!line.empty()&&line.back()=='\r')line.pop_back();
  Require(TableHeader(line,"EFF_RESOURCE_RELOAD_BASELINE"),"reload baseline format differs");
@@ -63,7 +63,7 @@ inline std::vector<Source> ReadBaseline(const std::filesystem::path& directory,s
   if(row[0]=="input"){
    std::filesystem::path file=std::filesystem::u8path(row[1]);
    Require(file==file.filename()&&file.extension()==".vfs"&&files.insert(row[1]).second&&DigestText(row[2]),"reload baseline input invalid/duplicate");
-   Source source{row[1],row[2]};if(row.size()==6){auto path=std::filesystem::u8path(row[3]);Require(!path.is_absolute()&&path.u8string().find("..") ==std::string::npos,"rule original path escapes game");source.physical=directory.parent_path().parent_path()/path;source.offset=std::stoull(row[4]);source.size=std::stoull(row[5]);}sources.push_back(std::move(source));
+   Source source{row[1],row[2]};if(row.size()==6){auto path=std::filesystem::u8path(row[3]);Require(!path.is_absolute()&&path.u8string().find("..") ==std::string::npos,"rule original path escapes game");source.physical=(game.empty()?directory.parent_path().parent_path():game)/path;source.offset=std::stoull(row[4]);source.size=std::stoull(row[5]);}sources.push_back(std::move(source));
   }else{
    Require(row[0]=="root"&&row[1].rfind("assets/",0)==0&&row[1].find("..") ==std::string::npos&&row[2]=="GameObject"&&paths.insert(row[1]).second,"reload root identity invalid/duplicate");
    roots.push_back(row[1]);
@@ -115,7 +115,7 @@ template<class F> inline auto Measure(const std::function<void(const char*,doubl
 inline std::string GeometryDigest(const Package& package,const std::vector<Source>& sources){
  auto p=package;for(auto it=p.resources.begin();it!=p.resources.end();)if(it->second->kind!=1)it=p.resources.erase(it);else ++it;
  p.textures.clear();for(auto& m:p.materials)m.second.textures.clear();
- std::string key="EFF_GEOMETRY_STAGE_1/material-clones\n"+InputContractDigest(p);
+ std::string key="EFF_GEOMETRY_STAGE/mesh-filter+renderer+material-clones\n"+InputContractDigest(p);
  for(const auto& source:sources)key+='\n'+source.file+'\n'+source.hash;
  return Hash(Bytes(key.begin(),key.end()));
 }
@@ -151,13 +151,10 @@ inline std::string GeometryInputDigest(const Bytes& input,const Package& package
  auto bundle=EndfieldInput::Decode(input);std::set<std::string> members;std::set<Identity> renderTargets;
  std::map<NativeReference,Identity> selected;
  for(const auto& target:package.targetIndex){const auto& asset=assets.at(target.first);selected.emplace(NativeReference{asset.cab,asset.pathId},target.first);}
+ std::set<NativeReference> references;for(const auto& row:selected)references.insert(row.first);
  for(const auto& member:bundle.members){
   members.insert(member.name);if(!Serialized(member.bytes))continue;auto layout=ParseSerialized(member.bytes);
-  for(const auto& row:layout.objects)if(layout.types.at(row.second.type).classId==137){
-   const auto& type=layout.types.at(row.second.type);auto value=ObjectValue(member.bytes,layout,row.first);
-   auto reference=NullableReference(type,Child(type,value,"m_Mesh"),layout,member.name);auto target=selected.find(reference);
-   if(target!=selected.end())renderTargets.insert(target->second);
-  }
+  for(const auto& consumer:MeshConsumers(member.bytes,layout,member.name,references))renderTargets.insert(selected.at(consumer.mesh));
  }
  auto p=package;p.resources.clear();p.textures.clear();for(auto& m:p.materials)m.second.textures.clear();
  for(const auto& target:package.targetIndex){
@@ -178,15 +175,15 @@ inline std::string GeometryInputDigest(const Bytes& input,const Package& package
    dependency->bytes.assign(text.begin(),text.end());p.resources.emplace(mesh.resource,std::move(dependency));
   }
  }
- auto text="EFF_GEOMETRY_INPUT_1/material-clones\n"+Hash(input)+"\n"+InputContractDigest(p);return Hash(Bytes(text.begin(),text.end()));
+ auto text="EFF_GEOMETRY_INPUT/mesh-filter+renderer+material-clones\n"+Hash(input)+"\n"+InputContractDigest(p);return Hash(Bytes(text.begin(),text.end()));
 }
 inline Plan Build(const Package& authoredPackage,const std::filesystem::path& baseline,const std::filesystem::path& destination,
                   const std::string& nonce,std::function<void(size_t,size_t)> progress={},
                   std::function<void(const char*,size_t,size_t)> stage={},
-                  std::function<void(const char*,double)> cost={},const std::filesystem::path& geometryCache={},bool rulesOnly=false){
+                  std::function<void(const char*,double)> cost={},const std::filesystem::path& geometryCache={},bool rulesOnly=false,const std::filesystem::path& game={}){
  auto package=authoredPackage;
  Require(!std::filesystem::exists(destination),"reload generation directory exists");
- std::vector<std::string> rootPaths;auto sources=ReadBaseline(baseline,rootPaths);
+ std::vector<std::string> rootPaths;auto sources=ReadBaseline(baseline,rootPaths,game);
  Plan plan;plan.directory=destination;plan.author=PackageDigest(package);plan.contract=InputContractDigest(package);plan.composed=package.composed;plan.rulesOnly=rulesOnly;plan.originals=rulesOnly?sources:std::vector<Source>{};
  std::string identity=plan.author+"\n"+plan.contract+"\n"+nonce;
  std::vector<Bytes> pristineInputs(sources.size());AssetIndex assets;MeshSchemaIndex schemas;std::vector<BuiltMeshPart> meshParts;
@@ -364,9 +361,8 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
    for(const auto& member:bundle.members)if(member.name==root.cab&&Serialized(member.bytes)){
     auto l=ParseSerialized(member.bytes);
     EiemRenderAssemblyDescription::Graph graph(member.bytes,member.name,root.source);
-    for(auto id:graph.Objects(137)){
-     const auto& t=l.types.at(l.objects.at(id).type);auto renderer=ObjectValue(member.bytes,l,id);
-    auto ref=Reference(t,Child(t,renderer,"m_Mesh"),l,member.name);auto marker=markers.find(ref);
+    for(auto id:graph.Renderers()){
+    auto ref=graph.Mesh(id);auto marker=markers.find(ref);
     if(marker!=markers.end())++root.markers[marker->second];
    }
   }
@@ -390,8 +386,9 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
   if(!rulesOnly)std::filesystem::create_directories(destination/"startup");
   if(rulesOnly){plan.rendererRules.resize(sources.size());plan.startupHashes.resize(sources.size());plan.namespaceRecipes.resize(sources.size());std::map<NativeReference,Identity> targets;
    for(const auto& target:package.targetIndex){const auto& asset=assets.at(target.first);targets.emplace(NativeReference{asset.cab,asset.pathId},target.first);}
+   std::set<NativeReference> references;for(const auto& row:targets)references.insert(row.first);
    for(size_t i=0;i<sources.size();++i){auto original=EndfieldInput::Decode(ReadSource(baseline,sources[i]));for(const auto& member:original.members)if(Serialized(member.bytes)){auto l=ParseSerialized(member.bytes);
-    for(auto id:l.order)if(l.types.at(l.objects.at(id).type).classId==137){const auto& t=l.types.at(l.objects.at(id).type);auto v=ObjectValue(member.bytes,l,id);auto ref=NullableReference(t,Child(t,v,"m_Mesh"),l,member.name);auto found=targets.find(ref);if(found!=targets.end())plan.rendererRules[i].push_back({member.name,id,found->second});}
+    for(const auto& consumer:MeshConsumers(member.bytes,l,member.name,references))plan.rendererRules[i].push_back({member.name,consumer.renderer,targets.at(consumer.mesh)});
    }}
   }
   if(stage)stage("publish",0,rebuilt.size());

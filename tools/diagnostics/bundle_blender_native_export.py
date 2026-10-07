@@ -85,12 +85,10 @@ def bundle(destination, compiler=None, abi=35):
     shutil.copy2(author_core, core / 'eff_author_core.dll')
     shutil.copy2(compiler, core / 'eff_resource_pack.exe')
     (core / 'package-protocol.json').write_text(json.dumps(protocol, indent=2) + '\n', 'utf-8')
-    if protocol.get('staticSourceInputs') == _protocol_module.STATIC_SOURCE_INPUTS:
-        static_tool = ROOT / 'bin/static-sources'
-        if not (static_tool / 'EndfieldVfsProbe.exe').is_file():
-            raise FileNotFoundError('Build the static source tool with tools/build_static_sources.ps1')
-        shutil.copytree(static_tool, core / 'static-sources',
-                        ignore=shutil.ignore_patterns('*.pdb', '*.xml'))
+    source_tool = ROOT / 'bin/source-preparer/eff_source_prepare.exe'
+    if not source_tool.is_file():
+        raise FileNotFoundError('Build author source preparer with tools/build_static_sources.ps1')
+    shutil.copy2(source_tool, core / 'eff_source_prepare.exe')
     vendor = ROOT / 'bin/author-core/vendor'
     if not (vendor / 'PIL').is_dir():
         raise FileNotFoundError(

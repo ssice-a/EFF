@@ -1,53 +1,51 @@
-﻿# EFF：终末地资源替换框架
+# EFF：终末地资源替换框架
 
 [English](README_EN.md)
 
-EFF（Endfield Framework）是《明日方舟：终末地》的资源替换框架。AnimeStudio 解包、Blender 制作、EFF 在游戏加载资源前应用替换规则，组成完整制作流程。
+EFF 在《明日方舟：终末地》创建资源和实例前应用 Mod。AnimeStudio 导出来源，Blender 制作并编译独立 Mod，EFF DLL 读取结果并完成游戏内加载与热重载。
 
-本次配套发布：**EFF v1.3.0、EFF Blender v0.40.0、AnimeStudio v1.3.0**。默认 DLL 包采用已实机验证的 v35 布局；另提供 v36 构建供验证。构建布局不是作者资源的版本准入条件，兼容性以实际数据结构和配套工具协议为准。
+配套发布：**EFF v1.3.1、EFF Blender v0.40.1、AnimeStudio v1.3.1**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
 
 ## 功能
 
-- 支持多材质、多 submesh 网格，以及网格、材质、贴图和形态键。
-- 按键切换、按住形态键与玩家数值持久化；Renderer 保留游戏原生显隐仲裁。
-- Ins 控制面板：选择角色对应的 Mod、查看资源目标、按键按钮及形态滑块；物理按键只控制所选 Mod，默认选择首个可控制 Mod。
-- 离线候选校验完成后请求游戏加载与已适配的 owner 重建；准备失败保留当前代际。
-- 支持多角色各自加载 Mod，没有对应 Mod 的角色保持原版；F10 统一读取整个 mods 目录，提交新增、删除和资源修改。
-- 可修改重载快捷键和镜头淡出行为；Lua UI 适配器尚未接入当前宿主。
-
-`mod.ini` 是唯一作者规则入口。离线工具依据指定的源 Mesh 找到使用它的全部 Prefab/Renderer，每个 Mod 自动携带 `source-inputs.bin`。编译器发布引用作者资源的替换清单，DLL 在 Unity 创建资源/实例前应用规则；未声明的资源保留原版。无需解包整个游戏供玩家使用，也没有运行时全场景 Renderer 扫描。见[命中与加载流程](docs/runtime-resource-discovery.md)。
+- 多角色各自加载 Mod，没有对应 Mod 的角色保持原版。
+- 蒙皮 Mesh 和静态 MeshFilter＋MeshRenderer 使用同一 Replace、材质、贴图及显隐规则；静态 Renderer 不支持运行时形态键。
+- 一个原 Renderer 可对应多个作者部件；未声明替换的目标保留原内容。材质和贴图可以借用游戏资源或由作者新建。
+- 按键切换、形态键与玩家数值持久化；Ins 面板选择接收物理按键的 Mod，默认选择首个可控制 Mod。
+- F10 读取整个 mods 目录，统一处理增删改和空集合；沿已适配的游戏世界/展示模型生命周期重载，重新绑定动画、武器和角色音频。准备或提交失败保留当前代际。
 
 ## 安装
 
-从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v1.3.0_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和 Mod 内的 `state.ini`：
+从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v1.3.1_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和各 Mod 的 `state.ini`。
 
 ```text
-d3dcompiler_47.dll         # DirectX 代理加载器
-vulkan-1.dll               # Vulkan 代理加载器
-└─ plugin/
-   ├─ eff.dll
-   ├─ eff.ini              # 全局设置模板
-   ├─ package-protocol.json # DLL/编译器协议
-   ├─ tools/
-   │  ├─ eff_resource_pack.exe # 配套离线编译器
-   │  └─ static-sources/    # 配套来源描述工具及运行库
-   └─ mods/                 # 放置 Mod 文件夹
-      └─ ExampleMod/
-         ├─ mod.ini
-         └─ ...
+d3dcompiler_47.dll
+vulkan-1.dll
+plugin/
+  eff.dll
+  eff.ini
+  package-protocol.json
+  mods/
+    YourMod/
+      mod.ini
+      compiled.bin
+      source-inputs.bin
+      meshes/
+      materials/
+      textures/
 ```
 
-把各角色**包含 `mod.ini` 的文件夹**直接放入 `plugin/mods/`，不要多套一层目录。完整 Mod 包含作者 Mesh/Material/Texture 及 `source-inputs.bin`，不需要分发作者机器的全局索引或游戏原包。配套编译器将全部 Mod 组合成同一候选，见[离线包契约](docs/offline-resource-package-format.md)。若已有同名代理加载器，请先确认当前图形后端和插件加载方式。
+DLL 包不包含编译器、AnimeStudio 运行库或来源工具。已有安装的 `plugin/tools/eff_resource_pack.exe` 和 `plugin/tools/static-sources/` 可删除；新版 DLL 不调用它们。若已有同名代理加载器，请先确认使用的图形后端与插件加载方式。
+
+把包含 `mod.ini` 的完整 Mod 文件夹直接放入 `plugin/mods/`。新版 Mod 的 `compiled.bin` 必须随作者资源一起分发；旧 Mod 请使用配套 Blender 插件重新导出。文件夹可移动到其他安装，编译结果中的来源路径相对游戏目录，不含作者机器的绝对游戏路径。游戏更新使来源摘要变化时需要重新导出。
 
 ## 游戏内使用
 
-1. 放入完整 Mod 后启动游戏，替换沿原游戏资源加载发生；首次准备需等待完成。
-2. 按 **Ins** 打开控制面板，选择要控制的 Mod；关闭面板后使用其声明的按键切换款式和形态。选择只限制按键控制，不影响其他角色的资源。
-3. 新增、删除 Mod 文件夹，或从 Blender 导出修改后，按 **F10** 请求当前完整集合热重载。失败保留当前画面；空集合自然恢复原版。实际按键由游戏 `plugin/eff.ini` 决定。
+1. 放入完整 Mod 后启动游戏，资源请求使用当前替换规则。
+2. 按 **Ins** 选择要控制的 Mod，关闭面板后使用其按键切换款式或形态。选择不影响其他角色加载资源。
+3. 从 Blender 导出修改、添加或删除 Mod 后，按 **F10** 提交当前完整集合。空集合恢复原版；模型尚在异步加载时请待加载完成后重试。
 
-F10 更新 Mod 资源和规则；更新 DLL 代码必须退出并重启游戏。模型仍在异步加载时，受影响的重载会被拒绝，请待加载完成后重试。
-
-全局设置位于 `plugin/eff.ini`：
+F10 更新 Mod 资源和规则；DLL 代码更新需要退出并重启游戏。全局设置位于 `plugin/eff.ini`：
 
 ```ini
 [Hotkeys]
@@ -58,18 +56,20 @@ gui=INSERT
 disable_camera_fade=true
 ```
 
-## 制作 Mod
+## 制作与三端职责
 
-1. 使用 [AnimeStudio](https://github.com/ssice-a/AnimeStudio) 打开游戏 VFS，选择 Prefab 并导出 EFF 源包。
-2. 在 Blender 安装 [EFF Blender 插件](https://github.com/ssice-a/EFF-blender)，导入源包中的 `mod.ini`。
-3. 编辑网格、材质、贴图、款式和形态键，然后导出 Mod 文件夹。
-4. 导出到 `plugin/mods/` 后等待配套离线编译完成，进游戏按配置的重载键检查结果。
+1. 使用 [AnimeStudio](https://github.com/ssice-a/AnimeStudio) 打开 VFS，选择 Prefab 并导出 EFF 源包。保留源包的字段模板、manifest 和作者索引。
+2. 安装 [EFF Blender 插件](https://github.com/ssice-a/EFF-blender)，导入源包 `mod.ini`，编辑并导出所选网格。首次导出选择全部资源；后续可仅更新 Mesh、材质与贴图或贴图。
+3. Blender 使用插件自带的作者核心、编译器和小型来源工具，按 INI 源 Mesh 离线找到全部 Prefab/Renderer 消费者，编译当前这一个 Mod。暂存结果完整验证后才发布，失败保留此前输出。
+4. DLL 读取各 Mod 的编译结果，合并共用资源上的已编译修改，在游戏加载前应用字节规则；F10 使用同一规则并调用游戏模型生命周期。DLL 不编译作者资源，不查询全游戏索引，不全场景扫描 Renderer。
 
-初次制作需保留 AnimeStudio 源包和来源索引；Blender 会自动为 Mod 生成来源描述。新版解包贴图使用短名称，旧包带哈希的名称仍以自身 INI/manifest 为准，无需手动删除哈希。当前生产 Mod 使用独立 Mesh、Material、Texture；Skeleton/Physics 作者工具仍未接入完整游戏模拟链。分资源导出见[Blender 导出](docs/blender-scoped-resource-export.md)。
+导出到游戏 `plugin/mods/` 会自动识别安装路径；导出到其他目录请设置 `EFF_RELOAD_GAME`。玩家不需要作者索引、原游戏包快照或 Blender 工具。`mod.ini` 仍是唯一作者规则入口，`compiled.bin` 是它的派生编译结果。新贴图短名称与旧哈希名称都依各自 INI/manifest 解析。
 
-## 验证与性能
+完整原包不会写入 Mod。实测 LZY 作者目录 131.17 MiB，独立编译规则新增 11.25 MiB，合计约 142.42 MiB；这是样本大小，不是固定上限。规则文件大小与 Unity 加载时的内存占用不同。详见[命中与加载流程](docs/runtime-resource-discovery.md)、[输出契约](docs/offline-resource-package-format.md)。
 
-2026-10-07，用户确认当前 v35 构建的袖子三状态切换、另一部件显隐及本轮验证正常。连续世界/展示热重载、动画重绑定、多角色集合组合及失败回滚已有原生回归。其他角色/NPC 的完整实机覆盖、20–30 个 Mod 的帧率与内存压力尚未验证；安装数量不等于同时渲染数量。当前全 LOD 导出可以将一套作者几何映射到多个目标，不会自动生成低面数模型。详细验收边界见[热重载测试](docs/hot-reload-testing.md)。
+## 验证边界
+
+离线回归覆盖同 PFB 多 Mod、增删恢复、流偏移、静态网格、连续世界/展示重载、动画消费者与回滚。新职责划分已通过构建和真实 LZY 离线回放，实机画面需单独验证。独立人群 NPC/场景物件的原地 F10、完整多代资源退休和 20–30 个 Mod 的压力尚未验证；数量不等于同时渲染数量。全 LOD 导出不会自动减面。Skeleton/Physics 作者工具尚未接入完整游戏模拟链。详细边界见[热重载验收](docs/hot-reload-testing.md)。
 
 ## 致谢与许可
 

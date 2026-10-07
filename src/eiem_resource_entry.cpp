@@ -16,6 +16,7 @@
 #include "eiem_mesh_input_builder.h"
 #include "eiem_resource_reload_plan.h"
 #include "eiem_offline_resource_package.h"
+#include "eiem_compiled_mod_set.h"
 #include "eiem_prefab_resource_rules.h"
 #include "eiem_loading_input_substitution.h"
 #include "eiem_resource_directory.h"
@@ -107,6 +108,7 @@ std::shared_ptr<const std::vector<Package>> published;
 std::shared_ptr<const EiemNativeInput::InputSubstitutions> substitutions;
 std::filesystem::path initialInputTable;
 std::shared_ptr<EiemPrefabRules::Context> resourceRules;
+std::shared_ptr<const EiemCompiledModSet::Set> preparedCompiledSet;
 void* LoadRuleInput(void* path,uint32_t crc,uint64_t offset,bool asynchronous,bool& matched);
 void CompleteRuleInput(void* request,void* bundle);
 std::shared_ptr<EiemNativeInput::InputSubstitutions> pendingSubstitutions;
@@ -444,7 +446,12 @@ void LoadInitialPackages() {
   auto config=EiemEntrySettings::Read(gameDirectory);
   std::shared_ptr<const std::vector<Package>> next;
   auto cache=gameDirectory/"plugin/resource-reload-cache";
-  if(std::filesystem::exists(cache/"current.tsv")){
+  auto roots=DiscoverModRoots();
+  if(!roots.empty()&&std::all_of(roots.begin(),roots.end(),[](const auto& root){return std::filesystem::is_regular_file(root/"compiled.bin");})){
+   try{preparedCompiledSet=EiemCompiledModSet::Read(gameDirectory);resourceRules=EiemCompiledModSet::Context(preparedCompiledSet);next=std::make_shared<const std::vector<Package>>(preparedCompiledSet->manifest.packages);initialComposed=true;Log("[ENTRY-PACKAGE] compiledStartup=1 authorCompilation=0 perModArtifacts=%zu key=%s",next->size(),preparedCompiledSet->pointer.key.c_str());}
+   catch(const std::exception& e){Log("[ENTRY-STARTUP-PENDING] reason=%s compiledModPreparationFailed=1",e.what());}
+  }
+  if(!next&&std::filesystem::exists(cache/"current.tsv")){
    try{
     auto pointer=EiemOfflinePackage::ReadCurrent(cache);
     auto manifest=EiemOfflinePackage::ReadManifest(cache,pointer,gameDirectory/"plugin/mods");
@@ -468,20 +475,6 @@ void LoadInitialPackages() {
   std::atomic_store(&published,next);
   ++generation;
   Log("[ENTRY-GENERATION] initial=%u mods=%zu",generation.load(),next->size());
-}
-void CompileCurrentMod(){
- auto executable=gameDirectory/"plugin/tools/eff_resource_pack.exe";
- Require(std::filesystem::exists(executable),"offline compiler unavailable");
- auto mod=gameDirectory/"plugin/mods";DiscoverModRoots();
- auto quote=[](const std::filesystem::path& p){auto text=p.wstring();Require(text.find(L'\"')==text.npos,"offline path contains quote");return L"\""+text+L"\"";};
- auto command=quote(executable)+L" --mods "+quote(mod)+L" "+quote(gameDirectory/"plugin/resource-reload-baseline")+L" "+quote(gameDirectory/"plugin/resource-reload-cache");
- STARTUPINFOW startup{};startup.cb=sizeof(startup);PROCESS_INFORMATION process{};
- Require(CreateProcessW(executable.c_str(),command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,gameDirectory.c_str(),&startup,&process)!=0,"offline build process launch failed");
- CloseHandle(process.hThread);auto begin=GetTickCount64();DWORD result=0,wait=WAIT_TIMEOUT;
- while((wait=WaitForSingleObject(process.hProcess,1000))==WAIT_TIMEOUT){if(!active){TerminateProcess(process.hProcess,1);CloseHandle(process.hProcess);throw std::runtime_error("offline compilation cancelled during shutdown");}}
- bool completed=GetExitCodeProcess(process.hProcess,&result)!=0;CloseHandle(process.hProcess);
- Require(wait==WAIT_OBJECT_0&&completed&&result==0,"offline compilation failed; previous native model retained; retry F10 after fixing the package");
- Log("[OFFLINE-CURRENT] externalCompiler=1 UnityCalls=0 elapsedMs=%llu",(unsigned long long)(GetTickCount64()-begin));
 }
 void PrepareInputSubstitutions() {
   if(std::atomic_load(&resourceRules)){Log("[ENTRY-PREFAB-RULES] startup=1 fullPrefabFiles=0 originalDependenciesCopied=0");return;}
@@ -1247,7 +1240,6 @@ void InstallHooks(void **assemblies, size_t count) {
       armed && !armed->control.empty(), int(ruleArmed));
 }
 DWORD WINAPI ProcessJobs(void *) {
-  FullResourceReload::StartOfflineCompiler();
   for (;;) {
     WaitForSingleObject(queueEvent, 1000);
     if (reload.exchange(false)) {
@@ -1328,35 +1320,7 @@ DWORD WINAPI ProcessJobs(void *) {
             Hex(hash.data(), 32).c_str(), assets.size(), matches,
             job.origin.c_str(), output.u8string().c_str(), job.generation,
             !!packages);
-        // Diagnostic stage only. Rebuild immutable captured bytes on the
-        // native worker; no IL2CPP, resource pointer, game read buffer or
-        // loader argument is changed. Renderer/material/texture closure must
-        // be completed before this can become a submit-capable input.
-        if (matches && packages && EiemNativeInput::EndfieldInput::Recognized(job.bytes)) {
-          try {
-            Require(packages->size() == 1, "diagnostic Mesh writer requires one package graph");
-            auto rebuilt = EiemNativeInput::BuildMeshInput(job.bytes, packages->front());
-            auto rebuiltFolder = folder / "mesh-input-rebuild";
-            std::filesystem::create_directories(rebuiltFolder);
-            auto rebuiltPath = rebuiltFolder / ("input-" + std::to_string(job.id) + ".vfs");
-            Require(!std::filesystem::exists(rebuiltPath), "diagnostic rebuild output already exists");
-            std::ofstream staged(rebuiltPath, std::ios::binary);
-            staged.write((const char*)rebuilt.bytes.data(), rebuilt.bytes.size());
-            Require(bool(staged), "diagnostic rebuilt input write failed");
-            auto rebuiltHash = Sha(rebuilt.bytes.data(), rebuilt.bytes.size());
-            Log("[ENTRY-REBUILD] input=%u matches=%zu skipped=%zu meshParts=%zu "
-                "changedObjects=%zu addedObjects=%zu bytes=%zu sha256=%s file=%s "
-                "generation=%u stage=mesh-content-only nativeSubmission=0 "
-                "rendererExpansion=0 dependencyClosure=0 replacement=0",
-                job.id, rebuilt.matches, rebuilt.skipped, rebuilt.parts.size(),
-                rebuilt.changedObjects, rebuilt.addedObjects, rebuilt.bytes.size(),
-                Hex(rebuiltHash.data(), rebuiltHash.size()).c_str(),
-                rebuiltPath.u8string().c_str(), job.generation);
-          } catch (const std::exception& e) {
-            Log("[ENTRY-REBUILD] input=%u rejected reason=%s nativeSubmission=0 replacement=0",
-                job.id, e.what());
-          }
-        }
+
       } catch (const std::exception &e) {
         Log("[ENTRY-CAPTURE] input=%u rejected reason=%s origin=%s", job.id,
             e.what(), job.origin.c_str());
@@ -1433,14 +1397,7 @@ DWORD StartImpl() {
     Log("[ENTRY-FATAL] MinHook init status=%d", (int)status);
     return 1;
   }
-  // Preserve the verified publication-before-observation startup order.
-  if(std::filesystem::exists(gameDirectory/"plugin/tools/eff_resource_pack.exe")){
-    try{CompileCurrentMod();}catch(const std::exception& e){
-      // A previous candidate is usable only if its author graph and actual
-      // source bytes still pass the normal loading-input validation.
-      Log("[OFFLINE-STARTUP-REJECT] reason=%s staticSourcePreparationFailed=1",e.what());
-    }
-  }
+  // Read author-compiled rules before observing game loading requests.
   LoadInitialPackages();
   Observe([] { PrepareInputSubstitutions(); });
   Observe([] { LoadSnapshotSelection(); });

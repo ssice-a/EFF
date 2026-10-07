@@ -1,10 +1,33 @@
+## 2026-10-08 独立 Mod 编译与三端隔离
+
+当前源码由 Blender 自带编译器为单 Mod 写 compiled.bin，DLL 不启动内嵌或外部作者编译器。真实 LZY 离线样本：62 输入、46 根，131.173 MiB 原资源 + 11.245 MiB 编译规则。原资源/INI 保持不变。已部署 eff.dll SHA256 6086A3DE0415A2145A6948ABA32B33DA576D43E275BED420632232E9505EECF5、LZY compiled.bin 758A7C4D31130C895BE775BC8DB61C43E72662BEFB2BB675273C776E713A6794、Blender 编译器 9BA8208CBA319E2688D9C760642DE436A54209D64542B20440DECFD2E704E73F。31 个现有 Mod 文件核验未变，未保存 .blend。旧工具目录清理被自动审批拒绝，仅替换新版文件，旧目录保留且不被新版调用。
+
+回归覆盖同 PFB 两个 Mod 的新增对象/子节点、LOD/helper 列表、preload 区间、流偏移与对齐、删除恢复 pristine 及冲突拒绝；真实独立清单回放一致。相同作者内容的编译复用实测 1.69 秒，仅为编译器计时，非完整 Blender 导出或 F10 耗时。DLL ZIP 0.63 MiB、Blender ZIP 8.81 MiB、AnimeStudio net9 ZIP 12.23 MiB。原生模拟连续世界/展示重载、动画/武器/音频、回滚与退休回归通过。源码与离线证据不等于新 DLL 和新规则实机画面验收，不能把旧二进制成功结论套用到本轮。
+
 # 热重载当前验收状态
 
-## 当前小型规则部署（2026-10-07）
+## 当前静态 Mesh 配套部署（2026-10-08）
+
+已部署生产 v35 DLL、游戏与 Blender 两处编译器，更新 Blender 的原生 Mesh 编码模块。插件通过既有 Junction 使用最新 Python 源码。32 个 Mod 与配置文件逐一 SHA 核验未变；检查时游戏目录下尚无资源候选缓存/current.tsv，未启动游戏或编译器发布新候选。未重导出、保存用户工程或写部署备份。协议与 INI 数据结构保持原样，AnimeStudio 已有静态 Mesh 来源字段，无需重部署解包器。新编译器的构建内容标识更新，防止复用缺少静态装配结果的缓存，不限制作者版本。
+
+当前安装 SHA256：
+
+- `eff.dll`：`84FBAE040151C388B16EAD7167161B8B3FD2C5CB96437D2E71D48B82736DDC1D`
+- 游戏与 Blender 的 `eff_resource_pack.exe`：`A8854C8BD10F9BE027FF4AA61E6DBB702D148BBF32883B611B3AEA6BC9EA0811`
+- 两处 `package-protocol.json`：`5B63FB0A4AD0AF985BC210A40EAB94514DFC14BC589BF58F38910ECDC43B443F`
+- Blender 的 `nativepack/mesh.py`：`FC905D1A304A9EFA1D08E7475C668428F5FB9CAB06843A753E7E9520EAB07FA5`
+
+静态目标按 MeshFilter 的真实 Mesh 引用、GameObject 组件表和唯一 MeshRenderer 配对，命中全部所属 PFB。无 MeshRenderer 的单独 MeshFilter 不算视觉消费者。0/1/N 部件、作者材质、preload、LOD/helper 列表和显隐沿用原流程。第一部件保留锚点，额外部件拥有自己的 MeshFilter；不伪造骨骼。混合静态/蒙皮节点保留原 SMR 地址序号，扩展 Renderer 用构建时的精确对象身份归属，避免把同节点的另一个原 Renderer 的部件重复归入。
+
+通过的检查：真实序列化夹具先复现漏命中，再验证两个 PFB 的全部静态使用者、0/1/N、材质克隆、LOD/helper/preload、原静态 batch/额外流清理、未声明对象保留、孤立 MeshFilter 与混合组件归属；v35/v36 完整事务回归包含静态原生验收与显隐，原连续 F10、动画恢复、失败回滚也通过。原形态桥回归通过。5 项 Python 蒙皮流测试、10 项导出核心测试通过。读取已有游戏源包的真实 Mesh TypeTree，验证无 UV/有 UV 的静态编码和完整序列化回读；Blender 5.0.1 后台工厂场景验证实际 snapshot → 原生 Mesh 编码，包含清除未使用源骨骼元数据，不打开或保存用户工程。
+
+**静态 Prefab 的游戏显示与 F10 尚未实机验收。** 这些夹具和真实 Mesh 数据结构检查不能代替游戏画面。静态 Renderer 不支持运行时形态键；资源构建支持不等于独立场景物件或人群 NPC 的 F10 owner 生命周期已适配，边界见[命中流程](runtime-resource-discovery.md)。
+
+## 小型规则部署与来源记录（2026-10-07）
 
 游戏 DLL、游戏与 Blender 编译器/协议、两处来源工具已同步小型规则链路。INI 保持唯一作者规则，离线确定全部目标，运行时读原游戏范围并在 Unity 创建资源/实例前应用。未做运行时来源查询、场景 Renderer 扫描或未知来源主动请求。Blender 插件为指向 `tools/Blender` 的 Junction，Python 修改直接生效；原生工具另外同步。
 
-当前安装 SHA256：
+该次安装 SHA256：
 
 - `eff.dll`：`B3411FFD8727550F98BF4F44216AC868C6745A2D1CFB710F96F4C855D113F6A3`
 - 游戏与 Blender 的 `eff_resource_pack.exe`：`5BF111366B6F542CC0285F69584D9795A0368E2D7AD64A119D9488CA018C1015`
@@ -12,7 +35,7 @@
 - `mods/LZY/source-inputs.bin`：`002AA6B762053CB8C26664442B0D74349A6F411CBFBFC5F937F7E526B7CB606C`（63,063 字节）
 - 来源工具 `EndfieldVfsProbe.dll`：`0867E41098B69A6803281AB37C3B4422807565AA5BA000589977496BAF3E24B3`
 
-正式 current key：`63B98D54F667330E9A2C1E6D70CE715A1774B3676458AC4AA4087BAB3C204198`；manifest SHA：`B3A5ED48C573715F1AC21AA6CB5025E3410493F831F7C940EF227A41F3EAD988`。含离线复制指令的规则 4,416,538 字节（约 4.21 MiB），来源描述 63,063 字节。新代目录只有 manifest 与 ready 摘要，没有完整 .vfs 或 startup 目录。当前有 15 个作者 Mesh、6 个材质、11 个贴图声明、7 组规则。来源描述不复制全局索引。
+该次 current key：`63B98D54F667330E9A2C1E6D70CE715A1774B3676458AC4AA4087BAB3C204198`；manifest SHA：`B3A5ED48C573715F1AC21AA6CB5025E3410493F831F7C940EF227A41F3EAD988`。含离线复制指令的规则 4,416,538 字节（约 4.21 MiB），来源描述 63,063 字节。新代目录只有 manifest 与 ready 摘要，没有完整 .vfs 或 startup 目录。该次有 15 个作者 Mesh、6 个材质、11 个贴图声明、7 组规则。来源描述不复制全局索引。
 
 游戏与 Blender 两处编译器已同步。本轮按用户要求迁移旧 Blender 工程并重新导出 LZY，更新为上述候选。部署 DLL/编译器期间 34 个作者、配置、协议及 current 文件逐一 SHA 核验未变，未写部署备份；随后作者资源及 current 由正常导出流程发布。
 

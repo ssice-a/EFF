@@ -78,6 +78,11 @@ inline Value ApplyMesh(const Type& type, const Value& source, const Resource& re
   auto boneHashes = Child(type, result, "m_BoneNameHashes");
   Require(ArrayValue(type, bindposes).count == mesh.bones.size() &&
               ArrayValue(type, boneHashes).count == mesh.bones.size(), "Mesh bone binding count");
+  if(mesh.bones.empty())Require(Integer(Child(type,result,"m_BonesPerVertex"))==0&&
+      (Integer(Child(type,channels.children[12],"dimension"))&15)==0&&
+      (Integer(Child(type,channels.children[13],"dimension"))&15)==0&&
+      ArrayValue(type,Child(type,result,"m_BonesAABB")).count==0,
+      "unskinned Mesh contains native skinning data");
   auto shapes = Child(type, result, "m_Shapes");
   auto& shapeChannels = ArrayValue(type, Child(type, shapes, "channels"));
   Require(shapeChannels.children.size() == mesh.shapes.size(), "Mesh shape binding count");

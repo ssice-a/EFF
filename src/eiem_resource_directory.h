@@ -633,6 +633,7 @@ inline Package Load(const std::filesystem::path& directory) {
         }
   }
   if(std::filesystem::is_regular_file(p.root/"source-inputs.bin"))allowed.insert("source-inputs.bin");
+  if(std::filesystem::is_regular_file(p.root/"compiled.bin"))allowed.insert("compiled.bin");
   std::set<std::string> actual;
   for (const auto& entry : std::filesystem::recursive_directory_iterator(p.root)) {
     Require(!entry.is_symlink(), "symlink/reparse resources forbidden");

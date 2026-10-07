@@ -1,63 +1,38 @@
-# 替换规则与资源契约
+# 独立 Mod 编译结果与资源契约
 
-兼容性依据 `src/eiem_package_protocol.h` 字段及实际数据核验。版本、编译器名称与 ABI 数字仅提供信息。`v35/v36` 分别保存无/有根地址描述，两者支持小型规则。新 reader 保留旧完整输入布局；新规则需 reader 声明其编码能力，相同版本标签不能替代字段契约。
+`mod.ini` 是唯一作者规则入口，独立 `.mesh/.mat/.tex` 是作者载荷。Blender 的配套工具生成 `source-inputs.bin` 和 `compiled.bin`；DLL 读取后者，不调用作者工具。兼容性依据 `eiem_package_protocol.h` 的实际字段与 `eiem_compiled_mod.h` 的结构声明判断，不按版本号。
 
-## 作者与输出
-
-`mod.ini` 为唯一作者规则，引用独立 `.mesh/.mat/.tex`。工具自动生成 `source-inputs.bin`，复用现有 AnimeStudio 索引定位全部真实消费者与所需模板，见[命中流程](runtime-resource-discovery.md)。DLL 不读取全局索引。
+## 输出布局
 
 ```text
-resource-reload-baseline/
-  baseline.tsv          # 原游戏范围、SHA 与根
-  source-ranges.tsv
-resource-reload-cache/
-  owner.tsv
-  current.tsv
-  sources/<key>.targets
-  generations/<key>/
-    manifest.bin        # 压缩规则；作者字节按引用读取
-    ready.tsv
+YourMod/
+  mod.ini
+  source-inputs.bin
+  compiled.bin
+  meshes/*.mesh
+  materials/*.mat
+  textures/*.tex
+  state.ini              # 游戏生成的玩家数值，可保留
 ```
 
-新候选不写完整 `.vfs`、`startup/` 或完整资源阶段缓存。旧全量缓存与旧清单读取分支不是新规则的前置条件。
+`compiled.bin` 保存独立 Mod 清单、原游戏相对文件路径/范围/SHA、成员复制规则、去重的字段结构字典、对象布局、精确流偏移和命名重定位位置、原根与作者标记。外层 Xpress-Huffman 压缩，尾部 SHA256；作者大段几何和像素通过资源文件范围引用，不再次嵌入。不保存完整 PFB 或游戏依赖。LZY 样本约 11.25 MiB；不存在人为大小/Mod 数量上限。
 
-`current.tsv` 两行为 `EFF_RESOURCE_RELOAD_CURRENT<TAB>1` 与 `<key><TAB><manifest SHA256>`。key 覆盖作者内容、构建语义、字段布局、原来源内容，不包含产品版本或 GameAssembly 摘要。核验成功且作者未变化才原子更新；失败保留旧 current。集合 owner 绑定 mods 目录，成员增删不改变 owner。
+原游戏相对路径在读取时绑定当前安装并校验范围/摘要。作者根重新绑定 Mod 当前目录；移动到另一安装不依赖作者机器绝对路径。来源更新、资源或替换声明变化需要重新导出。仅按键、数值、显隐、形态控制修改不改变编译资源契约，可由 F10 读取；源资源字节变化不可用旧编译规则。
 
-## 清单字段
+## 编译与发布
 
-外层 `compressed-rules/xpress-huffman/le64` 保存实际解压大小与压缩载荷，内层 `author-references+prefab-renderer-rules+source-ranges/le64/sha256` 保存：
+Blender 在暂存目录写选中的作者资源，复用或更新来源描述，再使用自身安装目录的 `eff_resource_pack.exe --export-mod <staged Mod> <game>` 编译一个独立 Mod。作者侧解析 Mesh/材质/贴图、寻找消费者、生成对象、校验规则回放。全部成功后才发布该 Mod；失败不覆盖此前完整结果。其他 Mod 不参与这次作者编译。
 
-- 原作者集合/目录、控制、资源文件路径和 SHA、资源块描述、Replace/LOD/Part。
-- PFB 根与装配预期、原文件范围和 SHA、每个 Renderer CAB+PathID/原 Mesh 身份。
-- 启动/隔离输入摘要、命名映射、骨骼顺序、形态和材质贴图预期。
+来源工具 `eff_source_prepare.exe --prepare-static-sources <game> <index> <Mod> <compiler>` 复用现有 AnimeStudio 索引，只读取相关原始范围。索引与模板留在作者机器。游戏安装只含 DLL、代理、设置及字段声明。
 
-规则基本字段之后可包含下列按结构名称标识的字段；无扩展的旧规则仍可读取，不以编译器版本号判断：
+## DLL 应用规则
 
-- `namespace-offset-patches/le64/sha256`：每输入的序列化成员原摘要及等宽修改位置、原值和新值。离线审计 CAB、外部引用及流路径，运行时先核对完整成员摘要再应用位置，拒绝越界、重叠及原值不符。
-- `member-rebuilds/source-author-spans/le64/sha256`：每输入的最终成员名、flags、size、SHA 和复制段；复制段引用原游戏成员或作者资源的 offset/size，或包含变化字节。作者 packed frame 必须展开时记录已验证的来源布局与展开摘要，结果按作者资源共享一次。运行时不重建资源索引、不匹配 Renderer、不解析 PFB 层级，按段构造后核对最终成员和完整包摘要。
+启动和 F10 读取当前完整 0/1/N Mod 集合，校验作者资源契约。独占输入直接回放编译复制规则；共用输入合并已编译对象记录，对不同原对象保留各自修改，对共用 Transform、LOD/helper、AssetBundle preload 列表按原槽位合并，对新增流调整偏移。重复原 Mesh 目标或同一字段的冲突修改拒绝。没有重新生成几何、材质或贴图，也没有重新查找 Prefab 消费者。
 
-这些字段保存离线构建结果的重建指令，不保存完整原包或作者大段载荷。小段差异会增大清单，真实 LZY 样本目前约 4.21 MiB，不能继续将旧约 207 KiB 或“小于 1 MiB”作为当前结果。清单大小没有人为限制。
+原对象未被声明修改时保持原字节。删除 Mod 使用此前来源证明恢复 pristine 候选；空集合走同一事务。集合候选与作者文件完整核验后才提交，导出过程中变化的快照拒绝，失败保持当前运行时代际。
 
-作者 Mesh/贴图载荷不嵌入清单。解压大小、数量、整数、文件范围、字段类型、摘要、重复身份、引用覆盖和数组布局按实际字节核验，没有固定容量上限。`--protocol` 必须成功查询；Blender 拒绝向不能读新编码的旧 DLL 发布，不能猜 EXE 字符串。
+运行时仍需读取原范围、解码容器并应用规则，生成 Unity 可加载的内存包。这些开销与规则文件大小不同。后台准备隔离输入；Unity 线程执行加载、核验和原生 owner 重建，动画、武器、音频、源租约及回滚沿现有链路处理。未加载目标随后使用当前规则。
 
-## 应用与生命周期
+`current.tsv` 和旧全量输入只保留只读兼容路径；新导出不生成全局作者集合缓存，DLL 不启动编译器，不读取索引，不主动查询游戏来源。旧非复制规则清单需要重新导出。
 
-编译器组合完整集合、精确发现目标，在内存验证规则输出并记录复制指令。DLL 读取当前原游戏范围，按离线复制段重建并验证 SHA，通过只读 MemoryStream 交给 Unity 的归档流加载入口；旧清单仍用完整序列化构建器。不使用 Unity Mesh/Material setter 改基础资源，不解码 PNG。
-
-一个原 Renderer 对应完整 0/1/N Part。未声明 Renderer 保留原对象。材质模板克隆为作者对象，原材质/原贴图保留；其他依赖仍走游戏正常加载。完整 Bundle 仍需在内存生成；新复制指令消除运行时 TypeTree 解析、Renderer 匹配与骨骼映射，保留范围读取、归档解码、复制和摘要成本。
-
-首次加载保留原命名，按精确物理路径和 offset 路由。F10 后台准备隔离输入，Unity 帧提交异步加载，闭包完成后核验 PFB，再调用世界/展示 owner 生命周期及动画重绑定。流及其 Byte[] 保留到 Bundle 卸载，保证请求完成后的定位/读取。规则构建或同步提交失败保留游戏原请求；异步原生失败的首次加载回退尚未覆盖，不把模拟通过当作实机验收。
-
-支持 0/1/N Mod，F10 统一提交增删改与空集合。原 Mesh 目标冲突拒绝；同来源且内容、贴图绑定相同的材质副本可复用，不同配置独立克隆并由各 Part 绑定。贴图模板解析处理该来源的全部作者材质，清单按作者材质 ID 记录各自槽与贴图预期，不按来源身份合并预期。源依赖租约、路径池清理、加载回调、rollback 和旧 Bundle `Unload(false)` 保持同一事务。磁盘监视器不自行交换游戏代际。
-
-## Blender 与验收
-
-Blender 暂存作者资源和来源描述，发布目录后调用配套编译器。导出到游戏 mods 时编译全部安装集合；工作区单作者输出不自动部署。默认全部导出，也支持仅 Mesh、材质与贴图或贴图；PNG 在作者端转成自描述 TEX。不修改或保存用户 .blend。
-
-```text
-eff_resource_pack <Mod> <baseline> <cache>
-eff_resource_pack --mods <mods> <baseline> <cache>
-eff_resource_pack --mods <mods> <baseline> <cache> --watch-parent <game PID>
-```
-
-真实规则回读、未声明 Renderer/原材质保留、多 Mod 增删与空集合、内存接口/异步引用、连续 F10/回滚及安装摘要见[热重载验收](hot-reload-testing.md)。这些检查不证明游戏画面、动画、多角色或所有过场已经验收。
+验证边界见[热重载测试](hot-reload-testing.md)。离线回放/模拟事务通过不表示所有模型的实机画面已验收。

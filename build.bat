@@ -3,15 +3,19 @@ setlocal
 pushd "%~dp0"
 rem Production entry: serialized native inputs and generation reload only.
 rem Usage: build.bat [v36|v35] [capture]. No deployment is performed.
-set "entry_abi=v36"
-set "entry_folder=bin\resource-directory-entry"
-set "entry_define="
+set "entry_abi=v35"
+set "entry_folder=bin\resource-directory-entry-v35"
+set "entry_define=/DEFF_OFFLINE_PACKAGE_V35=1"
 set "entry_capture="
 if /i "%~1"=="v35" (
  set "entry_abi=v35"
  set "entry_folder=bin\resource-directory-entry-v35"
  set "entry_define=/DEFF_OFFLINE_PACKAGE_V35=1"
-) else if not "%~1"=="" if /i not "%~1"=="v36" (
+) else if /i "%~1"=="v36" (
+ set "entry_abi=v36"
+ set "entry_folder=bin\resource-directory-entry"
+ set "entry_define="
+) else if not "%~1"=="" (
  echo [ERROR] Expected ABI v36 or v35.
  goto entry_failed
 )
@@ -56,19 +60,13 @@ cl /nologo /O2 /MD /LD /EHsc /std:c++17 ^
  /Fo"%entry_folder%\proxy_vulkan_full.obj" src\proxy_vulkan_full.cpp ^
  /Fe"%entry_folder%\vulkan-1.dll" /link /DLL
 if errorlevel 1 goto entry_failed
-echo [4/5] Building matching offline compiler ...
-call tools\build_resource_pack.cmd %entry_abi%
-if errorlevel 1 goto entry_failed
-set "entry_pack=bin\resource-pack\eff_resource_pack.exe"
-if /i "%entry_abi%"=="v35" set "entry_pack=bin\resource-pack-v35\eff_resource_pack.exe"
-copy /y "%entry_pack%" "%entry_folder%\eff_resource_pack.exe" >nul
-if errorlevel 1 goto entry_failed
-"%entry_folder%\eff_resource_pack.exe" --protocol > "%entry_folder%\package-protocol.json"
+echo [4/5] Writing DLL data structure declaration ...
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\write_package_protocol.ps1 -Output "%entry_folder%\package-protocol.json"
 if errorlevel 1 goto entry_failed
 echo [5/5] Copying distribution configuration ...
 copy /y config\eff.ini "%entry_folder%\eff.ini" >nul
 if errorlevel 1 goto entry_failed
-echo [OK] %entry_folder% contains the %entry_abi% DLL, compiler, proxies and settings.
+echo [OK] %entry_folder% contains the %entry_abi% DLL, proxies and settings. No author tools are distributed.
 echo [INFO] Build output only; installed DLL and configuration were not changed.
 popd
 exit /b 0

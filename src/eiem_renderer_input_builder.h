@@ -52,6 +52,39 @@ inline void SetReference(const Type& type, Value& value, const NativeReference& 
   SetInteger(type, Child(type, value, "m_FileID"), file);
   SetInteger(type, Child(type, value, "m_PathID"), (uint64_t)reference.second);
 }
+struct MeshConsumer {int64_t renderer=0,filter=0;NativeReference mesh;};
+// Static Mesh references belong to MeshFilter. Pair only the components that
+// the owning GameObject actually references; names and scene state play no role.
+inline std::vector<MeshConsumer> MeshConsumers(const Bytes& bytes,const SerializedLayout& layout,
+    const std::string& cab,const std::set<NativeReference>& selected,std::string (*canonical)(std::string)=nullptr) {
+  std::vector<MeshConsumer> result;
+  for(auto id:layout.order){const auto& type=layout.types.at(layout.objects.at(id).type);
+    if(type.classId!=137&&type.classId!=33)continue;
+    auto value=ObjectValue(bytes,layout,id);auto mesh=NullableReference(type,Child(type,value,"m_Mesh"),layout,cab);
+    auto key=mesh;if(canonical)key.first=canonical(key.first);
+    if(!mesh.second||!selected.count(key))continue;
+    if(type.classId==137){result.push_back({id,0,mesh});continue;}
+    auto owner=NullableReference(type,Child(type,value,"m_GameObject"),layout,cab);
+    Require(owner.first==cab&&owner.second&&layout.objects.count(owner.second),"static MeshFilter has no local GameObject");
+    const auto& gt=layout.types.at(layout.objects.at(owner.second).type);Require(gt.classId==1,"static MeshFilter owner is not a GameObject");
+    auto go=ObjectValue(bytes,layout,owner.second);int64_t renderer=0;size_t filters=0,renderers=0;
+    for(const auto& entry:ConstArray(gt,Child(gt,go,"m_Component")).children){auto ref=NullableReference(gt,Child(gt,entry,"component"),layout,cab);
+      // Unrelated missing/script references are preserved. Only the selected
+      // visual pair needs locally resolvable components.
+      if(ref.first!=cab||!ref.second||!layout.objects.count(ref.second))continue;
+      const auto& ct=layout.types.at(layout.objects.at(ref.second).type);
+      if(ct.classId!=23&&ct.classId!=33)continue;
+      auto component=ObjectValue(bytes,layout,ref.second);
+      Require(NullableReference(ct,Child(ct,component,"m_GameObject"),layout,cab)==owner,"static component/GameObject ownership differs");
+      if(ct.classId==33){++filters;Require(ref.second==id,"static GameObject has another MeshFilter");}
+      else {++renderers;renderer=ref.second;}
+    }
+    Require(filters==1,"static MeshFilter owner component reference differs");
+    if(!renderers)continue; // A MeshFilter alone is not a visual consumer.
+    Require(renderers==1,"static MeshFilter has multiple referenced MeshRenderers");
+    result.push_back({renderer,id,mesh});
+  }return result;
+}
 inline double FloatValue(const Type& type, const Value& value) {
   Require(type.nodes.at(value.node).type == "float" && value.raw.size() == 4,
           "serialized float schema");
@@ -175,6 +208,11 @@ struct RendererBoundsCache {
   size_t hits = 0, misses = 0;
   double computeMs = 0;
 };
+inline int64_t RendererObjectId(const std::string& cab,const Package& package,const char* kind,
+    int64_t renderer,const std::string& part) {
+  auto label=cab+":"+package.id+":"+kind+":"+std::to_string(renderer)+":"+part;
+  auto hash=Sha((const unsigned char*)label.data(),label.size());return (int64_t)Le(Bytes(hash.begin(),hash.end()),0,8);
+}
 class RendererMemberBuilder {
   const Bytes& source;
   const std::string cab;
@@ -207,9 +245,7 @@ class RendererMemberBuilder {
     return reference.second;
   }
   int64_t Allocate(const char* kind, int64_t renderer, const std::string& part) {
-    auto label = cab + ":" + package.id + ":" + kind + ":" + std::to_string(renderer) + ":" + part;
-    auto hash = Sha((const unsigned char*)label.data(), label.size());
-    auto id = (int64_t)Le(Bytes(hash.begin(), hash.end()), 0, 8);
+    auto id = RendererObjectId(cab,package,kind,renderer,part);
     Require(id && !layout.objects.count(id) && allocated.insert(id).second, "Renderer added PathID collision");
     return id;
   }
@@ -333,18 +369,14 @@ public:
       Require(selected.emplace(NativeReference{found->second.cab, found->second.pathId}, target.first).second,
               "Renderer target aliases are ambiguous");
     }
-    std::vector<std::pair<int64_t, Identity>> matches;
-    for (auto id : layout.order) {
-      if (Schema(id).classId != 137) continue;
-      auto reference = NullableReference(Schema(id), Child(Schema(id), Tree(id), "m_Mesh"), layout, cab);
-      auto found = selected.find(reference);
-      if (reference.second && found != selected.end()) matches.emplace_back(id, found->second);
-    }
+    std::set<NativeReference> references;for(const auto& row:selected)references.insert(row.first);
+    auto matches=MeshConsumers(source,layout,cab,references);
     if (matches.empty()) { result.bytes = source; return result; }
     Hierarchy();
     for (const auto& matched : matches) {
-      auto rid = matched.first;
-      const auto& target = matched.second;
+      auto rid = matched.renderer;
+      const auto& target = selected.at(matched.mesh);
+      const bool skinned=matched.filter==0;
       const auto& ruleId = package.targetIndex.at(target);
       const auto& rule = package.rules.at(ruleId);
       const auto& type = Schema(rid);
@@ -358,9 +390,10 @@ public:
       auto owner = Local(type, Child(type, original, "m_GameObject"), 1);
       Require(transforms.count(owner), "Renderer owner lacks Transform");
       auto tid = transforms.at(owner);
-      auto rootBone = Local(type, Child(type, original, "m_RootBone"), 4);
-      Local(type, Child(type, original, "m_SkinningRoot"), 4);
-      Require(roots.at(rootBone) == roots.at(tid), "Renderer root bone belongs to another hierarchy");
+      int64_t rootBone=0;
+      if(skinned){rootBone = Local(type, Child(type, original, "m_RootBone"), 4);
+        Local(type, Child(type, original, "m_SkinningRoot"), 4);
+        Require(roots.at(rootBone) == roots.at(tid), "Renderer root bone belongs to another hierarchy");}
       size_t rendererComponents = 0, transformComponents = 0;
       const auto& goType = Schema(owner);
       for (const auto& item : ConstArray(goType, Child(goType, Tree(owner), "m_Component")).children) {
@@ -383,22 +416,26 @@ public:
                 "Renderer author Mesh schema differs from current target");
         auto material = assets.find(package.materials.at(part.material).source);
         Require(material != assets.end() && material->second.classId == 21, "Renderer Material dependency absent from current graph");
-        auto bones = ResolveBones(tid, rootBone, mesh);
+        Require(skinned||(mesh.bones.empty()&&mesh.shapes.empty()&&part.shapes.empty()),
+                "static MeshRenderer parts require unskinned geometry without runtime shape channels");
+        auto bones = skinned?ResolveBones(tid, rootBone, mesh):std::vector<int64_t>{};
         auto renderer = original;
-        int64_t newRid = rid, gid = owner, newTid = tid;
+        int64_t newRid = rid, gid = owner, newTid = tid, newFilter=matched.filter;
         if (i) {
           newRid = Allocate("renderer", rid, pid); gid = Allocate("go", rid, pid); newTid = Allocate("transform", rid, pid);
+          if(!skinned)newFilter=Allocate("filter",rid,pid);
           auto go = Tree(owner);
           SetString(goType, Child(goType, go, "m_Name"),
               Text(Child(goType, go, "m_Name").raw.data(), Child(goType, go, "m_Name").raw.size()) + "__EFF_" + package.id + "_" + pid);
           auto& components = ArrayValue(goType, Child(goType, go, "m_Component"));
           components.children.clear();
-          for (auto component : {newTid, newRid}) {
+          std::vector<int64_t> componentIds{newTid};if(!skinned)componentIds.push_back(newFilter);componentIds.push_back(newRid);
+          for (auto component : componentIds) {
             auto entry = ArrayElement(goType, components);
             SetReference(goType, Child(goType, entry, "component"), {cab, component}, layout, cab);
             components.children.push_back(std::move(entry));
           }
-          components.count = 2;
+          components.count = components.children.size();
           Add(gid, owner, go);
           const auto& transformType = Schema(tid);
           auto transform = Tree(tid);
@@ -418,15 +455,28 @@ public:
           parentChildren.children.push_back(std::move(child)); parentChildren.count = parentChildren.children.size();
           changed.insert(tid); Add(newTid, tid, transform);
           for (auto id : {gid, newTid, newRid}) dependencies.insert({cab, id});
+          if(!skinned)dependencies.insert({cab,newFilter});
         }
         SetReference(type, Child(type, renderer, "m_GameObject"), {cab, gid}, layout, cab);
-        SetReference(type, Child(type, renderer, "m_Mesh"), {nativeMesh->cab, nativeMesh->id}, layout, cab);
+        if(skinned)SetReference(type, Child(type, renderer, "m_Mesh"), {nativeMesh->cab, nativeMesh->id}, layout, cab);
+        else {
+          const auto& ft=Schema(matched.filter);auto filter=Tree(matched.filter);
+          SetReference(ft,Child(ft,filter,"m_GameObject"),{cab,gid},layout,cab);
+          SetReference(ft,Child(ft,filter,"m_Mesh"),{nativeMesh->cab,nativeMesh->id},layout,cab);
+          if(i)Add(newFilter,matched.filter,filter);else {Tree(matched.filter)=std::move(filter);changed.insert(matched.filter);}
+          // Author geometry is not part of the original static batch or donor
+          // vertex stream. Let Unity render the replacement Mesh on its own.
+          for(auto& field:renderer.children){auto name=type.nodes[field.node].name;
+            if(name=="m_StaticBatchInfo"){for(auto& n:field.children)SetInteger(type,n,0);}
+            else if(name=="m_StaticBatchRoot"||name=="m_AdditionalVertexStreams"||name=="m_EnlightenVertexStream")SetReference(type,field,{cab,0},layout,cab);
+          }
+        }
         auto& materials = ArrayValue(type, Child(type, renderer, "m_Materials"));
         auto materialPointer = ArrayElement(type, materials);
         auto materialId=AllocateMaterialId(material->second.cab,package,part.material);
         SetReference(type, materialPointer, {material->second.cab, materialId}, layout, cab);
         materials.children = {materialPointer}; materials.count = 1;
-        auto& palette = ArrayValue(type, Child(type, renderer, "m_Bones"));
+        if(skinned){auto& palette = ArrayValue(type, Child(type, renderer, "m_Bones"));
         palette.children.clear();
         for (auto id : bones) {
           auto pointer = ArrayElement(type, palette); SetReference(type, pointer, {cab, id}, layout, cab);
@@ -453,6 +503,7 @@ public:
         auto& aabb = Child(type, renderer, "m_AABB");
         SetVector(type, Child(type, aabb, "m_Center"), bounds.first);
         SetVector(type, Child(type, aabb, "m_Extent"), bounds.second);
+        }
         if (i) Add(newRid, rid, renderer);
         else { Tree(rid) = std::move(renderer); changed.insert(rid); }
         rendererExpansion[rid].push_back(newRid);

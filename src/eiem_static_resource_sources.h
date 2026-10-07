@@ -69,8 +69,7 @@ inline Discovery FindConsumers(const Selection& s,const std::set<Identity>& targ
  Require(resolved.size()==targets.size(),"original Mesh path+asset missing in game-selected source");Discovery result;result.sources=targetSources;
  for(const auto& source:s.candidates){auto bundle=EndfieldInput::Decode(Payload(s.inputs.at(source)));
   for(const auto& m:bundle.members)if(SerializedHeader(m.bytes)){auto layout=ParseSerialized(m.bytes);std::vector<int64_t> matched;
-   for(auto id:layout.order){const auto& type=layout.types.at(layout.objects.at(id).type);if(type.classId!=137&&type.classId!=33)continue;auto v=ObjectValue(m.bytes,layout,id);auto ref=NullableReference(type,Child(type,v,"m_Mesh"),layout,m.name);ref.first=Cab(ref.first);if(!selected.count(ref))continue;
-    Require(type.classId==137,"target Mesh has a static MeshFilter consumer; static renderer assembly is not supported");matched.push_back(id);covered.insert(ref);}
+   for(const auto& consumer:MeshConsumers(m.bytes,layout,m.name,selected,Cab)){matched.push_back(consumer.renderer);auto ref=consumer.mesh;ref.first=Cab(ref.first);covered.insert(ref);}
    if(matched.empty())continue;std::set<int64_t> owned;
    for(const auto& a:SerializedAssets(m.bytes,m.name,layout))if(a.classId==1&&Ends(Logical(a.path),".prefab")){
     Require(Cab(a.cab)==Cab(m.name),"external Prefab root requires cross-file hierarchy resolution");EiemRenderAssemblyDescription::Graph graph(m.bytes,m.name,a.pathId);bool hit=false;
@@ -95,7 +94,7 @@ inline Selection Merge(const std::vector<Package>& authors,const std::filesystem
  }
  std::string identity;for(const auto& manifest:manifests)identity+=manifest+"\n";combined.manifest=Hash(Bytes(identity.begin(),identity.end()));Validate(combined);return combined;
 }
-inline void Ensure(const Selection& s,const std::filesystem::path& baseline,const std::filesystem::path& cache,const Package& package) {
+inline void Ensure(const Selection& s,const std::filesystem::path& baseline,const std::filesystem::path& cache,const Package& package,const std::filesystem::path& gameRoot={}) {
  Validate(s);std::filesystem::create_directories(cache);std::set<Identity> targets;for(const auto& t:package.targetIndex)targets.insert({Logical(t.first.path),t.first.asset});
  EiemOfflinePackage::Writer key;key.S(s.manifest);for(const auto& row:s.inputs){key.S(row.first);key.S(Signature(row.second));}for(const auto& t:targets)key.Id(t);
  auto snapshot=Encode(s);key.Raw(snapshot.data(),snapshot.size());auto path=cache/(Hash(key.b)+".targets");Discovery d;
@@ -107,7 +106,7 @@ inline void Ensure(const Selection& s,const std::filesystem::path& baseline,cons
  std::map<std::string,EiemResourceReloadPlan::Source> previous;
  std::map<std::string,std::string> previousRanges;
  if(std::filesystem::exists(baseline/"baseline.tsv")){
-  std::vector<std::string> roots;for(const auto& old:EiemResourceReloadPlan::ReadBaseline(baseline,roots))if(!old.physical.empty())previous.emplace(old.file,old);
+  std::vector<std::string> roots;for(const auto& old:EiemResourceReloadPlan::ReadBaseline(baseline,roots,gameRoot))if(!old.physical.empty())previous.emplace(old.file,old);
   if(!previous.empty())for(const auto& root:roots)d.roots.insert(root);
   auto bytes=Read(baseline/"source-ranges.tsv");std::istringstream rows(std::string(bytes.begin(),bytes.end()));std::string row;
   Require(bool(std::getline(rows,row))&&TableHeader(EiemOfflineCompile::Trim(row),"EFF_RESOURCE_SOURCE_RANGES"),"prior static source ranges header differs");
@@ -133,7 +132,7 @@ inline void Ensure(const Selection& s,const std::filesystem::path& baseline,cons
   }
  }
  if(d.roots.empty())return;auto sources=std::move(d.sources);std::filesystem::create_directories(baseline);std::string table="EFF_RESOURCE_RELOAD_BASELINE\t1\n",ranges="EFF_RESOURCE_SOURCE_RANGES\t1\n";
- auto game=baseline.parent_path().parent_path();
+ auto game=gameRoot.empty()?baseline.parent_path().parent_path():gameRoot;
  auto sourceRow=[&](const EiemResourceReloadPlan::Source& entry){auto relative=entry.physical.lexically_relative(game).u8string();Require(!relative.empty()&&relative.find("..") ==std::string::npos,"rule original outside game");return "input\t"+entry.file+"\t"+entry.hash+"\t"+relative+"\t"+std::to_string(entry.offset)+"\t"+std::to_string(entry.size)+"\n";};
  for(const auto& source:sources){const auto& e=s.inputs.at(source);auto identity=source+"\n"+e.revision;auto name=Hash(Bytes(identity.begin(),identity.end()))+".vfs";
   previous.erase(name);previousRanges.erase(name);table+=sourceRow({name,e.revision,e.physical,e.offset,e.size});ranges+=name+"\t"+e.physical.u8string()+"\t"+std::to_string(e.offset)+"\t"+std::to_string(e.size)+"\t"+e.revision+"\n";

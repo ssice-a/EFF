@@ -28,6 +28,8 @@ void* callbackTarget=(void*)0x1010;
 void *oldTexture=(void*)0x4103,*newTexture=(void*)0x4104,*textureValue=(void*)0x4103;bool identitySameMesh=false;
 void *factoryParent=(void*)0x4100,*factoryPosition=(void*)0x4101,*factoryRotation=(void*)0x4102;
 void *oldRenderer=(void*)0x1020,*newRenderer=(void*)0x1021,*oldMesh=(void*)0x1022,*newMesh=(void*)0x1023;
+bool staticRenderers=false;void *skinClass=(void*)0x2020,*staticClass=(void*)0x2021,*filterObject=(void*)0x2022;
+unsigned staticSkinCalls=0;unsigned char staticEnabled=1;
 void *material=(void*)0x1030,*shader=(void*)0x1031,*bone=(void*)0x1032,*pathValue=(void*)0x1033,*leaseHandle=(void*)0x1034;
 void *createRequest=(void*)0x1040,*bundle=(void*)0x1041,*assetRequest=(void*)0x1042;
 void *handleClass=(void*)0x2000,*pathClass=(void*)0x2001,*instanceClass=(void*)0x2002,*configClass=(void*)0x2003,*configBox=(void*)0x2004;
@@ -58,7 +60,7 @@ void* PropertyIds(){auto b=std::make_unique<Bytes>(32+propertyIds.size()*4);uint
 uint32_t Root(void* p,bool){handles[++sequence]=p;return sequence;}
 void* Target(uint32_t h){return handles.at(h);}
 void Free(uint32_t h){Require(handles.erase(h)==1,"fixture handle double free");}
-void* GetClass(void* p){return propertyArrays.count(p)?propertyArrayClass:p==assetProxyObject?assetProxyClass:(p==source||p==candidate||p==lazyCandidate||p==unrelatedRoot)?gameObjectClass:p==audio?audioClass:(p==model||p==unrelatedModel)?modelClass:p==loadCallback?delegateClass:p==leaseHandle?handleClass:p==pathValue?pathClass:(p==configBox||p==unrelatedConfig)?configClass:instanceClass;}
+void* GetClass(void* p){if(p==oldRenderer||p==newRenderer||p==unrelatedRenderer||p==auxiliaryRenderer)return staticRenderers?staticClass:skinClass;return propertyArrays.count(p)?propertyArrayClass:p==assetProxyObject?assetProxyClass:(p==source||p==candidate||p==lazyCandidate||p==unrelatedRoot)?gameObjectClass:p==audio?audioClass:(p==model||p==unrelatedModel)?modelClass:p==loadCallback?delegateClass:p==leaseHandle?handleClass:p==pathValue?pathClass:(p==configBox||p==unrelatedConfig)?configClass:instanceClass;}
 void* Fields(void*,void** it){auto n=uintptr_t(*it);if(n==10)return nullptr;*it=(void*)(n+1);return (void*)(n+1);}
 const char* FieldName(void* f){const char* names[]={"","modelManager","effectManager","m_entity","m_mainPart","m_cfg","usePersistentPool","modelPath","m_model","m_loadFinishCb","hash"};return names[uintptr_t(f)];}
 const char* TypeName(void* t){const char* names[]={"","Beyond.Gameplay.View.ModelManager","Beyond.Gameplay.EffectManager","Beyond.Gameplay.Core.Entity","Beyond.Gameplay.View.ComplexModelViewPart","Beyond.Gameplay.View.BaseModelViewPartData","System.Boolean","System.String","UnityEngine.GameObject","System.Action<System.Boolean,Beyond.Gameplay.View.BaseModelViewPart>","System.UInt64"};return names[uintptr_t(t)];}
@@ -90,9 +92,12 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==5)return Array(self==unrelatedRoot?unrelatedRenderer:self==newRoot||self==candidate||self==lazyCandidate?newRenderer:oldRenderer);
  if(m==6)return self==newMesh&&rejectVertex?&badVertex:&two;
  if(m==7)return &zero;
- if(m==8)return Array(bone);
- if(m==9)return Array(nullptr);
- if(m==10)return bone;
+ if(m==8){Require(!staticRenderers,"static Renderer called get_bones");++staticSkinCalls;return Array(bone);}
+ if(m==9)return Array(staticRenderers?std::vector<void*>{}:std::vector<void*>{nullptr});
+ if(m==10){Require(!staticRenderers,"static Renderer called get_rootBone");++staticSkinCalls;return bone;}
+ if(m==107){Require(args&&args[0]==(void*)109,"static MeshFilter query used wrong type");return filterObject;}
+ if(m==108){Require(self==filterObject,"static getter used Renderer instead of MeshFilter");return newMesh;}
+ if(m==110)return &staticEnabled;
  if(m==11)return Array(material);
  if(m==12)return shader;
  if(m==20){++instanceCalls;return hasInstance?instance:nullptr;}
@@ -166,8 +171,8 @@ void Setup(){
  il2cpp_gchandle_new=Root;il2cpp_gchandle_get_target=Target;il2cpp_gchandle_free=Free;il2cpp_object_get_class=GetClass;
  RuntimeShapes::Ref::weakHandle=Root;
  il2cpp_object_get_virtual_method=[](void*,void* method)->void*{return displayOverride?(void*)97:method;};
- il2cpp_class_get_name=[](void* klass){return klass==assetProxyClass?"AssetProxy":klass==gameObjectClass?"GameObject":klass==audioClass?"CharacterAudioComponent":klass==modelClass?"BaseModelComponent":klass==delegateClass?"Delegate":"fixture";};
- il2cpp_class_get_namespace=[](void* klass){return klass==assetProxyClass?"":klass==gameObjectClass?"UnityEngine":klass==modelClass?"Beyond.Gameplay.View":klass==delegateClass?"System":"Beyond.Gameplay.Core";};
+ il2cpp_class_get_name=[](void* klass){return klass==skinClass?"SkinnedMeshRenderer":klass==staticClass?"MeshRenderer":klass==assetProxyClass?"AssetProxy":klass==gameObjectClass?"GameObject":klass==audioClass?"CharacterAudioComponent":klass==modelClass?"BaseModelComponent":klass==delegateClass?"Delegate":"fixture";};
+ il2cpp_class_get_namespace=[](void* klass){return klass==skinClass||klass==staticClass||klass==gameObjectClass?"UnityEngine":klass==assetProxyClass?"":klass==modelClass?"Beyond.Gameplay.View":klass==delegateClass?"System":"Beyond.Gameplay.Core";};
  il2cpp_object_unbox=[](void* p){return p;};il2cpp_class_get_fields=Fields;il2cpp_class_get_parent=[](void*)->void*{return nullptr;};
  il2cpp_field_get_name=FieldName;il2cpp_field_get_flags=FieldFlags;il2cpp_field_static_get_value=StaticFieldValue;il2cpp_field_get_type=[](void* p){return p;};
  il2cpp_type_get_name=TypeName;il2cpp_free=[](void*){};il2cpp_field_get_value=FieldValue;il2cpp_runtime_invoke=Invoke;
@@ -880,6 +885,22 @@ int main(){
   AssemblyAddressRegression();
 #endif
   auto check=[](const char* name,auto action){try{action();}catch(const std::exception& e){throw std::runtime_error(std::string(name)+": "+e.what());}};
+  check("static Renderer verification and visibility",[]{
+    Reset();staticRenderers=true;staticSkinCalls=0;staticEnabled=1;
+    RuntimeShapes::api.getComponent=(void*)107;RuntimeShapes::api.filterMesh=(void*)108;RuntimeShapes::api.filterType=(void*)109;RuntimeShapes::api.getEnabled=(void*)110;
+    auto prepared=Test::Prepare();auto plan=*prepared->plan;plan.parts.at("marker").bones.clear();
+#ifndef EFF_OFFLINE_PACKAGE_V35
+    auto& target=plan.roots[0].assembly.sources[0].targets[0];target.bones.clear();target.root.clear();target.hasRoot=false;
+#endif
+    VerifyPrefab(candidate,plan,plan.roots[0]);Require(!staticSkinCalls,"static verification touched skinning APIs");
+    Require(!RuntimeShapes::SourceMesh(material),"non-Mesh Renderer invoked skin getter");
+    auto specs=RuntimeShapes::specs;auto variables=RuntimeShapes::variables;auto setter=RuntimeShapes::originalEnabledSetter;
+    RuntimeShapes::specs["marker"]={"static","part","marker",2,{},{}};auto& spec=RuntimeShapes::specs.at("marker");spec.visible=EiemExpression::Make();spec.visible->op=EiemExpression::Variable;spec.visible->variable="shown";RuntimeShapes::variables["static"]["shown"]=0;
+    RuntimeShapes::originalEnabledSetter=[](void*,bool value){staticEnabled=value;};
+    RuntimeShapes::RegisterRenderer(newRenderer,RuntimeShapes::SourceMesh(newRenderer));Require(!staticEnabled&&RuntimeShapes::bound.at(newRenderer).filter.Get()==filterObject,"static visibility/filter binding failed");
+    RuntimeShapes::variables["static"]["shown"]=1;RuntimeShapes::ApplyVisibility(newRenderer,RuntimeShapes::bound.at(newRenderer),spec);Require(staticEnabled,"static visibility did not return");
+    RuntimeShapes::bound.clear();RuntimeShapes::specs=std::move(specs);RuntimeShapes::variables=std::move(variables);RuntimeShapes::originalEnabledSetter=setter;staticRenderers=false;Reset();
+  });
   check("synchronous world owner",SynchronousOwnerRegression);
   check("LoadModel release ownership",LoadReleaseOwnershipRegression);
   check("bone verification cost",BoneVerificationCostRegression);

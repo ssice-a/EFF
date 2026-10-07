@@ -50,7 +50,7 @@ inline std::shared_ptr<EiemExpression> Expression(const std::shared_ptr<EiemExpr
   }
   return result;
 }
-inline Package Compose(const std::vector<Package>& authors,bool forceSet=false) {
+inline Package Compose(const std::vector<Package>& authors,bool forceSet=false,bool reuseCopies=true) {
   if(authors.size()==1 && !forceSet) return authors.front();
   Package result;result.id="EFF_COMPOSED_1";result.composed=true;
   std::vector<const Package*> ordered;std::set<std::string> ids,folders;
@@ -72,7 +72,7 @@ inline Package Compose(const std::vector<Package>& authors,bool forceSet=false) 
     for(const auto& m:p.meshes) {auto copy=m.second;copy.resource=resourceName(copy.resource);result.meshes.emplace(prefix+m.first,std::move(copy));}
     std::map<std::string,std::string> textures,materials;
     for(const auto& t:p.textures) {
-      auto fingerprint=TextureDigest(p,t.first,t.second);auto candidate=prefix+t.first;
+      auto fingerprint=reuseCopies?TextureDigest(p,t.first,t.second):prefix+t.first;auto candidate=prefix+t.first;
       auto alias=textureAliases.emplace(fingerprint,candidate);textures[t.first]=alias.first->second;
       if(alias.second) {auto copy=t.second;copy.resource=resourceName(copy.resource);result.textures.emplace(candidate,std::move(copy));}
     }
@@ -82,6 +82,7 @@ inline Package Compose(const std::vector<Package>& authors,bool forceSet=false) 
       for(auto& slot:copy.textures) {slot.second=textures.at(slot.second);fingerprint+='\n'+slot.first+":"+slot.second;}
       // A source Material is a clone template. Only identical authored
       // copies may share an object; different part bindings stay independent.
+      if(!reuseCopies)fingerprint+=prefix+m.first;
       auto candidate=prefix+m.first;auto alias=materialCopies.emplace(std::make_pair(copy.source,fingerprint),candidate);
       materials[m.first]=alias.first->second;
       if(alias.second) result.materials.emplace(candidate,std::move(copy));

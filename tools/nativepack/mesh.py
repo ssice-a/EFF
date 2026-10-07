@@ -119,6 +119,38 @@ def pack_frames(normals, tangents):
     return words.astype('<u4'), dict(normalMaxError=normal_error,tangentMaxError=tangent_error)
 
 
+def skin_stream(author):
+    """Encode skinning only when the author has an actual bone palette."""
+    count = author['vertex_count']
+    palette = len(author['bone_paths'])
+    require(len(author['bindposes']) == len(author['bone_hashes']) == palette,
+            'author bone palette metadata differs')
+    if not palette:
+        require(not author['skin'], 'unskinned geometry contains skin influences')
+        return b'', np.empty((0, 4)), np.empty((0, 4), dtype=np.uint32), 0.
+    require(len(author['skin']) == count, 'author skin vertex count')
+    weights = np.asarray([w for w, _ in author['skin']], dtype=np.float64)
+    indices = np.asarray([b for _, b in author['skin']], dtype=np.uint32)
+    require(weights.shape == indices.shape == (count, 4) and
+            np.all(np.isfinite(weights)) and np.all(weights >= 0) and
+            np.all(weights.sum(axis=1) > 0), 'invalid author skin influences')
+    require(indices.max() < palette and indices.max() < 256, 'skin indices exceed palette or UInt8 storage')
+    weights = weights / weights.sum(axis=1)[:, None]
+    scaled = weights * 65535
+    quantized = np.floor(scaled).astype(np.uint32)
+    remainder = 65535 - quantized.sum(axis=1)
+    order = np.argsort(-(scaled - quantized), axis=1, kind='stable')
+    for extra in range(4):
+        rows = np.where(remainder > extra)[0]
+        quantized[rows, order[rows, extra]] += 1
+    require(np.all(quantized.sum(axis=1) == 65535), 'UNorm16 weight sum')
+    skin = np.empty(count, dtype=[('weights', '<u2', (4,)), ('bones', 'u1', (4,))])
+    skin['weights'], skin['bones'] = quantized, indices
+    error = float(np.max(np.abs(quantized / 65535 - np.asarray([w for w, _ in author['skin']]))))
+    require(error <= 3e-5, 'skin quantization error')
+    return skin.tobytes(), weights, indices, error
+
+
 def native_mesh(template, author, name):
     mesh = copy.deepcopy(template)
     count = author['vertex_count']
@@ -152,27 +184,13 @@ def native_mesh(template, author, name):
         arrays.append(np.asarray(author['colors'],dtype='<f4').reshape(count,4))
         offset+=16
     require(offset<=255, 'vertex stream stride exceeds byte offset')
-    stream1 = np.column_stack(arrays).astype('<f4').tobytes()
-    weights = np.asarray([w for w,_ in author['skin']],dtype=np.float64)
-    indices = np.asarray([b for _,b in author['skin']],dtype=np.uint32)
-    require(indices.max()<256, 'this native UInt8 skin experiment requires fewer than 256 palette slots')
-    # Existing native contract stores four normalized UNorm16 influences.
-    weights /= weights.sum(axis=1)[:,None]
-    scaled = weights*65535
-    quantized = np.floor(scaled).astype(np.uint32)
-    remainder = 65535-quantized.sum(axis=1)
-    order = np.argsort(-(scaled-quantized),axis=1,kind='stable')
-    for extra in range(4):
-        rows=np.where(remainder>extra)[0]
-        quantized[rows,order[rows,extra]]+=1
-    require(np.all(quantized.sum(axis=1)==65535), 'UNorm16 weight sum')
-    skin=np.empty(count,dtype=[('weights','<u2',(4,)),('bones','u1',(4,))])
-    skin['weights']=quantized
-    skin['bones']=indices
-    channels[12]=dict(stream=2,offset=0,format=4,dimension=4)
-    channels[13]=dict(stream=2,offset=8,format=6,dimension=4)
+    stream1 = np.column_stack(arrays).astype('<f4').tobytes() if arrays else b''
+    skin, weights, indices, weight_error = skin_stream(author)
+    if skin:
+        channels[12]=dict(stream=2,offset=0,format=4,dimension=4)
+        channels[13]=dict(stream=2,offset=8,format=6,dimension=4)
     vertex_data=bytearray()
-    for stream in (stream0.tobytes(),stream1,skin.tobytes()):
+    for stream in (stream0.tobytes(),stream1,skin):
         vertex_data.extend(stream)
         vertex_data.extend(bytes((-len(vertex_data))%16))
     mesh.set('m_Name',name)
@@ -221,9 +239,10 @@ def native_mesh(template, author, name):
     mesh['m_StreamData'].set('offset',0)
     mesh['m_StreamData'].set('size',0)
     mesh['m_StreamData'].set('path','')
-    mesh.set('m_BonesPerVertex',4)
-    precision.update(weightMaxError=float(np.max(np.abs(quantized/65535-np.asarray([w for w,_ in author['skin']])))),indexBytes=width)
-    require(precision['weightMaxError']<=3e-5,'skin quantization error')
+    mesh.set('m_BonesPerVertex',4 if skin else 0)
+    if not skin:
+        mesh.set('m_RootBoneNameHash',0)
+    precision.update(weightMaxError=weight_error,indexBytes=width)
     return mesh,precision
 
 

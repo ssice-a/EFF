@@ -87,9 +87,6 @@ inline double Ms(uint64_t start) {
   return frequency.QuadPart ? double(Clock() - start) * 1000.0 / double(frequency.QuadPart) : 0;
 }
 void Install(void** assemblies, size_t count) {
-  if (!std::filesystem::exists(gameDirectory / "plugin/resource-reload-baseline/baseline.tsv") &&
-      !std::filesystem::exists(gameDirectory / "plugin/tools/eff_resource_pack.exe"))
-    return;
   Observe([&] {
     Require(RuntimeShapes::enabled && il2cpp_runtime_invoke && il2cpp_gchandle_new && il2cpp_object_new &&
                 il2cpp_string_new && il2cpp_class_get_type && il2cpp_type_get_object,

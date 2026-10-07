@@ -70,7 +70,6 @@ struct Api {
  void *handleUntrackedField=nullptr,*handleUntrackedClass=nullptr,*untrackedAssetGet=nullptr;
 } api;
 std::atomic<bool> configured{false},enabled{false},busy{false};std::mutex mutex;
-void StartOfflineCompiler();
 std::atomic<bool> testAuthorCommitted{false};
 std::shared_ptr<Prepared> pending;std::shared_ptr<Attempt> attempt,activeNative;
 struct Ticket {EiemOfflinePackage::Pointer pointer;uint64_t clock=0;RuntimeControls::State controls;EiemEntrySettings::Snapshot config;};
@@ -385,6 +384,8 @@ struct AssemblyTree {
  void* Renderer(const EiemRenderAssemblyDescription::Address& address)const{
   auto go=Call(api.componentGo,At(address.path));void* args[]={rendererType.Get()};
   auto list=Ref::Make(Call(api.directComponents,go,args),false);auto values=ReferenceArray(list.Get());
+  values.erase(std::remove_if(values.begin(),values.end(),[](void* r){return !RuntimeShapes::RendererKind(r);}),values.end());
+  std::stable_partition(values.begin(),values.end(),[](void* r){return RuntimeShapes::RendererKind(r)==137;});
   Require(address.component<values.size(),"reload assembly Renderer component ordinal absent: "+address.path);
   return values[address.component];
  }
@@ -397,7 +398,8 @@ void VerifyAssemblyPrefab(void* gameObject,const EiemResourceReloadPlan::Root& e
    Require(RuntimeShapes::Alive(renderer),"reload assembly target Renderer absent");
    auto mesh=RuntimeShapes::SourceMesh(renderer);
    if(!target.marker.empty())Require(RuntimeShapes::Alive(mesh)&&String(Call(RuntimeShapes::api.name,mesh))==target.marker,"reload assembly target Mesh marker differs: "+target.marker);
-   auto actual=Ref::Make(Call(RuntimeShapes::api.bones,renderer),false);
+   if(RuntimeShapes::RendererKind(renderer)==23){Require(target.bones.empty()&&!target.hasRoot&&!target.hasSkin,"reload static assembly contains skinning bindings");}
+   else {auto actual=Ref::Make(Call(RuntimeShapes::api.bones,renderer),false);
    auto bones=ReferenceArray(actual.Get(),target.bones.size());
    for(size_t i=0;i<bones.size();++i)Require(bones[i]==tree.At(target.bones[i]),"reload assembly bone slot address differs: "+target.marker+"/"+std::to_string(i));
    auto check=[&](void* method,const std::string& path,bool present,const char* name){auto value=Call(method,renderer);
@@ -405,6 +407,7 @@ void VerifyAssemblyPrefab(void* gameObject,const EiemResourceReloadPlan::Root& e
    };
    check(RuntimeShapes::api.rootBone,target.root,target.hasRoot,"rootBone");
    if(RuntimeShapes::api.skinningRoot)check(RuntimeShapes::api.skinningRoot,target.skin,target.hasSkin,"skinningRoot");
+   }
    ++checked;
   }
  }
@@ -427,9 +430,14 @@ struct VerifyWalk {
   Require(RuntimeShapes::Scalar<int>(RuntimeShapes::api.vertexCount,mesh)==int(p.vertices),"reload native vertex count differs: "+p.id);
   Require(RuntimeShapes::Scalar<int>(RuntimeShapes::api.shapeCount,mesh)==int(p.shapes.size()),"reload native shape count differs: "+p.id);
   for(size_t i=0;i<p.shapes.size();++i){int index=int(i);void* args[]={&index};Require(String(Call(RuntimeShapes::api.shapeName,mesh,args))==p.shapes[i],"reload shape channel order differs");}
-  auto array=Ref::Make(Call(RuntimeShapes::api.bones,renderer),false);auto bones=ReferenceArray(array.Get(),p.bones.size());
+  if(RuntimeShapes::RendererKind(renderer)==23){
+    Require(p.bones.empty()&&p.shapes.empty(),"reload static part contains skinning/shape bindings");
+    auto bindposes=Ref::Make(Call(RuntimeShapes::api.bindPoses,mesh),false);size_t count=0;
+    Require(ArrayLength(bindposes.Get(),&count)&&count==0,"reload static Mesh contains bindposes");
+  }else {auto array=Ref::Make(Call(RuntimeShapes::api.bones,renderer),false);auto bones=ReferenceArray(array.Get(),p.bones.size());
   auto bindposes=Call(RuntimeShapes::api.bindPoses,mesh);size_t count=0;Require(ArrayLength(bindposes,&count)&&count==bones.size(),"reload bone/bindpose counts differ");
   auto rootBone=Ref::Make(Call(RuntimeShapes::api.rootBone,renderer),false);Require(RuntimeShapes::Alive(rootBone.Get()),"reload root bone absent");hierarchy.Verify(renderer,bones,rootBone.Get(),p);
+  }
   auto mats=Ref::Make(Call(api.materials,renderer),false);auto material=ReferenceArray(mats.Get(),1).front();const auto& expected=plan.materials.at(p.material);
   auto materialName=RuntimeShapes::Alive(material)?String(Call(RuntimeShapes::api.name,material)):"";
   Require(RuntimeShapes::Alive(material)&&(materialName==expected.name||(live&&materialName==expected.name+" (Instance)"))&&RuntimeShapes::Alive(Call(api.shader,material)),"reload Material/Shader absent or wrong");
@@ -510,7 +518,7 @@ void* ResourceGet(void* self,void* info){
   auto expected=FindRoot(*current->prepared->plan,path);return CandidateForObserved(*current,size_t(expected-current->prepared->plan->roots.data()),source);
  }catch(const std::exception& e){Log("[FULL-RELOAD-RESOURCE-GAP] reason=%s gameResourcePreserved=1",e.what());return source;}
 }
-// Disk worker: lightweight descriptor/file validation only. Never calls Build.
+// Disk worker: prepares and validates candidates without any Unity calls.
 bool AuthorMatches(const Package& package){
  if(!std::filesystem::is_regular_file(package.root/"mod.ini"))return false;
  auto ini=EiemDirectory::Read(package.root/"mod.ini");
@@ -548,13 +556,35 @@ RuntimeControls::State CompiledControls(const std::shared_ptr<const std::vector<
   Require(state.specs.emplace(spec.marker,std::move(spec)).second,"offline control provenance collision");
  }RuntimeControls::PreviewPreferences(state);RuntimeControls::PreparePanel(state);return state;
 }
+bool CompiledMode(){
+ if(preparedCompiledSet)return true;for(const auto& root:DiscoverModRoots())if(std::filesystem::is_regular_file(root/"compiled.bin"))return true;return false;
+}
+void PollCompiled(bool trigger){
+ if(!enabled||!active)return;
+ static std::string lastError,failedStamp;
+ auto clock=trigger&&reloadClock.load()?reloadClock.load():NativeBundle::Clock();
+ try{
+  auto stamp=EiemCompiledModSet::DirectoryStamp(gameDirectory/"plugin/mods");if(!trigger&&!failedStamp.empty()&&stamp==failedStamp)return;
+  if(!preparedCompiledSet||!EiemCompiledModSet::Unchanged(*preparedCompiledSet,gameDirectory/"plugin/mods"))preparedCompiledSet=EiemCompiledModSet::Read(gameDirectory,preparedCompiledSet);
+  if(!preparedCompiledSet)return;auto pointer=preparedCompiledSet->pointer;auto failed=std::atomic_load(&failedKey);bool retry=trigger&&failed&&*failed==pointer.key;
+  if(pointer!=lastPrepared||retry||!diskPrepared){
+   auto p=std::make_shared<Prepared>();p->pointer=pointer;p->base=generation.load();p->graph=std::make_shared<const std::vector<Package>>(preparedCompiledSet->manifest.packages);p->authorFiles=preparedCompiledSet->files;p->plan=std::make_shared<const Plan>(preparedCompiledSet->manifest.plan);p->rules=EiemCompiledModSet::Context(preparedCompiledSet);p->ruleInputs=std::move(preparedCompiledSet->isolated);
+   if(retry)for(auto index:p->plan->closure)if(!p->ruleInputs.count(index))p->ruleInputs.emplace(index,std::make_shared<const Bytes>(p->rules->Materialize(index,true)));
+   auto config=EiemEntrySettings::Read(gameDirectory);p->controls=CompiledControls(p->graph,*p->plan,config);p->config=EiemEntrySettings::Prepare(config);Require(AuthorFilesUnchanged(*p),"Mod changed during compiled rule validation");
+   {std::lock_guard<std::mutex> lock(mutex);pending=p;}lastPrepared=pointer;diskPrepared=p;Log("[FULL-RELOAD-PREPARED] key=%s workerMs=%.6f compiledPerMod=1 authorCompilation=0 nativeSubmission=pendingUnityFrame",pointer.key.c_str(),NativeBundle::Ms(clock));
+  }
+  std::atomic_store(&latest,std::make_shared<const EiemOfflinePackage::Pointer>(pointer));
+  if(trigger){auto ticket=std::make_shared<Ticket>();ticket->pointer=pointer;ticket->clock=clock;auto config=EiemEntrySettings::Read(gameDirectory);ticket->controls=CompiledControls(diskPrepared->graph,*diskPrepared->plan,config);ticket->config=EiemEntrySettings::Prepare(config);std::atomic_store(&requested,std::shared_ptr<const Ticket>(ticket));Log("[FULL-RELOAD-REQUEST] key=%s compiledPerMod=1 authorCompilation=0",pointer.key.c_str());}
+  lastError.clear();failedStamp.clear();
+ }catch(const std::exception& e){try{failedStamp=EiemCompiledModSet::DirectoryStamp(gameDirectory/"plugin/mods");}catch(...){failedStamp.clear();}std::atomic_store(&latest,std::shared_ptr<const EiemOfflinePackage::Pointer>{});std::atomic_store(&requested,std::shared_ptr<const Ticket>{});if(trigger||lastError!=e.what()){lastError=e.what();Log("[FULL-RELOAD-REJECT] phase=compiled-mod reason=%s previousGenerationRetained=%u",e.what(),generation.load());}}
+}
 void PollOffline(bool trigger=false,bool allowBuild=true){
+ (void)allowBuild;if(CompiledMode()){PollCompiled(trigger);return;}
  if(!enabled||!active)return;
  static std::string baselineHash,lastError;
  auto clock=trigger&&reloadClock.load()?reloadClock.load():NativeBundle::Clock();
  try{
   auto cache=gameDirectory/"plugin/resource-reload-cache";
-  if(trigger&&allowBuild&&!std::filesystem::exists(cache/"current.tsv"))CompileCurrentMod();
   if(!std::filesystem::exists(cache/"current.tsv")&&DiscoverModRoots().empty())return;
   auto pointer=EiemOfflinePackage::ReadCurrent(cache);
   std::atomic_store(&latest,std::make_shared<const EiemOfflinePackage::Pointer>(pointer));
@@ -578,7 +608,7 @@ void PollOffline(bool trigger=false,bool allowBuild=true){
     Log("[FULL-RELOAD-REQUEST] key=%s offlineOnly=1 awaitingAuthorBuild=%d",pointer.key.c_str(),int(!matches));
    }else if(ticket&&matches&&ticket->pointer!=pointer){auto next=std::make_shared<Ticket>();next->clock=ticket->clock;next->pointer=pointer;std::atomic_store(&requested,std::shared_ptr<const Ticket>(next));}
    if(!matches){std::atomic_store(&latest,std::shared_ptr<const EiemOfflinePackage::Pointer>{});
-    if(trigger){Require(allowBuild,"author still changing after compilation; retry F10 after export finishes");Log("[FULL-RELOAD-BUILD] reason=currentModChanged externalCompiler=1 oldModelVisible=1");CompileCurrentMod();PollOffline(true,false);}
+    if(trigger)throw std::runtime_error("Mod declarations differ from compiled rules; export the Mod with Blender first");
     else if(ticket)std::atomic_compare_exchange_strong(&requested,&ticket,std::shared_ptr<const Ticket>{});
     return;}
    if(pointer!=lastPrepared||retry){
@@ -618,22 +648,7 @@ void Prepare(){
  try{PollOffline(true,true);}
  catch(const std::exception& e){Log("[FULL-RELOAD-REJECT] phase=static-compile reason=%s previousGenerationRetained=1",e.what());}
 }
-void StartOfflineCompiler(){
- if(!configured)return;
- static bool started=false;if(started||!std::filesystem::exists(gameDirectory/"plugin/resource-reload-baseline/baseline.tsv"))return;
- try{
-  auto graph=std::atomic_load(&published);Require(bool(graph),"offline watcher requires a Mod graph");
-  auto mods=gameDirectory/"plugin/mods";DiscoverModRoots();
-  auto executable=gameDirectory/"plugin/tools/eff_resource_pack.exe";Require(std::filesystem::exists(executable),"installed offline compiler missing");
-  auto quote=[](const std::filesystem::path& path){auto value=path.wstring();Require(value.find(L'\"')==value.npos,"offline process path quote");return L"\""+value+L"\"";};
-  auto command=quote(executable)+L" --mods "+quote(mods)+L" "+quote(gameDirectory/"plugin/resource-reload-baseline")+L" "+quote(gameDirectory/"plugin/resource-reload-cache")+L" --watch-parent "+std::to_wstring(GetCurrentProcessId());
-  STARTUPINFOW startup{};startup.cb=sizeof(startup);PROCESS_INFORMATION process{};
-  Require(CreateProcessW(executable.c_str(),command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,gameDirectory.c_str(),&startup,&process)!=0,"offline compiler process launch failed");
-  started=true;Log("[FULL-RELOAD-OFFLINE-COMPILER] pid=%lu autoWatch=1 gameExitStopsWatcher=1 authorBuildInExternalProcess=1",process.dwProcessId);CloseHandle(process.hThread);CloseHandle(process.hProcess);
- }catch(const std::exception& e){Log("[FULL-RELOAD-REJECT] phase=offline-compiler reason=%s oldModelVisible=1",e.what());}
-}
 void Install(void** assemblies,size_t count){
- if(!std::filesystem::exists(gameDirectory/"plugin/tools/eff_resource_pack.exe")&&!std::filesystem::exists(gameDirectory/"plugin/resource-reload-baseline/baseline.tsv"))return;
  configured=true;
  try{Require(RuntimeShapes::enabled&&NativeBundle::enabled&&il2cpp_value_box,"reload public runtime/boxing API absent");
   auto path=FindClass("Beyond.Resource","StringPathHash",assemblies,count),handle=FindClass("Beyond.Resource","FAssetProxyHandle",assemblies,count);
@@ -655,12 +670,12 @@ void Install(void** assemblies,size_t count){
   api.proxyHash=Exact(assetProxy,"get_pathOrNameHash",{},"System.Int64",false);if(!api.proxyHash)api.proxyHash=Method(assetProxy,"get_pathOrNameHash",{},"System.UInt64",false);
   Require(Entry::Install(proxy,"_PreloadPrefab",{"System.Boolean"},"System.Void",false,(void*)ProxyPreload,(void**)&originalProxyPreload),"game prefab instantiate lifecycle hook unavailable");
   api.rootCategory=Enum(FindClass("Beyond.Resource","RootCategory",assemblies,count),"Main");api.priority=Enum(FindClass("Beyond.Resource","EResourceRequestPriority",assemblies,count),"Default");
-  auto go=FindClass("UnityEngine","GameObject",assemblies,count),skin=FindClass("UnityEngine","SkinnedMeshRenderer",assemblies,count);
-  prefabType=Type(go);rendererType=Type(skin);
+  auto go=FindClass("UnityEngine","GameObject",assemblies,count),renderer=FindClass("UnityEngine","Renderer",assemblies,count);
+  prefabType=Type(go);rendererType=Type(renderer);
   api.components=Method(go,"GetComponentsInChildren",{"System.Type","System.Boolean"},"UnityEngine.Component[]",false);api.goTransform=Method(go,"get_transform",{},"UnityEngine.Transform",false);
   auto component=FindClass("UnityEngine","Component",assemblies,count);
   api.componentGo=Method(component,"get_gameObject",{},"UnityEngine.GameObject",false);
-  auto renderer=FindClass("UnityEngine","Renderer",assemblies,count),material=FindClass("UnityEngine","Material",assemblies,count);
+  auto material=FindClass("UnityEngine","Material",assemblies,count);
   api.materials=Method(renderer,"get_sharedMaterials",{},"UnityEngine.Material[]",false);api.texture=Method(material,"GetTexture",{"System.String"},"UnityEngine.Texture",false);api.shader=Method(material,"get_shader",{},"UnityEngine.Shader",false);
   BindMaterialTextureProperties(material);
   auto texture=FindClass("UnityEngine","Texture",assemblies,count);

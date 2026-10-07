@@ -3,17 +3,16 @@
 The production translation unit is `src/eiem_resource_entry.cpp`. The retired
 `eiem.cpp`, base-resource setter backend, render executor and restore ledger are
 no longer part of the working tree or production build. On 2026-10-06 the game
-installation was updated to the current paired v35 DLL/compiler/protocol with
+installation uses the production DLL and structure declaration with
 F10 reload and Insert controls. Historical v35c results belong to that binary.
 
 ## Boundaries and dependency direction
 
 ```text
-AnimeStudio source exchange + pristine game baseline
-  -> Blender author package (mod.ini format=2 + .mesh/.mat/.tex + source-inputs.bin)
-  -> paired eff_resource_pack.exe
-  -> compressed rules + author payload references + atomic current.tsv
-  -> DLL pristine range reads and in-memory serialized rule application
+AnimeStudio source exchange + existing author index
+  -> Blender-local author compiler + small source preparer
+  -> independent Mod: mod.ini + .mesh/.mat/.tex + source-inputs.bin + compiled.bin
+  -> DLL compiled-record composition and proven byte rule application
   -> Unity-thread native load, verification and game-owned owner rebuild
   -> runtime graph, controls, settings and future-instance routes
 ```
@@ -33,10 +32,7 @@ AnimeStudio source exchange + pristine game baseline
 | Observation | `eiem_entry_loading_observation.h`, `eiem_entry_reload_observation.h` | Optional evidence; observers do not establish completion fences |
 | Author bridge | `eiem_author_core.cpp` | Source-schema interface for author tools |
 
-The compiler and DLL share the pure serialized builders through
-`eiem_prefab_resource_rules.h`. The compiler validates rules; the DLL applies
-them to pristine ranges and submits memory bundles with public native bindings.
-Neither path persists complete Prefabs or duplicate author payloads for rules.
+Author builders are used only by `eiem_compiled_mod_writer.h` through the Blender compiler. The DLL uses `eiem_compiled_mod_set.h` to combine already compiled records and `eiem_prefab_resource_rules.h` to apply byte recipes. It neither runs author executables nor generates Mesh/Material/Texture records. Shared headers provide codecs; author builders are not called by the runtime. Complete original Prefabs and duplicate author payloads are not persisted in Mod outputs.
 Public Renderer visibility and blend-shape controls, and the
 capture consumer's shape snapshots, have their own bounded responsibilities;
 they do not restore the retired base-resource replacement path. `eiem_lua_ui.h`
@@ -48,12 +44,7 @@ physical Mod keys pause while open and otherwise affect only the selected Mod.
 
 ## Startup and reload
 
-The full installed 0/1/N author set is composed before native inputs are built.
-Each character keeps its own Mod ID, keys and variables; characters without a
-Mod retain original resources. Shared CABs/Prefabs are built once, with duplicate
-Mesh targets and conflicting Material overrides rejected. Set caches are locked
-by canonical cache path and claimed by the containing mods directory. Legacy
-single-author manifests remain readable and validated owners can be upgraded.
+Blender compiles each Mod independently before publication. Startup and F10 read the full installed 0/1/N compiled set. Shared input edits compose against pristine records and exact original list positions; conflicting Mesh targets or field edits are rejected. Player key state remains per Mod. Old current.tsv publications remain read-only compatibility inputs; new exports do not use the game-side compiler/cache.
 
 Startup loads the latest complete manifest and its loading table, validates the
 field structures and source/output hashes, then submits substituted inputs along
@@ -88,7 +79,7 @@ path rejects resource changes; it is not a second resource replacement route.
 
 Manifest fields select address verification or marker coverage, independently of
 compiler/build labels. Product versions do not gate structurally compatible inputs.
-The disk compiler takes only author, baseline and cache paths, with no GameAssembly
+The author compiler takes one Mod directory and the game installation path, with no GameAssembly
 file dependency. Protocol queries must succeed; executable strings are never used
 to guess layouts. Legacy manifests remain readable and are rewritten with the current
 self-describing header. Mod/input/root
@@ -111,7 +102,7 @@ cmd /c build.bat v36
 cmd /c build.bat v35
 ```
 
-Each output folder contains the DLL, matching compiler, protocol JSON, proxies
+Each production output contains the DLL, protocol JSON, proxies
 and settings. Build commands alone do not change game files. The separately
 authorized deployment installed the v35 pair; v36 remains a local build.
 

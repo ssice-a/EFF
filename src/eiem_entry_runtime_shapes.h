@@ -37,6 +37,7 @@ struct Bound {
   std::map<std::string,int> indices;
   bool nativeEnabled = true;
   bool modelReady = false;
+  Ref filter;
 };
 struct Snapshot { Ref mesh; };
 struct CaptureScope {
@@ -65,6 +66,7 @@ struct Api {
   void *localToWorld = nullptr, *worldToLocal = nullptr, *skinningRoot = nullptr;
   void* transformClass = nullptr;
   void *attributeCount = nullptr, *attributeDescriptor = nullptr, *bonesPerVertex = nullptr, *filterMesh = nullptr;
+  void *getComponent = nullptr, *filterType = nullptr;
 } api;
 std::atomic<bool> enabled{false};
 std::atomic<unsigned> boundCount{0};
@@ -201,7 +203,28 @@ void Finished(void* renderer, bool ready) {
 }
 // Registration/ownership checks always inspect the original Renderer Mesh,
 // even when Capture's scoped getter is supplying an evaluated snapshot.
-void* SourceMesh(void* renderer) { return originalMeshGetter?originalMeshGetter(renderer):Call(api.mesh,renderer); }
+int RendererKind(void* renderer) {
+  if(!renderer)return 0;
+  // Direct diagnostic callers can provide the native getter without metadata.
+  if(!il2cpp_object_get_class||!il2cpp_class_get_name||!il2cpp_class_get_namespace||!il2cpp_class_get_parent)return 137;
+  for(auto c=il2cpp_object_get_class(renderer);c;c=il2cpp_class_get_parent(c)){
+    auto name=il2cpp_class_get_name(c),ns=il2cpp_class_get_namespace(c);
+    if(!name||!ns||strcmp(ns,"UnityEngine"))continue;
+    if(!strcmp(name,"SkinnedMeshRenderer"))return 137;
+    if(!strcmp(name,"MeshRenderer"))return 23;
+  }return 0;
+}
+void* SourceFilter(void* renderer) {
+  Require(api.getComponent&&api.filterType&&api.filterMesh,"static MeshFilter access unavailable");
+  void* args[]={api.filterType};return Call(api.getComponent,renderer,args);
+}
+void* SourceMesh(void* renderer) {
+  auto kind=RendererKind(renderer);
+  if(kind==23){auto filter=Ref::Make(SourceFilter(renderer),false);
+    return Alive(filter.Get())?Call(api.filterMesh,filter.Get()):nullptr;
+  }
+  return kind==137?(originalMeshGetter?originalMeshGetter(renderer):Call(api.mesh,renderer)):nullptr;
+}
 const Spec* Match(void* mesh) {
   if (!mesh) return nullptr;
   auto marker = String(Call(api.name,mesh));
@@ -213,10 +236,12 @@ void Bind(void* renderer, void* mesh, const Spec& spec) {
   if (existing != bound.end() && existing->second.renderer.Get() == renderer && existing->second.mesh.Get() == mesh) return;
   Require(Alive(renderer) && Alive(mesh) && Scalar<int>(api.vertexCount,mesh) == int(spec.vertices) &&
           Scalar<int>(api.shapeCount,mesh) == int(spec.channels.size()), "runtime shape provenance/layout mismatch");
+  Require(RendererKind(renderer)!=23||spec.channels.empty(),"static MeshRenderer cannot animate shape channels");
   // A managed Mesh wrapper can be collected while its native Renderer still
   // uses the asset. Keep that wrapper until this Renderer binding retires;
   // native validity is still checked independently on the main thread.
   Bound b{Ref::Make(renderer,true),Ref::Make(mesh,false),spec.marker,{}};
+  if(RendererKind(renderer)==23)b.filter=Ref::Make(SourceFilter(renderer),false);
   if (spec.visible) b.nativeEnabled=Scalar<unsigned char>(api.getEnabled,renderer)!=0;
   for (size_t i=0;i<spec.channels.size();++i) {
     int index = int(i); void* args[] = {&index};
@@ -610,7 +635,8 @@ void Update() {
   for (auto it=bound.begin();it!=bound.end();) {
     auto renderer=it->second.renderer.Get(), mesh=it->second.mesh.Get();
     if (!Alive(renderer) || !Alive(mesh)) { it=bound.erase(it); continue; }
-    auto current=SourceMesh(renderer);
+    auto filter=it->second.filter.Get();
+    auto current=it->second.filter.handle?(Alive(filter)?Call(api.filterMesh,filter):nullptr):SourceMesh(renderer);
     if (current!=mesh) { it=bound.erase(it); continue; }
     const auto& spec=specs.at(it->second.marker);
     ApplyVisibility(renderer,it->second,spec);
@@ -662,9 +688,7 @@ void Init(void* self, void* renderers, void* configs, void* custom, bool skip, v
     for (int i=0;i<size;++i) {
       void* renderer=nullptr; Require(CopyRaw((char*)items+32+i*sizeof(void*),&renderer,sizeof(renderer)),"runtime shape renderer list element");
       if (!Alive(renderer)) continue;
-      auto c=il2cpp_object_get_class(renderer); bool skin=false;
-      for (;c;c=il2cpp_class_get_parent(c)) { auto n=il2cpp_class_get_name(c); auto ns=il2cpp_class_get_namespace(c); skin|=n && ns && !strcmp(n,"SkinnedMeshRenderer") && !strcmp(ns,"UnityEngine"); }
-      if (!skin) continue;
+      if (!RendererKind(renderer)) continue;
       auto mesh=SourceMesh(renderer);
       // Material controllers can initialize before BaseModelViewPart saves
       // Renderer enabled state. Complete-model callbacks activate filtering.
@@ -679,7 +703,6 @@ void InstallOptional(void** assemblies,size_t count) {
   if (!graph) return;
   bool needed=false;
   for (const auto& package:*graph) needed|=!package.parts.empty();
-  if (!needed && !std::filesystem::exists(gameDirectory/"plugin/tools/eff_resource_pack.exe") && !std::filesystem::exists(gameDirectory/"plugin/resource-reload-baseline/baseline.tsv")) return;
   try {
     Require(il2cpp_resolve_icall,"runtime shape icall resolver unavailable");
     Require(bool(graph),"runtime control package graph unavailable");
@@ -697,8 +720,13 @@ void InstallOptional(void** assemblies,size_t count) {
     Require(api.getEnabled,"runtime Renderer enabled getter unavailable");
     api.modelRenderers=Exact(FindClass("UnityEngine","GameObject",assemblies,count),"GetComponentsInChildren",{"System.Type","System.Boolean"},"UnityEngine.Component[]",false);
     Require(api.modelRenderers && il2cpp_class_get_type && il2cpp_type_get_object,"runtime model renderer registration unavailable");
-    api.rendererType=il2cpp_type_get_object(il2cpp_class_get_type(skin));
-    Require(api.rendererType,"runtime SkinnedMeshRenderer type missing");
+    api.rendererType=il2cpp_type_get_object(il2cpp_class_get_type(renderer));
+    Require(api.rendererType,"runtime Renderer type missing");
+    auto filter=FindClass("UnityEngine","MeshFilter",assemblies,count);
+    api.filterType=il2cpp_type_get_object(il2cpp_class_get_type(filter));
+    api.filterMesh=Exact(filter,"get_sharedMesh",{},"UnityEngine.Mesh",false);
+    api.getComponent=Exact(FindClass("UnityEngine","Component",assemblies,count),"GetComponent",{"System.Type"},"UnityEngine.Component",false);
+    Require(api.filterType&&api.filterMesh&&api.getComponent,"runtime static MeshFilter access unavailable");
     Log("[CONTROL-RUNTIME-REGISTRATION] modelCompletion=1 includeInactive=1 controllerInit=1 sceneRendererDiscovery=0");
     api.vertexCount=Exact(mesh,"get_vertexCount",{},"System.Int32",false);
     api.vertices=Exact(mesh,"get_vertices",{},"UnityEngine.Vector3[]",false);
@@ -794,8 +822,6 @@ void InstallOptional(void** assemblies,size_t count) {
         api.attributeCount=Exact(mesh,"GetVertexAttributeCountImpl",{},"System.Int32",false);
         api.attributeDescriptor=Exact(mesh,"GetVertexAttribute",{"System.Int32"},"UnityEngine.Rendering.VertexAttributeDescriptor",false);
         api.bonesPerVertex=Exact(mesh,"GetBonesPerVertexValue",{},"System.Int32",false);
-        auto filter=FindClass("UnityEngine","MeshFilter",assemblies,count);
-        api.filterMesh=Exact(filter,"get_sharedMesh",{},"UnityEngine.Mesh",false);
         installIcall("UnityEngine.Mesh::get_blendShapeCount()",(void*)ShapeCount,(void**)&originalShapeCount);
         installIcall("UnityEngine.MeshFilter::set_sharedMesh(UnityEngine.Mesh)",(void*)SetFilterMesh,(void**)&originalFilterSetter);
         Log("[DEBUG-shape-v24-READY] count=%d assignment=%d matrixRequest=%d layout=%d sampleLimit=128 nativeCountPreserved=1",
