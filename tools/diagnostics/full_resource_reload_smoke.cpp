@@ -736,7 +736,7 @@ void BackgroundReadyRegression(){
 }
 void OfflineRejectionRegression(){
  using namespace FullResourceReload;Reset();
- auto previous=gameDirectory;auto folder=std::filesystem::path("E:/")/("eff-offline-reject-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));
+ auto previous=gameDirectory;auto folder=std::filesystem::absolute("bin")/("eff-offline-reject-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));
  Require(std::filesystem::create_directory(folder),"offline reject fixture already exists");
  struct Cleanup {std::filesystem::path game,folder;~Cleanup(){attempt.reset();pending.reset();std::atomic_store(&requested,std::shared_ptr<const Ticket>{});std::atomic_store(&latest,std::shared_ptr<const EiemOfflinePackage::Pointer>{});enabled=false;gameDirectory=game;std::filesystem::remove_all(folder);Reset();}}cleanup{previous,folder};
  gameDirectory=folder;enabled=true;RuntimeShapes::enabled=true;auto cache=folder/"plugin/resource-reload-cache";std::filesystem::create_directories(cache);
