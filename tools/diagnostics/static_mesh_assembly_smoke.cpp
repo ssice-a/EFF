@@ -58,6 +58,19 @@ int main(){try{
  AssetIndex assets;assets[target].cab=assets[mat].cab=f.cab;assets[target].pathId=100;assets[target].classId=43;assets[target].type=resource->type;assets[mat].pathId=200;assets[mat].classId=21;
  std::vector<BuiltMeshPart> parts{{target,"R","P",f.cab,100,100,3,3},{target,"R","Q",f.cab,100,101,3,3}};
  auto built=RendererMemberBuilder(before,f.cab,p,assets,parts).Build();Require(built.matches==2&&built.parts.size()==4&&built.addedObjects==8,"static Mesh consumers/one-to-many assembly missing");
+ auto crossAssets=assets;const std::string materialCab="CAB-"+std::string(32,'c');crossAssets.at(mat).cab=materialCab;
+ auto cross=RendererMemberBuilder(before,f.cab,p,crossAssets,parts).Build();auto crossLayout=ParseSerialized(cross.bytes);
+ Require(crossLayout.externals==std::vector<std::string>{materialCab},"cross-CAB Material was not registered exactly once");
+ const NativeReference inheritedTexture{"CAB-"+std::string(32,'d'),91}, inheritedShader{"CAB-"+std::string(32,'e'),92};
+ MaterialPreloadIndex borrowed{{{materialCab,200},{inheritedTexture,inheritedShader}}};
+ RendererMemberBuilder borrowedBuilder(before,f.cab,p,crossAssets,parts);borrowedBuilder.SetMaterialPreloads(borrowed);
+ auto withDependencies=borrowedBuilder.Build();auto dependencyLayout=ParseSerialized(withDependencies.bytes);
+ auto dependencyBundle=ObjectValue(withDependencies.bytes,dependencyLayout,300);const auto& dependencyType=dependencyLayout.types.at(dependencyLayout.objects.at(300).type);
+ std::set<NativeReference> dependencyRefs;for(const auto& ref:ConstArray(dependencyType,Child(dependencyType,dependencyBundle,"m_PreloadTable")).children)
+  dependencyRefs.insert(NullableReference(dependencyType,ref,dependencyLayout,f.cab));
+ Require(dependencyRefs.count(inheritedTexture)&&dependencyRefs.count(inheritedShader),"borrowed Material lost inherited Texture/Shader preloads");
+ for(const auto& part:cross.parts){auto value=ObjectValue(cross.bytes,crossLayout,part.renderer);const auto& type=crossLayout.types.at(crossLayout.objects.at(part.renderer).type);
+  Require(NullableReference(type,ConstArray(type,Child(type,value,"m_Materials")).children.front(),crossLayout,f.cab)==NativeReference{materialCab,part.material},"cross-CAB Material FileID/PathID differs");}
  EiemRenderAssemblyDescription::Graph g(built.bytes,f.cab,10);Require(g.Mesh(13)==NativeReference{f.cab,100},"native static MeshFilter changed identity");auto extra=g.RendererChildren(13);Require(extra.size()==1&&g.Mesh(extra[0])==NativeReference{f.cab,101},"static extension MeshFilter missing");g.RequirePure(extra[0]);
  Require(g.Pointer(13,"m_AdditionalVertexStreams")==0&&g.Pointer(13,"m_StaticBatchRoot")==0&&Integer(Child(g.Schema(13),Child(g.Schema(13),g.Tree(13),"m_StaticBatchInfo"),"subMeshCount"))==0,"static donor batch/vertex stream survived geometry replacement");
  auto next=ParseSerialized(built.bytes);for(const auto& part:built.parts){auto renderer=ObjectValue(built.bytes,next,part.renderer);auto ref=NullableReference(next.types[next.objects.at(part.renderer).type],ConstArray(next.types[next.objects.at(part.renderer).type],Child(next.types[next.objects.at(part.renderer).type],renderer,"m_Materials")).children[0],next,f.cab);Require(ref==NativeReference{f.cab,part.material},"static material clone binding differs");}

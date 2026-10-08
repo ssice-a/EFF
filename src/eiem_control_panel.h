@@ -10,7 +10,7 @@ namespace EiemControlPanel {
 struct Snapshot {
   uint64_t revision=0, scope=0;
   std::string selected;
-  bool keyboard=true;
+  std::map<std::string,bool> keySwitchEnabled;
   std::shared_ptr<const std::vector<EiemDirectory::Package>> graph;
   std::map<std::string,EiemVariables> values;
 };

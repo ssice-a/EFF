@@ -79,6 +79,8 @@ def update_directory(root, *, parts=(), materials=(), textures=(), texture_only=
     root = Path(root)
     ini = ini_document(root)
     before = {s: dict(ini[s]) for s in ini.sections()}
+    if 'key_switch_enabled' not in ini['Mod']:
+        ini['Mod']['key_switch_enabled'] = '1'
     old_paths = {ini[s]['path'] for s in ini.sections() if s.startswith(('Mesh', 'Material', 'Texture'))}
     texture_ids = {t['id']: identifier('Texture' + t['sourceAsset']) for t in textures}
     for material in materials:
@@ -127,7 +129,8 @@ def update_directory(root, *, parts=(), materials=(), textures=(), texture_only=
     return read_package(root, resource_cache)
 
 
-def export_directory(root, *, mod_id, parts, materials, textures, rules, switches, resource_cache=None):
+def export_directory(root, *, mod_id, parts, materials, textures, rules, switches, resource_cache=None,
+                     key_switch_enabled=True):
     root = Path(root)
     require(root.is_dir() and not any(root.iterdir()), "publication output must be empty")
     identifier(mod_id)
@@ -143,7 +146,8 @@ def export_directory(root, *, mod_id, parts, materials, textures, rules, switche
             require("\n" not in text and "\r" not in text, "multiline INI value")
             ini[name][key] = text
 
-    section("Mod", dict(format=2, id=mod_id))
+    from .ini_reader import key_switch_enabled as parse_key_switch_enabled
+    section("Mod", dict(format=2, id=mod_id, key_switch_enabled=int(parse_key_switch_enabled(key_switch_enabled))))
     constants = {}
     for switch in switches:
         require(switch["variable"] not in constants, "duplicate state declaration")

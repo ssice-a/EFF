@@ -9,6 +9,7 @@ struct BuiltMeshPart {
   std::string rule, part, cab;
   int64_t sourceId = 0, id = 0;
   unsigned vertices = 0, indices = 0;
+  std::vector<uint32_t> sourceBoneHashes;
 };
 struct MeshInputBuild {
   Bytes bytes;
@@ -29,13 +30,19 @@ inline Value ApplyMesh(const Type& type, const Value& source, const Resource& re
   Require(type.classId == 43 && resource.kind == 1 && type.hash == resource.type,
           "Mesh serialized class/schema mismatch");
   Value result = source;
-  // The channel flags describe the current native packed-frame convention.
-  // Author UV dimensions retain its upper nibble for channels 4 through 11.
+  // Author UV dimensions retain the source flags for channels 4 through 11.
+  // Source meshes may have packed frames or ordinary Float32 normal/tangent channels.
   auto sourceVertex = Child(type, source, "m_VertexData");
   auto& sourceChannels = ArrayValue(type, Child(type, sourceVertex, "m_Channels"));
-  Require(sourceChannels.children.size() == 14 &&
-              Integer(Child(type, sourceChannels.children[1], "dimension")) == 0x31,
-          "unsupported current Mesh packed-frame channel convention");
+  Require(sourceChannels.children.size() == 14, "unsupported source Mesh channel count");
+  const auto& normal = sourceChannels.children[1];
+  const auto& tangent = sourceChannels.children[2];
+  auto normalDimension = Integer(Child(type, normal, "dimension"));
+  Require(Integer(Child(type, normal, "format")) == 0 &&
+              ((normalDimension == 0x31 && Integer(Child(type, tangent, "dimension")) == 0) ||
+               (normalDimension == 3 && Integer(Child(type, tangent, "dimension")) == 4 &&
+                Integer(Child(type, tangent, "format")) == 0)),
+          "unsupported source Mesh frame layout");
   for (const auto& block : resource.blocks) {
     if (block.first[0] == '@') continue;
     auto& field = Child(type, result, block.first);

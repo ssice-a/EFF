@@ -1,7 +1,47 @@
 """Static author geometry must not invent a skin palette or vertex stream."""
 import unittest
 import numpy as np
+from . import mesh
 from .mesh import skin_stream
+from types import SimpleNamespace
+
+
+class FrameStreamTests(unittest.TestCase):
+    def channels(self, packed):
+        rows = [dict(format=0, dimension=0) for _ in range(14)]
+        rows[0]['dimension'] = 3
+        rows[1]['dimension'] = 0x31 if packed else 3
+        rows[2]['dimension'] = 0 if packed else 4
+        return [{k: SimpleNamespace(data=v) for k, v in row.items()} for row in rows]
+
+    def test_float_normals_and_tangents_keep_source_storage(self):
+        p=np.array([[1.,2.,3.],[-2.,3.,4.]])
+        n=np.array([[0.,0.,1.],[0.,1.,0.]])
+        t=np.array([[1.,0.,0.,-1.],[1.,0.,0.,1.]])
+        data, dimension, _=mesh.frame_stream(self.channels(False),p,n,t)
+        self.assertEqual((data.dtype.str,data.shape,dimension),('<f4',(2,10),3))
+        np.testing.assert_array_equal(data,np.column_stack((p,n,t)))
+
+    def test_packed_frames_still_decode_within_precision(self):
+        p=np.array([[1.,2.,3.]])
+        n=np.array([[0.,0.,1.]])
+        t=np.array([[1.,0.,0.,-1.]])
+        data, dimension, precision=mesh.frame_stream(self.channels(True),p,n,t)
+        self.assertEqual((data.shape,dimension),((1,4),0x31))
+        actual_n, actual_t=mesh.unpack_frames(data[:,3].view('<u4'))
+        np.testing.assert_allclose(actual_n,n,atol=.006)
+        np.testing.assert_allclose(actual_t,t,atol=.015)
+
+    def test_float_storage_preserves_zero_tangent_from_blender(self):
+        data, dimension, _=mesh.frame_stream(self.channels(False),np.zeros((1,3)),
+            np.array([[0.,0.,1.]]),np.zeros((1,4)))
+        self.assertEqual(dimension,3)
+        np.testing.assert_array_equal(data[:,6:10],np.zeros((1,4)))
+
+    def test_unknown_normal_encoding_is_rejected(self):
+        channels=self.channels(False); channels[1]['dimension'].data=2
+        with self.assertRaisesRegex(ValueError,'frame layout'):
+            mesh.frame_stream(channels,np.zeros((1,3)),np.array([[0.,0.,1.]]),np.array([[1.,0.,0.,1.]]))
 
 
 class SkinStreamTests(unittest.TestCase):

@@ -69,6 +69,7 @@ void RecordUIModel(void* loader,void* root,const std::string& path,void* parent,
  if(!uiLifecycleReady||!RuntimeShapes::Main()||!RuntimeShapes::Alive(root)||!UIOwns(loader,root))return;
  LiveUIModel live{Ref::Make(loader,true),Ref::Make(root,true),Ref::Make(parent,true),Ref::Make(callback,false),path};
  liveUIModels[root]=std::move(live);++ownerRevision;auto controlsReady=RuntimeShapes::RegisterModel(root);
+ ProbeModelMaterials(root,"ui-complete");
  Log("[FULL-RELOAD-UI-READY] path=%s rootId=%d originalCallbackRecorded=%d parentProvided=%d hierarchyActive=%d controlsReady=%zu gameOwnedInstance=1",path.c_str(),Id(root),int(callback!=nullptr),int(parent!=nullptr),int(RuntimeShapes::Scalar<unsigned char>(api.uiActiveHierarchy,root)!=0),controlsReady);
 }
 void* UILoad(void* self,void* path,void* parent,void* info){

@@ -1,3 +1,4 @@
+#define EIEM_PANEL_TEST
 #include "../../src/eiem_resource_entry.cpp"
 #include <iostream>
 #include <thread>
@@ -41,16 +42,16 @@ void Checks() {
   LoadControls(Graph({Make("A"),Make("B")}));Require(selected=="A","default selection differs from old manager");
   auto immutable=panel.Read();
   physical=VK_NUMPAD1;Frame();Frame();
-  Require(variables.at("A").at("$switch")==1 && variables.at("B").at("$switch")==0,"same key changed unselected Mod or repeated");
+  Require(variables.at("A").at("$switch")==1 && variables.at("B").at("$switch")==1,"same key did not reach both enabled Mods or repeated");
   Require(immutable->values.at("A").at("$switch")==0,"published UI snapshot mutated");
   panel.open=true;Queue(Action::Select,"B");Frame();
-  panel.open=false;Frame();Require(selected=="B" && variables.at("B").at("$switch")==0,"selection manufactured held edge");
+  panel.open=false;Frame();Require(selected=="B" && variables.at("B").at("$switch")==1,"selection manufactured held edge");
   physical=0;Frame();physical=VK_NUMPAD1;Frame();
-  Require(variables.at("B").at("$switch")==1 && variables.at("A").at("$switch")==1,"selected Mod key isolation");
+  Require(variables.at("B").at("$switch")==2 && variables.at("A").at("$switch")==2,"panel selection limited physical keys to one Mod");
   panel.open=true;physical=0;Frame();physical=VK_NUMPAD1;Frame();
-  Require(variables.at("B").at("$switch")==1,"panel physical shortcut not paused");
+  Require(variables.at("B").at("$switch")==2,"panel physical shortcut not paused");
   Queue(Action::Invoke,"A",u8"衣装切换");Queue(Action::Invoke,"B",u8"衣装切换");Frame();
-  Require(variables.at("A").at("$switch")==1 && variables.at("B").at("$switch")==2,"panel invocation escaped selection");
+  Require(variables.at("A").at("$switch")==2 && variables.at("B").at("$switch")==0,"panel invocation escaped selection");
   Queue(Action::Invoke,"B","set");Frame();Require(variables.at("B").at("$switch")==2,"press button");
   auto oldScope=panel.Read();Queue(Action::Select,"A");Queue(Action::Value,"B","$shape",.9,oldScope);Frame();
   Require(selected=="A" && variables.at("B").at("$shape")==0,"queued old selection command applied");
@@ -66,14 +67,14 @@ void Checks() {
   Queue(Action::Hold,"A","increase",1);Frame();panel.open=false;physical=0;Frame();panel.open=true;Frame();
   Require(variables.at("A").at("$shape")==.75 && uiHold.empty(),"closed/reopened panel resumed GUI hold");
   Queue(Action::Keyboard,"A",{},0);Frame();panel.open=false;physical=0;Frame();physical=VK_NUMPAD1;Frame();
-  Require(variables.at("A").at("$switch")==1,"disabled keyboard changed variables");
+  Require(variables.at("A").at("$switch")==2 && variables.at("B").at("$switch")==0,"per-Mod disable also stopped the other enabled Mod");
   panel.open=true;Queue(Action::Invoke,"A",u8"衣装切换");Frame();
-  Require(variables.at("A").at("$switch")==2,"keyboard disable incorrectly disabled panel controls");
+  Require(variables.at("A").at("$switch")==0,"keyboard disable incorrectly disabled panel controls");
   Queue(Action::Keyboard,"A",{},1);Frame();
   auto beforeReload=panel.Read();Queue(Action::Value,"A","$shape",.9,beforeReload);
   auto a=Make("A");a.persistent={"$shape"};
   auto b=Make("B");Install({a,b},true);Frame();
-  Require(selected=="A" && keyboard && variables.at("A").at("$shape")==0,"reload accepted stale command");
+  Require(selected=="A" && keySwitchEnabled.at("A") && variables.at("A").at("$shape")==0,"reload accepted stale command");
   Queue(Action::Value,"A","$shape",.6);Frame();Install({a,b},true);
   Require(selected=="A" && variables.at("A").at("$shape")==.6,"reload lost valid persistent shape/selection");
   auto oldAuthor=panel.Read();Queue(Action::Value,"A","$shape",.8,oldAuthor);
@@ -88,15 +89,26 @@ void Checks() {
   Install({},true);Frame();Require(selected.empty()&&keys.empty()&&specs.empty()&&panel.Read()->graph->empty(),"deleting last Mod left live controls");
   Install({Make("B")},true);Frame();Require(selected=="B","readding character Mod after empty set failed default selection");
   auto reserved=Make("reserved");reserved.bindings.front().key={VK_INSERT,MOD_CONTROL};
-  bool rejected=false;try{Prepare(Graph({reserved}),EiemGlobalConfig{});}catch(const std::exception&){rejected=true;}
-  Require(rejected,"modifier chord overlaps reserved Insert");
+  auto accepted=Prepare(Graph({reserved}),EiemGlobalConfig{});Require(accepted.keys.at(reserved.id).front().key==reserved.bindings.front().key,"user-selected overlapping shortcut was rejected");
+  auto view=panel.Read();panel.open=true;Queue(Action::Keyboard,"B",{},0,view);Frame();
+  Require(!keySwitchEnabled.at("B"),"checkbox did not disable its Mod");
+  Install({Make("C"),Make("D")});view=panel.Read();
+  Queue(Action::Keyboard,"C",{},0,view);Queue(Action::Keyboard,"D",{},0,view);Frame();
+  Require(!keySwitchEnabled.at("C")&&!keySwitchEnabled.at("D"),"one checkbox invalidated another queued checkbox");
+  Queue(Action::Keyboard,"C",{},1);Queue(Action::Keyboard,"D",{},1);Frame();
+  Require(keySwitchEnabled.at("C")&&keySwitchEnabled.at("D"),"multiple Mods could not be enabled together");
+  auto disabled=Make("FromIni");disabled.keySwitchEnabled=false;Install({disabled,Make("DefaultEnabled")});
+  panel.open=false;physical=0;Frame();physical=VK_NUMPAD1;Frame();
+  Require(variables.at("FromIni").at("$switch")==0&&variables.at("DefaultEnabled").at("$switch")==1,"INI flag/default did not control independent key routing");
+  disabled.keySwitchEnabled=true;Install({disabled,Make("DefaultEnabled")},true);Frame();
+  Require(keySwitchEnabled.at("FromIni")&&variables.at("FromIni").at("$switch")==0,"F10 ignored edited INI or synthesized a held press");
   // Store publication and UI submissions use only immutable data across threads.
   EiemControlPanel::Store bridge;std::atomic_bool done=false;
   std::thread producer([&]{for(int i=0;i<2000;++i){auto s=std::make_shared<EiemControlPanel::Snapshot>();s->revision=i;bridge.Publish(s);}done=true;});
   while(!done) {auto s=bridge.Read();if(s) bridge.Submit({s->revision,0,Action::Select,"A"});bridge.Drain();}
   producer.join();Require(bridge.Read()->revision==1999,"cross-thread snapshot publication");
   panel.open=false;physical=0;
-  std::cout<<"PASS selected Mod input isolation, default/reload/removal selection, held edges, immutable snapshots, stale graph/scope rejection, GUI pause/buttons/sliders/hold, focus/close, keyboard disable, persistence, reserved keys, concurrent publication\n";
+  std::cout<<"PASS per-Mod INI/UI keyboard enable, simultaneous identical keys, independent checkbox queues, default/reload/removal, held edges, immutable snapshots, stale graph/scope rejection, GUI pause/buttons/sliders/hold, focus/close, persistence, overlapping user keys, concurrent publication\n";
 }
 LRESULT CALLBACK GameProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {return DefWindowProcW(hwnd,msg,wp,lp);}
 void SavedPreferencesChecks() {
@@ -136,6 +148,27 @@ void SavedPreferencesChecks() {
   Install({},true);
   std::cout<<"PASS hot addition/readdition saved values, legacy state, compiled controls/UI values, rejected candidate cache isolation, changed domains, reused directory ownership, deleted Mod save refusal\n";
 }
+void KeySettingsChecks(){
+  auto folder=std::filesystem::current_path()/"bin"/("control-key-settings-smoke-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));
+  Require(std::filesystem::create_directory(folder),"key settings fixture already exists");
+  struct Cleanup {std::filesystem::path folder;~Cleanup(){std::filesystem::remove_all(folder);}}cleanup{folder};
+  auto p=Make("Keys");p.root=folder;const std::string original="\xEF\xBB\xBF; author comment\r\n[Mod]\r\nformat=2\r\nid=Keys\r\n\r\n[Constants]\r\npersist $outfit=0\r\n";
+  EiemResourceReloadPlan::Save(folder/"mod.ini",Bytes(original.begin(),original.end()));
+  const std::string compiled="unchanged compiled resource bytes";EiemResourceReloadPlan::Save(folder/"compiled.bin",Bytes(compiled.begin(),compiled.end()));
+  EiemModKeySettings saves;Require(saves.Preview(p),"old INI default did not enable keys");saves.Capture(p,false);
+  Require(!saves.Preview(p),"pending checkbox lost before disk flush");saves.Flush(Log,true);
+  auto bytes=EiemDirectory::Read(folder/"mod.ini");auto off=EiemModKeySettings::Rewrite(bytes,p.id,false);
+  Require(off==std::string(bytes.begin(),bytes.end())&&off==std::string(original).insert(original.find("[Mod]\r\n")+7,"key_switch_enabled=0\r\n"),"UI save rewrote comments/line endings or changed other declarations");
+  auto on=EiemModKeySettings::Rewrite(bytes,p.id,true);Require(on==std::regex_replace(off,std::regex("key_switch_enabled=0"),"key_switch_enabled=1"),"UI enable changed more than the INI flag");
+  Require(EiemDirectory::Read(folder/"compiled.bin")==Bytes(compiled.begin(),compiled.end()),"key checkbox rewrote compiled resources");
+  p.keySwitchEnabled=false;Require(!saves.Preview(p),"INI disable not restored without cached UI state");
+  auto prepared=Prepare(Graph({p}),EiemGlobalConfig{});auto fromCompiled=FullResourceReload::CompiledControls(Graph({p}),EiemResourceReloadPlan::Plan{},EiemGlobalConfig{});
+  Require(!prepared.keySwitchEnabled.at(p.id)&&prepared.keySwitchEnabled==fromCompiled.keySwitchEnabled,"compiled and configuration controls disagree on the INI flag");
+  saves.Capture(p,true);std::filesystem::remove(folder/"mod.ini");saves.Flush(Log,true);Require(!std::filesystem::exists(folder/"mod.ini"),"UI save recreated a removed Mod INI");
+  bool rejected=false;try{EiemDirectory::KeySwitchEnabled("2");}catch(const std::exception&){rejected=true;}Require(rejected,"invalid INI key flag accepted");
+  Require(EiemDirectory::KeySwitchEnabled("TRUE")&&!EiemDirectory::KeySwitchEnabled("0"),"INI key boolean parsing differs");
+  std::cout<<"PASS per-Mod checkbox INI save, comments/BOM/CRLF preservation, restart/compiled control defaults, no resource rewrite, removed Mod save refusal\n";
+}
 void WindowChecks(bool demo) {
   Install({Make("lizhiyan"),Make("other")});
   WNDCLASSW wc{};wc.lpfnWndProc=GameProc;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"EFF_PanelTestOwner";
@@ -150,22 +183,27 @@ void WindowChecks(bool demo) {
   for(int i=0;i<10;++i) {Pump();Sleep(20);}
   Require(IsWindowVisible(window.Handle()),"panel not shown");
   window.Tick(nullptr);Require(!IsWindowVisible(window.Handle()),"external focus did not hide panel");window.Tick(owner);
-  auto combo=GetDlgItem(window.Handle(),100);Require(SendMessageW(combo,CB_GETCOUNT,0,0)==2,"native Mod selector missing entries");
-  SendMessageW(combo,CB_SETCURSEL,1,0);SendMessageW(window.Handle(),WM_COMMAND,MAKEWPARAM(100,CBN_SELCHANGE),reinterpret_cast<LPARAM>(combo));Pump();
-  Require(selected=="other","native selector not wired to runtime");
-  SendMessageW(GetDlgItem(window.Handle(),200),BM_CLICK,0,0);Pump();
-  Require(variables.at("other").at("$switch")==1 && variables.at("lizhiyan").at("$switch")==0,"native cycle button not isolated");
-  auto slider=GetDlgItem(window.Handle(),203);Require(slider!=nullptr,"native shape slider missing");
-  SendMessageW(slider,TBM_SETPOS,TRUE,3500);SendMessageW(window.Handle(),WM_HSCROLL,TB_THUMBPOSITION,reinterpret_cast<LPARAM>(slider));Pump();
-  Require(std::abs(variables.at("other").at("$shape")-.35)<.00001,"native slider not wired");
+  auto Click=[&](RECT rect){int x=(rect.left+rect.right)/2,y=(rect.top+rect.bottom)/2;window.TestMouse(x,y,false);Pump();window.TestMouse(x,y,true);Pump();window.TestMouse(x,y,false);Pump();Pump();};
+  Click(window.TestRect(Action::Keyboard,"lizhiyan"));Click(window.TestRect(Action::Keyboard,"other"));
+  Require(!keySwitchEnabled.at("lizhiyan")&&!keySwitchEnabled.at("other"),"ImGui checkboxes were limited by panel selection");
+  Click(window.TestRect(Action::Keyboard,"lizhiyan"));Click(window.TestRect(Action::Keyboard,"other"));
+  Require(keySwitchEnabled.at("lizhiyan")&&keySwitchEnabled.at("other"),"ImGui could not enable multiple Mods");
+  Click(window.TestRect(Action::Select,""));Click(window.TestRect(Action::Select,"other"));
+  Require(selected=="other","ImGui selector not wired to runtime");
+  Click(window.TestRect(Action::Invoke,"other",u8"衣装切换"));
+  Require(variables.at("other").at("$switch")==1&&variables.at("lizhiyan").at("$switch")==0,"ImGui cycle button not isolated");
+  auto before=variables.at("other").at("$shape");Click(window.TestRect(Action::Value,"other","$shape"));
+  auto value=variables.at("other").at("$shape");Require(value>=0&&value<=1&&value!=before,"ImGui shape slider not wired");
+  std::cout<<"Panel backdrop acrylic="<<window.TestAcrylic()<<"\n";
   if(demo) {auto until=GetTickCount64()+60000;while(GetTickCount64()<until && panel.open){Pump();Sleep(16);}}
   SendMessageW(window.Handle(),WM_CLOSE,0,0);Pump();
   Require(!panel.open && !IsWindowVisible(window.Handle()),"close did not hide control panel");
   DestroyWindow(owner);panel.gameWindow=nullptr;
-  std::cout<<"PASS real Win32 panel creation, Mod dropdown, cycle button, shape trackbar and close; injected foreground observation\n";
+  std::cout<<"PASS real ImGui/D3D composition, independent checkboxes, Mod dropdown, cycle button, shape slider and close; injected foreground/mouse observation\n";
 }
 }
 int main(int argc,char** argv) {
-  try {TestPanel::Checks();TestPanel::SavedPreferencesChecks();if(argc>1) TestPanel::WindowChecks(std::string(argv[1])=="--demo");return 0;}
+  std::cout.setf(std::ios::unitbuf);
+  try {TestPanel::Checks();TestPanel::SavedPreferencesChecks();TestPanel::KeySettingsChecks();if(argc>1) TestPanel::WindowChecks(std::string(argv[1])=="--demo");return 0;}
   catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
 }

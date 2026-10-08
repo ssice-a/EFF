@@ -147,6 +147,12 @@ inline Value& ArrayValue(const Type& type, Value& value) {
               type.nodes.at(value.children[0].node).type == "Array", "not a serialized array");
   return value.children[0];
 }
+inline const Value& ArrayValue(const Type& type, const Value& value) {
+  if (type.nodes.at(value.node).type == "Array") return value;
+  Require(value.children.size() == 1 &&
+              type.nodes.at(value.children[0].node).type == "Array", "not a serialized array");
+  return value.children[0];
+}
 inline uint64_t Integer(const Value& value) {
   Require(!value.raw.empty() && value.raw.size() <= 8 && value.children.empty(),
           "not a serialized integer");
@@ -164,6 +170,25 @@ inline void SetString(const Type& type, Value& value, const std::string& text) {
   Text((const unsigned char*)text.data(), text.size());
   value.raw.assign(text.begin(), text.end());
 }
+using NativeReference = std::pair<std::string, int64_t>;
+inline bool ExternalPrefix(const std::vector<std::string>& before,const std::vector<std::string>& after) {
+  return after.size()>=before.size()&&std::equal(before.begin(),before.end(),after.begin());
+}
+inline void SetReference(const Type& type,Value& value,const NativeReference& reference,
+                         SerializedLayout& layout,const std::string& cab) {
+  size_t file=0;
+  if(reference.first!=cab){
+    auto found=std::find(layout.externals.begin(),layout.externals.end(),reference.first);
+    if(found==layout.externals.end()){
+      Require(!reference.first.empty()&&reference.first.find_first_of("/\\\r\n")==std::string::npos&&reference.first.find('\0')==std::string::npos,
+              "invalid serialized external member name");
+      Require(layout.externals.size()<INT_MAX,"serialized FileID field overflow");
+      layout.externals.push_back(reference.first);file=layout.externals.size();
+    }else file=size_t(found-layout.externals.begin())+1;
+  }
+  SetInteger(type,Child(type,value,"m_FileID"),file);
+  SetInteger(type,Child(type,value,"m_PathID"),uint64_t(reference.second));
+}
 inline Value ObjectValue(const Bytes& source, const SerializedLayout& layout, int64_t id) {
   const auto& object = layout.objects.at(id);
   Bytes bytes(source.begin() + object.offset, source.begin() + object.offset + object.size);
@@ -180,7 +205,13 @@ struct AddedObject {
 inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout,
                               const std::map<int64_t, Bytes>& replacements,
                               const std::vector<AddedObject>& added = {}) {
-  if (replacements.empty() && added.empty()) return source;
+  Reader externalReader(source,layout.tableEnd,false,48+layout.metadataSize);
+  auto scripts=externalReader.Count();externalReader.Skip(MultiplySize(scripts,12));
+  auto externalCountOffset=externalReader.p;auto externalCount=externalReader.Count();
+  std::vector<std::string> originalExternals;
+  for(size_t i=0;i<externalCount;++i){externalReader.Z();externalReader.Skip(20);auto path=externalReader.Z();auto slash=path.find_last_of("/\\");originalExternals.push_back(slash==path.npos?path:path.substr(slash+1));}
+  Require(ExternalPrefix(originalExternals,layout.externals),"serialized original external order changed");
+  if (replacements.empty() && added.empty() && originalExternals==layout.externals) return source;
   Require(layout.countOffset >= 48 && layout.tableEnd <= 48 + layout.metadataSize &&
               layout.tableStart >= layout.countOffset + 4, "serialized writer metadata range");
   for (const auto& change : replacements)
@@ -192,8 +223,18 @@ inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout
   metadata.resize((metadata.size() + 3) & ~size_t(3));
   size_t table = metadata.size();
   metadata.resize(AddSize(table,MultiplySize(count,24)));
-  metadata.insert(metadata.end(), source.begin() + layout.tableEnd,
-                  source.begin() + 48 + layout.metadataSize);
+  auto tail=metadata.size();
+  metadata.insert(metadata.end(),source.begin()+layout.tableEnd,source.begin()+externalReader.p);
+  Require(layout.externals.size()<=INT_MAX,"serialized external count field overflow");
+  WriteInteger(metadata,tail+externalCountOffset-layout.tableEnd,layout.externals.size(),4);
+  for(size_t i=externalCount;i<layout.externals.size();++i){
+    // Preserve all existing GUID/type/path records. New bundle members use
+    // Unity's archive reference grammar and the native zero GUID/type form.
+    metadata.resize(AddSize(metadata.size(),21));
+    auto path="archive:/"+layout.externals[i]+"/"+layout.externals[i];
+    metadata.insert(metadata.end(),path.begin(),path.end());metadata.push_back(0);
+  }
+  metadata.insert(metadata.end(),source.begin()+externalReader.p,source.begin()+48+layout.metadataSize);
   size_t dataOffset = (48 + metadata.size() + 15) & ~size_t(15);
   Bytes output(source.begin(), source.begin() + 48);
   output.insert(output.end(), metadata.begin(), metadata.end());
@@ -234,8 +275,8 @@ inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout
   WriteInteger(output, 20, metadata.size(), 4, true);
   WriteInteger(output, 24, output.size(), 8, true);
   WriteInteger(output, 32, dataOffset, 8, true);
-  // Legacy fields, type table and trailing metadata (externals/ref types/user
-  // info) remain the current input's bytes; payload order is retained.
+  // Original external records, ref types and user info remain byte-for-byte;
+  // only append registered dependencies after the existing external prefix.
   auto checked = ParseSerialized(output);
   Require(checked.order.size() == count && checked.externals == layout.externals &&
               std::is_sorted(checked.order.begin(), checked.order.end()),

@@ -4,19 +4,21 @@
 
 EFF 在《明日方舟：终末地》创建资源和实例前应用 Mod。AnimeStudio 导出来源，Blender 制作并编译独立 Mod，EFF DLL 读取结果并完成游戏内加载与热重载。
 
-配套发布：**EFF v1.3.2、EFF Blender v0.40.1、AnimeStudio v1.3.1**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
+配套发布：**EFF v1.3.3、EFF Blender v0.40.2、AnimeStudio v1.3.1**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
+
+首次制作 Mod 可先阅读带截图的[简易教程：安装、解包、Blender 制作与导出](Mod%20Tutorial.md)。
 
 ## 功能
 
 - 多角色各自加载 Mod，没有对应 Mod 的角色保持原版。
 - 蒙皮 Mesh 和静态 MeshFilter＋MeshRenderer 使用同一 Replace、材质、贴图及显隐规则；静态 Renderer 不支持运行时形态键。
 - 一个原 Renderer 可对应多个作者部件；未声明替换的目标保留原内容。材质和贴图可以借用游戏资源或由作者新建。
-- 按键切换、形态键与玩家数值持久化；Ins 面板选择接收物理按键的 Mod，默认选择首个可控制 Mod。
+- 按键切换、形态键与玩家数值持久化；Ins 面板独立勾选各 Mod 是否接收按键，默认全部启用，可同时启用多个 Mod。
 - F10 读取整个 mods 目录，统一处理增删改和空集合；沿已适配的游戏世界/展示模型生命周期重载，重新绑定动画、武器和角色音频。准备或提交失败保留当前代际。
 
 ## 安装
 
-从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v1.3.2_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和各 Mod 的 `state.ini`。
+从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v1.3.3_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和各 Mod 的 `state.ini`。
 
 ```text
 d3dcompiler_47.dll
@@ -42,10 +44,12 @@ DLL 包不包含编译器、AnimeStudio 运行库或来源工具。已有安装�
 ## 游戏内使用
 
 1. 放入完整 Mod 后启动游戏，资源请求使用当前替换规则。
-2. 按 **Ins** 选择要控制的 Mod，关闭面板后使用其按键切换款式或形态。选择不影响其他角色加载资源。
+2. 按 **Ins** 勾选需要响应按键的 Mod，关闭面板后使用按键切换款式或形态。同一个键会触发所有已启用且绑定该键的 Mod；下拉选择只决定面板中手动调整哪个 Mod。
 3. 从 Blender 导出修改、添加或删除 Mod 后，按 **F10** 提交当前完整集合。空集合恢复原版；模型尚在异步加载时请待加载完成后重试。
 
 同一 Mod 的 UI 与大世界模型共用切换值。UI 原地刷新通过游戏加载器和页面项的模型绑定流程完成，保留旧人物直到候选校验、页面绑定和控制发布完成；无法确认页面归属的实例会在修改前拒绝刷新。
+
+各 `mod.ini` 的 `[Mod]` 中用 `key_switch_enabled=1` 启用按键，`0` 停用；未填写时默认启用。手改后按 F10 生效，Ins 勾选立即生效并保存到同一字段。停用按键保留 Mod 资源与当前数值。
 
 F10 更新 Mod 资源和规则；DLL 代码更新需要退出并重启游戏。全局设置位于 `plugin/eff.ini`：
 
@@ -71,7 +75,7 @@ disable_camera_fade=true
 
 ## 验证边界
 
-离线回归覆盖同 PFB 多 Mod、增删恢复、流偏移、静态网格、连续世界/展示重载、动画消费者与回滚。v1.3.2 实机连续四次 F10 完成世界/UI 资源提交与页面引用更新，耗时约 97–100 ms；UI 最终画面、动作及显隐仍待确认。独立人群 NPC/场景物件的原地 F10、完整多代资源退休和 20–30 个 Mod 的压力尚未验证；数量不等于同时渲染数量。全 LOD 导出不会自动减面。Skeleton/Physics 作者工具尚未接入完整游戏模拟链。详细边界见[热重载验收](docs/hot-reload-testing.md)。
+离线回归覆盖同 PFB 多 Mod、增删恢复、流偏移、静态网格、连续世界/展示重载、动画消费者与回滚。最新两角色实机 F10 请求到提交约 107 ms，待机附件已获视觉确认；这是已准备候选的样本，不能代表所有场景的耗时。独立人群 NPC/场景物件的原地 F10、完整多代资源退休和 20–30 个 Mod 的压力尚未验证；数量不等于同时渲染数量。全 LOD 导出不会自动减面。Skeleton/Physics 作者工具尚未接入完整游戏模拟链。详细边界见[热重载验收](docs/hot-reload-testing.md)。
 
 ## 致谢与许可
 

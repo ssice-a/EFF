@@ -214,6 +214,11 @@ inline double Number(const std::string& s) {
   Require(s != "true" && s != "false" && EiemNumber(s, &n), "invalid finite number: " + s);
   return n;
 }
+inline bool KeySwitchEnabled(std::string value) {
+  for(auto& ch:value)if(ch>='A'&&ch<='Z')ch+=32;
+  Require(value=="0"||value=="1"||value=="false"||value=="true","key_switch_enabled must be 0/1 or false/true");
+  return value=="1"||value=="true";
+}
 inline unsigned Integer(const std::string& s) {
   Require(!s.empty() && s.size() <= 10 &&
               std::all_of(s.begin(), s.end(), [](unsigned char c) { return c >= '0' && c <= '9'; }),
@@ -341,6 +346,7 @@ struct Package {
   std::set<std::string> persistent;
   std::map<std::string, Control> controls;
   std::vector<Binding> bindings;
+  bool keySwitchEnabled=true;
   // Compiler-only ownership metadata, reconstructed from the original authors
   // when a composed manifest is decoded. Never authored in mod.ini.
   bool composed=false;
@@ -369,10 +375,11 @@ inline Package Load(const std::filesystem::path& directory) {
   bool mod = false, constants = false;
   for (const auto& s : sections) {
     if (s.id == "Mod") {
-      Keys(s, {"format", "id"});
+      Keys(s, {"format", "id"}, {"key_switch_enabled"});
       Require(Identifier(s.values.at("id")),
               "unsupported Mod format/id");
       p.id = s.values.at("id");
+      if(s.values.count("key_switch_enabled"))p.keySwitchEnabled=KeySwitchEnabled(s.values.at("key_switch_enabled"));
       mod = true;
     }
     if (s.id == "Constants") {

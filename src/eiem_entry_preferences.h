@@ -43,21 +43,23 @@ class EiemEntryPreferences {
         EiemDirectory::Require(std::find(key.values.begin(),key.values.end(),v.second)!=key.values.end(),"state exceeds cycle domain");
     }
   }
+  static void WriteText(const std::filesystem::path& path,const std::string& text) {
+    auto tmp=path;tmp+=L".tmp-"+std::to_wstring(GetCurrentProcessId());
+    HANDLE file=CreateFileW(tmp.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+    EiemDirectory::Require(file!=INVALID_HANDLE_VALUE,"cannot create temporary settings file");
+    size_t offset=0;bool ok=true;
+    while(ok&&offset<text.size()){DWORD written=0,count=DWORD(std::min(text.size()-offset,size_t(1024*1024)));ok=WriteFile(file,text.data()+offset,count,&written,nullptr)&&written==count;offset+=written;}
+    if(ok)ok=FlushFileBuffers(file)!=FALSE;CloseHandle(file);
+    if(ok)ok=MoveFileExW(tmp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=FALSE;
+    if(!ok)DeleteFileW(tmp.c_str());EiemDirectory::Require(ok,"atomic settings save failed; previous file retained");
+  }
   static void Write(const std::filesystem::path& path,const EiemVariables& values,const std::string& owner={}) {
     std::ostringstream out;out.imbue(std::locale::classic());
     out<<"; EFF runtime preferences, not Mod actions\n";
     if(!owner.empty()) out<<"; EFF Mod ID: "<<owner<<'\n';
     out<<"[Values]\n";
     for (const auto& v:std::map<std::string,double>(values.begin(),values.end())) out<<v.first<<'='<<std::setprecision(17)<<v.second<<'\n';
-    const auto text=out.str();auto tmp=path;tmp+=L".tmp-"+std::to_wstring(GetCurrentProcessId());
-    HANDLE file=CreateFileW(tmp.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
-    EiemDirectory::Require(file!=INVALID_HANDLE_VALUE,"cannot create temporary state file");
-    DWORD written=0;bool ok=WriteFile(file,text.data(),DWORD(text.size()),&written,nullptr) && written==text.size();
-    if (ok) ok=FlushFileBuffers(file)!=FALSE;
-    CloseHandle(file);
-    if (ok) ok=MoveFileExW(tmp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=FALSE;
-    if (!ok) DeleteFileW(tmp.c_str());
-    EiemDirectory::Require(ok,"atomic state save failed; previous file retained");
+    WriteText(path,out.str());
   }
   // Candidate preparation must not mutate the live preference cache. A
   // failed F10 can read disk/queued numbers but cannot replace their owner.

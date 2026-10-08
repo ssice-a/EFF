@@ -13,13 +13,12 @@ constexpr const char* ruleStructure = "author-references+prefab-renderer-rules+s
 constexpr const char* ruleEncoding = "compressed-rules/xpress-huffman/le64";
 constexpr unsigned authorFormat = 2;
 constexpr unsigned resourceVersion = 2;
+constexpr bool rootAssembly = true;
 #ifdef EFF_OFFLINE_PACKAGE_V35
 constexpr unsigned abi = 35;
 constexpr const char* compiler = "EFF_NATIVE_PACK_V35_1";
-constexpr bool rootAssembly = false;
 #else
 constexpr unsigned abi = 36;
 constexpr const char* compiler = "EFF_NATIVE_PACK_V36_ASSEMBLY_1";
-constexpr bool rootAssembly = true;
 #endif
 } // namespace EiemPackageProtocol

@@ -5,9 +5,16 @@ namespace Test {
 void *propertyArrayClass=(void*)0xAB00,*propertyElementClass=(void*)0xAB01;
 std::set<void*> propertyArrays;
 std::vector<int32_t> propertyIds{314};std::map<int32_t,void*> propertyTextures;int propertyElementWidth=4;
+bool shaderSupported=true;int shaderPasses=2;std::string shaderLabel="Fixture/Character";
 void *source=(void*)0x1000,*candidate=(void*)0x1001,*oldRoot=(void*)0x1002,*newRoot=(void*)0x1003,*restoredRoot=(void*)0x1004;
 void *lazyCandidate=(void*)0x1008,*lazyRoot=(void*)0x1009;
 void *model=(void*)0x1010,*entity=(void*)0x1011,*instance=(void*)0x1012,*manager=(void*)0x1013,*effect=(void*)0x1014;
+void *world=(void*)0x1110,*performManager=(void*)0x1111;
+bool performActive=false,performPropAlive=false,stalePerformProp=false,unrelatedPerformActive=false;
+unsigned performStops=0;
+bool characterAnimation=false,performIdleHeld=true,performDashHeld=true;
+unsigned performIdlePreloads=0,performDashPreloads=0;
+void* characterAnimationClass=(void*)0x2110;
 void *helper=(void*)0x1015,*mainPart=(void*)0x1016;
 void *auxiliaryRenderer=(void*)0x101d,*auxiliaryHelper=(void*)0x101e;
 void *modelClass=(void*)0x2011,*delegateClass=(void*)0x2012,*loadCallback=(void*)0x2013;
@@ -20,6 +27,20 @@ std::vector<void*> sceneRenderers;
 std::map<void*,std::vector<void*>> controlRenderers;
 void *animation=(void*)0x1017,*animationData=(void*)0x1018,*animator=(void*)0x1019,*weapons=(void*)0x101a,*audio=(void*)0x101b,*audioClass=(void*)0x2010;
 void* animationRoot=(void*)0x1002;unsigned animationRebinds=0,weaponUnloads=0,weaponReloads=0,weaponRemounts=0,audioInvalidations=0;
+void* weaponMountRoot=(void*)0x1002;void* weaponRequestMountRoot=nullptr;
+std::vector<int> consumerCalls;
+std::map<void*,std::vector<uint64_t>> dependencyLists;
+std::map<uint64_t,std::vector<uint64_t>> nativeDependencyLists;
+std::map<std::string,uint64_t> dependencyNames;uint64_t dependencyHash=0;bool dependencyHashDiffers=false;void* dependencyManifest=(void*)0x7000;
+Bytes dependencyMapped;unsigned dependencyManifestReads=0,dependencyNameChecks=0;
+void BuildDependencyManifest(){
+ namespace D=StartupDependencies;
+ const size_t data=16+dependencyNames.size()*D::api.bundleSize;dependencyMapped.assign(data,0);size_t i=0;
+ for(const auto& row:dependencyNames){size_t record=16+i++*D::api.bundleSize;int32_t offset=int32_t(dependencyMapped.size()-data),length=int32_t(row.first.size()*sizeof(wchar_t));
+  memcpy(dependencyMapped.data()+record+D::api.bundleNameOffset,&offset,sizeof(offset));memcpy(dependencyMapped.data()+record+D::api.bundleKeyOffset,&row.second,sizeof(row.second));
+  auto start=dependencyMapped.size();dependencyMapped.resize(start+sizeof(length)+length);memcpy(dependencyMapped.data()+start,&length,sizeof(length));for(size_t c=0;c<row.first.size();++c){wchar_t value=wchar_t(row.first[c]);memcpy(dependencyMapped.data()+start+sizeof(length)+c*sizeof(value),&value,sizeof(value));}
+ }
+}
 int nativeFactory=1;bool ignoreCandidate=false;
 bool recordPartFinished=false,completePartLoading=true;
 bool typedAudioOnly=false;
@@ -68,12 +89,21 @@ void* PropertyIds(){auto b=std::make_unique<Bytes>(32+propertyIds.size()*4);uint
 uint32_t Root(void* p,bool){handles[++sequence]=p;return sequence;}
 void* Target(uint32_t h){return handles.at(h);}
 void Free(uint32_t h){Require(handles.erase(h)==1,"fixture handle double free");}
-void* GetClass(void* p){if(p==&yes||p==&no)return uiBooleanClass;if(p==uiProxy)return uiUntrackedClass;if(p==oldRenderer||p==newRenderer||p==unrelatedRenderer||p==auxiliaryRenderer)return staticRenderers?staticClass:skinClass;return propertyArrays.count(p)?propertyArrayClass:p==assetProxyObject?assetProxyClass:(p==source||p==candidate||p==lazyCandidate||p==unrelatedRoot)?gameObjectClass:p==audio?audioClass:(p==model||p==unrelatedModel)?modelClass:p==loadCallback?delegateClass:p==leaseHandle?handleClass:p==pathValue?pathClass:(p==configBox||p==unrelatedConfig)?configClass:instanceClass;}
+void* GetClass(void* p){if(p==animation&&characterAnimation)return characterAnimationClass;if(p==&yes||p==&no)return uiBooleanClass;if(p==uiProxy)return uiUntrackedClass;if(p==oldRenderer||p==newRenderer||p==unrelatedRenderer||p==auxiliaryRenderer)return staticRenderers?staticClass:skinClass;return propertyArrays.count(p)?propertyArrayClass:p==assetProxyObject?assetProxyClass:(p==source||p==candidate||p==lazyCandidate||p==unrelatedRoot)?gameObjectClass:p==audio?audioClass:(p==model||p==unrelatedModel)?modelClass:p==loadCallback?delegateClass:p==leaseHandle?handleClass:p==pathValue?pathClass:(p==configBox||p==unrelatedConfig)?configClass:instanceClass;}
 void* Fields(void*,void** it){auto n=uintptr_t(*it);if(n==17)return nullptr;*it=(void*)(n+1);return (void*)(n+1);}
 const char* FieldName(void* f){const char* names[]={"","modelManager","effectManager","m_entity","m_mainPart","m_cfg","usePersistentPool","modelPath","m_model","m_loadFinishCb","hash","m_untrackedHandle","m_instance2AssetHandle","<>4__this","parent","callback","requestId","m_disposed"};return names[uintptr_t(f)];}
 const char* TypeName(void* t){const char* names[]={"","Beyond.Gameplay.View.ModelManager","Beyond.Gameplay.EffectManager","Beyond.Gameplay.Core.Entity","Beyond.Gameplay.View.ComplexModelViewPart","Beyond.Gameplay.View.BaseModelViewPartData","System.Boolean","System.String","UnityEngine.GameObject","System.Action<System.Boolean,Beyond.Gameplay.View.BaseModelViewPart>","System.UInt64","Beyond.Resource.FAssetProxyUntrackedHandle","Dictionary","Beyond.UI.UIModelLoader","UnityEngine.Transform","System.Action<UnityEngine.GameObject>","System.Int32","System.Boolean"};return names[uintptr_t(t)];}
 int FieldFlags(void* f){return (f==(void*)1||f==(void*)2)&&managersStatic?0x16:0x6;}
 void FieldValue(void* self,void* f,void* out){Require(!(FieldFlags(f)&0x10)&&self,"instance getter used for a static field");
+ if(f==(void*)160){Require(self==instance,"world field read on another receiver");*(void**)out=world;return;}
+ if(f==(void*)161){Require(self==world,"perform manager field read on another world");*(void**)out=performManager;return;}
+ if(f==(void*)150){*(void**)out=dependencyManifest;return;}
+ if(f==(void*)151){*(void**)out=dependencyMapped.empty()?nullptr:dependencyMapped.data();return;}
+ if(f==(void*)152){*(int64_t*)out=int64_t(dependencyMapped.size());return;}
+ if(f==(void*)153){*(void**)out=dependencyMapped.data()+16+dependencyNames.size()*StartupDependencies::api.bundleSize;return;}
+ if(f==(void*)154){++dependencyManifestReads;memset(out,0,StartupDependencies::api.arraySize);int32_t count=int32_t(dependencyNames.size());auto head=dependencyMapped.data()+16;memcpy((char*)out+StartupDependencies::api.arrayCount,&count,sizeof(count));memcpy((char*)out+StartupDependencies::api.arrayHead,&head,sizeof(head));return;}
+ if(f==(void*)18){std::vector<void*> values;for(auto value:dependencyLists.at(self))values.push_back((void*)value);auto array=Array(values);propertyArrays.insert(array);*(void**)out=array;return;}
+ if(f==(void*)19){*(int*)out=int(dependencyLists.at(self).size());return;}
  if(f==(void*)12){*(void**)out=uiDictionary;return;}if(f==(void*)13){*(void**)out=uiLoader;return;}if(f==(void*)14){*(void**)out=factoryParent;return;}if(f==(void*)15){*(void**)out=uiRequestCallback;return;}if(f==(void*)16){*(int*)out=7;return;}if(f==(void*)17){*(bool*)out=false;return;}
  if(f==(void*)11){memset(out,0,64);return;}if(f==(void*)10){*(uint64_t*)out=pathHashValue;return;}if(f==(void*)5){memset(out,0,64);memcpy(out,&self,8);return;}if(f==(void*)6){*(unsigned char*)out=0;return;}
  auto v=f==(void*)1?manager:f==(void*)2?effect:f==(void*)3?(self==unrelatedHelper?unrelatedEntity:hasEntity?entity:nullptr):f==(void*)4?(self==unrelatedModel?unrelatedPart:hasPart?mainPart:nullptr):f==(void*)7?StringValue(self==unrelatedConfig?"assets/unmodified-character.prefab":modelPath):self==unrelatedPart?unrelatedRoot:currentRoot;memcpy(out,&v,8);}
@@ -95,10 +125,15 @@ void* NativeCreate(void* p){
 void* Mesh(void* renderer){return renderer==newRenderer||identitySameMesh?newMesh:oldMesh;}
 void* Invoke(void* method,void* self,void** args,void** exception){
  *exception=nullptr;auto m=uintptr_t(method);
+ if(m==140){dependencyLists[self].clear();return nullptr;}
+ if(m==141){dependencyLists.at(self).push_back(*(uint64_t*)args[0]);return nullptr;}
+ if(m==142){dependencyHash=dependencyNames.at(String(args[0]));if(dependencyHashDiffers)dependencyHash^=0x7000000000000000ULL;return &dependencyHash;}
+ if(m==143){++dependencyNameChecks;for(const auto& row:dependencyNames)if(row.second==*(uint64_t*)args[0])return StringValue(row.first);return nullptr;}
+ if(m==144)return dependencyManifest;
  if(m==1)return &yes;
  if(m==2){++aliveCalls;auto p=args[0];return !p||(p==source&&!sourceAlive)||unloadedStreamBundles.count(p)?&no:&yes;}
  if(m==3){id=int(uintptr_t(self));return &id;}
- if(m==4)return StringValue(self==material?"body":self==skeletonRoot?"Root":self==bip?"Bip001":self==left?"Left":self==right?"Right":(self==bone||self==leftBone||self==rightBone)?"Bone":"marker");
+ if(m==4)return StringValue(self==shader?shaderLabel:self==material?"body":self==skeletonRoot?"Root":self==bip?"Bip001":self==left?"Left":self==right?"Right":(self==bone||self==leftBone||self==rightBone)?"Bone":"marker");
  if(m==5)return Array(self==unrelatedRoot?unrelatedRenderer:self==newRoot||self==uiResultRoot||self==candidate||self==lazyCandidate?newRenderer:oldRenderer);
  if(m==6)return self==newMesh&&rejectVertex?&badVertex:&two;
  if(m==7)return &zero;
@@ -129,9 +164,12 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==118)return &no; // UI page activation can occur after native completion.
  if(m==11)return Array(material);
  if(m==12)return shader;
+ if(m==130)return shaderSupported?&yes:&no;
+ if(m==131)return &shaderPasses;
  if(m==20){++instanceCalls;return hasInstance?instance:nullptr;}
  if(m==21)return self==unrelatedModel?unrelatedRoot:currentRoot;
- if(m==22){++removeCalls;currentRoot=nullptr;return nullptr;}
+ if(m==22){++removeCalls;if(performActive&&performPropAlive){performPropAlive=false;stalePerformProp=true;}currentRoot=nullptr;return nullptr;}
+ if(m==155){Require(self==performManager&&args&&args[0]==entity&&!args[1],"perform exit used another entity or squad-switch reason");Require(!performActive||(currentRoot&&animationRoot==currentRoot),"perform exit ran after retiring its model/Animator");++performStops;consumerCalls.push_back(155);performActive=performPropAlive=stalePerformProp=false;return nullptr;}
  if(m==97){++overrideReleases;++removeCalls;currentRoot=nullptr;return nullptr;}
  if(m==23){Require(!currentRoot,"pool discarded before old owner released");++discardCalls;return nullptr;}
  if(m==24){Require(discardCalls>=removeCalls,"model loaded before path-scoped pool discard");++loadCalls;
@@ -171,14 +209,17 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==65)return animationData;
  if(m==66)return animator;
  if(m==67)return animationRoot==currentRoot?&yes:&no;
- if(m==68){Require(self==animation&&args&&args[0]==animationData&&*(unsigned char*)args[1]==1,"native animation rebind did not preserve data/resume option");++animationRebinds;animationRoot=currentRoot;return &yes;}
+ if(m==68){Require(self==animation&&args&&args[0]==animationData&&*(unsigned char*)args[1]==1,"native animation rebind did not preserve data/resume option");consumerCalls.push_back(68);++animationRebinds;animationRoot=currentRoot;
+  if(characterAnimation)performIdleHeld=performDashHeld=false;return &yes;}
+ if(m==156||m==157){Require(characterAnimation&&self==animation&&animationRoot==currentRoot&&currentRoot,"performance preload preceded animation setup or used another owner");consumerCalls.push_back(int(m));
+  if(m==156){performIdleHeld=true;++performIdlePreloads;}else{performDashHeld=true;++performDashPreloads;}return nullptr;}
  if(m==69)return self==unrelatedEntity?nullptr:weapons;
- if(m==70){Require(self==weapons&&args&&*(unsigned char*)args[0]==1,"weapon unload arguments differ");++weaponUnloads;return nullptr;}
- if(m==71){Require(animationRoot==currentRoot&&self==weapons&&*(unsigned char*)args[0]==1,"weapons reloaded before animation rebound");++weaponReloads;return nullptr;}
- if(m==72){++weaponRemounts;return nullptr;}
+ if(m==70){Require(self==weapons&&args&&*(unsigned char*)args[0]==1,"weapon unload arguments differ");consumerCalls.push_back(70);++weaponUnloads;return nullptr;}
+ if(m==71){Require(animationRoot==currentRoot&&self==weapons&&*(unsigned char*)args[0]==1,"weapons reloaded before animation rebound");consumerCalls.push_back(71);weaponRequestMountRoot=weaponMountRoot;++weaponReloads;return nullptr;}
+ if(m==72){consumerCalls.push_back(72);weaponMountRoot=currentRoot;++weaponRemounts;return nullptr;}
  if(m==73)return self==unrelatedEntity?nullptr:typedAudioOnly?instance:audio;
  if(m==96){Require(args&&args[1]&&args[2]&&!*(unsigned char*)args[2],"typed game component query out/warning ABI differs");*(void**)args[1]=self==unrelatedEntity?nullptr:audio;return self==unrelatedEntity?&no:&yes;}
- if(m==74){++audioInvalidations;return nullptr;}
+ if(m==74){consumerCalls.push_back(74);++audioInvalidations;return nullptr;}
  if(m==75)return textureValue;
  if(m==76||m==77){
   std::vector<void*> children;for(const auto& row:transformParents)if(row.second==self)children.push_back(row.first);
@@ -191,7 +232,7 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==82)return PropertyIds();
  if(m==83){Require(self==material&&args&&args[0],"public Texture ID getter arguments absent");auto property=*(int32_t*)args[0];Require(std::find(propertyIds.begin(),propertyIds.end(),property)!=propertyIds.end(),"public Texture ID getter received wrong ABI value");auto found=propertyTextures.find(property);return found==propertyTextures.end()?textureValue:found->second;}
  if(m==84){if(!self){++nullDelegateTargetCalls;throw std::runtime_error("Delegate.get_Target invoked with a null receiver");}return self==uiCompletionDelegate?uiClosure:callbackTarget;}
- if(m==85)return self==model?entity:unrelatedEntity;
+ if(m==85)return self==model||self==animation?entity:unrelatedEntity;
  if(m==86){Require(self&&args&&args[0]==(void*)81&&*(unsigned char*)args[1]==1,"controls queried scene objects instead of inactive model children");
   auto found=controlRenderers.find(self);return found==controlRenderers.end()?Array(self==newRoot||self==uiResultRoot?newRenderer:oldRenderer):Array(found->second);}
  throw std::runtime_error("unexpected fixture managed call: "+std::to_string(m));
@@ -200,8 +241,8 @@ void Setup(){
  il2cpp_gchandle_new=Root;il2cpp_gchandle_get_target=Target;il2cpp_gchandle_free=Free;il2cpp_object_get_class=GetClass;
  RuntimeShapes::Ref::weakHandle=Root;
  il2cpp_object_get_virtual_method=[](void*,void* method)->void*{return displayOverride?(void*)97:method;};
- il2cpp_class_get_name=[](void* klass){return klass==uiBooleanClass?"Boolean":klass==skinClass?"SkinnedMeshRenderer":klass==staticClass?"MeshRenderer":klass==assetProxyClass?"AssetProxy":klass==gameObjectClass?"GameObject":klass==audioClass?"CharacterAudioComponent":klass==modelClass?"BaseModelComponent":klass==delegateClass?"Delegate":"fixture";};
- il2cpp_class_get_namespace=[](void* klass){return klass==skinClass||klass==staticClass||klass==gameObjectClass?"UnityEngine":klass==assetProxyClass?"":klass==modelClass?"Beyond.Gameplay.View":klass==delegateClass||klass==uiBooleanClass?"System":"Beyond.Gameplay.Core";};
+ il2cpp_class_get_name=[](void* klass){return klass==characterAnimationClass?"CharacterAnimationComponent":klass==uiBooleanClass?"Boolean":klass==skinClass?"SkinnedMeshRenderer":klass==staticClass?"MeshRenderer":klass==assetProxyClass?"AssetProxy":klass==gameObjectClass?"GameObject":klass==audioClass?"CharacterAudioComponent":klass==modelClass?"BaseModelComponent":klass==delegateClass?"Delegate":"fixture";};
+ il2cpp_class_get_namespace=[](void* klass){return klass==skinClass||klass==staticClass||klass==gameObjectClass?"UnityEngine":klass==assetProxyClass?"":klass==modelClass||klass==characterAnimationClass?"Beyond.Gameplay.View":klass==delegateClass||klass==uiBooleanClass?"System":"Beyond.Gameplay.Core";};
  il2cpp_object_unbox=[](void* p){return p;};il2cpp_class_get_fields=Fields;il2cpp_class_get_parent=[](void*)->void*{return nullptr;};
  il2cpp_field_get_name=FieldName;il2cpp_field_get_flags=FieldFlags;il2cpp_field_static_get_value=StaticFieldValue;il2cpp_field_get_type=[](void* p){return p;};
  il2cpp_type_get_name=TypeName;il2cpp_free=[](void*){};il2cpp_field_get_value=FieldValue;il2cpp_runtime_invoke=Invoke;
@@ -218,9 +259,11 @@ void Setup(){
  a.texture=(void*)75;a.textureIds=(void*)82;a.textureById=(void*)83;
  a.instance=(void*)20;a.getModel=(void*)21;a.remove=(void*)22;a.discard=(void*)23;a.loadModel=(void*)24;a.follow=(void*)25;a.released=(void*)26;
  a.animationCom=(void*)64;a.animationData=(void*)65;a.animationAnimator=(void*)66;a.animationValid=(void*)67;a.animationChange=(void*)68;
+ a.animationIdlePreload=(void*)156;a.animationDashPreload=(void*)157;
  a.weaponCom=(void*)69;a.weaponUnload=(void*)70;a.weaponReload=(void*)71;a.weaponMounts=(void*)72;a.componentLookup=(void*)96;a.audioInvalidate=(void*)74;
  a.modelManager=FullResourceReload::BindObjectField(instanceClass,"modelManager","Beyond.Gameplay.View.ModelManager");
  a.effectManager=FullResourceReload::BindObjectField(instanceClass,"effectManager","Beyond.Gameplay.EffectManager");
+ a.world={(void*)160,false};a.performManager={(void*)161,false};a.performExit=(void*)155;
  a.pathClass=pathClass;a.handleClass=handleClass;a.dispose=(void*)30;a.done=(void*)31;
  a.goTransform=(void*)41;a.parent=(void*)42;
  a.childCount=(void*)76;a.getChild=(void*)77;a.componentGo=(void*)78;a.directComponents=(void*)79;
@@ -272,13 +315,11 @@ std::shared_ptr<FullResourceReload::Prepared> Prepare(){
  prepared->controls.graph=std::make_shared<const std::vector<Package>>();prepared->config=EiemEntrySettings::Prepare(EiemGlobalConfig{});
  auto plan=std::make_shared<EiemResourceReloadPlan::Plan>();plan->parts.emplace("marker",EiemResourceReloadPlan::Part{"part","marker","material",2,{"Root/Bip001/Bone"},{}});
  plan->materials.emplace("material",EiemResourceReloadPlan::Material{"body",{}});plan->roots.push_back({"assets/model.prefab",0,{{"marker",1}}});
-#ifndef EFF_OFFLINE_PACKAGE_V35
  using namespace EiemRenderAssemblyDescription;
  EiemRenderAssemblyDescription::Source descriptor;descriptor.cab="CAB-fixture";descriptor.id=1;descriptor.renderer={Segment("marker",0),0};
  EiemRenderAssemblyDescription::Target target;target.renderer=descriptor.renderer;target.marker="marker";
  target.bones={Segment("Root",0)+Segment("Bip001",0)+Segment("Bone",0)};target.root=target.bones.front();target.hasRoot=true;
  descriptor.targets.push_back(target);plan->roots.front().assembly.sources.push_back(descriptor);
-#endif
  prepared->plan=plan;return prepared;
 }
 FullResourceReload::Attempt MakeAttempt(){
@@ -290,11 +331,14 @@ FullResourceReload::Attempt MakeAttempt(){
 }
 void Reset(){
  nullDelegateTargetCalls=0;
+ performActive=performPropAlive=stalePerformProp=unrelatedPerformActive=false;performStops=0;
+ characterAnimation=false;performIdleHeld=performDashHeld=true;performIdlePreloads=performDashPreloads=0;
  unloadedStreamBundles.clear();
  propertyArrays.clear();propertyIds={314};propertyTextures.clear();propertyElementWidth=4;
  std::atomic_store(&FullResourceReload::routes,std::shared_ptr<const FullResourceReload::Routes>(std::make_shared<FullResourceReload::Routes>()));
  currentRoot=oldRoot;removeCalls=discardCalls=loadCalls=cloneCalls=followCalls=disposeCalls=unloadCalls=0;rejectVertex=false;sourceAlive=true;throwDispose=false;done=0;generation=2;
  animationRoot=oldRoot;animationRebinds=weaponUnloads=weaponReloads=weaponRemounts=audioInvalidations=0;ignoreCandidate=false;recordPartFinished=false;completePartLoading=true;callbackTarget=model;
+ weaponMountRoot=oldRoot;weaponRequestMountRoot=nullptr;consumerCalls.clear();
  identitySameMesh=false;textureValue=oldTexture;
  scheduleDone.clear();scheduleBundles.clear();opened=leaseRequests=sceneQueries=0;
  hasHelper=hasEntity=hasModel=hasPart=helperMatches=rendererInside=true;released=false;modelPath="assets/model.prefab";
@@ -364,6 +408,183 @@ void NativeLifecycleRegression(){
   Require(generation==2&&std::atomic_load(&routes)->empty(),"old-asset rejection published candidate state");
  }
  Reset();
+}
+void PerformLifecycleRegression(){
+ using namespace FullResourceReload;Reset();
+ // The native standby system owns a temporary object parented to the current
+ // model. Destroying that model cannot clear the game's separate handle cache.
+ {auto a=MakeAttempt();auto& owner=a.owners.front();CaptureConsumers(owner);performActive=performPropAlive=true;
+  RemoveOwner(owner);Require(stalePerformProp&&!performPropAlive,"fixture did not reproduce a dangling standby prop after model removal");}
+ Reset();performActive=performPropAlive=unrelatedPerformActive=true;
+ {auto a=MakeAttempt();CaptureConsumers(a.owners.front());Rebuild(a);
+  Require(a.phase==Phase::Passed&&performStops==1&&!performActive&&!stalePerformProp,"reload retired a model without ending its game-owned standby performance");
+  Require(unrelatedPerformActive,"reload stopped another character's performance");
+  Require(!consumerCalls.empty()&&consumerCalls.front()==155,"perform cleanup followed weapon/model/animation retirement");
+  // The next idle performance starts with new objects on the new model.
+  performActive=performPropAlive=true;Require(currentRoot==newRoot&&!stalePerformProp,"next standby performance reused the retired prop");}
+ Reset();{auto a=MakeAttempt();auto& owner=a.owners.front();owner.viewPart=true;CaptureConsumers(owner);ReleaseConsumers(owner);Require(!performStops,"display-only part stopped a world performance");}
+ Reset();
+}
+void PerformPreloadRegression(){
+ using namespace FullResourceReload;Reset();characterAnimation=true;
+ // Native CharacterAnimationComponent.ReleaseInternal clears born/custom
+ // perform preloads even for ChangeAnimationConfig(..., resume=true).
+ // A temporary object inherited by the next perform can remain visible after
+ // its outgoing loader exits; without the born preload, the queued Bundle
+ // unload destroys its Controller/Mesh later. Reproduce that delayed boundary.
+ auto delayedRelease=[&]{performPropAlive=performIdleHeld&&performDashHeld;};
+ {auto a=MakeAttempt();CaptureConsumers(a.owners.front());Rebuild(a);performPropAlive=true;delayedRelease();
+  Require(a.phase==Phase::Passed&&performPropAlive,"animation rebind left native performance preloads cleared before delayed Bundle unload");
+  Require(performIdlePreloads==1&&performDashPreloads==1,"reload omitted or repeated configured performance preloads");
+  Require(consumerCalls==std::vector<int>{155,70,68,156,157,74,72,71},"performance preload did not follow new animation setup before async consumers");
+  Require(!leaseRequests,"performance restore issued a plugin ResourceManager source request");}
+ Reset();characterAnimation=true;
+ {auto a=MakeAttempt();CaptureConsumers(a.owners.front());ignoreCandidate=true;bool rejected=false;try{Rebuild(a);}catch(const std::exception&){rejected=true;}
+  delayedRelease();Require(rejected&&currentRoot==restoredRoot&&performPropAlive&&performIdlePreloads==1&&performDashPreloads==1,"rollback restored the old model but left its native performance resources unheld");}
+ Reset();characterAnimation=true;
+ {auto a=MakeAttempt();auto& owner=a.owners.front();owner.viewPart=true;CaptureConsumers(owner);ReloadConsumers(owner,currentRoot);
+  Require(!performIdlePreloads&&!performDashPreloads&&!animationRebinds,"display-only owner preloaded world performances");}
+ Reset();{auto a=MakeAttempt();CaptureConsumers(a.owners.front());Rebuild(a);Require(!performIdlePreloads&&!performDashPreloads,"non-character animation called CharacterAnimationComponent preload functions");}
+ Reset();
+}
+void AnimationAttachmentProbeRegression(){
+ using namespace FullResourceReload;Reset();
+ static bool failRead=false;static unsigned parentReads=0;
+ static decltype(il2cpp_field_get_value) fallbackFields=nullptr;
+ auto previous=std::make_tuple(animationLinkProbe,il2cpp_runtime_invoke,il2cpp_field_get_value);fallbackFields=il2cpp_field_get_value;
+ auto restore=[&]{animationLinkProbe=std::get<0>(previous);il2cpp_runtime_invoke=std::get<1>(previous);il2cpp_field_get_value=std::get<2>(previous);Reset();};
+ animationLinkProbe.monoField=(void*)250;animationLinkProbe.objectField=(void*)251;animationLinkProbe.ownerField=(void*)252;animationLinkProbe.animationField=(void*)253;
+ animationLinkProbe.parentMethod=(void*)254;animationLinkProbe.objectType=Ref::Make((void*)0x6000,false);animationLinkProbe.ready=true;
+ il2cpp_field_get_value=[](void* self,void* field,void* out){
+  if(field==(void*)250){if(failRead)throw std::runtime_error("fixture animation link read failure");*(void**)out=animationRoot==oldRoot?(void*)0x6010:(void*)0x6011;return;}
+  if(field==(void*)251){*(void**)out=self==(void*)0x6010?(void*)0x6020:nullptr;return;}
+  if(field==(void*)252){Require(self==(void*)0x6020,"probe read entity on the wrong owner");*(void**)out=entity;return;}
+  if(field==(void*)253){*(void**)out=animation;return;}
+  fallbackFields(self,field,out);
+ };
+ il2cpp_runtime_invoke=[](void* method,void* self,void** args,void** exception)->void*{
+  if(method==(void*)254){*exception=nullptr;Require((self==(void*)0x6010||self==(void*)0x6011)&&args&&args[0]==(void*)0x6000,"probe parent query ABI changed");++parentReads;return (void*)0x6020;}
+  return Invoke(method,self,args,exception);
+ };
+ try{
+  failRead=false;parentReads=0;
+  auto before=ReadAnimationLinks(animation);Require(before.entity.Get()==entity&&before.parentEntity.Get()==entity&&before.animation.Get()==animation,"probe missed the initial animation owner");
+  auto a=MakeAttempt();CaptureConsumers(a.owners.front());Rebuild(a);
+  auto after=ReadAnimationLinks(animation);Require(!after.object.Get()&&!after.entity.Get()&&after.parentEntity.Get()==entity&&after.animation.Get()==animation,"probe concealed a missing cached owner after model replacement");
+  Require(a.phase==Phase::Passed&&parentReads>=4&&animationRebinds==1,"read-only link probe altered native reload or skipped its boundaries");
+  Reset();parentReads=0;failRead=true;
+  {auto a=MakeAttempt();CaptureConsumers(a.owners.front());Rebuild(a);Require(a.phase==Phase::Passed&&animationRebinds==1&&parentReads==0,"diagnostic read failure interrupted the resource transaction");}
+  failRead=false;restore();
+ }catch(...){failRead=false;restore();throw;}
+}
+void UnmodifiedSkinProbeRegression(){
+ using namespace FullResourceReload;Reset();
+ static Matrix4x4 matrix{},inverse{};static SkinState::Bounds bounds{};
+ static bool badLinks=false,failMatrix=false;
+ auto previous=std::make_tuple(RuntimeShapes::api,api,skinStateProbe,il2cpp_runtime_invoke);
+ auto restore=[&]{RuntimeShapes::api=std::get<0>(previous);api=std::get<1>(previous);skinStateProbe=std::get<2>(previous);il2cpp_runtime_invoke=std::get<3>(previous);Reset();};
+ for(int i=0;i<16;++i)matrix.m[i]=inverse.m[i]=(i%5==0?1.f:0.f);matrix.m[12]=2.f;matrix.m[13]=3.f;matrix.m[14]=4.f;
+ RuntimeShapes::api.getEnabled=(void*)260;skinStateProbe.active=(void*)261;skinStateProbe.forceOff=(void*)262;skinStateProbe.bounds=(void*)263;
+ RuntimeShapes::api.bones=(void*)264;RuntimeShapes::api.rootBone=(void*)265;RuntimeShapes::api.skinningRoot=(void*)265;
+ RuntimeShapes::api.localToWorld=(void*)266;RuntimeShapes::api.worldToLocal=(void*)267;api.isChild=(void*)268;skinStateProbe.ready=true;
+ il2cpp_runtime_invoke=[](void* method,void* self,void** args,void** exception)->void*{
+  *exception=nullptr;auto m=uintptr_t(method);
+  if(m==260||m==261)return &yes;if(m==262)return &no;if(m==263)return &bounds;
+  if(m==264){auto array=Array(badLinks?std::vector<void*>{bone,nullptr,leftBone}:std::vector<void*>{bone});propertyArrays.insert(array);return array;}
+  if(m==265)return bone;if(m==266){if(failMatrix)throw std::runtime_error("fixture skin matrix read failure");return &matrix;}if(m==267)return &inverse;
+  if(m==268){Require(args&&args[0]==prefabTransform,"skin probe queried outside the exact model root");return self==leftBone?&no:&yes;}
+  return Invoke(method,self,args,exception);
+ };
+ try{
+  badLinks=failMatrix=false;auto initial=ReadSkinState(oldRenderer,prefabTransform);
+  Require(initial.slots==1&&!initial.missing&&!initial.outside&&initial.rootInside==1&&initial.skinInside==1&&initial.enabled&&initial.active&&!initial.forceOff,"skin probe failed the valid native palette");
+  Require(initial.detail.find("2,3,4")!=std::string::npos,"skin probe lost root-relative bone position");
+  badLinks=true;auto stale=ReadSkinState(oldRenderer,prefabTransform);
+  Require(stale.slots==3&&stale.missing==1&&stale.outside==1,"skin probe concealed a missing or foreign bone in an untouched Mesh");
+  failMatrix=true;TraceSkinStates(oldRoot,"assets/model.prefab",{RuntimeShapes::Ref::Make(oldRenderer,true)},"fixture",0);
+  // Diagnostic faults remain isolated from the resource transaction.
+  failMatrix=false;
+  restore();
+ }catch(...){restore();throw;}
+}
+void PerformanceProbeRegression(){
+ using namespace FullResourceReload;Reset();
+ struct Row {MInfo info{};void* owner;const char* name;const char* result;};
+ static Row rows[]={{{},(void*)0xDD10,"get_Values","Fixture.Values"},{{},(void*)0xDD11,"get_Count","System.Int32"},
+  {{},(void*)0xDD11,"GetEnumerator","Fixture.Enumerator"},{{},(void*)0xDD12,"MoveNext","System.Boolean"},
+  {{},(void*)0xDD12,"get_Current","Fixture.Prop"},{{},(void*)0xDD12,"Dispose","System.Void"}};
+ for(auto& row:rows)row.info.mp=(void*)1;
+ static int cursor=0,count=2;static unsigned disposals=0;static bool throwNext=false;
+ static Bytes requestBytes(24);static void* array=nullptr;
+ auto previous=std::make_tuple(performProbe,il2cpp_class_get_methods,il2cpp_method_get_name,il2cpp_method_get_param_count,il2cpp_method_get_flags,
+  il2cpp_method_get_return_type,il2cpp_type_get_name,il2cpp_class_get_type,il2cpp_type_get_type,il2cpp_object_get_class,
+  il2cpp_class_get_name,il2cpp_class_get_namespace,il2cpp_class_get_parent,il2cpp_object_unbox,il2cpp_runtime_invoke,il2cpp_field_get_value,il2cpp_value_box);
+ auto restore=[&]{std::tie(performProbe,il2cpp_class_get_methods,il2cpp_method_get_name,il2cpp_method_get_param_count,il2cpp_method_get_flags,
+  il2cpp_method_get_return_type,il2cpp_type_get_name,il2cpp_class_get_type,il2cpp_type_get_type,il2cpp_object_get_class,
+  il2cpp_class_get_name,il2cpp_class_get_namespace,il2cpp_class_get_parent,il2cpp_object_unbox,il2cpp_runtime_invoke,il2cpp_field_get_value,il2cpp_value_box)=previous;Reset();};
+ il2cpp_class_get_methods=[](void* klass,void** it)->void*{for(auto i=uintptr_t(*it);i<std::size(rows);++i){*it=(void*)(i+1);if(rows[i].owner==klass)return &rows[i];}return nullptr;};
+ il2cpp_method_get_name=[](void* method){return static_cast<Row*>(method)->name;};il2cpp_method_get_param_count=[](void*)->uint32_t{return 0;};
+ il2cpp_method_get_flags=[](void*,uint32_t*)->uint32_t{return 0x86;};il2cpp_method_get_return_type=[](void* method)->void*{return const_cast<char*>(static_cast<Row*>(method)->result);};
+ il2cpp_type_get_name=[](void* type)->const char*{return static_cast<const char*>(type);};il2cpp_class_get_type=[](void* klass){return klass;};
+ il2cpp_type_get_type=[](void* type)->int{return type==(void*)0xDD13?0x1d:0x12;};
+ il2cpp_object_get_class=[](void* object)->void*{return object==array?(void*)0xDD13:object==(void*)0xDD20?(void*)0xDD10:object==(void*)0xDD21?(void*)0xDD11:object==(void*)0xDD22?(void*)0xDD12:object==animation?(void*)0xDD14:(void*)0xDD15;};
+ il2cpp_class_get_parent=[](void* klass)->void*{return klass==(void*)0xDD12?(void*)0xDD16:nullptr;};
+ il2cpp_class_get_name=[](void* klass){return klass==(void*)0xDD16?"ValueType":klass==(void*)0xDD14?"CharacterAnimationComponent":"CharPerformHandleBase";};
+ il2cpp_class_get_namespace=[](void* klass){return klass==(void*)0xDD16?"System":klass==(void*)0xDD14?"Beyond.Gameplay.View":"Beyond.Gameplay.Core.CharInteractPerform";};
+ il2cpp_object_unbox=[](void* object)->void*{return object==(void*)0xDD22?(void*)0xDD23:object;};
+ il2cpp_runtime_invoke=[](void* method,void* self,void** args,void** exception)->void*{
+  *exception=nullptr;if(method==(void*)0xDD30)return self==(void*)0xDD40?entity:unrelatedEntity;
+  if(method==&rows[0]){Require(self==(void*)0xDD20,"probe used a different dictionary");return (void*)0xDD21;}
+  if(method==&rows[1])return &count;if(method==&rows[2]){cursor=0;return (void*)0xDD22;}
+  Require(self==(void*)0xDD23,"probe did not unbox its value-type enumerator");
+  if(method==&rows[3]){if(throwNext)throw std::runtime_error("fixture enum failure");return ++cursor<=2?&yes:&no;}
+  if(method==&rows[4])return cursor==1?(void*)0xDD40:(void*)0xDD41;
+  if(method==&rows[5]){++disposals;return nullptr;}throw std::runtime_error("unexpected performance probe method");
+ };
+ il2cpp_field_get_value=[](void* self,void* field,void* out){
+  if(field==(void*)0xDD50){Require(self==animation,"request read from another animation component");memcpy(out,requestBytes.data(),requestBytes.size());}
+  else if(field==(void*)0xDD51){Require(self==requestBytes.data(),"handle read without boxing the actual request extent");memcpy(out,requestBytes.data(),sizeof(void*));}
+  else if(field==(void*)0xDD52){*(void**)out=(void*)0xDD41;}else if(field==(void*)0xDD53){memcpy(out,requestBytes.data()+16,4);}else throw std::runtime_error("unexpected probe field");
+ };
+ il2cpp_value_box=[](void* klass,void* bytes)->void*{Require(klass==(void*)0xDD17&&!memcmp(bytes,requestBytes.data(),requestBytes.size()),"request boxing changed the value bytes");return requestBytes.data();};
+ try{
+  array=Array(std::vector<void*>{(void*)0xDD40,(void*)0xDD41});auto refs=ProbeReferences(array);Require(refs.size()==2,"probe lost reference-array elements");
+  count=2;disposals=0;throwNext=false;refs=ProbeReferences((void*)0xDD20);Require(refs.size()==2&&refs[1].Get()==(void*)0xDD41&&disposals==1,"probe failed actual dictionary-value enumeration");
+  count=1;bool rejected=false;try{ProbeReferences((void*)0xDD20);}catch(const std::exception&){rejected=true;}Require(rejected&&disposals==2,"probe trusted enumeration beyond its real collection count");
+  count=2;throwNext=true;rejected=false;try{ProbeReferences((void*)0xDD20);}catch(const std::exception&){rejected=true;}Require(rejected&&disposals==3,"diagnostic enumeration failure leaked its enumerator");throwNext=false;
+  performProbe.requestField=(void*)0xDD50;performProbe.handleField=(void*)0xDD51;performProbe.requestClass=(void*)0xDD17;performProbe.requestSize=int(requestBytes.size());
+  performProbe.mainHandleField=(void*)0xDD52;performProbe.handleEntity=(void*)0xDD30;performProbe.requestSourceField=(void*)0xDD53;void* handle=(void*)0xDD40;memcpy(requestBytes.data(),&handle,sizeof(handle));uint32_t sourceKind=2;memcpy(requestBytes.data()+16,&sourceKind,sizeof(sourceKind));
+  auto request=ProbeCurrentRequest(animation);Require(request.handle.Get()==handle&&request.source==sourceKind,"probe lost current performance source or handle");
+  Owner owner;owner.animation=Ref::Make(animation,false);owner.entity=Ref::Make(entity,false);owner.performManager=Ref::Make(performManager,false);
+  auto selected=ProbePerformHandles(owner);Require(selected.size()==1&&selected.front().Get()==handle,"probe included another entity's main performance");
+  performProbe.ready=true;performProbe.watches[model].started=GetTickCount64()-180001;TracePerformanceFrame();Require(performProbe.watches.empty(),"completed performance observation retained references");
+  restore();
+ }catch(...){restore();throw;}
+}
+void PerformanceReleaseProbeRegression(){
+ using namespace FullResourceReload;Reset();static unsigned calls=0;static void* target=nullptr;static bool destroy=false;
+ auto previous=std::make_tuple(performProbe,originalProbeUnload,originalProbeUnloadAsync,originalProbeUnloadAsset,originalProbeUnloadAssetAsync,probePendingReleases,il2cpp_runtime_invoke);
+ auto restore=[&]{std::tie(performProbe,originalProbeUnload,originalProbeUnloadAsync,originalProbeUnloadAsset,originalProbeUnloadAssetAsync,probePendingReleases,il2cpp_runtime_invoke)=previous;Reset();};
+ originalProbeUnload=[](void* self,bool all){++calls;target=self;destroy=all;};
+ originalProbeUnloadAsync=[](void* self,bool all)->void*{++calls;target=self;destroy=all;return assetRequest;};
+ originalProbeUnloadAsset=[](void* self,void* asset){++calls;target=self;Require(asset==oldMesh,"release probe changed asset argument");};
+ originalProbeUnloadAssetAsync=[](void* self,void* asset)->void*{++calls;target=self;Require(asset==oldMesh,"release probe changed async asset argument");return assetRequest;};
+ try{
+  performProbe.ready=true;auto& watch=performProbe.watches[model];ProbeRememberResource(watch,oldMesh,"Attachment/Fixture");
+  ProbeRememberResource(watch,oldMesh,"Attachment/Fixture");Require(watch.resources.size()==1,"probe duplicated the same attachment resource");
+  {ProbeResourceRelease observation("fixture",bundle,true);Require(observation.before.size()==1&&observation.before[0].id==int(uintptr_t(oldMesh)),"probe failed to select a live native attachment resource");}
+  {ProbeResourceRelease observation("fixture",bundle,false,newMesh);Require(observation.before.empty(),"exact asset release probe selected an unrelated resource");}
+  calls=0;ProbeUnload(bundle,false);Require(calls==1&&target==bundle&&!destroy,"probe changed Unload(false) or called it twice");
+  probePendingReleases.clear();auto result=ProbeUnloadAsync(bundle,true);Require(calls==2&&result==assetRequest&&destroy,"probe changed asynchronous unload arguments/result");
+  ProbeUnloadAsset(bundle,oldMesh);Require(calls==3&&target==bundle,"probe changed asset unload receiver/call count");
+  result=ProbeUnloadAssetAsync(bundle,oldMesh);Require(calls==4&&result==assetRequest&&probePendingReleases.size()==2,"probe lost actual asynchronous resource requests");
+  done=0;TracePerformanceReleases();Require(probePendingReleases.size()==2&&calls==4,"completion observation dropped pending requests or initiated another unload");
+  done=1;TracePerformanceReleases();Require(probePendingReleases.empty()&&calls==4,"completion observation initiated another unload or retained completed requests");
+  il2cpp_runtime_invoke=[](void*,void*,void**,void**)->void*{throw std::runtime_error("fixture diagnostic read failure");};
+  ProbeUnload(bundle,true);Require(calls==5&&destroy,"diagnostic read failure prevented native unload");
+  ProbeUnloadAsset(bundle,oldMesh);Require(calls==6,"diagnostic read failure prevented native asset release");
+  restore();
+ }catch(...){restore();throw;}
 }
 void TextureIdentityRegression(){
  using namespace FullResourceReload;Reset();auto p=Prepare();auto plan=std::make_shared<EiemResourceReloadPlan::Plan>(*p->plan);
@@ -512,18 +733,21 @@ void RecordPart(bool world=true){
  completePartLoading=previous;
 }
 void SequentialWorldRegression(){
- using namespace FullResourceReload;Reset();BindWorld();RecordPart();recordPartFinished=true;sceneRenderers={oldRenderer};
+ using namespace FullResourceReload;Reset();characterAnimation=true;BindWorld();RecordPart();recordPartFinished=true;sceneRenderers={oldRenderer};
  auto originalNewRoot=newRoot;
  struct Cleanup {void* root;~Cleanup(){newRoot=root;Reset();}}cleanup{originalNewRoot};
  for(unsigned repeat=0;repeat<8;++repeat){
+  performActive=performPropAlive=true;unrelatedPerformActive=true;
   auto a=MakeAttempt();a.owners.clear();a.prepared->base=generation.load();DiscoverOwners(a);Require(!sceneQueries,"world reload queried scene Renderers");
   Require(a.owners.size()==1,"consecutive F10 lost the live model part");
   if(repeat)newRoot=(void*)(uintptr_t(0x1005)+repeat);
   Rebuild(a);
   Require(a.phase==Phase::Passed&&generation==3+repeat,"consecutive F10 did not commit");
+  Require(performStops==repeat+1&&!performActive&&!stalePerformProp&&unrelatedPerformActive,"consecutive F10 retained a retired standby prop or stopped another entity");
+  Require(performIdleHeld&&performDashHeld&&performIdlePreloads==repeat+1&&performDashPreloads==repeat+1,"consecutive F10 left native performance preloads cleared or accumulated duplicate preload calls");
   Require(animationRoot==currentRoot&&animationRebinds==repeat+1,
           "consecutive F10 committed a world model as a display part and left animation bound to the old root (T pose)");
-  Require(!a.owners.front().viewPart&&followCalls==repeat+1&&weaponReloads==repeat+1&&weaponRemounts==repeat+1,
+  Require(!a.owners.front().viewPart&&followCalls==repeat+1&&weaponReloads==repeat+1&&weaponRemounts==repeat+1&&weaponRequestMountRoot==currentRoot,
           "consecutive F10 lost the world's native consumer lifecycle");
   // The game replaces its helper, whose entity link is absent after the
   // primitive reload. Keep the new root/part/animation exactly as committed.
@@ -953,7 +1177,16 @@ void RuleMemoryRegression(){
  NativeBundle::enabled=true;
  Require(ObservePublicFile("rule-bad-source",0,fallback,matched,0,12,nullptr)==bundle&&fileFallbackCalls==3,"missing original source blocked the game's loading request");
  auto originalFile=file;file=fallback;Require(File(matched,0,12,nullptr)==bundle&&fileFallbackCalls==4,"internal file binding bypassed rule failure passthrough");file=originalFile;
+ unsigned replayed=0;auto cachedPlan=std::make_shared<EiemResourceReloadPlan::Plan>();cachedPlan->originals=emptyPlan->originals;cachedPlan->startupHashes={std::string(64,'B')};cachedPlan->rendererRules.resize(1);
+ auto cached=std::make_shared<EiemPrefabRules::Context>(cachedPlan,Package{},[&](size_t,bool){++replayed;throw std::runtime_error("startup should not replay source on the game thread");return Bytes{};});
+ cached->startupInputsPacked=true;cached->startupInputs.emplace(0,std::make_shared<const Bytes>(EiemCompiledMod::Pack(Bytes{1,2,3,4})));std::atomic_store(&resourceRules,cached);
+ bool hit=false;Require(LoadRuleInput(matched,0,12,true,hit)&&hit&&!replayed,"prepared startup input was rebuilt on the game's loading thread");
+ auto allocations=storage.size();hit=false;Require(LoadRuleInput(matched,0,12,true,hit)&&hit&&!replayed&&storage.size()==allocations+1,"repeated startup load copied another Byte[] instead of reusing the live stream buffer");
+ auto submittedCount=memoryCalls;cachedPlan->startupHashes[0]=cachedPlan->originals[0].hash;hit=false;
+ Require(!LoadRuleInput(matched,77,12,true,hit)&&!hit&&!replayed&&memoryCalls==submittedCount,"unchanged dependency intercepted the native file/CRC path");
+ for(const auto& request:NativeBundle::memoryRequests)scheduleDone[request.first]=true;NativeBundle::CollectMemory();
  for(const auto& b:NativeBundle::memoryBundles)unloadedStreamBundles.insert(b.first);NativeBundle::CollectMemory();Require(NativeBundle::memoryBundles.empty(),"unloaded rule Bundles retained archive streams");
+ startupArrays.clear();
  NativeBundle::enabled=false;active=wasActive;std::atomic_store(&resourceRules,std::shared_ptr<EiemPrefabRules::Context>{});Reset();
 }
 void LatestPublicationRegression(){
@@ -1052,6 +1285,20 @@ void PreparedShortcutRegression(){
  auto added=folder/"plugin/mods/Added";std::filesystem::create_directories(added);EiemResourceReloadPlan::Save(added/"mod.ini",{'[','M','o','d',']'});
  FullResourceReload::Prepare();Require(!std::atomic_load(&requested)&&!std::atomic_load(&latest),"new Mod bypassed the required compiler and used the previous set");
 }
+void CompiledSnapshotRegression(){
+ using namespace FullResourceReload;Reset();auto previousGame=gameDirectory;auto previousDisk=diskPrepared;auto previousSet=preparedCompiledSet;auto previousPointer=lastPrepared;bool previousActive=active;
+ auto folder=std::filesystem::absolute("bin")/("compiled-snapshot-fixture-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));Require(std::filesystem::create_directory(folder),"snapshot fixture already exists");
+ struct Cleanup {std::filesystem::path game,folder;std::shared_ptr<Prepared> disk;std::shared_ptr<const EiemCompiledModSet::Set> set;EiemOfflinePackage::Pointer pointer;bool activeBefore;~Cleanup(){attempt.reset();pending.reset();diskPrepared=disk;preparedCompiledSet=set;lastPrepared=pointer;gameDirectory=game;active=activeBefore;enabled=false;std::atomic_store(&requested,std::shared_ptr<const Ticket>{});std::atomic_store(&latest,std::shared_ptr<const EiemOfflinePackage::Pointer>{});std::filesystem::remove_all(folder);Reset();}}cleanup{previousGame,folder,previousDisk,previousSet,previousPointer,previousActive};
+ gameDirectory=folder;active=true;enabled=true;std::filesystem::create_directories(folder/"plugin/mods");auto file=folder/"snapshot";EiemResourceReloadPlan::Save(file,{1,2,3});
+ auto ready=std::make_shared<EiemCompiledModSet::Set>();ready->pointer={std::string(64,'A'),std::string(64,'B')};ready->manifest.plan.key=ready->pointer.key;ready->files.emplace(file,FileStamp(file));preparedCompiledSet=ready;
+ auto before=std::make_shared<Prepared>();before->pointer=preparedCompiledSet->pointer;before->plan=std::make_shared<const Plan>(preparedCompiledSet->manifest.plan);before->graph=std::make_shared<const std::vector<Package>>();before->authorFiles.emplace(file,InputFileStamp{});before->rules=EiemCompiledModSet::Context(preparedCompiledSet);diskPrepared=before;lastPrepared=before->pointer;
+ attempt=std::make_unique<Attempt>();attempt->prepared=before;attempt->phase=Phase::Ready;
+ PollCompiled(true);Require(diskPrepared!=before&&AuthorFilesUnchanged(*diskPrepared)&&std::atomic_load(&requested),"same-content re-export retained stale author stamps and rejected F10");
+ // Native candidate identity is unchanged. Refresh its verified author
+ // snapshot without losing the ready model or repeating native loads.
+ std::atomic_store(&requested,std::shared_ptr<const Ticket>{});Frame();Require(attempt->phase==Phase::Ready&&AuthorFilesUnchanged(*attempt->prepared)&&!pending&&!opened&&!leaseRequests&&!removeCalls&&!loadCalls,"same-key pending candidate discarded the new snapshot or repeated native work");
+ EiemResourceReloadPlan::Save(file,{1,2,3,4});Require(!AuthorFilesUnchanged(*attempt->prepared),"actual post-preflight file edits bypassed the snapshot guard");
+}
 void RetirementRegression(){
  using namespace FullResourceReload;Reset();
  Attempt a;a.prepared=Prepare();a.exposed=true;
@@ -1070,9 +1317,7 @@ void FullFrameRegression(bool display,bool vanilla=false,bool pristine=false){
  {
   auto prepared=Prepare();auto plan=std::make_shared<EiemResourceReloadPlan::Plan>(*prepared->plan);
   if(pristine){plan->composed=true;plan->parts.clear();plan->materials.clear();plan->roots.front().markers.clear();
-#ifndef EFF_OFFLINE_PACKAGE_V35
    plan->roots.front().assembly.sources.front().targets.front().marker.clear();
-#endif
   }
   plan->inputs.push_back({"input-001.vfs",{},"bundle",file,{}});plan->closure={0};prepared->plan=plan;
   prepared->files.emplace(0,std::make_shared<NativeBundle::FileHold>(file));prepared->pointer={std::string(64,'A'),std::string(64,'B')};pending=prepared;
@@ -1114,9 +1359,7 @@ void MembershipPreflightRegression(){
 void PristineIdentityRegression(){
  using namespace FullResourceReload;Reset();auto a=MakeAttempt();auto plan=std::make_shared<Plan>(*a.prepared->plan);
  plan->composed=true;plan->parts.clear();plan->materials.clear();plan->roots.front().markers.clear();
-#ifndef EFF_OFFLINE_PACKAGE_V35
  plan->roots.front().assembly.sources.front().targets.front().marker.clear();
-#endif
  a.prepared->plan=plan;ignoreCandidate=true;bool refused=false;try{Rebuild(a);}catch(const std::exception&){refused=true;}
  Require(refused&&generation==2&&currentRoot==restoredRoot&&MeshProfile(currentRoot)==a.owners.front().originalMeshes,"last Mod deletion accepted the old native Mesh despite candidate route");Reset();
 }
@@ -1128,9 +1371,7 @@ void ModSetCommitRegression(){
  for(const auto& packages:std::vector<std::vector<Package>>{{mod("A")},{mod("A"),mod("B")},{mod("A")},{},{mod("B")}}){
   Reset();auto next=graph(packages);auto a=MakeAttempt();a.prepared->controls=RuntimeControls::Prepare(next,EiemGlobalConfig{});
   if(packages.empty()){auto plan=std::make_shared<Plan>(*a.prepared->plan);plan->composed=true;plan->parts.clear();plan->materials.clear();plan->roots.front().markers.clear();
-#ifndef EFF_OFFLINE_PACKAGE_V35
    plan->roots.front().assembly.sources.front().targets.front().marker.clear();
-#endif
    a.prepared->plan=plan;
   }
   auto before=std::atomic_load(&published);auto selection=RuntimeControls::selected;auto panel=RuntimeControls::panel.Read();auto revision=RuntimeControls::revision;
@@ -1144,7 +1385,6 @@ void ModSetCommitRegression(){
  RuntimeControls::controlGraph.reset();RuntimeControls::keys.clear();RuntimeControls::variables.clear();RuntimeControls::selected.clear();RuntimeControls::panel.Publish({});Reset();
 }
 }
-#ifndef EFF_OFFLINE_PACKAGE_V35
 void AssemblyAddressRegression(){
  using namespace Test;using namespace FullResourceReload;
  Reset();auto prepared=Test::Prepare();auto expected=prepared->plan->roots.front();
@@ -1156,22 +1396,173 @@ void AssemblyAddressRegression(){
  reject([](auto& root){root.assembly.sources.front().targets.front().root=EiemRenderAssemblyDescription::Segment("marker",0);});
  Reset();
 }
-#endif
+void SerializedBoneAddressRegression(){
+ using namespace Test;using namespace FullResourceReload;
+ Reset();auto prepared=Test::Prepare();auto plan=*prepared->plan;
+ // A story/low-LOD prefab can bind the same Mesh bone hash to a native
+ // Transform whose path differs from the author skeleton. The offline
+ // descriptor records that actual binding, including its exact slot order.
+ plan.parts.at("marker").bones[0]="Root/Bip001/AuthorBone";
+ VerifyPrefab(candidate,plan,plan.roots.front());
+ auto reject=[&](auto broken){bool failed=false;try{VerifyPrefab(candidate,broken,broken.roots.front());}catch(const std::exception&){failed=true;}Require(failed,"incorrect native bone address or legacy author path accepted");};
+ auto wrong=plan;wrong.roots.front().assembly.sources.front().targets.front().bones.front()=EiemRenderAssemblyDescription::Segment("Root",0)+EiemRenderAssemblyDescription::Segment("Bip001",0)+EiemRenderAssemblyDescription::Segment("Left",0)+EiemRenderAssemblyDescription::Segment("Bone",0);reject(wrong);
+ auto legacy=plan;legacy.roots.front().assembly.sources.clear();reject(legacy);
+ legacy.parts.at("marker").bones[0]="Root/Bip001/Bone";VerifyPrefab(candidate,legacy,legacy.roots.front());Reset();
+}
+void MaterialShaderRegression(){
+ using namespace Test;using namespace FullResourceReload;
+ Reset();api.shaderSupported=(void*)130;api.materialPassCount=(void*)131;auto prepared=Test::Prepare();
+ VerifyPrefab(candidate,*prepared->plan,prepared->plan->roots.front());
+ auto reject=[&]{bool failed=false;try{VerifyPrefab(candidate,*prepared->plan,prepared->plan->roots.front());}catch(const std::exception&){failed=true;}Require(failed,"live Shader object incorrectly accepted unsupported/error/zero-pass material");};
+ shaderSupported=false;reject();shaderSupported=true;shaderPasses=0;reject();shaderPasses=2;shaderLabel="Hidden/InternalErrorShader";reject();shaderLabel="Fixture/Character";
+ api.shaderSupported=api.materialPassCount=nullptr;Reset();
+}
+void WeaponMountBeforeReloadRegression(){
+ using namespace Test;using namespace FullResourceReload;
+ Reset();auto attempt=MakeAttempt();CaptureConsumers(attempt.owners.front());Rebuild(attempt);
+ Require(attempt.phase==Phase::Passed&&weaponRequestMountRoot==currentRoot,"weapon async reload captured retired model mounts before UpdateAllWeaponMountPoint");
+ Require(consumerCalls==std::vector<int>{155,70,68,74,72,71},"native perform/model/audio/mount/weapon lifecycle order differs from game");
+ Reset();auto rollback=MakeAttempt();CaptureConsumers(rollback.owners.front());ignoreCandidate=true;bool refused=false;try{Rebuild(rollback);}catch(const std::exception&){refused=true;}
+ Require(refused&&currentRoot==restoredRoot&&weaponRequestMountRoot==restoredRoot,"weapon reload on rollback captured retired model mounts");
+ Require(consumerCalls==std::vector<int>{155,70,155,70,68,74,72,71},"rollback perform/audio/mount/weapon lifecycle order differs from game");Reset();
+}
+void StartupDependencyRegression(){
+ using namespace EiemBundleDependencies;
+ EiemBundleDependencies::Keys current{{1,{3}},{2,{4}},{3,{5}},{5,{3}}};std::map<uint64_t,std::vector<uint64_t>> vanilla{{3,{6}},{4,{7}},{6,{}}};
+ auto edges=[&](uint64_t key){auto found=current.find(key);return found==current.end()?std::vector<uint64_t>{}:found->second;};
+ unsigned queries=0;auto native=[&](uint64_t key){++queries;return vanilla[key];};
+ auto direct=Added(1,{2},true,edges,native);Require(direct==std::vector<uint64_t>{3}&&queries==0,"direct dependencies opened resources or flattened native dependencies");
+ auto all=Added(1,{2},false,edges,native);Require(all==std::vector<uint64_t>({3,6,4,7,5}),"startup full dependencies omitted foreign material/native transitive dependencies");
+ Require(Added(1,{2,3,6,4,7,5},false,edges,native).empty(),"startup dependencies duplicated existing game entries");
+ auto old=current;current={{1,{9}}};Require(Added(1,{},true,edges,native)==std::vector<uint64_t>{9},"new Mod set did not use new dependency edges");
+ auto retained=[&](uint64_t key){auto found=old.find(key);return found==old.end()?std::vector<uint64_t>{}:found->second;};
+ Require(Added(1,{},true,retained,native)==std::vector<uint64_t>{3},"loaded original bundle lost its dependency snapshot after F10");
+ current.clear();Require(Added(1,{2},false,edges,native).empty(),"empty Mod set retained new dependency rules");
+}
+bool NativeDependencyQuery(void*,uint64_t key,void* list,void*){
+ auto& output=Test::dependencyLists.at(list);auto found=Test::nativeDependencyLists.find(key);if(found==Test::nativeDependencyLists.end())return false;output.insert(output.end(),found->second.begin(),found->second.end());return true;
+}
+void StartupDependencyListBindingRegression(){
+ using namespace Test;namespace D=StartupDependencies;
+ struct MethodRow {MInfo info{};const char* name;const char* result;const char* parameter;void* klass=(void*)700;const char* second=nullptr;};
+ static MethodRow rows[]={{{},".ctor","System.Void",nullptr},{{},".ctor","System.Void","System.Int32"},
+  {{},"Add","System.Void","System.UInt64"},{{},"System.Collections.IList.Add","System.Int32","System.Object"},
+  {{},".ctor","System.Void","Test.ObjectPool<Test.PooledList<System.UInt64>>",(void*)701,"System.Int32"},
+  {{},"Allocate","Test.PooledList<System.UInt64>",nullptr,(void*)702},{{},"Dispose","System.Void",nullptr,(void*)701}};
+ static unsigned allocated=0,disposed=0;allocated=disposed=0;static int pool;
+ Reset();propertyElementWidth=8;auto oldApi=D::api;
+ auto previous=std::make_tuple(il2cpp_class_get_methods,il2cpp_method_get_name,il2cpp_method_get_param_count,
+  il2cpp_method_get_flags,il2cpp_method_get_return_type,il2cpp_method_get_param,il2cpp_type_get_name,
+  il2cpp_object_new,il2cpp_value_box,il2cpp_runtime_invoke,il2cpp_class_get_parent,il2cpp_field_get_value,il2cpp_object_get_class);
+ auto restore=[&]{std::tie(il2cpp_class_get_methods,il2cpp_method_get_name,il2cpp_method_get_param_count,
+  il2cpp_method_get_flags,il2cpp_method_get_return_type,il2cpp_method_get_param,il2cpp_type_get_name,
+  il2cpp_object_new,il2cpp_value_box,il2cpp_runtime_invoke,il2cpp_class_get_parent,il2cpp_field_get_value,il2cpp_object_get_class)=previous;D::api=oldApi;dependencyLists.clear();Reset();};
+ il2cpp_class_get_methods=[](void* klass,void** it)->void*{auto index=uintptr_t(*it);while(index<std::size(rows)&&rows[index].klass!=klass)++index;if(index==std::size(rows))return nullptr;*it=(void*)(index+1);return &rows[index];};
+ il2cpp_class_get_parent=[](void* klass)->void*{return klass==(void*)701?(void*)700:nullptr;};
+ il2cpp_method_get_name=[](void* method)->const char*{return static_cast<MethodRow*>(method)->name;};
+ il2cpp_method_get_param_count=[](void* method)->uint32_t{auto row=static_cast<MethodRow*>(method);return row->second?2:row->parameter?1:0;};
+ il2cpp_method_get_flags=[](void*,uint32_t*)->uint32_t{return 0x86;};
+ il2cpp_method_get_return_type=[](void* method)->void*{return const_cast<char*>(static_cast<MethodRow*>(method)->result);};
+ il2cpp_method_get_param=[](void* method,uint32_t index)->void*{auto row=static_cast<MethodRow*>(method);return const_cast<char*>(index?row->second:row->parameter);};
+ il2cpp_type_get_name=[](void* type)->const char*{return static_cast<const char*>(type);};
+ il2cpp_object_new=[](void*)->void*{auto bytes=std::make_unique<Bytes>(8);auto value=bytes->data();storage.push_back(std::move(bytes));dependencyLists[value]={};return value;};
+ il2cpp_field_get_value=[](void* self,void* field,void* out){if(field==(void*)20){Require(dependencyLists.count(self)!=0,"pool field read from another object");void* p=&pool;memcpy(out,&p,8);}else FieldValue(self,field,out);};
+ il2cpp_object_get_class=[](void* object)->void*{return object==&pool?(void*)702:dependencyLists.count(object)?StartupDependencies::api.listClass:GetClass(object);};
+ il2cpp_value_box=[](void* klass,void* data)->void*{Require(klass==propertyElementClass,"IList bridge boxed a different scalar type");auto bytes=std::make_unique<Bytes>(8);memcpy(bytes->data(),data,8);auto value=bytes->data();storage.push_back(std::move(bytes));return value;};
+ il2cpp_runtime_invoke=[](void* method,void* self,void** args,void** exception)->void*{
+  *exception=nullptr;auto index=static_cast<MethodRow*>(method)-rows;Require(index>=0&&index<7&&index!=4,"list binder invoked another API or constructed a pooled list directly");
+  if(index==5){Require(self==&pool&&!args,"pool allocation call shape differs");++allocated;return il2cpp_object_new((void*)701);}
+  if(index==6){Require(!args&&dependencyLists.erase(self)==1,"scratch list was recycled twice");++disposed;return nullptr;}
+  if(index<2){Require(index?args&&*(int*)args[0]==0:!args,"list constructor used a different argument shape");dependencyLists[self].clear();}
+  else dependencyLists.at(self).push_back(*(uint64_t*)args[0]);return nullptr;
+ };
+ D::api={};D::api.listClass=(void*)700;D::api.scalarClass=propertyElementClass;D::api.listItems=(void*)18;D::api.listSize=(void*)19;
+ try{
+  for(bool stripped:{false,true}){
+   for(auto& row:rows)row.info.mp=(void*)1;
+   if(stripped){rows[0].info.mp=rows[2].info.mp=nullptr;
+    Require(!Exact(D::api.listClass,".ctor",{},"System.Void",false)&&!Exact(D::api.listClass,"Add",{"System.UInt64"},"System.Void",false),"fixture did not expose the old startup binding rejection");}
+   D::BindListMethods(D::api.listClass,"System.UInt64");D::VerifyListApi();
+   Require(D::api.capacityCtor==stripped&&D::api.boxedAdd==stripped,"list binding did not select the available compiled interface");
+  }
+  rows[2].info.mp=nullptr;rows[3].parameter="System.Int32";bool rejected=false;
+  try{D::BindListMethods(D::api.listClass,"System.UInt64");}catch(const std::exception&){rejected=true;}
+  Require(rejected,"dependency list accepted an incompatible append argument");rows[3].parameter="System.Object";
+  // The real game supplies a PooledList with a two-argument constructor.
+  // List methods live on its parent, and the native pool owns scratch lists.
+  D::api.listClass=(void*)701;D::api.poolField=(void*)20;D::api.poolClass=(void*)702;
+  D::api.poolAllocate=Exact(D::api.poolClass,"Allocate",{},"Test.PooledList<System.UInt64>",false);
+  D::api.listDispose=D::Inherited(D::api.listClass,"Dispose",{},"System.Void");
+  Require(!Exact(D::api.listClass,".ctor",{},"System.Void",false)&&!Exact(D::api.listClass,".ctor",{"System.Int32"},"System.Void",false),"pooled fixture has a plain List constructor");
+  auto prototype=il2cpp_object_new(D::api.listClass);dependencyLists[prototype]={91};
+  for(bool boxed:{false,true}){rows[2].info.mp=boxed?nullptr:(void*)1;
+   D::BindListMethods(D::api.listClass,"System.UInt64");D::VerifyListApi(prototype);
+   Require(D::api.boxedAdd==boxed&&!D::api.listCtor,"pooled list did not use inherited append and pool allocation");
+  }
+  Require(allocated==2&&disposed==2&&dependencyLists.at(prototype)==std::vector<uint64_t>{91},"pooled dependency scratch lifecycle changed the game's input list");
+  bool badAppend=false;
+  try{auto scratch=D::NewList(prototype);throw std::runtime_error("injected query failure");}catch(const std::exception&){badAppend=true;}
+  Require(badAppend&&allocated==3&&disposed==3,"scratch list was not recycled after query failure");
+ }catch(...){rows[3].parameter="System.Object";restore();throw;}
+ restore();
+}
+void StartupDependencyHookRegression(){
+ using namespace Test;namespace D=StartupDependencies;
+ Reset();propertyElementWidth=8;auto oldApi=D::api;auto oldNew=il2cpp_object_new;auto oldRules=std::atomic_load(&Entry::resourceRules);
+ D::api.bundleName=(void*)143;D::api.managerManifest=(void*)144;D::api.listCtor=(void*)140;D::api.listAdd=(void*)141;D::api.listClass=(void*)700;D::api.listItems=(void*)18;D::api.listSize=(void*)19;
+ D::api.manifestData=(void*)150;D::api.mappedBase=(void*)151;D::api.mappedLength=(void*)152;D::api.mappedData=(void*)153;D::api.bundles=(void*)154;
+ // Different field offsets/stride from the inspected game, to enforce
+ // metadata-based traversal rather than baking that build's binary layout.
+ D::api.arraySize=24;D::api.arrayCount=4;D::api.arrayHead=16;D::api.bundleSize=64;D::api.bundleNameOffset=20;D::api.bundleKeyOffset=40;
+ D::originalAll=D::originalDirect=NativeDependencyQuery;D::originalInit=[](void*,uint64_t,void*,void*){};D::originalClear=[](void*,void*){};D::enabled=true;
+ dependencyNames={{"source",1},{"old",2},{"foreign",3},{"texture",4},{"later",9}};nativeDependencyLists={{1,{2}},{3,{4}}};dependencyLists.clear();
+ BuildDependencyManifest();dependencyManifestReads=dependencyNameChecks=0;
+ il2cpp_object_new=[](void*)->void*{auto value=std::make_unique<Bytes>(8);auto p=value->data();storage.push_back(std::move(value));dependencyLists[p]={};return p;};
+ auto makeRules=[](uint64_t next){auto value=std::make_shared<EiemPrefabRules::Context>(Prepare()->plan,EiemNativeInput::Package{},[](size_t,bool){return Bytes{};});auto graph=std::make_shared<EiemBundleDependencies::Names>();(*graph)["source"].insert(next==3?"foreign":"later");value->addedDependencies=graph;return value;};
+ std::atomic_store(&Entry::resourceRules,makeRules(3));void* list=il2cpp_object_new(D::api.listClass);void* proxy=(void*)0x7001;
+ D::Init(proxy,1,manager,nullptr);
+ // A game asset request must see the foreign material and its native texture
+ // before it starts LoadAsset, without an extra ResourceManager request.
+ auto loads=Test::memoryCalls,leases=leaseRequests;Require(D::All(dependencyManifest,1,list,nullptr),"startup full query lost native success");
+ Require(dependencyLists.at(list)==std::vector<uint64_t>({2,3,4}),"game first-load dependency query omitted foreign material before asset creation");
+ // The shipped manifest stores a VFS Bundle key, which differs from the
+ // callable ManifestDataBinary.HashCodeEx4AutoLower result (PID 24076).
+ D::indexes.clear();dependencyHashDiffers=true;dependencyLists[list].clear();
+ D::All(dependencyManifest,1,list,nullptr);
+ Require(dependencyLists.at(list)==std::vector<uint64_t>({2,3,4}),"stored manifest key was replaced by a different string hash; cold-start borrowed material missing");
+ dependencyHashDiffers=false;
+ dependencyLists[list].clear();D::Direct(dependencyManifest,1,list,nullptr);Require(dependencyLists.at(list)==std::vector<uint64_t>({2,3}),"native direct dependency ownership was flattened");
+ std::atomic_store(&Entry::resourceRules,makeRules(9));dependencyLists[list].clear();D::Direct(dependencyManifest,1,list,nullptr);
+ Require(dependencyLists.at(list)==std::vector<uint64_t>({2,3}),"F10 changed dependency release rules for an already loaded game Bundle");
+ D::Clear(proxy,nullptr);D::Init(proxy,1,manager,nullptr);dependencyLists[list].clear();D::Direct(dependencyManifest,1,list,nullptr);
+ Require(dependencyLists.at(list)==std::vector<uint64_t>({2,9}),"recycled game Bundle did not acquire current Mod dependencies");
+ Require(Test::memoryCalls==loads&&leaseRequests==leases,"dependency query actively loaded resources or recursed into ResourceManager");
+ auto rules=makeRules(3);auto graph=std::make_shared<EiemBundleDependencies::Names>();(*graph)["source"].insert("missing");rules->addedDependencies=graph;D::Clear(proxy,nullptr);std::atomic_store(&Entry::resourceRules,rules);
+ auto reads=dependencyManifestReads,checks=dependencyNameChecks;
+ for(int i=0;i<1000;++i){dependencyLists[list].clear();Require(D::All(dependencyManifest,1,list,nullptr),"failed manifest mapping suppressed native result");Require(dependencyLists.at(list)==std::vector<uint64_t>{2},"failed manifest mapping partially appended foreign keys");}
+ Require(dependencyManifestReads==reads+1&&dependencyNameChecks==checks,"failed manifest mapping was rebuilt on every queue poll");
+ dependencyNames["missing"]=0xFE369E5452DF7026ULL;BuildDependencyManifest();dependencyLists[list].clear();D::Direct(dependencyManifest,1,list,nullptr);
+ Require(dependencyLists.at(list)==std::vector<uint64_t>({2,0xFE369E5452DF7026ULL}),"changed manifest did not retry a cached gap / truncated stored high-bit key");
+ auto parsed=dependencyManifestReads;for(int i=0;i<1000;++i)Require(D::GetIndex(dependencyManifest,graph)!=nullptr,"ready manifest cache lost index");Require(dependencyManifestReads==parsed,"ready index rescanned manifest per query");
+ D::Clear(proxy,nullptr);D::snapshots.clear();D::snapshotKeys.clear();D::indexes.clear();D::enabled=false;D::api=oldApi;il2cpp_object_new=oldNew;std::atomic_store(&Entry::resourceRules,oldRules);dependencyLists.clear();Reset();
+}
 int main(){
  using namespace Test;using namespace FullResourceReload;
  try{
   Setup();Reset();
-#ifndef EFF_OFFLINE_PACKAGE_V35
   AssemblyAddressRegression();
-#endif
+  SerializedBoneAddressRegression();
+  MaterialShaderRegression();
+  WeaponMountBeforeReloadRegression();
+  StartupDependencyRegression();
+  StartupDependencyListBindingRegression();
+  StartupDependencyHookRegression();
   auto check=[](const char* name,auto action){try{action();}catch(const std::exception& e){throw std::runtime_error(std::string(name)+": "+e.what());}};
   check("static Renderer verification and visibility",[]{
     Reset();staticRenderers=true;staticSkinCalls=0;staticEnabled=1;
     RuntimeShapes::api.getComponent=(void*)107;RuntimeShapes::api.filterMesh=(void*)108;RuntimeShapes::api.filterType=(void*)109;RuntimeShapes::api.getEnabled=(void*)110;
     auto prepared=Test::Prepare();auto plan=*prepared->plan;plan.parts.at("marker").bones.clear();
-#ifndef EFF_OFFLINE_PACKAGE_V35
     auto& target=plan.roots[0].assembly.sources[0].targets[0];target.bones.clear();target.root.clear();target.hasRoot=false;
-#endif
     VerifyPrefab(candidate,plan,plan.roots[0]);Require(!staticSkinCalls,"static verification touched skinning APIs");
     Require(!RuntimeShapes::SourceMesh(material),"non-Mesh Renderer invoked skin getter");
     auto specs=RuntimeShapes::specs;auto variables=RuntimeShapes::variables;auto setter=RuntimeShapes::originalEnabledSetter;
@@ -1193,9 +1584,9 @@ int main(){
   check("UI Lua exception details",UILuaExceptionRegression);
   check("UI encrypted script loading",UIEncryptedLoadRegression);
   check("UI controls without page transfer API",UIControlWithoutPageApiRegression);
-  check("background candidate readiness",BackgroundReadyRegression);
+  check("background candidate readiness",BackgroundReadyRegression);check("compiled same-content snapshot",CompiledSnapshotRegression);
   check("enum",EnumRegression);check("bones",BonePathRegression);check("root paths",RootPathRegression);check("managers",ManagerContractRegression);
-  check("Material property bindings",MaterialBindingRegression);check("native lifecycle",NativeLifecycleRegression);check("typed character audio",[]{typedAudioOnly=true;NativeLifecycleRegression();typedAudioOnly=false;});check("texture identity",TextureIdentityRegression);check("load scheduling",PrewarmScheduleRegression);check("committed retry",CommittedRetryRegression);check("released pool",ReleasedPoolRegression);check("display virtual override",DisplayOverrideRegression);check("rule memory loads",RuleMemoryRegression);
+  check("Material property bindings",MaterialBindingRegression);check("standby prop lifecycle",PerformLifecycleRegression);check("native performance preloads",PerformPreloadRegression);check("animation attachment probe contract",AnimationAttachmentProbeRegression);check("unmodified skin probe contract",UnmodifiedSkinProbeRegression);check("actual performance attachment probe",PerformanceProbeRegression);check("native resource release probe",PerformanceReleaseProbeRegression);check("native lifecycle",NativeLifecycleRegression);check("typed character audio",[]{typedAudioOnly=true;NativeLifecycleRegression();typedAudioOnly=false;});check("texture identity",TextureIdentityRegression);check("load scheduling",PrewarmScheduleRegression);check("committed retry",CommittedRetryRegression);check("released pool",ReleasedPoolRegression);check("display virtual override",DisplayOverrideRegression);check("rule memory loads",RuleMemoryRegression);
   check("latest publication",LatestPublicationRegression);check("offline failure cancellation",OfflineRejectionRegression);check("prepared shortcut",PreparedShortcutRegression);check("startup",StartupNoWorldRegression);check("Mesh gate",ChangedMeshGateRegression);check("retirement",RetirementRegression);
   check("world Frame",[]{FullFrameRegression(false);});check("display Frame",[]{FullFrameRegression(true);});
   check("consecutive world F10",SequentialWorldRegression);

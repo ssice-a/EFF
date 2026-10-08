@@ -3,6 +3,8 @@ setlocal
 pushd "%~dp0..\.."
 set "loader_vswhere=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 for /f "usebackq tokens=*" %%i in (`"%loader_vswhere%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat" >nul
+call tools\build_imgui.cmd
+if errorlevel 1 exit /b 1
 set "loader_folder=bin\resource-directory-entry"
 set "loader_define="
 if /i "%~1"=="v35" set "loader_folder=bin\resource-directory-entry-v35"

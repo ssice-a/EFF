@@ -7,8 +7,27 @@
 #include <mutex>
 
 namespace EiemNativeInput {
-using NativeReference = std::pair<std::string, int64_t>;
 using MeshSchemaIndex = std::map<std::array<unsigned char, 16>, Type>;
+using MeshBoneHashIndex = std::map<NativeReference,std::vector<uint32_t>>;
+inline std::vector<uint32_t> BoneHashes(const Type& type,const Value& field){
+  const auto& values=ArrayValue(type,field);std::vector<uint32_t> hashes;
+  if(!values.raw.empty()){
+    Require(values.raw.size()==values.count*4,"Mesh bone hash byte count differs");
+    for(size_t i=0;i<values.count;++i)hashes.push_back(uint32_t(Le(values.raw,i*4,4)));
+  }else for(const auto& value:values.children)hashes.push_back(uint32_t(Integer(value)));
+  Require(hashes.size()==values.count,"Mesh bone hash array count differs");return hashes;
+}
+inline std::map<size_t,int64_t> OriginalBoneBinding(const std::vector<uint32_t>& sourceHashes,
+    const std::vector<int64_t>& nativeBones,const std::vector<uint32_t>& authorHashes) {
+  Require(sourceHashes.size()==nativeBones.size(),"native Renderer palette differs from its source Mesh");
+  std::map<uint32_t,size_t> slots;
+  for(size_t i=0;i<sourceHashes.size();++i){auto found=slots.find(sourceHashes[i]);
+    if(found==slots.end())slots.emplace(sourceHashes[i],i);else found->second=SIZE_MAX;}
+  std::map<size_t,int64_t> result;
+  for(size_t i=0;i<authorHashes.size();++i){auto found=slots.find(authorHashes[i]);if(found==slots.end())continue;
+    Require(found->second!=SIZE_MAX,"source Mesh bone hash is ambiguous");result.emplace(i,nativeBones.at(found->second));}
+  return result;
+}
 inline Value EmptyValue(const Type& type, size_t index, unsigned depth = 0) {
   Require(index < type.nodes.size() && depth < type.nodes.size(), "new serialized value schema limit");
   Value value;
@@ -40,17 +59,6 @@ inline NativeReference NullableReference(const Type& type, const Value& value,
   Require(file <= layout.externals.size(), "serialized dependency file index");
   return {file ? layout.externals[(size_t)file - 1] : cab,
           (int64_t)Integer(Child(type, value, "m_PathID"))};
-}
-inline void SetReference(const Type& type, Value& value, const NativeReference& reference,
-                           const SerializedLayout& layout, const std::string& cab) {
-  size_t file = 0;
-  if (reference.first != cab) {
-    auto found = std::find(layout.externals.begin(), layout.externals.end(), reference.first);
-    Require(found != layout.externals.end(), "new dependency requires serialized external registration: " + reference.first);
-    file = size_t(found - layout.externals.begin()) + 1;
-  }
-  SetInteger(type, Child(type, value, "m_FileID"), file);
-  SetInteger(type, Child(type, value, "m_PathID"), (uint64_t)reference.second);
 }
 struct MeshConsumer {int64_t renderer=0,filter=0;NativeReference mesh;};
 // Static Mesh references belong to MeshFilter. Pair only the components that
@@ -199,6 +207,36 @@ struct RendererInputBuild {
   size_t matches = 0, skipped = 0, changedObjects = 0, addedObjects = 0, lodGroups = 0, preloadReferences = 0;
   std::vector<RendererPartWrite> parts;
 };
+using MaterialPreloadIndex = std::map<NativeReference, std::set<NativeReference>>;
+inline void AddMaterialPreloads(MaterialPreloadIndex& index, const Bytes& input, const Package& package) {
+  auto bundle=EndfieldInput::Decode(input);
+  for(const auto& member:bundle.members) {
+    if(!SerializedHeader(member.bytes))continue;
+    auto layout=ParseSerialized(member.bytes);std::set<int64_t> selected,found;
+    for(const auto& asset:SerializedAssets(member.bytes,member.name,layout))
+      if(asset.classId==21)for(const auto& material:package.materials)
+        if(material.second.source.path==asset.path&&material.second.source.asset==asset.asset)selected.insert(asset.pathId);
+    if(selected.empty())continue;
+    for(const auto& row:layout.objects) {
+      const auto& type=layout.types.at(row.second.type);if(type.classId!=142)continue;
+      auto value=ObjectValue(member.bytes,layout,row.first);
+      const auto& preloads=ConstArray(type,Child(type,value,"m_PreloadTable"));
+      for(const auto& entry:ConstArray(type,Child(type,value,"m_Container")).children) {
+        const auto& info=Child(type,entry,"second");
+        auto asset=NullableReference(type,Child(type,info,"asset"),layout,member.name);
+        if(asset.first!=member.name||!selected.count(asset.second))continue;
+        auto first=Integer(Child(type,info,"preloadIndex")),count=Integer(Child(type,info,"preloadSize"));
+        Require(first<=preloads.children.size()&&count<=preloads.children.size()-first,"Material source preload interval");
+        auto& dependencies=index[asset];found.insert(asset.second);
+        for(size_t i=size_t(first);i<size_t(first+count);++i) {
+          auto ref=NullableReference(type,preloads.children[i],layout,member.name);
+          if(ref.second)dependencies.insert(std::move(ref));
+        }
+      }
+    }
+    Require(found==selected,"Material source preload closure absent");
+  }
+}
 // Scoped to one immutable author Package/build. Skeleton pointers and palettes
 // are still resolved for each Renderer; only the authored local AABB is reused.
 struct RendererBoundsCache {
@@ -226,6 +264,8 @@ class RendererMemberBuilder {
   std::map<int64_t, std::map<std::string, int64_t>> hierarchy;
   std::map<int64_t, std::vector<int64_t>> rendererExpansion;
   std::map<int64_t, std::vector<NativeReference>> preloadExpansion;
+  const MaterialPreloadIndex* materialPreloads = nullptr;
+  std::map<int64_t, std::map<uint32_t,int64_t>> skeletonBindings;
   std::set<int64_t> changed, allocated;
   std::vector<AddedObject> added;
   RendererInputBuild result;
@@ -253,24 +293,51 @@ class RendererMemberBuilder {
     added.push_back({id, layout.objects.at(donor).type, EncodeValue(Schema(donor), value)});
   }
   std::vector<int64_t> ResolveBones(int64_t ownerTransform, int64_t rootBone,
-                                      const Mesh& mesh) const {
+      const Mesh& mesh,const std::vector<uint32_t>& sourceHashes,const std::vector<int64_t>& nativeBones) const {
+    std::map<size_t,int64_t> original;
+    if(!sourceHashes.empty()){
+      const auto& resource=*package.resources.at(mesh.resource);auto model=EmptyValueForMesh(resource);
+      auto hashes=AuthorField(model.first,model.second,resource,"m_BoneNameHashes");auto author=BoneHashes(model.first,hashes);
+      Require(author.size()==mesh.bones.size(),"author Mesh bone hash count differs");
+      original=OriginalBoneBinding(sourceHashes,nativeBones,author);
+      // Lower LOD palettes may omit a bone used by the authored LOD0 Mesh.
+      // Other native Renderers on this exact root bone retain its true binding.
+      auto skeleton=skeletonBindings.find(rootBone);
+      if(skeleton!=skeletonBindings.end())for(size_t slot=0;slot<author.size();++slot)if(!original.count(slot)){
+        auto bound=skeleton->second.find(author[slot]);
+        if(bound!=skeleton->second.end()&&bound->second)original.emplace(slot,bound->second);
+      }
+    }
     std::set<int64_t> ownerAncestors;
     for (auto id = ownerTransform; id; id = parents.at(id)) ownerAncestors.insert(id);
     const auto& index = hierarchy.at(roots.at(ownerTransform));
     std::vector<std::vector<int64_t>> candidates;
+    size_t bestMatches=0;std::string firstMissing;
     for (auto anchor = rootBone; anchor; anchor = parents.at(anchor)) {
       if (!ownerAncestors.count(anchor)) continue;
       std::vector<int64_t> bones;
       auto prefix = paths.at(anchor);
-      for (const auto& path : mesh.bones) {
+      std::string missing;
+      for (size_t slot=0;slot<mesh.bones.size();++slot) {
+        const auto& path=mesh.bones[slot];auto donor=original.find(slot);
+        if(donor!=original.end()){
+          Require(roots.at(donor->second)==roots.at(ownerTransform),"native Renderer bone belongs to another hierarchy");
+          bones.push_back(donor->second);continue;
+        }
         auto found = index.find(prefix.empty() ? path : prefix + "/" + path);
-        if (found == index.end() || !found->second) { bones.clear(); break; }
+        if (found == index.end() || !found->second) { if(missing.empty())missing=path;continue; }
         bones.push_back(found->second);
       }
-      if (!bones.empty() && std::count(bones.begin(), bones.end(), rootBone) == 1)
+      if(bones.size()>bestMatches){bestMatches=bones.size();firstMissing=missing;}
+      if (missing.empty() && !bones.empty() && std::count(bones.begin(), bones.end(), rootBone) == 1 &&
+          std::find(candidates.begin(),candidates.end(),bones)==candidates.end())
         candidates.push_back(std::move(bones));
     }
-    Require(candidates.size() == 1, "Renderer bone paths have no unique local hierarchy anchor");
+    Require(candidates.size() == 1, "Renderer bone paths have no unique local hierarchy anchor: CAB="+cab+
+        " owner="+paths.at(ownerTransform)+" rootBone="+paths.at(rootBone)+
+        " candidates="+std::to_string(candidates.size())+
+        " matched="+std::to_string(bestMatches)+"/"+std::to_string(mesh.bones.size())+" firstMissing="+firstMissing+
+        " resource="+mesh.resource);
     return candidates.front();
   }
   void Hierarchy() {
@@ -373,6 +440,22 @@ public:
     auto matches=MeshConsumers(source,layout,cab,references);
     if (matches.empty()) { result.bytes = source; return result; }
     Hierarchy();
+    for(const auto& matched:matches) {
+      if(matched.filter)continue;
+      const auto& target=selected.at(matched.mesh);
+      auto part=std::find_if(meshes.begin(),meshes.end(),[&](const BuiltMeshPart& p){return !(p.target<target)&&!(target<p.target);});
+      if(part==meshes.end()||part->sourceBoneHashes.empty())continue;
+      const auto& type=Schema(matched.renderer);const auto& renderer=Tree(matched.renderer);
+      auto root=Local(type,Child(type,renderer,"m_RootBone"),4);
+      const auto& bones=ConstArray(type,Child(type,renderer,"m_Bones"));
+      Require(bones.children.size()==part->sourceBoneHashes.size(),"native LOD bone palette count differs");
+      auto& bindings=skeletonBindings[root];
+      for(size_t slot=0;slot<bones.children.size();++slot){auto bone=Local(type,bones.children[slot],4);
+        Require(roots.at(bone)==roots.at(root),"native LOD bone belongs to another hierarchy");
+        auto found=bindings.emplace(part->sourceBoneHashes[slot],bone);
+        if(!found.second&&found.first->second!=bone)found.first->second=0;
+      }
+    }
     for (const auto& matched : matches) {
       auto rid = matched.renderer;
       const auto& target = selected.at(matched.mesh);
@@ -391,9 +474,11 @@ public:
       Require(transforms.count(owner), "Renderer owner lacks Transform");
       auto tid = transforms.at(owner);
       int64_t rootBone=0;
+      std::vector<int64_t> nativeBones;
       if(skinned){rootBone = Local(type, Child(type, original, "m_RootBone"), 4);
         Local(type, Child(type, original, "m_SkinningRoot"), 4);
-        Require(roots.at(rootBone) == roots.at(tid), "Renderer root bone belongs to another hierarchy");}
+        Require(roots.at(rootBone) == roots.at(tid), "Renderer root bone belongs to another hierarchy");
+        for(const auto& bone:ConstArray(type,Child(type,original,"m_Bones")).children)nativeBones.push_back(Local(type,bone,4));}
       size_t rendererComponents = 0, transformComponents = 0;
       const auto& goType = Schema(owner);
       for (const auto& item : ConstArray(goType, Child(goType, Tree(owner), "m_Component")).children) {
@@ -418,7 +503,7 @@ public:
         Require(material != assets.end() && material->second.classId == 21, "Renderer Material dependency absent from current graph");
         Require(skinned||(mesh.bones.empty()&&mesh.shapes.empty()&&part.shapes.empty()),
                 "static MeshRenderer parts require unskinned geometry without runtime shape channels");
-        auto bones = skinned?ResolveBones(tid, rootBone, mesh):std::vector<int64_t>{};
+        auto bones = skinned?ResolveBones(tid, rootBone, mesh,nativeMesh->sourceBoneHashes,nativeBones):std::vector<int64_t>{};
         auto renderer = original;
         int64_t newRid = rid, gid = owner, newTid = tid, newFilter=matched.filter;
         if (i) {
@@ -508,6 +593,11 @@ public:
         else { Tree(rid) = std::move(renderer); changed.insert(rid); }
         rendererExpansion[rid].push_back(newRid);
         dependencies.insert({nativeMesh->cab, nativeMesh->id}); dependencies.insert({material->second.cab, materialId});
+        if(materialPreloads) {
+          auto closure=materialPreloads->find({material->second.cab,material->second.pathId});
+          Require(closure!=materialPreloads->end(),"Renderer borrowed Material preload closure absent");
+          dependencies.insert(closure->second.begin(),closure->second.end());
+        }
         result.parts.push_back({cab, ruleId, pid, nativeMesh->cab, material->second.cab,
             rid, newRid, gid, newTid, tid, nativeMesh->id, materialId, std::move(bones)});
       }
@@ -580,6 +670,7 @@ private:
     boundsCache->computeMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();return bounds;
   }
 public:
+  void SetMaterialPreloads(const MaterialPreloadIndex& preloads) { materialPreloads = &preloads; }
   void SetMeshSchemas(const MeshSchemaIndex& schemas) { meshSchemas = &schemas; }
   void SetBoundsCache(RendererBoundsCache& cache) {
     std::lock_guard<std::mutex> lock(cache.mutex);
@@ -587,19 +678,27 @@ public:
     cache.package=&package;boundsCache=&cache;
   }
 };
-inline void AddMeshSchemas(MeshSchemaIndex& schemas, const Bytes& input) {
+inline void AddMeshSchemas(MeshSchemaIndex& schemas, const Bytes& input,
+                          MeshBoneHashIndex* palettes=nullptr,const Package* package=nullptr) {
   auto bundle = EndfieldInput::Decode(input);
   for (const auto& member : bundle.members) {
     if (!SerializedHeader(member.bytes)) continue;
     auto layout = ParseSerialized(member.bytes);
     for (const auto& type : layout.types) if (type.classId == 43) schemas.emplace(type.hash, type);
+    if(palettes&&package)for(const auto& asset:SerializedAssets(member.bytes,member.name,layout)){
+      if(asset.classId!=43||!package->targetIndex.count({asset.path,asset.asset}))continue;
+      const auto& type=layout.types.at(layout.objects.at(asset.pathId).type);auto value=ObjectValue(member.bytes,layout,asset.pathId);
+      Require(palettes->emplace(NativeReference{member.name,asset.pathId},BoneHashes(type,Child(type,value,"m_BoneNameHashes"))).second,
+          "duplicate source Mesh bone palette");
+    }
   }
 }
 inline RendererInputBuild BuildRendererInput(const Bytes& source, const Package& package,
                                                const AssetIndex& assets,
                                                const std::vector<BuiltMeshPart>& meshParts,
                                                const MeshSchemaIndex& schemas,
-                                               RendererBoundsCache* sharedBounds = nullptr) {
+                                               RendererBoundsCache* sharedBounds = nullptr,
+                                               const MaterialPreloadIndex* materialPreloads = nullptr) {
   auto bundle = EndfieldInput::Decode(source);
   RendererBoundsCache localBounds;auto& bounds=sharedBounds?*sharedBounds:localBounds;
   RendererInputBuild result;
@@ -608,6 +707,7 @@ inline RendererInputBuild BuildRendererInput(const Bytes& source, const Package&
     RendererMemberBuilder builder(member.bytes, member.name, package, assets, meshParts);
     builder.SetMeshSchemas(schemas);
     builder.SetBoundsCache(bounds);
+    if(materialPreloads)builder.SetMaterialPreloads(*materialPreloads);
     auto rebuilt = builder.Build();
     result.matches += rebuilt.matches; result.skipped += rebuilt.skipped;
     result.changedObjects += rebuilt.changedObjects; result.addedObjects += rebuilt.addedObjects;

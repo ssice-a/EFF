@@ -1,3 +1,175 @@
+## 2026-10-09 当前验收结果
+
+修正后的实机 PID 31820：06:24:47.979 请求 F10，06:24:48.086 提交，约 107 ms，迁移 Typhoea 与 LZY 两个世界模型。用户随后确认待机书恢复正常；日志所记录的刷新后观测窗口约 11 秒，没有再出现已用资源被销毁的记录。该结论结合用户视觉确认，不将这 11 秒日志描述为 180 秒观测，也不据此声明所有 NPC 或大量 Mod 的压力已通过。待机/特殊冲刺预加载分别约 0.56/0.55 ms，由游戏原生配置决定。
+
+## 2026-10-08 未替换道具与待机表演生命周期
+
+2026-10-09 PID 36684 再次实机复现，四个资源释放入口均成功绑定。06:08:47.527 请求 F10，06:08:47.633 提交（约 106 ms）。新的书 `-316740` 仍跟随新角色骨骼，Controller 为 `637966`；06:08:56.606 游戏对 `main/2bef987b4d686d02ad787edf.ab` 执行同步 `AssetBundle.Unload(true)`，在该调用内直接销毁这个仍使用的 Controller。06:08:58.356–.357 对 `main/673a32dee408d555f9e74c31.ab` 的相同调用销毁 43 个书 Mesh。后一次书实例再次发生相同销毁。调用栈经当前文件的元数据/PE 核对为 BundleResourceManager.LateTick → Manager._TailUpdateBundleWaitUnloadState → BundleProxy.UnloadSync，不是插件退役容器的 Unload(false)。这轮从弱引用存活前后确认了实际资源销毁，已超出上一轮仅 Controller=0 / Mesh=<null> 的相关性证据；没有修改或输出书资源。
+
+原生调用链核对：ComplexAnimatorComponent.ChangeAnimationConfig 在 _ClearInternal 后调用虚拟 ReleaseInternal(false)，CharacterAnimationComponent 的实现仍清空该 Entity 的 born/custom perform preload。后续 _SetupAnimation/OnAnimationSetup 不重跑 CharacterAnimationComponent.OnStart；配置中的待机及特殊冲刺 perform preload 原本在 OnStart 调用 _PreloadSpIdlePerform/_PreloadSpDashPerform 建立。旧 F10 缺少这一步，使重建后继承的临时对象失去原有预加载持有，符合本次延后 Bundle 销毁的行为；首次角色启动与动画重绑的生命周期不能视为相同。
+
+本轮修正：仅对真正的 CharacterAnimationComponent，在 ChangeAnimationConfig 成功且新 Animator 归属验证后，调用上述两个原生配置预加载函数；UI 展示部件和其他动画组件跳过。路径/列表及句柄由游戏选择和管理，不按角色、道具名或 Bundle 名硬编码，不额外保存附件清单、不阻止卸载，也不重跑会重复订阅事件的整个 OnStart。回滚同样恢复旧动画配置对应的预加载，调用耗时由 FULL-RELOAD-PERFORM-PRELOAD 单独记录。新增模拟回归先因重绑后的 preload 为空而失败，补齐后 v35/v36 全部通过；覆盖延后退出边界、一次调用与顺序、回滚、UI/其他组件过滤，以及不重置状态的连续 8 次 F10。这是已确认的流程遗漏修正，尚需本版实机证明书在延后待机切换后不再失效，不能将模拟回归代替原始复现验收。
+
+v35 生产构建通过，游戏退出时仅部署 eff.dll，SHA256 `CEBF402B899A00E3D6515D3A7CCF40A145CCE6308BE8503CAD00381E5B6C3458`（2,197,504 字节）。65 个既有 Mod/配置/协议文件的集合与 SHA256 均未变，没有重导出、保存工程、修改书或发布 Release。定向弱引用观测暂留供本版冷启动/F10/延后待机验证；实机确认后再移除临时探针。
+
+2026-10-09 实机 PID 29828 首次捕获实际书附件，用户确认复现。05:43:49.000 请求 F10，05:43:49.102 提交（约 102 ms，两个世界模型）。释放前书实例 `-251730` 的 Controller 为 `410594`，骨槽无缺失/模型外骨骼；表演退出后旧句柄无效且临时对象 go 已清空，但当前请求 source 仍为 2。重绑后角色模型为 `-293500`；约 1 秒后游戏创建新的 `toRelax` 表演与书实例 `-300640`，followCurrent=1、Controller=410594，5 秒时网格仍有效。约 6 秒切换到 `RelaxLoop`，7 秒时该书 Controller 变为 0；15 秒时书仍 active=1、挂点在新模型下、所有骨槽完整，但 Mesh 读数变为 `<null>`。约 22 秒另一次 `toRelax` 创建书实例 `-317232`、Controller=1094630，27 秒再次变为 0，30 秒时 Mesh 再次失效。后续待机继续使用此实例，观测完整持续到 180 秒。
+
+该证据否定“新书仍跟随旧模型”及所测的“缺骨槽”预测，并将问题缩到表演切换后的资源/动画生命周期；Controller=0 本身不证明资源被销毁，`mesh=<null>` 也尚未区分空指针与失效的原对象。只读展开现有两份 compiled.bin 的描述，均没有书的 PFB 路径及 `CAB-5deb3789c8c7c910b53ae6df11a32dbe`，没有新增解包或修改作者资源。尚未确认哪个释放操作导致异常，不直接改骨骼、Animator Controller 或恢复参数。
+
+下一诊断在实际附件中记住已使用 Mesh/Controller 的弱引用，通过当前游戏的四个 AssetBundle 原生释放入口（同步/异步 Bundle 和同步/异步单资产）对照释放前后的资源存活与调用栈。原接收者、参数、异步返回值和调用次数保持不变，不阻止释放、不发起加载。同步调用内的销毁单独记录；异步操作只观察游戏原有请求完成，并标记 correlationOnly，不能将同时完成的请求当作唯一因果。观测窗口结束后清除弱记录。
+
+v35/v36 完整事务回归和 v35 生产构建通过；新增探针合同覆盖弱资源身份去重、同步/异步原参数与调用次数、异步返回值及完成观测、诊断异常时仍执行原释放。游戏退出时仅部署 eff.dll，SHA256 `E637B525C3C0E0B73796CFDA0AFBD37C861AEBCF77F3C4169653AEC886460728`（2,196,480 字节）；65 个既有 Mod/配置/协议文件的集合与 SHA256 均未变。该版本是只读诊断，没有改变表演、模型或资源释放行为，尚未修复书消失/扭曲。仍需本版冷启动后的完整复现以确认入口绑定及实际释放/资源失效的对应关系，探针合同通过不替代实机验收。
+
+2026-10-09 道具身份更正：只读查询现有 AnimeStudio 索引，并在内存解析单个原始附件 Bundle `Bundles/Windows/main/2bef987b4d686d02ad787edf.ab`，找到独立书 PFB `assets/beyond/dynamicassets/gameplay/prefabs/attachment/att_widget_typhoea_book_postmodel.prefab`（CAB `CAB-5deb3789c8c7c910b53ae6df11a32dbe`）。其根为 `Att_widget_typhoea_book_postmodel`，包含 `S_item_widget_inner_*` / `S_item_widget_outer_*` 网格，以及 `book_rt_f_jnt`、`shudi_jnt`、`fengmian_*`、`shuye_*` 等书自身骨架。对角色本体导出 Mesh 的几何检查确认 cloth_06/07 是机械装置，不是书；此前这些网格及 Gadget 骨骼的正常读数不能用于验收待机书。没有新增全游戏解包、修改用户工程或 Mod，尚未确认实际待机句柄对这个附件的运行时持有和释放关系。
+
+当前诊断替换为 `[DEBUG-perform-state-*]`：直接在 F10 必经的释放前、表演退出后、动画重绑后，读取角色动画组件的当前表演请求及表演管理器的主/子句柄，只接受属于当前 Entity 的句柄。跟踪这些句柄实际保存的 `TmpObjectInst`，记录资源路径、GameObject 显隐、跟随 Transform 对当前/旧模型的归属，以及附件自己的 Animator、Controller 和既有 Renderer 列表中的蒙皮状态。请求值大小和字段类型由当前 IL2CPP 结构取得；字典沿游戏自身使用的 Values/Enumerator 接口读取，并在异常时 Dispose。不安装表演事件钩子，不查询场景，不改变游戏字段或现有清理顺序。
+
+观测使用弱引用，每秒检测状态变化，在 1/5/15/30/60/90/150 秒采样附件蒙皮，180 秒后释放窗口；读取失败只记录 GAP，不拒绝重载。撤除旧的本体网格延后观测，避免用无关机械装置判断书。生产入口回归覆盖实际集合数量约束、值类型枚举器、异常归还、表演请求装箱、其他 Entity 过滤及窗口结束释放；这些是探针合同测试，不是书异常的修复回归。v35/v36 完整事务回归和 v35 生产构建通过。
+
+本轮游戏退出时仅部署 eff.dll，SHA256 `A130D20441A093FE9D3633B6FC79FC73949BABA10D7B98DA56B4B346C8A261E8`（2,182,144 字节）；65 个既有 Mod/配置/协议文件的集合与 SHA256 均未变。未改 Blender 工程、作者资源或 compiled.bin。新诊断尚未获得实际书的运行时日志，书消失/扭曲根因仍未确认；需冷启动、正常书待机、F10、延后消失和下一次扭曲的完整时段，COMMIT 和探针合同通过均不替代实机验收。
+
+PID 26032 在 05:03:41.134 请求 F10、05:03:41.250 提交（约 116 ms，两个世界模型）。本体网格观测只有刷新前、刷新后、1 秒与 5 秒，最后一段日志止于 05:03:46；没有 15/30/60/90 秒的记录。该探针未识别上述独立书实例，也没有覆盖延后消失及下一次扭曲，因此这次 COMMIT 和本体骨槽正常都不能证明书正常。用户报告的视觉消失/扭曲仍未修复。
+
+2026-10-09 补充实机顺序：用户确认 F10 后待机的前半段书仍存在且正常，稍后突然消失，下一次待机才扭曲。PID 30640 再次提交 generation=2，04:51:36.820；LZY 与 Typhoea 的 after-rebind 三种归属检查均匹配。立即动画归属丢失的预测已被两次实机观测否定；现有表演清理没有修复该延后异常。
+
+新增临时 `[DEBUG-skin-state-*]` 只读诊断：在 F10 前后枚举确切当前模型中未命中作者控制声明的蒙皮网格，读取其公开 bones/rootBone/skinningRoot、显隐、包围盒与骨骼在模型空间的位置；刷新后保存弱引用，在 1/5/15/30/60/90 秒各读取一次既有列表，随后清除。没有全场景查找、按角色/书名称选取、骨骼写入或资源导出。该列表只覆盖当前模型已有网格，不能据此排除独立临时对象的问题。
+
+生产入口回归验证完整骨槽、空槽、模型外骨骼及读取失败隔离，并验证观测窗口结束后释放引用。v35/v36 完整事务回归及 v35 构建通过。游戏退出时仅部署 eff.dll SHA256 `9381E19CE0D7E089904EBB9893F6B1C0FC81EB9CF2AB574BC3C8C7CA05FE7B49`（2,153,472 字节），65 个既有 Mod/配置/协议文件的集合与哈希未变。该版本仍为诊断，书异常尚未修复；下一轮需覆盖正常待机、F10、消失、再次待机扭曲的时段。
+
+用户观察：Typhoea 的书在 UI 正常，切回大世界后消失，下一次待机出现撕裂；用户进一步确认冷启动后、第一次 F10 前正常，F10 后异常。当前 INI 只命中 body_01、cloth_01、cloth_02 和隐藏的 cloth_03，没有书的替换规则，不能归因于用户修改书。
+
+对当前实际 Typhoea compiled.bin 回放并与原始来源比对：51 个未命中的 Mesh、1553 个未命中的 SkinnedMeshRenderer 字节保持原样；1845 个原脚本的 29680 个字段保持原样，仅允许原有 RenderHelper 的 customRenderers 引用列表扩展。35182 个原 GameObject/Transform 的身份、名字、父引用及 175910 个姿态/其他字段保持原样（新增组件/子节点列表由替换规则管理）。这是资源输出边界验证，不证明待机道具的运行时生命周期正确。
+
+PID 46732 的 Player.log 记录 CharInteractPerform.TmpObjectInst.RefreshTimeScale 的 NullReferenceException，经 CharPerformHandleBase/CharPerformMainHandle 与 CharInteractPerformManager.OnTimeScaleChange 调用。该表演系统独立保存临时对象和挂点；旧 F10 只重绑动画、武器、音频和跟随特效，没有在拆除模型前结束关联表演，因此可留下被旧模型销毁的道具引用。这确认一处生命周期遗漏，尚不能单凭异常断言书撕裂的全部原因。
+
+修正：按确切元数据读取 GameInstance.m_world、GameWorld.charInteractPerformManager，先调用游戏 ForceExitAllPerformOnEntity(entity, null)，再卸载武器和模型。null 不继承某次编队切换的表演句柄；游戏方法按该 Entity 清理主/子/跟随表演，未增加角色、Mesh 或道具名称特例。UI 展示部件不走世界表演清理，其他 Entity 不受该调用影响。当前待机/互动会正常结束，下一次由游戏流程重新创建，不手工修补道具或骨骼指针。
+
+生产入口的模拟回归先复现拆除模型后临时道具已销毁但表演句柄仍存活的失败，再验证清理在模型/Animator 退役前发生、其他角色保留、展示部件不调用，以及连续 8 次不重置状态的 F10 每次都清理当轮待机道具。v35/v36 完整事务回归与 v35 DLL 构建通过；原有动画、武器、音频、异步 UI、拒绝及回滚仍覆盖。实机边界：修正版仍需冷启动后按 UI → 大世界 → 待机 → F10 → 再次待机验收，COMMIT 和模拟测试不替代书显示/变形的实际观察。未改变 .blend、INI、compiled.bin 或作者资源，无需重导出。
+
+首版已在游戏退出时部署，eff.dll SHA256 `7F74E383D0E01EEBE5BAE333E2599D5E6B7395E0F9032806EED6332F92B2C6EF`（2,138,624 字节）。65 个既有 Mod/配置/协议文件前后哈希及集合校验未变。PID 19396 与 39900 实际记录 ForceExitAllPerformOnEntity 在模型退役前执行，随后两个世界模型提交；PID 19396 没有此前 TmpObjectInst 的空引用记录，但用户确认书仍异常。首版清理没有解决该显示/变形问题，COMMIT 不作为成功验收。
+
+继续调查的三个假设为：道具跟随引用仍指向旧骨骼、动画网格分组显隐恢复遗漏、待机表演另有残留状态。临时 `[DEBUG-attachment-*]` 探针仅观察游戏 ComplexAnimatorComponent.SetTransformFollow 与 SetRendererGroupVisibility 的原调用；记录确切模型路径、根身份、跟随双方的名字/父节点/根归属/世界坐标与分组参数，不扫描场景 Renderer、不改变骨骼或显隐。首次 F10 前使用已有资源规则的目标集合过滤，提交后使用当前原生候选，保证能获得正常与异常两侧证据。生产入口回归覆盖返回 true/false、参数及调用次数保留、诊断读取异常隔离、其他角色调用、首次 F10 前的记录；v35/v36 事务测试通过。
+
+只读诊断版已构建并在游戏退出时部署，eff.dll SHA256 `E44CAC35303293766FAC223F6CCA9E8080444B8815553914A59D628C6706BCDC`（2,145,792 字节），65 个既有 Mod/配置/协议文件哈希及集合未变。未改作者资源或工程，未重导出或发布 release。仍需本版冷启动待机、F10、再次待机的实际调用日志定位根因；当前书异常尚未修复，诊断完成后移除临时探针。
+
+PID 38008 按冷启动待机 → F10 → 再次待机复现，18:32:36 成功提交 generation=2，用户确认完成操作；两个探针绑定成功，但均没有 EVENT 或 GAP。随后只读查看原 PFB 的 AnimatorMono 序列化处理器：PostAudioHandler、WeaponVisibleHandler、CharPerformHandler、FootStepHandler，没有 TransformFollowHandler/RendererVisibilityHandler。这说明首轮探针没有覆盖本模型实际的事件处理路径，不能据空日志排除挂点或显隐问题。
+
+已撤掉这两个无效观测点，改为游戏 CharPerformHandleBase.ResolveEntityMountTransform(Entity, MountPoint) 与 SetCharMeshGroupShow(Entity, ModelPartEnum, bool)，观察角色表演实际解析的挂点 Transform 及显隐分组。两种枚举的实际类型、Int32 底层与四字节值大小在绑定时验证，不猜偏移；原请求、Transform 返回值、显隐调用次数及读取异常隔离通过生产入口回归。v35/v36 事务回归、v35 DLL 构建通过，游戏退出时仅部署 eff.dll SHA256 `1EF6F66055809146CDB567B24128EC9844638B881178ADCA2DDE70C0ED474568`（2,145,792 字节），65 个保护文件未变。当前仍是只读诊断，没有宣称书异常已修复；下一轮需对照角色表演实际的 F10 前后调用。
+
+PID 11232 的第二轮表演探针绑定成功，18:55:14.548 的 F10 提交 generation=2，迁移两个世界模型，但仍没有 EVENT 或 GAP。两轮事件观测均未覆盖实际书的控制调用，不能据空日志判断归属、挂点或显隐正确。已撤除这些事件钩子，改为在必经的 CaptureConsumers / ReloadConsumers 边界只读记录当前 AnimatorMono：缓存的 ObjectMono/Entity、所属层级实际的 ObjectMono/Entity，以及绑定的 ComplexAnimatorComponent。该诊断只查询当前动画组件的父层级，不扫描场景 Renderer，也不改游戏字段。
+
+生产入口回归验证 F10 前后都执行归属读取，能够区分“缓存归属为空、父层级归属正确”，并验证诊断读取失败不打断真实重载。v35/v36 事务回归与 v35 DLL 构建通过。游戏退出时仅部署 eff.dll SHA256 `263EF0743680BF43565469F4C9CF93164E6565679A37D7604E1C7CA8F3E496B5`（2,143,232 字节），65 个既有 Mod/配置/协议文件哈希及集合未变。该版本仍为只读诊断；尚未取得其冷启动后 F10 前后归属日志，书异常未完成修复或实机验收。
+
+PID 40268 已取得该版本的实际归属日志：19:08:31.648 请求，19:08:31.746 提交 generation=2（约 98 ms，两个世界模型）。Typhoea 与 LZY 的 before-release / after-rebind 均为 cachedOwnerMatches=1、parentOwnerMatches=1、animatorBindingMatches=1；AnimatorMono 已换为新实例，缓存与父层级仍指向原 Entity。这排除了本轮所测的动画归属丢失预测，未证明书的显隐/变形正确。用户已回复重启，刷新后书的视觉观察仍待确认。
+
+只读核对本机游戏原生流程：AbilitySystem._ApplyModeChange 的两处 ChangeAnimationConfig 都传入 tryResumeAnimations=true，与当前重载参数一致；实际 CharacterAnimationComponent.OnAnimationSetup 调用基类 OnAnimationSetup，后者通过 AnimatorMono.SetObjectMono 设置归属。BaseModelComponent.FinishLoaded 同时通知 RootComponent.InvalidateMountPointCache，不能把重复加载必定缺少挂点清理当作既定根因；本轮没有额外调用生命周期初始化或写入私有字段。
+
+## 2026-10-08 F10 文件快照、Blender 导出与形态键文字
+
+PID 44496 在 16:51:43 因准备期间文件变化拒绝候选，16:52:08 又因准备后的作者文件快照不一致拒绝提交；没有提交就不能把画面未变视为刷新成功。16:54:58 的后续请求已有 COMMIT，generation=2，迁移两个世界/UI 模型；这仍不替代用户对动作、衣服、武器和按键的观察。
+
+相同编译内容的新文件时间戳原先只更新 Set，未更新 diskPrepared；Unity 帧又按相同候选键丢弃新的 Prepared，导致旧 authorFiles 一直参与提交校验。现在同键候选也更新已经验证的文件快照及控制声明，并保留已就绪的原生资源。先红后绿的入口回归复现该拒绝，验证刷新不会重复原生加载，真正的准备后文件修改仍拒绝。v35/v36 完整事务回归通过。只改 `[Mod] key_switch_enabled` 或无语义变化的 INI 时，用原先验证的声明/资源更新控制，Mesh/材质/贴图及 compiled.bin 的时间戳变化仍进入正常验证；单个真实 Typhoea 副本的控制刷新从约 2999 ms 降到 311 ms。隔离输入使用弱引用找回尚未消费的数据，不延长已消费数据的生命期。
+
+Blender 编译器原先完成资源构建后串行重读、解压并回放全部来源来生成对象/重定位证明。现在在已有原始和编辑后成员仍在内存时生成相同证明，并复用现有工作线程；校验、完整来源及依赖保持不变。同一 Typhoea 独立副本强制完整编译：旧路径 47358.5 ms，新路径 27993.6 ms，compiled.bin 均为 SHA256 `7942C9D3A5C272220BF6B4D2BA1820CDC17D0C0F961AAA4818B800CC464188FA`，约减少 41% 编译耗时，没有增大输出。内容未变的单独编译复用为 2968.67 ms。
+
+在打开的 `18324_autosave.blend` 中将当前 13 个选中对象导出到独立测试副本，生成 12 个作者 Mesh、6 个材质、13 张贴图：完整入口耗时 14.344 秒，其中作者处理 8.676 秒、来源准备/复用编译 5.018 秒、发布 0.650 秒。该测试没有改变网格内容，编译命中旧结果，不能当作修改网格后的全量导出耗时。选择、活动对象和工程路径保留，未保存工程或覆盖游戏 Mod。导出完成提示现在显示实际秒数，返回结果保留阶段耗时；形态键、录制按钮、面板标题和错误提示的乱码已修正，当前 Blender 只更新 Python 函数/面板，不重新注册保存控制变量的数据属性。31 项离线编译、导出合同及发布测试通过。
+
+已部署单个 eff.dll，SHA256 `32A512CD6C00D908AF358F19C0473EFC41392C16C41169B4130DAF3FDCF01154`；Blender 自己的编译器 SHA256 `B4D0DA0172312A2BE74D1E58FBC41BBFEED7C75FC29AF7CDC1C5D05DEF1235E2`。65 个现有 Mod/全局配置及协议文件部署前后哈希不变。此版 F10 修正仍需冷启动后验证世界/UI 更新、动作、武器和按键；本轮没有发布 Release。
+
+部署后实机 PID 46732：17:34:26.846 请求 F10，17:34:26.951 提交 generation=2，两个世界模型迁移，约 105 ms；17:34:33.216 再次请求，17:34:33.358 提交 generation=3，两个世界模型加一个展示模型迁移，约 142 ms。两轮均调用动画/武器/音频重新绑定；本会话没有 FULL-RELOAD-REJECT、STARTUP-DEPENDENCY-GAP 或 materialNull=1。LZY/Typhoea 同时响应各自小键盘绑定。两轮资源键相同，证明已准备候选能连续提交，不证明修改 Mesh 后的重新导出已经显示新内容；画面、动作、武器显现及有内容变化的导出仍待用户观察。
+
+本轮独立测试副本位于 `bin/export-profile-151ea854af454c54879795788430a2a3`。校验绝对路径在当前工作区 bin 下后尝试清理，自动审批返回 `blocked by policy`，副本暂时保留；没有换工具绕过。
+
+## 2026-10-08 首次加载的新增 Bundle 依赖
+
+PID 24076 使用 `9EFE1...` 仍出现默认紫色和切换停顿。PooledList 绑定已成功，但 `main/03c21cd847f08573c23a8c9a.ab` 的键/名称校验失败；16:19:29.109 至 16:20:53.438 共重复记录 93,416 次，整图每次重建、异常与同步日志写入均位于资源查询路径。16:20:13 的世界模型完成记录仍有作者衣服 `materialNull=1`。这是依赖映射失败，不能通过修改作者贴图规避。
+
+只读展开游戏随包 `manifest.hgmmap` 到内存后，目标包记录的实际键为 `7E369E5452DF7026`，与 VFS 文件记录一致；原先选用的 HashCodeEx4AutoLower 不生成该键。已改为从当前 RuntimeManifestBinary 持有的 ManifestDataBinary 读取现有映射表的 Bundle 名称与 hashName。数组与记录大小、名称引用及键偏移由 IL2CPP 字段/类型反射取得，所有读取范围受游戏自身 m_address/m_length 约束；只缓存编译图需要的键，并通过 GetBundleNameString 回查核验。没有游戏资源请求、额外清单文件、全游戏解包或 Renderer 扫描。
+
+成功和失败结果均按当前 manifest、映射地址/长度与 Mod 图缓存，避免队列轮询重复解析/刷日志；清单换映射或 Mod 图变化后重新解析。回归先复现字符串哈希与存储键不同导致借用材质依赖缺失，再验证真实键/高位键、不同结构偏移、失败保留原列表、成功/失败各 1,000 次查询只解析一次，以及换清单后的恢复。v35/v36 完整事务回归通过。只读诊断从两个现有 compiled.bin 的结构取得全部 112 个来源 Bundle 名称，均存在于随包清单的 254,722 条记录中；只读取包清单，不展开这些包的资源。
+
+该修正版 eff.dll SHA256 `855137C15F2276CA2A037C37A975F943505DD8F8068406AC6B291FFCC79DB8E3`，65 个 Mod/全局配置文件部署前后哈希未变，未重导出。PID 44496 实机仅建立一次键索引：255,842 个游戏记录、45 个所需名称，indexMs=61.871；没有依赖 GAP 或作者 materialNull=1。世界和 UI 的借用衣服 Shader 均为 HGRP/CharacterNPR、supported=1、passes=7，用户确认首次紫色已恢复正常。后续角色切换没有重复资源回放，材质实例 ID 复用，但没有帧时间对照，不能宣称所有切换卡顿已消除。35 次首次输入提交的 replay+upload 合计仍约 2.111 秒，分散在各次请求，不是一次切换或每帧开销。
+
+PID 36948 再次确认 Typhoea 默认画面紫色、F10 后恢复。PID 41944 使用首版依赖修正 DLL，仍复现：14:39:32 出现 `STARTUP-DEPENDENCY-GAP phase=bind reason=game dependency list API absent`，增补模块没有启用；14:40:05 的模型完成探针直接记录多个作者部件 `materialNull=1`，14:40:18 F10 后借用材质才完整出现。此前合并的错误信息无法区分无参构造器和泛型 Add 哪个不可调用，不能声称已确认具体裁剪了哪个方法。原文件替换入口修改了序列化 external/PFB preload，但游戏 RuntimeManifestBinary 的 Bundle 依赖列表仍是原表；F10 的隔离资源加载则先注册了完整闭包。新增 external 不会自动成为游戏加载队列的依赖。
+
+DLL 从已有 compiled.bin 的 before/after external 描述提取仅追加的 CAB 边，按同一清单的 CAB 所属来源映射到原 Bundle 名称，不新增文件或重编作者资源。当前真实双 Mod 集合为 22 个来源包、424 条去重的新增边。首版通过游戏 HashCodeEx4AutoLower 计算包键，再以 GetBundleNameString 回查；该计算入口已因上述实机证据撤掉，改用原清单的存储键。校验后补入 TryGetBundleDirectDeps/TryGetBundleDeps 返回的列表。原依赖顺序保留，间接依赖沿游戏原枚举函数补齐并去重；加载、排队、依赖就绪检查、RetainBundleRef/ReleaseBundleRef 均继续由原生流程处理，插件不主动调用 ResourceManager 加载来源，也不等待异步请求。
+
+游戏 BundleProxy.Init 记录该实例使用的依赖图；ClearAll 完成释放后移除记录。F10 发布另一份清单时，已加载包的依赖释放规则保持一致，池中再次 Init 的实例使用当前图。按 manifest/hash 查记录，无场景或 Renderer 扫描。依赖枚举只读取现有 List 的实际元素范围，原游戏字段宽度和名称经反射确认，不设置资源数量限制。
+
+PID 42056 使用 `9BE296...` 仍失败，14:52:43 记录的实际签名为 `.ctor(ObjectPool<PooledList<Int64>>, Int32)`；零参数和 capacity-only 构造器都不存在。该具体参数是游戏的 PooledList，不是普通 List。当前修正从原生列表的 m_objectPool 调用 Allocate，沿父类寻找 Add/IList.Add，并在查询成功或异常后调用 Dispose 归还临时列表。池化列表的往返验证在第一次收到游戏实际列表时执行，不创建另一套资源请求或队列。
+
+此前回归覆盖普通列表、被裁剪的构造器/追加方法、父类上的追加接口、两参数池化构造器、Allocate/Dispose、异常归还、64 位键往返；依赖图覆盖首次借用材质/原生间接依赖、原顺序/去重/环、直接依赖引用归属、旧包释放与池复用、新清单和空图。`9EFE1DD131E6DA46DA1BDF14FE00CE2369A8AB4D2DB973458AB525A253C1A808` 是本轮前的部署，PID 24076 已确认失败。两个 Mod 的 INI 只新增按键启用字段，63 个资源、compiled.bin 与全局配置核验未变。不能把模拟依赖补齐或构建成功当作画面验收。暂留定向材质/武器诊断。
+
+## 2026-10-08 按键控制与面板
+
+`[Mod] key_switch_enabled` 缺省/1 为启用，0 为停用，也接受 true/false。所有启用 Mod 都响应自己的绑定，同键允许共存；面板选择只决定显示哪个 Mod 的手动控件。Ins 独立勾选立即生效，并在工作线程只改写同一 INI 字段，保留其他声明、BOM、注释与换行；手改后 F10 生效，不需要重编作者资源。LZY/Typhoea 均写入 1。完整和局部导出会补齐缺失字段并保留现有值。Blender MCP 仅热更新 Python 导出/控制模块，工程、选择与形态控制数量保持不变。
+
+面板使用内嵌 ImGui + 独立 D3D11/DirectComposition 窗口，Windows 11 Desktop Acrylic 背景；无游戏渲染器挂钩，仍只用快照/命令与 Unity 线程交换。设备/字体在首次打开 Ins 时创建，隐藏时停止绘制。真实窗口回归通过勾选、同时启用、选择、按钮、滑块与关闭，acrylic=1；模拟输入焦点与鼠标，不作为游戏窗口实测。真实 Blender 后台验证同键组/形态规划，25 个目录格式测试、11 个导出合同与 12 个发布测试通过。
+
+## 2026-10-08 首次资源加载的重复工作
+
+原调用链丢弃后台生成的首次加载结果，在游戏文件加载调用中又读取/解压来源并回放编译规则。现在后台保留已完成且实际变化的输入，以压缩包存储；首次请求只展开已准备的输入并传给游戏，之后复用原生流仍持有的 Byte[]，弱引用不会额外延长游戏数组寿命。未变化的来源回到原文件加载路径。没有新增磁盘缓存文件或修改发布资源。当前真实两 Mod 有 99 个变化输入、压缩缓存约 249.658 MiB，展开数据原约 887.24 MiB；这只计算新增缓存，不代表游戏、隔离候选或 Mod 的总内存。
+
+生产入口回归验证缓存命中不读/回放来源、重复请求不分配另一份 Byte[]、未变化输入保留原 CRC/文件路径。真实集合验证缓存覆盖、解压哈希及快照共享；加载日志分别记录 replayMs、uploadMs、nativeSubmitMs 和 arrayReused。仍需实机对照量出进场景卡顿中资源展开、上传、原生提交及 Shader 创建的占比，不能据此声称几秒卡顿已完全消除。
+
+## 2026-10-08 当前实机结果与武器重载修正
+
+实机 PID 6724 在 13:31:06 成功提交两个世界角色的新模型，用户确认 F10 后衣服紫色恢复。首次启动仍紫，首次资源加载的新依赖注册尚未通过实机验收；候选材质的 Shader 名称、支持状态及 pass 数通过检查，不等同于首次依赖图完整。该会话随后用户反馈所有 Mod 的武器消失。Player.log 的 RayCastEffectAction 空引用签名包含角色/武器挂点参数，但尚未确定具体分支及所属实体，不能单凭这条异常认定丢武器的原因；消费者日志中的 weapons=1 仅表示调用了武器组件，不能作为武器显示成功的验收。
+
+对照当前游戏 AbilitySystem._ApplyModeChange 的两条换模型分支，原顺序都是先刷新 CharacterAudioComponent 引用，再 UpdateAllWeaponMountPoint，最后 ReloadWeapon(true)。旧 DLL 将 ReloadWeapon 放在挂点更新前。现已对齐原生顺序，成功提交与失败回滚共用同一消费者恢复流程。回归先复现重载请求捕获旧挂点，再验证新根挂点、失败回滚及八次连续重载；v35/v36 完整事务回归通过。当前两个真实 Mod 的原生 GameObject/Transform 身份、名称、父引用和局部姿态审计通过：Typhoea 35,182 个节点/175,910 个字段，LZY 240,914 个节点/1,204,570 个字段。该审计不替代游戏内武器完成加载后的显示检查。
+
+DLL 在游戏退出后已替换并核对 SHA256：`C0BF14CE01304ED8C247127C9860926C0E5A90012F9598E5A89F23076793F8EF`。既有作者、配置及配套文件校验未变，没有重导出、保存工程或发布 release。武器恢复仍待此 DLL 的启动、连续 F10 与攻击实测；临时 DEBUG-weapon-reload 日志区分原生 loaded/noWeapons 状态与函数调用，材质诊断继续用于首次紫色问题，实机问题确认后应移除临时探针。
+
+## 2026-10-08 原生骨骼地址与候选材质验证
+
+部分剧情/LOD PFB 的原生骨骼路径与作者工程不同，但真实骨骼槽引用正确。旧校验将作者路径强加到所有消费者，曾在 PID 36288 拒绝 F10。现在离线为每个命中 PFB 编译精确 Renderer 地址及骨槽 Transform 地址，两个构建上下文均生成该描述；运行时按实际地址验证，旧无地址描述继续走已有路径校验。没有按版本拒绝旧 Mod，也没有写入原版像素资源。
+
+Typhoea compiled.bin 当前为 4,107,258 字节（约 3.92 MiB），SHA256 `5D61FF3E75A7E683CD728FCD81A39133C042A0AF6A2E51D2F499EC4AA263A105`；相比上一份的增加来自精确原生地址描述。全部 22 个根已包含描述；42 个非空纹理引用存在，6 个材质的原 Shader 引用、valid/invalid keywords 及禁用 pass 字段保留。两 Mod 组合为 112 输入、68 根，结果键 `3447E3571CD619B1BE23F4C3EBF624A8DE462B0DD127247596C7703BB221A5B5`。Blender 自有编译器 SHA256 `EE64801275ED51AAF5A7B87175EA00B9115021DDE68413720AFC5A08B461274C`；本次仅重建 compiled.bin，当前选择、作者文件和工程未改。
+
+## 2026-10-08 LOD0 复用与跨角色材质完整依赖
+
+旧工程仅导入 LOD0，原发现逻辑只查询 Blender Mesh，遗漏来源 manifest 已声明的低级 LOD。现在导出窗口与普通脚本入口都读取同一包的确切 Mesh 元数据；当前 13 个选择展开为 51 个视图，作者模板全部仍为原 LOD0，没有导入额外几何。四条替换规则覆盖实际存在的 15 个 Mesh 身份，所有级别复用 12 个作者部件、6 组切换和 2 个形态控制；cloth_03 的隐藏规则覆盖其已有 LOD0～2。复制对象按原作者名排序，避免 .001 对象在不同 LOD 中改变成员顺序。
+
+实机日志显示外部狼卫材质的 _SpecRampMap 为空，F10 拒绝提交；旧 compiled.bin 的真实材质完整性检查也在佩丽卡 _DiffRampMap 处失败。旧来源准备仅保留修改纹理的模板，缺少继承纹理和 Shader。现在仅沿声明材质补齐原生依赖闭包的游戏文件范围，并把该材质原 AssetBundle 的预加载区间并入命中 Renderer 所属 PFB。编译结果仍保存规则和作者资源，不打包原版纹理像素。来源请求哈希包含新的选择语义，已有来源描述自然重新准备，不增加版本兼容限制。
+
+全 LOD 实际编译另复现剧情 LOD3 原生调色板删骨后仅匹配 121/122 的失败。编译器汇集同一原生 rootBone 下命中 Renderer 的骨骼 hash/引用关系，补齐 LOD0 所需的原骨骼；跨层级和歧义引用继续验证。修复后当前工程实际导出成功，四规则 compiled.bin 为 2,334,470 字节，source-inputs.bin 为 33,052 字节，整个 Mod 为 285,335,788 字节。结果键 BDD5D1E1567CB44A97CADFB6BB1FC175BC1C3325FFDB8B8C34DD531E034B2703。第一次扩充来源并编译用时 104.4 秒；调整成员顺序后的导出用时 68.6 秒，这两次均有结构变化，不作为纯缓存命中速度。
+
+35 个 Blender 逻辑/发布/离线回归、原生材质预加载扩展、静态来源与组合回归通过；真实结果的 42 个非空材质纹理引用全部存在于编译输入。与 LZY 组合为 2 Mod、112 输入、68 根；既有保护文件校验未变。Blender 自有编译器 SHA256 08E3951045D38BE2D33409128DA07C19C92FB06385C9E34E126B9EED6E8FB801，来源准备工具 C31738442E7A9BA80CBD3732BB2214EC1C000C2490BED07EC3D9B188016CA425。仅更新作者端及 Typhoea，DLL 读取结构未变，没有自动保存工程。游戏内紫色、远景 LOD、按键和 F10 仍等待修正版实测，不能以离线编译成功代替画面验收。
+
+## 2026-10-08 旧工程迁移、跨角色材质与普通法线布局
+
+用户当前工程 `G:/zmd/typhoeus/18324_autosave.blend` 的 13 个选中 Mesh 迁移到用户提供的 `chr_0034_typhoea_postmodel.eff` 来源；狼卫和佩丽卡材质分别关联同目录 `chr_0028_wulfa_postmodel.eff`、`chr_0004_pelica_postmodel.eff`。修复 36 个失效的原版贴图路径为确切游戏逻辑引用，自定义 G: PNG、几何、选中范围、形态键值和六组切换保留。没有自动保存 .blend。
+
+Blender 原生导出器按材质自己的 eiem_author_package 读取结构，并在本次导出中复用同一个来源对象；图片筛选包含选中材质的包归属。纯逻辑回归通过；真实从佩丽卡包导入 .mat，校验所属包和原生 schema 后释放测试材质/图片，原选择不变。
+
+塔菲 cloth_01 的原生 Mesh 使用普通 Float32 normal3/tangent4，旧导出器仅接受 0x31 packed frame。Python 编码及离线 C++ ApplyMesh 现在保留两种实际来源布局；普通 Float32 可保留 Blender 产生的有限零切线，不额外构造 packed basis。压缩帧解码精度、普通帧与零切线、未知格式拒绝回归通过。
+
+真实剧情消费者另揭示原骨骼绑定限制：相同 Mesh 在剧情 PFB 的一根裙骨层级路径不同，严格按主模型全部路径查找失败（121/122 匹配）。离线编译读取原 Mesh 骨骼 hash/槽表，以该 Renderer 原生 m_Bones 对应恢复已有骨骼；新增槽继续在所属层级内按路径验证，重复候选按实际引用集合去重。原绑定姿态及原 Mesh hash 与新解包来源逐项一致。重排作者槽、新增槽及歧义/数量不符拒绝回归通过；不扫描运行中场景，不硬编码角色或剧情路径。
+
+当前选中内容完整导出至游戏 `plugin/mods/Typhoea`：12 个部件、6 个材质、13 个纹理声明、4 条替换规则（隐藏的 cloth_03 保留 skip）、6 组按键切换、2 个形态控制；compiled.bin 为 1,841,518 字节。正常导出入口重复导出成功，用时 10.724 秒，作者文件及 source-inputs.bin 字节不变，仅重新生成 compiled.bin。整个 Mod 为 284,838,048 字节，主要为现有自定义贴图的 TEX 像素数据。
+
+DLL 同入口实际读取单 Mod 通过：37 个输入、21 个根。与现有 LZY 组合通过：2 个 Mod、99 个输入、67 个根。Blender 自有编译器已更新，SHA256 `FD266682B4998565B16B8C06879D9D11FD1012600581165D3A30282AB695B381`；既有 34 个 LZY/配置/协议文件校验未变。实际画面、动作、跨角色材质和 F10 仍需游戏验收，离线成功不能替代实机结果。未发布新 release。
+
+正常重复导出后的 compiled.bin 再次通过双 Mod 读取，SHA256 `0D9FF8F67BDC898A2C2508353177E21B23EC54CE30EE3DC2E8E6B6FDFAC0D078`。临时验证副本 bin/typhoea-migration 的清理也被自动审批以 blocked by policy 拒绝，暂留，未换工具重试。
+
+## 2026-10-08 新增材质的原生依赖登记与独立 Mod 合并
+
+庄方宜的 `M_actor_lod_zhuangfy_body_01` 位于 `CAB-ed1a0aec166350e23f7e189dd6fa75f1`。离线匹配出的部分 Mesh 消费者 PFB 原来没有依赖该材质，因此旧 SetReference 以 `new dependency requires serialized external registration` 拒绝导出。静态 Renderer 夹具先复现同类跨 CAB 失败，再验证按需登记外部依赖。
+
+编译器保留原外部依赖表的顺序、GUID、类型和路径，仅追加所需 CAB 的 archive 引用；原有 FileID 不变。对象表后的 script references、ref types、user info，以及未修改对象的字节均保留。compiled.bin 已有 before/after 外部依赖字段，读取规则改为原表是新表的完整前缀，没有修改字节布局或按版本限制兼容。
+
+DLL 组合多个 Mod 的同一原包时，合并并去重追加的依赖，依据 TypeTree 重定位修改对象及新增对象的 PPtr FileID，保留 PathID 和本地引用。单 Mod 继续回放已编译结果，不调用作者编译器。外部路径的隔离重命名按实际依赖记录定位；AssetBundle 名称字段按实际 schema 定位，不能沿用列表增长前的字节偏移。
+
+LZY 与庄方宜的真实组合另暴露了原预加载列表合并的歧义：新增依赖可能与后面已有的依赖完全相同，旧序列算法误判为删除原区间。小型回归复现后，改为依据 m_Container、m_HashContainer、m_MainAsset 的原生区间边界分别合并，并优先识别保留原序列的插入。回归验证新增依赖仍落在所属 PFB 的区间，删除/显隐控制等非依赖列表规则仍按原有语义处理。
+
+真实导出还发现 Python 包检查遗漏 compiled.bin，把编译产物当作额外文件拒绝。canonical ini_reader 与本机 Blender 配套模块已登记该文件；新增首次/重复发布回归，并在发布失败回滚用例中同时检查旧 compiled.bin 与作者资源的恢复。
+
+当前验证：跨 CAB 材质、不同 Mod 的外部依赖顺序/去重、修改及新增对象的引用编号、原 GUID/未改对象保留、删除成员和空集、重复依赖与 PFB 区间，以及包名称字段移动回归通过。Blender 当前选中的三个庄方宜对象在隔离目录完整导出成功，保留工程的现有 skip 规则，生成 compiled.bin 4,190,371 字节；DLL 相同读取入口验证单 Mod 的 26 个输入/21 个根、移目录和空集恢复。现有 LZY 与该结果的隔离组合通过：2 个 Mod、84 个输入、63 个根、4 个共享输入。没有把测试 Mod 发布到游戏目录，也没有保存用户工程。
+
+补丁已部署：游戏 eff.dll SHA256 `7A91C0E8DAA213C079734F02304A892D531A812E07AD2CE61EF5A60073098CAE`，Blender 自有 eff_resource_pack.exe SHA256 `5D5528318AD827FAF2FC8F06A13A67BC13F1B6F81353246EB72958EEDECA950B`。生产 v35 构建、v35/v36 完整重载事务回归、静态组装和组合回归通过；34 个既有 LZY/配置/协议文件再次校验未变。隔离验证副本的清理被自动审批以 blocked by policy 拒绝，暂留 bin/external-dependency-verification，未换工具重试。
+
+实机边界：上述是离线编译和 DLL 磁盘入口的真实资源验证，不能替代庄方宜新 Mod 的游戏画面、动作、按键和 F10 验收。仍需正常重新导出到游戏 mods，再启动游戏检查。
+
 ## 2026-10-08 UI 页面项类型与角色切换
 
 编码候选的实机 PID 32416 已启用全部 UI 接口，10:28:13 世界 F10 提交 generation 2；随后 UI 根 -342026 登记 controlsReady=15。10:28:16 的 UI F10 已记录 gameCodec=1、roundTripVerified=1、factoryReturned=1，说明编码与工厂加载通过；下一次 Lua 调用抛出 managed exception，仍未提交 UI 事务，原代 2 保留。此次日志尚未包含异常原文，不能据此写为 UI 显示、动作或刷新通过。

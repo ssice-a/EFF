@@ -13,8 +13,11 @@ transactions are described in [the architecture](code-architecture.md).
 - Ctrl/Alt/Shift chords use the shared key parser. Sampling occurs once per
   Unity frame while the game owns the foreground window. Focus changes do not
   manufacture cycle/press edges from already-held chords.
-- Physical bindings apply only to the selected Mod. Every Mod's physical
-  edges are still sampled while unselected, disabled or covered by the panel.
+- Physical bindings apply to every enabled Mod. `[Mod] key_switch_enabled=1`
+  is the default, including INIs that omit the field; `0` disables that Mod's
+  physical bindings. `true`/`false` are also accepted. Identical keys are allowed
+  across and within Mods and run in declaration order. Every binding's edges
+  are still sampled while disabled or covered by the panel.
 - Instances of the same Mod share variables. Each controlled Renderer has its
   own validated binding. New instances receive current visibility during
   registration. The game's model completion callback registers only that model's
@@ -67,34 +70,45 @@ visibility. Arrow shape holds retain their assignments.
 The reload shortcut comes from game `plugin/eff.ini`. Current source defaults,
 generated configuration, project template and the 2026-10-06 v35 deployment
 use F10 (VK_F10). After editing a binding, use the old active shortcut once
-to publish the new one. Reload and GUI reserve their base keys; Mod bindings
-on either are rejected because modifier sets can overlap. `gui=INSERT` toggles
+to publish the new one. Mod bindings may overlap global shortcuts; users control
+which Mods respond through their INI flags and panel checkboxes. `gui=INSERT` toggles
 the built-in control panel in current source. The separate Lua adapter is still
 not wired to this host.
 
 ### Ins control panel
 
-The built-in Windows panel shows the loaded Mod directory/ID and its authored
-source paths, then exposes binding buttons and declared shape sliders. It does
+The ImGui panel uses an independent D3D11 composition window for either game
+graphics backend. On Windows 11 it uses the system Desktop Acrylic backdrop,
+with a translucent dark surface; unsupported systems keep a dark surface.
+The graphics device and fonts are created on the first panel opening, and hidden
+panels do not render. No game graphics hook is added.
+
+The panel lists independent keyboard checkboxes for Mods with
+bindings. Each applies immediately and atomically saves the same INI flag on
+the worker, preserving other declarations, comments and line endings. Manual
+INI edits apply on F10 without re-exporting compiled resources. The panel also
+shows the selected Mod directory/ID and its authored source paths, then exposes
+binding buttons and declared shape sliders. It does
 not infer the currently active character from a filename or select individual
 instances: all instances of one Mod continue sharing that Mod's values.
 
-Selection follows the old manager: initially choose the first Mod with keys,
+Selection only chooses which manual controls are shown: initially choose the first Mod with keys,
 otherwise the first with shape controls; retain that selection across successful
 reload while its ID and author directory remain available. If removed, choose
 the next selectable Mod. Selection is session state. It does not enable/disable
 resources, hide other characters or discard their saved values.
 
 While the panel is open, physical Mod keys pause; the panel's buttons and sliders
-remain usable. Closing restores keys only for the selected Mod, subject to the
-panel's keyboard checkbox. GUI holds advance with Unity game delta once per
+remain usable even for Mods whose physical keys are disabled. Closing restores
+keys for every checked Mod. GUI holds advance with Unity game delta once per
 frame. Losing focus, closing, changing selection and reloading end GUI holds.
 Held cycle/press chords do not manufacture edges when selection/focus changes.
 The GUI shortcut also samples physical edges across focus/config changes.
 
 The UI worker owns its Windows controls, using immutable snapshots and a bounded
 command queue. Unity applies commands only while focused/open and after checking
-both control-graph and selection revisions. Removed targets, old widgets,
+the control-graph revision; manual commands also check the selection revision.
+Checkbox commands are independent of selection. Removed targets, old widgets,
 undeclared slider variables and invalid ranges cannot update another Mod. The
 prepared graph includes its panel snapshot before native/property mutation;
 publication does not allocate after successful writes.

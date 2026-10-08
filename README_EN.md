@@ -4,11 +4,13 @@
 
 AnimeStudio exports source assets and templates. Blender creates and compiles each independent Mod. EFF applies the compiled rules before the game creates resources and uses the game's model lifecycle for reloads.
 
-Paired releases: **EFF v1.3.2, EFF Blender v0.40.1, AnimeStudio v1.3.1**. There is one production DLL package. Compatibility follows byte structures, fields, source hashes and references.
+Paired releases: **EFF v1.3.3, EFF Blender v0.40.2, AnimeStudio v1.3.1**. There is one production DLL package. Compatibility follows byte structures, fields, source hashes and references.
+
+See the illustrated [quick Mod tutorial](Mod%20Tutorial.md) (Chinese) for installation, extraction, Blender editing and export.
 
 ## Install
 
-Download `EFF_v1.3.2_dll.zip` from [Releases](https://github.com/ssice-a/EFF/releases), quit the game and extract beside `Endfield.exe`. Preserve `plugin/eff.ini`, your Mods and their `state.ini` when upgrading.
+Download `EFF_v1.3.3_dll.zip` from [Releases](https://github.com/ssice-a/EFF/releases), quit the game and extract beside `Endfield.exe`. Preserve `plugin/eff.ini`, your Mods and their `state.ini` when upgrading.
 
 ```text
 d3dcompiler_47.dll
@@ -34,13 +36,15 @@ The DLL distribution has no compiler, source tools or AnimeStudio libraries. Pre
 - Independent character Mods; characters without a Mod retain original assets.
 - Skinned Mesh and static MeshFilter/MeshRenderer replacement, materials, textures and visibility. Static Renderers do not support runtime shape controls.
 - One source Renderer can expand into multiple author parts. Unspecified targets retain original content. Materials and textures may use game templates or author-created data.
-- **Ins** opens the panel and selects the Mod receiving physical keys. The first controllable Mod is selected by default. Key switches, shape controls and saved player values remain supported.
+- **Ins** opens independent keyboard checkboxes for each Mod, all enabled by default. Multiple Mods can respond to the same key. The dropdown selects the Mod whose buttons and sliders are shown. Key switches, shape controls and saved player values remain supported.
 - **F10** reads the full current Mod set, handles additions/removals/changes and the empty set, and reloads supported world/display owners with animation, weapon and audio rebinding. Failed preparation or submission keeps the current generation.
 
 UI and world instances of a Mod share control values. UI reload uses the game's
 loader and page item binding, retaining the displayed model until candidate
 verification, page binding and control publication complete. Instances without
 a verified page owner reject reload before mutation.
+
+Set `key_switch_enabled=0` or `1` under `[Mod]` in each `mod.ini`, then press F10 to apply manual edits. An omitted flag defaults to enabled. The Ins checkboxes apply immediately and save this same field; disabling keys preserves the Mod's resources and current values.
 
 DLL updates require a game restart. Wait for active model loads to finish before requesting reload. Global shortcuts and camera fade behavior are configured in `plugin/eff.ini`.
 
@@ -57,7 +61,7 @@ Complete original bundles are not saved in the Mod. The measured LZY folder grew
 
 ## Validation limits
 
-Regression checks cover shared-PFB composition, removals, stream relocation, static Meshes, sequential world/display reloads, animation consumers and rollback. Four consecutive in-game v1.3.2 reloads committed world/UI resources and transferred page references in about 97–100 ms; final UI visuals, animation and visibility still require confirmation. Independent crowd NPC/scene-object refresh, complete generation retirement and 20–30 Mod pressure remain unverified. Exporting all LOD targets does not generate reduced geometry. Skeleton/Physics author support is not connected to the complete game simulation chain.
+Regression checks cover shared-PFB composition, removals, stream relocation, static Meshes, sequential world/display reloads, animation consumers and rollback. The latest in-game two-character F10 took about 107 ms from request to commit, with idle attachments visually confirmed. This measured an already prepared candidate, not every scene's latency. Independent crowd NPC/scene-object refresh, complete generation retirement and 20–30 Mod pressure remain unverified. Exporting all LOD targets does not generate reduced geometry. Skeleton/Physics author support is not connected to the complete game simulation chain.
 
 ## Credits and license
 

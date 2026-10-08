@@ -1,4 +1,5 @@
 #pragma once
+#include "eiem_bundle_dependency_graph.h"
 #include "eiem_offline_resource_package.h"
 
 // Reads author-compiled byte recipes and applies their proven relocations to
@@ -8,6 +9,9 @@ using namespace EiemResourceReloadPlan;
 struct Context {
  std::shared_ptr<const Plan> plan;Package package;
  std::function<Bytes(size_t,bool)> compiledMaterializer;
+ std::shared_ptr<const EiemBundleDependencies::Names> addedDependencies;
+ std::map<size_t,std::shared_ptr<const Bytes>> startupInputs;
+ bool startupInputsPacked=false;
  Context(std::shared_ptr<const Plan> p,Package author,std::function<Bytes(size_t,bool)> materializer):plan(std::move(p)),package(std::move(author)),compiledMaterializer(std::move(materializer)){}
  std::mutex buildMutex;std::map<std::string,Bytes> frameBytes;
  Context(std::shared_ptr<const Plan> p,Package author):plan(std::move(p)),package(std::move(author)){

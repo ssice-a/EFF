@@ -1,13 +1,14 @@
-# EFF v1.3.2
+# EFF v1.3.3
 
-配套：[EFF Blender v0.40.1](https://github.com/ssice-a/EFF-blender/releases/tag/v0.40.1)、[AnimeStudio v1.3.1](https://github.com/ssice-a/AnimeStudio/releases/tag/v1.3.1)。
+配套：[EFF Blender v0.40.2](https://github.com/ssice-a/EFF-blender/releases/tag/v0.40.2)、[AnimeStudio v1.3.1](https://github.com/ssice-a/AnimeStudio/releases/tag/v1.3.1)。制作流程见[简易教程](https://github.com/ssice-a/EFF/blob/v1.3.3/Mod%20Tutorial.md)。
 
-- UIModelLoader 完成加载后接入与大世界共用的 Mod 控制值；Ins 选择控制目标，小键盘切换沿用作者配置。
-- UI F10 使用游戏异步加载与页面项 BindGameObject 更新模型，保留页面和编队缓存的项目身份，以及当前层、位置、显隐、动画参数与播放状态。
-- 候选完成校验和页面接管后才释放旧人物；取消、关闭页面、新请求覆盖或候选失败时保留原显示，部分提交失败执行回滚。
-- 保留多角色 Mod、完整目录增删改、空集合恢复、静态 Mesh、材质贴图及形态控制；DLL 继续读取 Blender 生成的独立编译结果。
-- 一个正式 DLL 安装包，只包含运行 DLL、代理加载器、设置模板、结构声明和文档。
+- 首次加载和 F10 使用一致的编译规则，补齐借用材质与新增资源的依赖映射。
+- 世界模型重载恢复游戏配置的待机及特殊冲刺资源预加载，保留动画、武器、音频和未替换附件的生命周期。
+- Ins 使用半透明面板，独立勾选每个 Mod 的按键开关；默认全部启用，同键可同时控制多个 Mod。开关与 mod.ini 的 key_switch_enabled 同步。
+- 改善共享资源的独立 Mod 合并和来源注册；继续支持静态网格、多个作者部件、形态控制与分资源导出。
 
-下载 **EFF_v1.3.2_dll.zip**，退出游戏后解压到 Endfield.exe 同级目录，保留自己的配置与 Mod。已有 v1.3.1 的 compiled.bin 无需重导出。旧 Mod 请用配套 Blender 重新导出以生成 compiled.bin。旧 plugin/tools 编译器与来源运行库不再使用。F10 更新 Mod 资源；DLL 更新需要重启游戏。
+只有一个 DLL 安装包：EFF_v1.3.3_dll.zip。根目录仅 d3dcompiler_47.dll、vulkan-1.dll；plugin 内是 eff.dll、默认配置、数据结构协议、许可及空 mods 目录。包内没有作者编译器、AnimeStudio 运行库、日志、调试符号或游戏资源。
 
-生产构建、原生事务与生产 Lua 页面回归通过。实机连续四次 F10 提交世界/UI 资源与页面引用，耗时约 97–100 ms；最终 UI 画面、动作与显隐仍待确认。无法确认实际页面项归属的 UI 实例在修改前拒绝原地 F10。独立人群 NPC/场景物件原地刷新、多代资源退休、20–30 个 Mod 压力及新增 Physics 模拟尚未完整验收。
+退出游戏后解压到 Endfield.exe 所在目录，更新时保留自己的 eff.ini、mods 和 state.ini。既有 Mod 继续携带 compiled.bin；需要新制作或更新资源时安装配套 Blender 插件。F10 更新 Mod 数据，DLL 文件更新需要重启游戏。
+
+验证：连续世界/UI 重载及回滚回归；两角色最新实机 F10 请求到提交约 107 ms，待机附件正常。这是已准备候选的样本，不代表所有 NPC、场景物件或二三十个 Mod 的压力验证。全 LOD 导出不自动减面，Physics 尚未接通完整游戏模拟链。

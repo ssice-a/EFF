@@ -53,7 +53,7 @@ internal static class StaticModSourceCommand
         var game = Path.GetFullPath(args[1]); var indexPath = Path.GetFullPath(args[2]);
         var mod = Path.GetFullPath(args[3]); var compiler = Path.GetFullPath(args[4]);
         var request = Request(compiler, mod);
-        var requestHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(request + "\nselection=reverse-mesh-consumers+declared-assets+direct-templates")));
+        var requestHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(request + "\nselection=reverse-mesh-consumers+declared-assets+material-dependency-closure")));
         var destination = Path.Combine(mod, "source-inputs.bin");
         if (args.Length == 5 && File.Exists(destination))
         {
@@ -76,6 +76,7 @@ internal static class StaticModSourceCommand
             throw new InvalidDataException("The existing source index no longer describes the installed streaming archive; regenerate it with AnimeStudio.");
         var assets = new SortedDictionary<string, string>(StringComparer.Ordinal);
         var meshSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var materialSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var source in sources)
         {
             var path = Logical(source.GetProperty("path").GetString()!);
@@ -87,6 +88,7 @@ internal static class StaticModSourceCommand
             var bundle = Logical(matches[0].Source);
             if (assets.TryGetValue(path, out var old) && old != bundle) throw new InvalidDataException("Conflicting source bundles for " + path);
             assets[path] = bundle; if (kind == "Mesh") meshSources.Add(bundle);
+            if (kind == "Material") materialSources.Add(bundle);
         }
         var graph = index.Dependencies.DirectBundleDependencies(out var unresolved);
         var reverse = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
@@ -105,6 +107,15 @@ internal static class StaticModSourceCommand
         // Prefab dependencies remain owned by the game's normal loader.
         foreach (var bundle in assets.Values.ToArray())
             if (graph.TryGetValue(bundle, out var dependencies)) selected.UnionWith(dependencies);
+        // A borrowed Material may use textures and Shader dependencies that
+        // the target character never loads. Keep its native dependency closure.
+        var materialQueue = new Queue<string>(materialSources);
+        var materialClosure = new HashSet<string>(materialSources, StringComparer.OrdinalIgnoreCase);
+        while (materialQueue.TryDequeue(out var materialBundle))
+            if (graph.TryGetValue(materialBundle, out var dependencies))
+                foreach (var dependency in dependencies)
+                    if (materialClosure.Add(dependency)) materialQueue.Enqueue(dependency);
+        selected.UnionWith(materialClosure);
         foreach (var record in index.Assets.Records.Where(r => r.Type == "GameObject" && r.Container.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase) && candidates.Contains(Logical(r.Source))))
         {
             var path = Logical(record.Container); var bundle = Logical(record.Source);

@@ -151,6 +151,30 @@ def skin_stream(author):
     return skin.tobytes(), weights, indices, error
 
 
+def frame_stream(source_channels, positions, normals, tangents):
+    """Retain the source's packed or Float32 normal/tangent representation."""
+    require(len(source_channels) == 14, 'unsupported source frame layout')
+    normal, tangent = source_channels[1], source_channels[2]
+    dimension = normal['dimension'].data
+    require(normal['format'].data == 0 and
+            ((dimension == 0x31 and tangent['dimension'].data == 0) or
+             (dimension == 3 and tangent['dimension'].data == 4 and tangent['format'].data == 0)),
+            'unsupported source frame layout')
+    if dimension == 0x31:
+        frames, precision = pack_frames(normals, tangents)
+        stream = np.empty((len(positions),4), dtype='<f4')
+        stream[:,:3] = positions
+        stream[:,3].view('<u4')[:] = frames
+        return stream, dimension, precision
+    require(np.all(np.isfinite(normals)) and np.all(np.isfinite(tangents)), 'nonfinite author frame')
+    # Float storage can retain zero tangents, including loose vertices for
+    # which Blender cannot construct a UV tangent. No packed-frame basis is
+    # required or invented for this representation.
+    stream = np.column_stack((positions, normals, tangents)).astype('<f4')
+    return stream, dimension, dict(normalMaxError=float(np.max(np.abs(stream[:,3:6]-normals))),
+                                   tangentMaxError=float(np.max(np.abs(stream[:,6:10]-tangents))))
+
+
 def native_mesh(template, author, name):
     mesh = copy.deepcopy(template)
     count = author['vertex_count']
@@ -160,15 +184,13 @@ def native_mesh(template, author, name):
     tangents = np.asarray(author['tangents'],dtype=np.float64).reshape(count,4)
     require(not author['additional'], 'additional native shape-normal payload is unsupported by the source schema')
     require(not mesh['m_CollisionMeshBaked'].data and not mesh['m_CollisionMeshOnly'].data, 'collision-only source Mesh unsupported')
-    frames, precision = pack_frames(normals,tangents)
     source_channels = mesh['m_VertexData']['m_Channels'].items()
-    require(len(source_channels)==14 and source_channels[1]['dimension'].data==0x31, 'source is not the proven packed-frame layout')
+    stream0, frame_dimension, precision = frame_stream(source_channels, positions, normals, tangents)
     channels = [dict(stream=0,offset=0,format=0,dimension=0) for _ in range(14)]
-    stream0 = np.empty((count,4),dtype='<f4')
-    stream0[:,:3] = positions
-    stream0[:,3].view('<u4')[:] = frames
     channels[0] = dict(stream=0,offset=0,format=0,dimension=3)
-    channels[1] = dict(stream=0,offset=12,format=0,dimension=0x31)
+    channels[1] = dict(stream=0,offset=12,format=0,dimension=frame_dimension)
+    if frame_dimension == 3:
+        channels[2] = dict(stream=0,offset=24,format=0,dimension=4)
     arrays = []
     offset = 0
     for i,values in enumerate(author['uvs']):

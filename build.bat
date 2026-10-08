@@ -38,6 +38,8 @@ if errorlevel 1 (
 if not exist "%entry_folder%" mkdir "%entry_folder%"
 if errorlevel 1 goto entry_failed
 echo [1/5] Building production eff.dll for %entry_abi% ...
+call tools\build_imgui.cmd
+if errorlevel 1 goto entry_failed
 rc /nologo /fo "%entry_folder%\version.res" src\version.rc
 if errorlevel 1 goto entry_failed
 cl /nologo /utf-8 /O2 /Zi /MD /LD /EHsc /std:c++17 /bigobj /W4 ^

@@ -95,6 +95,29 @@ class DirectoryTests(unittest.TestCase):
 
     def tearDown(self): self.temp.cleanup()
 
+    def test_per_mod_key_switch_default_and_explicit_flag(self):
+        self.assertTrue(self.package['keySwitchEnabled'])
+        self.edit_ini(lambda text: text.replace('key_switch_enabled=1\n', ''))
+        self.assertTrue(read_package(self.root)['keySwitchEnabled'])
+        update_directory(self.root, textures=fixture()['textures'], texture_only=True)
+        self.assertEqual(ini_document(self.root)['Mod']['key_switch_enabled'], '1')
+        self.edit_ini(lambda text: text.replace('key_switch_enabled=1', 'key_switch_enabled=false'))
+        self.assertFalse(read_package(self.root)['keySwitchEnabled'])
+        updated = update_directory(self.root, textures=fixture()['textures'], texture_only=True)
+        self.assertFalse(updated['keySwitchEnabled'])
+        self.edit_ini(lambda text: text.replace('key_switch_enabled=false', 'key_switch_enabled=TRUE'))
+        self.assertTrue(read_package(self.root)['keySwitchEnabled'])
+        self.edit_ini(lambda text: text.replace('key_switch_enabled=TRUE', 'key_switch_enabled=2'))
+        with self.assertRaises(ValueError): read_package(self.root)
+        with tempfile.TemporaryDirectory() as root:
+            disabled = export_directory(root, **fixture(), key_switch_enabled=False)
+            self.assertFalse(disabled['keySwitchEnabled'])
+
+    def test_different_bindings_can_share_one_key(self):
+        self.edit_ini(lambda text: text + '\n[KeyOther]\nkey=NUMPAD1\ntype=cycle\n$mode=0,1,2\n')
+        bindings = read_package(self.root)['keyBindings']
+        self.assertEqual(sum(b['key'] == 'NUMPAD1' for b in bindings), 2)
+
     def edit_ini(self, transform):
         path = self.root / "mod.ini"
         path.write_text(transform(path.read_text(encoding="utf-8")), encoding="utf-8")

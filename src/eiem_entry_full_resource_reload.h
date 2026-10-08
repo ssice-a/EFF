@@ -14,7 +14,7 @@ struct Route {Ref source,candidate;int sourceId=0,candidateId=0;};
 using Routes=std::vector<Route>;
 struct UIModelRequest {Ref loader,callback,closure,proxy,root,instantiateProxy,candidatePrefab;std::string path,error;uint64_t pathHash=0;void* completionInfo=nullptr;int id=0;bool submitted=false,completed=false,cancelled=false,delivered=false;};
 struct Owner {Ref entity,component,root,pathHash;std::string path;int oldRootId=0;std::map<std::string,std::pair<unsigned,int>> originalMeshes;bool viewPart=false;Ref config;
- Ref animation,animationData,weapons,audio;
+ Ref animation,animationData,weapons,audio,performManager;
  bool uiModel=false;Ref uiParent,uiCallback,uiPage;mutable Ref uiLoadedRoot;std::shared_ptr<UIModelRequest> uiRequest;};
 // Unity serializes asset paths with a different case than the offline
 // manifest (for example `Assets/Beyond/...` versus `assets/beyond/...`).
@@ -63,11 +63,14 @@ struct Api {
  NativeEnum rootCategory,priority;
  void *prefabType=nullptr,*rendererType=nullptr;
  void *components=nullptr,*materials=nullptr,*texture=nullptr,*textureIds=nullptr,*textureById=nullptr,*shader=nullptr,*width=nullptr,*height=nullptr,*mips=nullptr;
+ void *shaderSupported=nullptr,*materialPassCount=nullptr,*materialKeywords=nullptr;
  void *getModel=nullptr,*getPath=nullptr,*modelCom=nullptr,*modelEntity=nullptr,*delegateTarget=nullptr,*released=nullptr;
  void *instance=nullptr,*discard=nullptr,*remove=nullptr,*loadModel=nullptr,*follow=nullptr;
- ObjectField modelManager,effectManager;
+ ObjectField modelManager,effectManager,world,performManager;
+ void* performExit=nullptr;
  void *animationCom=nullptr,*animationData=nullptr,*animationChange=nullptr,*animationAnimator=nullptr,*animationValid=nullptr;
- void *weaponCom=nullptr,*weaponUnload=nullptr,*weaponReload=nullptr,*weaponMounts=nullptr,*componentLookup=nullptr,*audioInvalidate=nullptr;
+ void *animationIdlePreload=nullptr,*animationDashPreload=nullptr;
+ void *weaponCom=nullptr,*weaponUnload=nullptr,*weaponReload=nullptr,*weaponMounts=nullptr,*weaponValid=nullptr,*componentLookup=nullptr,*audioInvalidate=nullptr;
  void *instanceId=nullptr,*parent=nullptr,*isChild=nullptr,*goTransform=nullptr;
  void *childCount=nullptr,*getChild=nullptr,*componentGo=nullptr,*directComponents=nullptr;
  void *partRelease=nullptr,*partLoad=nullptr,*partSetup=nullptr;
@@ -96,6 +99,24 @@ std::map<std::string,Ref> observedPrefabs;
 uint64_t ownerRevision=0;
 using ResourceGetFn=void*(*)(void*,void*);
 ResourceGetFn originalResourceGet=nullptr;
+struct AnimationLinkProbe {
+ void *monoField=nullptr,*objectField=nullptr,*ownerField=nullptr,*animationField=nullptr;
+ void *parentMethod=nullptr;Ref objectType;
+ bool ready=false;
+} animationLinkProbe;
+struct SkinStateProbe {
+ void *active=nullptr,*forceOff=nullptr,*bounds=nullptr;bool ready=false;
+} skinStateProbe;
+struct PerformProbe {
+ void *requestField=nullptr,*requestClass=nullptr,*handleField=nullptr,*requestSourceField=nullptr,*mainHandleField=nullptr,*subHandlesField=nullptr,*objectsField=nullptr;
+ void *handleEntity=nullptr,*handleValid=nullptr,*handlePlaying=nullptr,*handlePath=nullptr;
+ void *pathField=nullptr,*goField=nullptr,*followField=nullptr,*renderersField=nullptr,*objectAnimator=nullptr,*objectActive=nullptr,*animatorEnabled=nullptr,*animatorController=nullptr;
+ int requestSize=0;bool ready=false;
+ struct Resource {Ref asset;std::string path,name;int id=0;};
+ struct Watch {Owner owner;std::vector<Ref> handles,objects;std::vector<Resource> resources;ULONGLONG started=0,last=0;size_t sample=0;std::string signature;};
+ std::map<void*,Watch> watches;
+} performProbe;
+void BindPerformanceProbe(void** assemblies,size_t count);
 thread_local bool readingSource=false;
 void* ResourceGet(void* self,void* info);
 thread_local bool proxyContext=false;thread_local uint64_t proxyPathHash=0;
@@ -197,12 +218,13 @@ ObjectField BindObjectField(void* klass,const char* name,const char* expected){
   return {field,isStatic};
  }}throw std::runtime_error("reload typed manager field absent: "+std::string(name));
 }
-void* ReadManager(const ObjectField& field){
+void* ReadBoundObject(const ObjectField& field,void* receiver){
  Require(field.field,"reload manager field not bound");void* value=nullptr;
  if(field.isStatic)il2cpp_field_static_get_value(field.field,&value);
- else{auto instance=Call(api.instance);Require(instance,"reload GameInstance unavailable");il2cpp_field_get_value(instance,field.field,&value);}
+ else{Require(receiver,"reload manager field receiver unavailable");il2cpp_field_get_value(receiver,field.field,&value);}
  return value;
 }
+void* ReadManager(const ObjectField& field){return ReadBoundObject(field,field.isStatic?nullptr:Call(api.instance));}
 Ref PartConfig(void* part){
  auto f=Field(il2cpp_object_get_class(part),"m_cfg","Beyond.Gameplay.View.BaseModelViewPartData");
  auto c=il2cpp_class_from_type(il2cpp_field_get_type(f));uint32_t alignment=0;auto size=il2cpp_class_value_size(c,&alignment);
@@ -256,6 +278,7 @@ void PartConfigured(void* self,void* data,void* info){
  // LoadModel's callback. Record this real game entry before completion.
  RecordPartLoad(self,nullptr);originalPartConfigured(self,data,info);
 }
+void ProbeModelMaterials(void* root,const char* phase);
 void RecordPartFinished(void* self){
  try{if(!RuntimeShapes::Main())return;auto root=ReadObject(self,"m_model","UnityEngine.GameObject");if(!RuntimeShapes::Alive(root)){liveParts.erase(self);return;}
   auto cfg=PartConfig(self);auto path=String(ReadObject(cfg.Get(),"modelPath","System.String"));
@@ -263,6 +286,7 @@ void RecordPartFinished(void* self){
   auto& live=liveParts[self];live.part=Ref::Make(self,true);live.root=Ref::Make(root,true);live.path=path;live.persistent=persistent!=0;
   ++ownerRevision;
   RuntimeShapes::RegisterModel(root);
+  ProbeModelMaterials(root,"world-complete");
  }catch(const std::exception& e){Log("[FULL-RELOAD-PART-GAP] reason=%s",e.what());}
 }
 void PartFinished(void* self,void* info){originalPartFinished(self,info);RecordPartFinished(self);}
@@ -323,6 +347,30 @@ NativeEnum Enum(void* klass,const char* name){
 std::vector<Ref> Components(void* root){unsigned char inactive=1;void* args[]={rendererType.Get(),&inactive};auto array=Ref::Make(Call(api.components,root,args),false);size_t count=0;
  Require(ArrayLength(array.Get(),&count),"reload Renderer discovery coverage/limit");std::vector<Ref> values;values.reserve(count);
  for(auto value:ReferenceArray(array.Get(),count))values.push_back(Ref::Make(value,false));return values;}
+struct ShaderState {std::string name;int supported=-1,passes=-1;bool valid=false;};
+ShaderState MaterialShader(void* material,const char* phase=nullptr){
+ auto shader=Ref::Make(Call(api.shader,material),false);ShaderState result;
+ result.valid=RuntimeShapes::Alive(shader.Get());
+ if(result.valid){result.name=String(Call(RuntimeShapes::api.name,shader.Get()));
+  if(api.shaderSupported)result.supported=RuntimeShapes::Scalar<unsigned char>(api.shaderSupported,shader.Get())?1:0;
+  if(api.materialPassCount)result.passes=RuntimeShapes::Scalar<int>(api.materialPassCount,material);
+  result.valid=result.name!="Hidden/InternalErrorShader"&&result.supported!=0&&result.passes!=0;
+ }
+ if(phase){std::string keywords;
+  if(api.materialKeywords){auto array=Ref::Make(Call(api.materialKeywords,material),false);for(auto keyword:ReferenceArray(array.Get())){if(!keywords.empty())keywords+=',';keywords+=String(keyword);}}
+  Log("[DEBUG-material-shader] phase=%s material=%s materialId=%d shader=%s shaderId=%d supported=%d passes=%d keywords=%s",phase,String(Call(RuntimeShapes::api.name,material)).c_str(),Id(material),result.name.c_str(),shader.Get()?Id(shader.Get()):0,result.supported,result.passes,keywords.c_str());
+ }return result;
+}
+void ProbeModelMaterials(void* root,const char* phase){
+ if(!api.shaderSupported||!api.materials||RuntimeControls::specs.empty())return;
+ std::set<int> seen;std::set<std::string> missing;
+ for(const auto& value:Components(root)){auto renderer=value.Get(),mesh=RuntimeShapes::SourceMesh(renderer);
+  if(!RuntimeShapes::Alive(mesh)||!RuntimeControls::specs.count(String(Call(RuntimeShapes::api.name,mesh))))continue;
+  auto array=Ref::Make(Call(api.materials,renderer),false);
+  auto materials=ReferenceArray(array.Get());bool absent=materials.empty();for(auto material:materials){if(!RuntimeShapes::Alive(material)){absent=true;continue;}if(seen.insert(Id(material)).second)MaterialShader(material,phase);}
+  if(absent){auto marker=String(Call(RuntimeShapes::api.name,mesh));if(missing.insert(marker).second)Log("[DEBUG-material-shader] phase=%s marker=%s materialNull=1 slots=%zu",phase,marker.c_str(),materials.size());}
+ }
+}
 std::map<std::string,std::pair<unsigned,int>> MeshProfile(void* root) {
  std::map<std::string,std::pair<unsigned,int>> profile,authored;
  size_t ordinal=0;
@@ -431,7 +479,7 @@ void VerifyAssemblyPrefab(void* gameObject,const EiemResourceReloadPlan::Root& e
 }
 struct VerifyWalk {
  Ref root;const Plan& plan;const EiemResourceReloadPlan::Root& expectedRoot;bool live;
- std::map<std::string,unsigned> found;std::vector<Ref> renderers;BoneHierarchy hierarchy;size_t cursor=0,checked=0,textureChecks=0;
+ std::map<std::string,unsigned> found;std::set<int> materialChecks;std::vector<Ref> renderers;BoneHierarchy hierarchy;size_t cursor=0,checked=0,textureChecks=0;
  VerifyWalk(void* value,const Plan& p,const EiemResourceReloadPlan::Root& expected,bool isLive=false):root(Ref::Make(value,false)),plan(p),expectedRoot(expected),live(isLive),renderers(Components(value)),hierarchy(value){}
  bool Step(){
  if(cursor==renderers.size()){
@@ -452,11 +500,17 @@ struct VerifyWalk {
     Require(ArrayLength(bindposes.Get(),&count)&&count==0,"reload static Mesh contains bindposes");
   }else {auto array=Ref::Make(Call(RuntimeShapes::api.bones,renderer),false);auto bones=ReferenceArray(array.Get(),p.bones.size());
   auto bindposes=Call(RuntimeShapes::api.bindPoses,mesh);size_t count=0;Require(ArrayLength(bindposes,&count)&&count==bones.size(),"reload bone/bindpose counts differ");
-  auto rootBone=Ref::Make(Call(RuntimeShapes::api.rootBone,renderer),false);Require(RuntimeShapes::Alive(rootBone.Get()),"reload root bone absent");hierarchy.Verify(renderer,bones,rootBone.Get(),p);
+  auto rootBone=Ref::Make(Call(RuntimeShapes::api.rootBone,renderer),false);Require(RuntimeShapes::Alive(rootBone.Get()),"reload root bone absent");
+  // New artifacts describe the actual prefab binding resolved offline from
+  // its native Mesh hashes. Author paths can differ in other consumers of
+  // that Mesh. VerifyAssemblyPrefab checks the exact Transform in every slot.
+  if(expectedRoot.assembly.sources.empty())hierarchy.Verify(renderer,bones,rootBone.Get(),p);
+  else Require(std::set<void*>(bones.begin(),bones.end()).size()==bones.size()&&std::count(bones.begin(),bones.end(),rootBone.Get())==1,"reload per-Mesh root/duplicate bone slot differs: "+p.id);
   }
   auto mats=Ref::Make(Call(api.materials,renderer),false);auto material=ReferenceArray(mats.Get(),1).front();const auto& expected=plan.materials.at(p.material);
   auto materialName=RuntimeShapes::Alive(material)?String(Call(RuntimeShapes::api.name,material)):"";
-  Require(RuntimeShapes::Alive(material)&&(materialName==expected.name||(live&&materialName==expected.name+" (Instance)"))&&RuntimeShapes::Alive(Call(api.shader,material)),"reload Material/Shader absent or wrong");
+  Require(RuntimeShapes::Alive(material)&&(materialName==expected.name||(live&&materialName==expected.name+" (Instance)")),"reload Material absent or wrong");
+  if(materialChecks.insert(Id(material)).second){auto shader=MaterialShader(material,api.shaderSupported?"candidate":nullptr);Require(shader.valid,"reload Material Shader unavailable/unsupported: "+p.id+" shader="+shader.name+" supported="+std::to_string(shader.supported)+" passes="+std::to_string(shader.passes));}
   for(const auto& slot:expected.slots){auto property=Ref::Make(il2cpp_string_new(slot.property.c_str()),false);void* args[]={property.Get()};auto tex=Call(api.texture,material,args);
    if(!slot.nonnull){Require(!RuntimeShapes::Alive(tex),"reload null Texture override differs");continue;}
    Require(RuntimeShapes::Alive(tex),"reload shared/custom Texture missing: "+p.id+"/"+slot.property);
@@ -556,12 +610,12 @@ std::map<std::filesystem::path,InputFileStamp> AuthorFiles(const std::vector<Pac
 }
 bool AuthorFilesUnchanged(const std::map<std::filesystem::path,InputFileStamp>& files){for(const auto& file:files)if(!std::filesystem::is_regular_file(file.first)||!SameStamp(FileStamp(file.first),file.second))return false;return true;}
 bool AuthorFilesUnchanged(const Prepared& p){return (!p.graph||InstalledAuthorsMatch(*p.graph))&&AuthorFilesUnchanged(p.authorFiles);}
-RuntimeControls::State CompiledControls(const std::shared_ptr<const std::vector<Package>>& graph,const Plan& plan,const EiemGlobalConfig& config){
+RuntimeControls::State CompiledControls(const std::shared_ptr<const std::vector<Package>>& graph,const Plan& plan,const EiemGlobalConfig&){
  Require(bool(graph),"offline control graph unavailable");RuntimeControls::State state;state.graph=graph;
  std::map<std::string,std::pair<const Package*,std::string>> owners;
  for(const auto& package:*graph){
   state.variables[package.id]=package.defaults;state.keys[package.id]=package.bindings;
-  for(const auto& key:package.bindings)Require(key.key.vk!=config.reload.vk&&key.key.vk!=config.gui.vk,"Mod key overlaps reserved global shortcut: "+package.id+"/"+key.id);
+  state.keySwitchEnabled[package.id]=RuntimeControls::keySettings.Preview(package);
   for(const auto& part:package.parts)Require(owners.emplace(plan.composed?EiemComposedPackage::Name(package.id,part.first):part.first,std::make_pair(&package,part.first)).second,"compiled part owner collision");
  }
  // Provenance markers were already computed by the compiler. Do not hash the
@@ -575,6 +629,10 @@ RuntimeControls::State CompiledControls(const std::shared_ptr<const std::vector<
 bool CompiledMode(){
  if(preparedCompiledSet)return true;for(const auto& root:DiscoverModRoots())if(std::filesystem::is_regular_file(root/"compiled.bin"))return true;return false;
 }
+bool SameAuthorSnapshot(const Prepared& prepared,const EiemCompiledModSet::Set& set){
+ if(prepared.authorFiles.size()!=set.files.size())return false;
+ for(const auto& file:set.files){auto old=prepared.authorFiles.find(file.first);if(old==prepared.authorFiles.end()||!SameStamp(old->second,file.second))return false;}return true;
+}
 void PollCompiled(bool trigger){
  if(!enabled||!active)return;
  static std::string lastError,failedStamp;
@@ -583,8 +641,10 @@ void PollCompiled(bool trigger){
   auto stamp=EiemCompiledModSet::DirectoryStamp(gameDirectory/"plugin/mods");if(!trigger&&!failedStamp.empty()&&stamp==failedStamp)return;
   if(!preparedCompiledSet||!EiemCompiledModSet::Unchanged(*preparedCompiledSet,gameDirectory/"plugin/mods"))preparedCompiledSet=EiemCompiledModSet::Read(gameDirectory,preparedCompiledSet);
   if(!preparedCompiledSet)return;auto pointer=preparedCompiledSet->pointer;auto failed=std::atomic_load(&failedKey);bool retry=trigger&&failed&&*failed==pointer.key;
-  if(pointer!=lastPrepared||retry||!diskPrepared){
-   auto p=std::make_shared<Prepared>();p->pointer=pointer;p->base=generation.load();p->graph=std::make_shared<const std::vector<Package>>(preparedCompiledSet->manifest.packages);p->authorFiles=preparedCompiledSet->files;p->plan=std::make_shared<const Plan>(preparedCompiledSet->manifest.plan);p->rules=EiemCompiledModSet::Context(preparedCompiledSet);p->ruleInputs=std::move(preparedCompiledSet->isolated);
+  if(pointer!=lastPrepared||retry||!diskPrepared||!SameAuthorSnapshot(*diskPrepared,*preparedCompiledSet)){
+   bool refresh=diskPrepared&&pointer==diskPrepared->pointer&&!retry;
+   auto p=std::make_shared<Prepared>();p->pointer=pointer;p->base=generation.load();p->graph=std::make_shared<const std::vector<Package>>(preparedCompiledSet->manifest.packages);p->authorFiles=preparedCompiledSet->files;p->plan=std::make_shared<const Plan>(preparedCompiledSet->manifest.plan);
+   if(refresh)p->rules=diskPrepared->rules;else p->rules=EiemCompiledModSet::Context(preparedCompiledSet);p->ruleInputs=std::move(preparedCompiledSet->isolated);
    if(retry)for(auto index:p->plan->closure)if(!p->ruleInputs.count(index))p->ruleInputs.emplace(index,std::make_shared<const Bytes>(p->rules->Materialize(index,true)));
    auto config=EiemEntrySettings::Read(gameDirectory);p->controls=CompiledControls(p->graph,*p->plan,config);p->config=EiemEntrySettings::Prepare(config);Require(AuthorFilesUnchanged(*p),"Mod changed during compiled rule validation");
    {std::lock_guard<std::mutex> lock(mutex);pending=p;}lastPrepared=pointer;diskPrepared=p;Log("[FULL-RELOAD-PREPARED] key=%s workerMs=%.6f compiledPerMod=1 authorCompilation=0 nativeSubmission=pendingUnityFrame",pointer.key.c_str(),NativeBundle::Ms(clock));
@@ -693,6 +753,8 @@ void Install(void** assemblies,size_t count){
   api.componentGo=Method(component,"get_gameObject",{},"UnityEngine.GameObject",false);
   auto material=FindClass("UnityEngine","Material",assemblies,count);
   api.materials=Method(renderer,"get_sharedMaterials",{},"UnityEngine.Material[]",false);api.texture=Method(material,"GetTexture",{"System.String"},"UnityEngine.Texture",false);api.shader=Method(material,"get_shader",{},"UnityEngine.Shader",false);
+  api.shaderSupported=Exact(FindClass("UnityEngine","Shader",assemblies,count),"get_isSupported",{},"System.Boolean",false);
+  api.materialPassCount=Exact(material,"get_passCount",{},"System.Int32",false);api.materialKeywords=Exact(material,"get_shaderKeywords",{},"System.String[]",false);
   BindMaterialTextureProperties(material);
   auto texture=FindClass("UnityEngine","Texture",assemblies,count);
   api.width=Method(texture,"get_width",{},"System.Int32",false);api.height=Method(texture,"get_height",{},"System.Int32",false);api.mips=Method(texture,"get_mipmapCount",{},"System.Int32",false);
@@ -707,16 +769,36 @@ void Install(void** assemblies,size_t count){
   api.animationData=Method(animation,"get_data",{},"Beyond.Gameplay.View.ComplexAnimatorComponentData",false);
   api.animationChange=Method(animation,"ChangeAnimationConfig",{"Beyond.Gameplay.View.ComplexAnimatorComponentData","System.Boolean"},"System.Boolean",false);
   api.animationAnimator=Method(animation,"get_animator",{},"UnityEngine.Animator",false);api.animationValid=Method(animation,"IsValid",{},"System.Boolean",false);
+  auto characterAnimation=FindClass("Beyond.Gameplay.View","CharacterAnimationComponent",assemblies,count);
+  api.animationIdlePreload=Method(characterAnimation,"_PreloadSpIdlePerform",{},"System.Void",false);
+  api.animationDashPreload=Method(characterAnimation,"_PreloadSpDashPerform",{},"System.Void",false);
+  // Read cached and actual parent ownership at the transaction boundary;
+  // animation event detours may not observe the game's patched handlers.
+  try{
+   auto mono=FindClass("Beyond.Gameplay.View.Animation","AnimatorMono",assemblies,count),object=FindClass("Beyond.Gameplay.Core","ObjectMono",assemblies,count);
+   animationLinkProbe.monoField=Field(animation,"m_mono","Beyond.Gameplay.View.Animation.AnimatorMono");
+   animationLinkProbe.objectField=Field(mono,"m_objectMono","Beyond.Gameplay.Core.ObjectMono");
+   animationLinkProbe.animationField=Field(mono,"m_complexAnimatorComponent","Beyond.Gameplay.View.ComplexAnimatorComponent");
+   animationLinkProbe.ownerField=Field(object,"<entity>k__BackingField","Beyond.Gameplay.Core.Entity");
+   animationLinkProbe.parentMethod=Method(component,"GetComponentInParent",{"System.Type"},"UnityEngine.Component",false);animationLinkProbe.objectType=Type(object);
+   animationLinkProbe.ready=true;Log("[DEBUG-model-links-API] ready=1 cachedAndParentOwners=1 eventHooks=0");
+  }catch(const std::exception& e){Log("[DEBUG-model-links-GAP] phase=bind reason=%s reloadUnaffected=1",e.what());}
   auto weapon=FindClass("Beyond.Gameplay.View","WeaponComponent",assemblies,count);
   api.weaponCom=Method(entity,"get_weaponCom",{},"Beyond.Gameplay.View.WeaponComponent",false);
   api.weaponUnload=Method(weapon,"UnloadWeapons",{"System.Boolean"},"System.Void",false);
   api.weaponReload=Method(weapon,"ReloadWeapon",{"System.Boolean"},"System.Void",false);api.weaponMounts=Method(weapon,"UpdateAllWeaponMountPoint",{},"System.Void",false);
+  api.weaponValid=Exact(weapon,"get_isValid",{},"System.Boolean",false);
   auto audio=FindClass("Beyond.Gameplay.Core","CharacterAudioComponent",assemblies,count);
   api.componentLookup=Method(entity,"TryGetComponent",{"System.Type","Beyond.Gameplay.Core.BaseComponent&","System.Boolean"},"System.Boolean",false);
   characterAudioType=Type(audio);api.audioInvalidate=Method(audio,"InvalidateTransformReference",{},"System.Void",false);
   auto instance=FindClass("Beyond.Gameplay","GameInstance",assemblies,count);api.instance=Method(instance,"get_instance",{},"Beyond.Gameplay.GameInstance",true);
   api.modelManager=BindObjectField(instance,"modelManager","Beyond.Gameplay.View.ModelManager");
   api.effectManager=BindObjectField(instance,"effectManager","Beyond.Gameplay.EffectManager");
+  api.world=BindObjectField(instance,"m_world","Beyond.Gameplay.Core.GameWorld");
+  auto world=FindClass("Beyond.Gameplay.Core","GameWorld",assemblies,count);
+  api.performManager=BindObjectField(world,"charInteractPerformManager","Beyond.Gameplay.Core.CharInteractPerform.CharInteractPerformManager");
+  auto perform=FindClass("Beyond.Gameplay.Core.CharInteractPerform","CharInteractPerformManager",assemblies,count);
+  api.performExit=Method(perform,"ForceExitAllPerformOnEntity",{"Beyond.Gameplay.Core.Entity","System.String"},"System.Void",false);
   auto modelManager=FindClass("Beyond.Gameplay.View","ModelManager",assemblies,count);api.discard=Method(modelManager,"DiscardPooledObjects",{"Beyond.Resource.StringPathHash"},"System.Void",false);
   auto basePart=FindClass("Beyond.Gameplay.View","BaseModelViewPart",assemblies,count),complexPart=FindClass("Beyond.Gameplay.View","ComplexModelViewPart",assemblies,count);
   Require(il2cpp_object_get_virtual_method,"reload public virtual dispatch unavailable");
@@ -733,6 +815,14 @@ void Install(void** assemblies,size_t count){
   auto effect=FindClass("Beyond.Gameplay","EffectManager",assemblies,count);api.follow=Method(effect,"ChangeEntityFollowEffect",{"Beyond.Gameplay.Core.Entity"},"System.Void",false);
   auto object=FindClass("UnityEngine","Object",assemblies,count);api.instanceId=Method(object,"GetInstanceID",{},"System.Int32",false);
   auto transform=FindClass("UnityEngine","Transform",assemblies,count);api.isChild=Method(transform,"IsChildOf",{"UnityEngine.Transform"},"System.Boolean",false);api.parent=Method(transform,"get_parent",{},"UnityEngine.Transform",false);
+  try{
+   skinStateProbe.active=Method(go,"get_activeInHierarchy",{},"System.Boolean",false);
+   skinStateProbe.forceOff=Method(renderer,"get_forceRenderingOff",{},"System.Boolean",false);
+   skinStateProbe.bounds=Method(renderer,"get_bounds",{},"UnityEngine.Bounds",false);
+   Require(RuntimeShapes::api.getEnabled&&RuntimeShapes::api.localToWorld&&RuntimeShapes::api.worldToLocal,"skin diagnostic public getters absent");
+   skinStateProbe.ready=true;Log("[DEBUG-skin-state-API] ready=1 currentModelOnly=1 fieldsWritten=0");
+  }catch(const std::exception& e){Log("[DEBUG-skin-state-GAP] phase=bind reason=%s reloadUnaffected=1",e.what());}
+  BindPerformanceProbe(assemblies,count);
   api.childCount=Method(transform,"get_childCount",{},"System.Int32",false);api.getChild=Method(transform,"GetChild",{"System.Int32"},"UnityEngine.Transform",false);
   api.directComponents=Method(go,"GetComponents",{"System.Type"},"UnityEngine.Component[]",false);
   for(auto m:{api.toPath,api.load,api.done,api.error,api.get,api.dispose,api.components,api.goTransform,api.materials,api.texture,api.shader,api.width,api.height,api.mips,api.modelCom,api.released,api.getModel,api.getPath,api.remove,api.loadModel,api.instance,api.discard,api.follow,api.instanceId,api.isChild,api.parent,api.childCount,api.getChild,api.componentGo,api.directComponents})Require(m,"reload exact managed signature missing");
@@ -800,10 +890,67 @@ void VerifyAnimation(const Owner& owner,void* root){
  auto transform=Ref::Make(Call(RuntimeShapes::api.transform,animator.Get()),false),rootTransform=Ref::Make(Call(api.goTransform,root),false);void* args[]={rootTransform.Get()};
  Require(transform.Get()==rootTransform.Get()||RuntimeShapes::Scalar<unsigned char>(api.isChild,transform.Get(),args),"reload Animator still bound outside the current model root");
 }
+struct AnimationLinks {Ref mono,object,entity,animation,parentObject,parentEntity;};
+AnimationLinks ReadAnimationLinks(void* animation){
+ auto read=[](void* object,void* field){void* value=nullptr;if(object)il2cpp_field_get_value(object,field,&value);return Ref::Make(value,false);};
+ AnimationLinks links;links.mono=read(animation,animationLinkProbe.monoField);if(!links.mono.Get())return links;
+ links.object=read(links.mono.Get(),animationLinkProbe.objectField);links.entity=read(links.object.Get(),animationLinkProbe.ownerField);
+ links.animation=read(links.mono.Get(),animationLinkProbe.animationField);void* args[]={animationLinkProbe.objectType.Get()};
+ links.parentObject=Ref::Make(Call(animationLinkProbe.parentMethod,links.mono.Get(),args),false);links.parentEntity=read(links.parentObject.Get(),animationLinkProbe.ownerField);return links;
+}
+void TraceAnimationLinks(const Owner& owner,void* root,const char* phase){
+ if(!animationLinkProbe.ready||!owner.animation.Get())return;
+ try{auto links=ReadAnimationLinks(owner.animation.Get());
+  Log("[DEBUG-model-links] phase=%s path=%s rootId=%d entity=%p mono=%p cachedObject=%p cachedOwner=%p parentObject=%p parentOwner=%p boundAnimation=%p expectedAnimation=%p cachedOwnerMatches=%d parentOwnerMatches=%d animatorBindingMatches=%d",phase,owner.path.c_str(),Id(root),owner.entity.Get(),links.mono.Get(),links.object.Get(),links.entity.Get(),links.parentObject.Get(),links.parentEntity.Get(),links.animation.Get(),owner.animation.Get(),int(links.entity.Get()==owner.entity.Get()),int(links.parentEntity.Get()==owner.entity.Get()),int(links.animation.Get()==owner.animation.Get()));
+ }catch(const std::exception& e){Log("[DEBUG-model-links-GAP] phase=%s reason=%s reloadUnaffected=1",phase,e.what());}
+}
+struct SkinState {
+ struct Bounds {float center[3],extents[3];} bounds{};
+ size_t slots=0,missing=0,outside=0;int rootInside=-1,skinInside=-1;
+ bool enabled=false,active=false,forceOff=false;float span[3]{};std::string detail;
+};
+SkinState ReadSkinState(void* renderer,void* rootTransform){
+ SkinState state;auto owner=Ref::Make(Call(api.componentGo,renderer),false);
+ state.enabled=RuntimeShapes::Scalar<unsigned char>(RuntimeShapes::api.getEnabled,renderer)!=0;
+ state.active=RuntimeShapes::Scalar<unsigned char>(skinStateProbe.active,owner.Get())!=0;
+ state.forceOff=RuntimeShapes::Scalar<unsigned char>(skinStateProbe.forceOff,renderer)!=0;
+ state.bounds=RuntimeShapes::Scalar<SkinState::Bounds>(skinStateProbe.bounds,renderer);
+ auto inside=[&](void* node){if(!RuntimeShapes::Alive(node))return false;void* args[]={rootTransform};return node==rootTransform||RuntimeShapes::Scalar<unsigned char>(api.isChild,node,args)!=0;};
+ auto rootBone=Ref::Make(Call(RuntimeShapes::api.rootBone,renderer),false);if(rootBone.Get())state.rootInside=int(inside(rootBone.Get()));
+ if(RuntimeShapes::api.skinningRoot){auto skin=Ref::Make(Call(RuntimeShapes::api.skinningRoot,renderer),false);if(skin.Get())state.skinInside=int(inside(skin.Get()));}
+ auto array=Ref::Make(Call(RuntimeShapes::api.bones,renderer),false);auto bones=ReferenceArray(array.Get());state.slots=bones.size();
+ auto inverse=RuntimeShapes::Scalar<Matrix4x4>(RuntimeShapes::api.worldToLocal,rootTransform);
+ float minimum[3]={INFINITY,INFINITY,INFINITY},maximum[3]={-INFINITY,-INFINITY,-INFINITY};size_t live=0;
+ for(size_t i=0;i<bones.size();++i){auto bone=bones[i];if(!RuntimeShapes::Alive(bone)){++state.missing;continue;}++live;if(!inside(bone))++state.outside;
+  auto matrix=RuntimeShapes::Scalar<Matrix4x4>(RuntimeShapes::api.localToWorld,bone);float local[3];
+  for(size_t axis=0;axis<3;++axis){local[axis]=inverse.m[axis]*matrix.m[12]+inverse.m[axis+4]*matrix.m[13]+inverse.m[axis+8]*matrix.m[14]+inverse.m[axis+12];minimum[axis]=std::min(minimum[axis],local[axis]);maximum[axis]=std::max(maximum[axis],local[axis]);}
+  // Extra per-slot text for small palettes is a logging choice, not a resource limit.
+  if(bones.size()<=4){char position[128];snprintf(position,sizeof(position),"@%d:%.5g,%.5g,%.5g",Id(bone),local[0],local[1],local[2]);if(!state.detail.empty())state.detail+=';';state.detail+=String(Call(RuntimeShapes::api.name,bone))+position;}
+ }
+ if(live)for(size_t axis=0;axis<3;++axis)state.span[axis]=maximum[axis]-minimum[axis];return state;
+}
+void TraceSkinStates(void* root,const std::string& path,const std::vector<Ref>& renderers,const char* phase,ULONGLONG elapsed){
+ if(!skinStateProbe.ready)return;
+ try{if(!RuntimeShapes::Alive(root))return;auto transform=Ref::Make(Call(api.goTransform,root),false);
+  for(const auto& value:renderers){auto renderer=value.Get();if(!RuntimeShapes::Alive(renderer))continue;
+   auto mesh=Ref::Make(RuntimeShapes::SourceMesh(renderer),false);auto name=RuntimeShapes::Alive(mesh.Get())?String(Call(RuntimeShapes::api.name,mesh.Get())):"<null>";
+   auto state=ReadSkinState(renderer,transform.Get());
+   Log("[DEBUG-skin-state] phase=%s elapsedMs=%llu path=%s rootId=%d rendererId=%d mesh=%s enabled=%d active=%d forceOff=%d slots=%zu missing=%zu outside=%zu rootInside=%d skinInside=%d boneSpan=%.5g,%.5g,%.5g boundsCenter=%.5g,%.5g,%.5g boundsExtents=%.5g,%.5g,%.5g bones=%s",phase,(unsigned long long)elapsed,path.c_str(),Id(root),Id(renderer),name.c_str(),int(state.enabled),int(state.active),int(state.forceOff),state.slots,state.missing,state.outside,state.rootInside,state.skinInside,state.span[0],state.span[1],state.span[2],state.bounds.center[0],state.bounds.center[1],state.bounds.center[2],state.bounds.extents[0],state.bounds.extents[1],state.bounds.extents[2],state.detail.c_str());
+  }
+ }catch(const std::exception& e){Log("[DEBUG-skin-state-GAP] phase=%s reason=%s reloadUnaffected=1",phase,e.what());}
+}
+#include "eiem_entry_perform_probe.h"
 void CaptureConsumers(Owner& owner){
  if(owner.viewPart)return;
+ auto world=Ref::Make(ReadManager(api.world),false);
+ owner.performManager=Ref::Make(ReadBoundObject(api.performManager,world.Get()),false);
+ Require(owner.performManager.Get(),"reload character performance manager unavailable");
  owner.animation=Ref::Make(Call(api.animationCom,owner.entity.Get()),false);
  if(owner.animation.Get()){owner.animationData=Ref::Make(Call(api.animationData,owner.animation.Get()),false);Require(owner.animationData.Get(),"reload animation data unavailable");VerifyAnimation(owner,owner.root.Get());}
+ if(Inherits(owner.animation.Get(),"Beyond.Gameplay.View","CharacterAnimationComponent"))
+  Require(api.animationIdlePreload&&api.animationDashPreload,"reload native character performance preloads unavailable");
+ TraceAnimationLinks(owner,owner.root.Get(),"before-release");
+ TracePerformance(owner,"before-release",true);
  owner.weapons=Ref::Make(Call(api.weaponCom,owner.entity.Get()),false);
  // Entity.audioCom is the separate generic AudioComponent. The game's mode
  // change queries CharacterAudioComponent through its component registry.
@@ -813,17 +960,50 @@ void CaptureConsumers(Owner& owner){
  }
 }
 void ReleaseConsumers(const Owner& owner){
+ // A standby/interaction handle owns temporary objects and cached mount nodes
+ // separately from ModelComponent. End it while the old skeleton/Animator is
+ // still alive, as the game's character retirement does. The native method
+ // selects this entity's main, sub and follow handles; other entities and
+ // display-only model parts are unaffected. A null squad-switch reason forces
+ // ordinary cleanup rather than inheriting a handle across a squad operation.
+ if(owner.performManager.Get()){void* args[]={owner.entity.Get(),nullptr};Call(api.performExit,owner.performManager.Get(),args);Log("[FULL-RELOAD-PERFORM] path=%s gameEntityCleanup=1 beforeModelRelease=1",owner.path.c_str());}
+ TracePerformance(owner,"after-perform-exit");
  if(owner.weapons.Get()){unsigned char all=1;void* args[]={&all};Call(api.weaponUnload,owner.weapons.Get(),args);}
 }
+void ProbeWeaponState(const Owner& owner,const char* phase){
+ if(!api.weaponValid||!owner.weapons.Get())return;
+ try{
+  auto weapon=owner.weapons.Get(),klass=il2cpp_object_get_class(weapon);unsigned char loaded=0,none=0;
+  il2cpp_field_get_value(weapon,Field(klass,"m_weaponLoaded","System.Boolean"),&loaded);
+  il2cpp_field_get_value(weapon,Field(klass,"m_noWeapons","System.Boolean"),&none);
+  Log("[DEBUG-weapon-reload] phase=%s path=%s valid=%d nativeLoaded=%d noWeapons=%d",phase,owner.path.c_str(),int(RuntimeShapes::Scalar<unsigned char>(api.weaponValid,weapon)),int(loaded),int(none));
+ }catch(const std::exception& e){Log("[DEBUG-weapon-reload] phase=%s stateReadFailed=%s",phase,e.what());}
+}
 void ReloadConsumers(const Owner& owner,void* root){
- // AbilitySystem::_ApplyModeChange rebuilds model, then calls the game's
- // ChangeAnimationConfig(data, tryResumeAnimations=true), then remounts
- // weapons and invalidates audio's Transform references. Reuse that chain;
+ // Rebind animation through ChangeAnimationConfig with resume enabled, then
+ // follow AbilitySystem::_ApplyModeChange's audio and weapon ordering.
+ // Reuse the game's lifecycle;
  // no Animator state, controller pointers, bones or jobs are edited here.
  if(owner.animation.Get()){unsigned char resume=1;void* args[]={owner.animationData.Get(),&resume};
   Require(RuntimeShapes::Scalar<unsigned char>(api.animationChange,owner.animation.Get(),args),"game animation rebind failed");VerifyAnimation(owner,root);}
- if(owner.weapons.Get()){unsigned char all=1;void* args[]={&all};Call(api.weaponReload,owner.weapons.Get(),args);Call(api.weaponMounts,owner.weapons.Get());}
+ // ChangeAnimationConfig invokes CharacterAnimationComponent.ReleaseInternal,
+ // which clears born/custom perform preloads even when resuming animation.
+ // SetupAnimation does not repeat OnStart. Restore the two configured native
+ // preload lists from OnStart before gameplay can inherit its next temporary
+ // object; their resource handles must outlive the outgoing perform's loader.
+ // Do not replay all of OnStart (event subscriptions), pin assets ourselves,
+ // or suppress Bundle unload. The game selects paths and owns these handles.
+ if(!owner.viewPart&&Inherits(owner.animation.Get(),"Beyond.Gameplay.View","CharacterAnimationComponent")){
+  auto started=std::chrono::steady_clock::now();
+  Call(api.animationIdlePreload,owner.animation.Get());Call(api.animationDashPreload,owner.animation.Get());
+  Log("[FULL-RELOAD-PERFORM-PRELOAD] path=%s nativeConfiguredLists=1 elapsedMs=%.3f",owner.path.c_str(),std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count());
+ }
+ TraceAnimationLinks(owner,root,"after-rebind");
+ TracePerformance(owner,"after-rebind");
  if(owner.audio.Get())Call(api.audioInvalidate,owner.audio.Get());
+ // The game refreshes mount nodes before ReloadWeapon starts asynchronous
+ // model requests. Reversing them lets those requests retain retired nodes.
+ if(owner.weapons.Get()){ProbeWeaponState(owner,"before-remount");Call(api.weaponMounts,owner.weapons.Get());unsigned char all=1;void* args[]={&all};Call(api.weaponReload,owner.weapons.Get(),args);ProbeWeaponState(owner,"after-reload-request");}
  if(!owner.viewPart)Log("[FULL-RELOAD-CONSUMERS] path=%s animation=%d nativeConfigRebind=%d weapons=%d audio=%d",owner.path.c_str(),int(bool(owner.animation.Get())),int(bool(owner.animation.Get())),int(bool(owner.weapons.Get())),int(bool(owner.audio.Get())));
 }
 using AssetIdentity=std::map<std::string,std::pair<int,std::map<std::string,int>>>;
@@ -1125,11 +1305,13 @@ void Step(Attempt& a){
 }
 void Frame(){
  if(!enabled||!RuntimeShapes::Main())return;
+ TracePerformanceFrame();
+ TracePerformanceReleases();
  NativeBundle::CollectMemory();
  RetireSuperseded();
  std::shared_ptr<Prepared> next;{std::lock_guard<std::mutex> lock(mutex);next=pending;}
  if(next){
-  if(attempt&&attempt->prepared->pointer==next->pointer&&attempt->phase!=Phase::Drained&&attempt->phase!=Phase::Reject){std::lock_guard<std::mutex> lock(mutex);if(pending==next)pending.reset();}
+  if(attempt&&attempt->prepared->pointer==next->pointer&&attempt->phase!=Phase::Drained&&attempt->phase!=Phase::Reject){attempt->prepared->authorFiles=next->authorFiles;attempt->prepared->graph=next->graph;next->ruleInputs.clear();std::lock_guard<std::mutex> lock(mutex);if(pending==next)pending.reset();}
   else if(attempt&&attempt->phase!=Phase::Passed&&attempt->phase!=Phase::Drained){AbortUIStaging(*attempt);attempt->phase=Phase::Reject;}
   else{if(attempt){if(attempt->exposed||attempt->quarantined)retained.push_back(std::move(attempt));else attempt.reset();}
    {std::lock_guard<std::mutex> lock(mutex);if(pending==next)pending.reset();}

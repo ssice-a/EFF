@@ -2,6 +2,7 @@
 #include "eiem_entry_preferences.h"
 #include "eiem_shape_snapshot.h"
 #include "eiem_control_panel.h"
+#include "eiem_mod_key_settings.h"
 // Numeric author state has no dependency on Unity Meshes or capture lifetime.
 namespace RuntimeControls {
 struct Spec {
@@ -17,10 +18,11 @@ std::map<std::string,EiemVariables> variables;
 std::map<std::string,std::vector<Binding>> keys;
 std::shared_ptr<const std::vector<Package>> controlGraph;
 EiemEntryPreferences preferences;
+EiemModKeySettings keySettings;
 std::map<std::string,bool> held;
 EiemControlPanel::Store panel;
 std::string selected, uiHold;
-bool keyboard=true;
+std::map<std::string,bool> keySwitchEnabled;
 uint64_t revision=0, scopeRevision=0;
 struct State {
   std::map<std::string,Spec> specs;
@@ -29,7 +31,7 @@ struct State {
   std::map<std::string,bool> held;
   std::shared_ptr<const std::vector<Package>> graph;
   std::string selected;
-  bool keyboard=true;
+  std::map<std::string,bool> keySwitchEnabled;
   std::shared_ptr<EiemControlPanel::Snapshot> panelSnapshot;
 };
 bool Selectable(const Package& p) { return !p.bindings.empty() || !p.controls.empty(); }
@@ -42,13 +44,13 @@ void PreparePanel(State& state) {
     if (state.selected.empty()) for (const auto& p:*state.graph) if (Selectable(p)) {state.selected=p.id;break;}
   }
   state.panelSnapshot->selected=state.selected;
-  state.panelSnapshot->keyboard=state.keyboard;
+  state.panelSnapshot->keySwitchEnabled=state.keySwitchEnabled;
   state.panelSnapshot->values=state.variables;
 }
 void PublishPanel() {
   auto view=std::make_shared<EiemControlPanel::Snapshot>();
   view->revision=revision;view->scope=scopeRevision;view->selected=selected;
-  view->keyboard=keyboard;view->graph=controlGraph;view->values=variables;
+  view->keySwitchEnabled=keySwitchEnabled;view->graph=controlGraph;view->values=variables;
   panel.Publish(std::move(view));
 }
 bool Down(const EiemKeyChord& key) {
@@ -66,16 +68,12 @@ void PreviewPreferences(State& state) {
     catch(const std::exception& e) {Log("[CONTROL-STATE-GAP] load=%s reason=%s usingDefaults=1",p.id.c_str(),e.what());}
   }
 }
-State Prepare(const std::shared_ptr<const std::vector<Package>>& graph,const EiemGlobalConfig& config) {
+State Prepare(const std::shared_ptr<const std::vector<Package>>& graph,const EiemGlobalConfig&) {
   Require(bool(graph),"runtime control graph unavailable");
   State state;state.graph=graph;
   for (const auto& package:*graph) {
     state.variables[package.id]=package.defaults;state.keys[package.id]=package.bindings;
-    for(const auto& key:package.bindings)
-      // Chords permit additional modifiers, so bindings with the same base
-      // key can overlap even when their modifier lists differ.
-      Require(key.key.vk!=config.reload.vk && key.key.vk!=config.gui.vk,
-              "Mod key overlaps reserved global shortcut: "+package.id+"/"+key.id);
+    state.keySwitchEnabled[package.id]=keySettings.Preview(package);
     for(const auto& rule:package.rules) if(!rule.second.skip)
       for(const auto& target:rule.second.targets) for(const auto& partId:rule.second.parts) {
         const auto& part=package.parts.at(partId);const auto& mesh=package.meshes.at(part.mesh);
@@ -88,7 +86,7 @@ State Prepare(const std::shared_ptr<const std::vector<Package>>& graph,const Eie
 void Swap(State& state) noexcept {
   specs.swap(state.specs);variables.swap(state.variables);keys.swap(state.keys);
   held.swap(state.held);controlGraph.swap(state.graph);
-  selected.swap(state.selected);keyboard=state.keyboard;uiHold.clear();
+  selected.swap(state.selected);keySwitchEnabled.swap(state.keySwitchEnabled);uiHold.clear();
   ++revision;++scopeRevision;
   if(state.panelSnapshot) {
     state.panelSnapshot->revision=revision;state.panelSnapshot->scope=scopeRevision;
@@ -102,6 +100,7 @@ void LoadControls(const std::shared_ptr<const std::vector<Package>>& graph) {
 void MergeLive(State& next,bool (*sample)(const EiemKeyChord&)=Down) {
   Require(bool(next.graph) && sample,"reload controls candidate missing");
   for(const auto& p:*next.graph) {
+    next.keySwitchEnabled[p.id]=keySettings.Preview(p);
     const Package* previous=nullptr;
     if(controlGraph) for(const auto& old:*controlGraph) if(old.id==p.id && old.root==p.root) previous=&old;
     auto oldValues=variables.find(p.id);
@@ -112,7 +111,7 @@ void MergeLive(State& next,bool (*sample)(const EiemKeyChord&)=Down) {
     }
     for(const auto& key:p.bindings) next.held[p.id+"/"+key.id]=sample(key.key);
   }
-  next.selected.clear();next.keyboard=keyboard;
+  next.selected.clear();
   for(const auto& p:*next.graph) if(p.id==selected && Selectable(p)) {
     // A reused ID from another author directory is a different control owner.
     if(controlGraph) for(const auto& old:*controlGraph)
@@ -133,13 +132,20 @@ void PanelCommands(bool focused,bool (*sample)(const EiemKeyChord&)=Down) {
   bool publish=false;std::set<std::string> changed;
   for(const auto& command:panel.Drain()) {
     using EiemControlPanel::Action;
-    if(!focused || !panel.open || !controlGraph || command.revision!=revision || command.scope!=scopeRevision) continue;
+    if(!focused || !panel.open || !controlGraph || command.revision!=revision ||
+       (command.action!=Action::Keyboard && command.scope!=scopeRevision)) continue;
     const Package* owner=nullptr;
     for(const auto& p:*controlGraph) if(p.id==command.package && Selectable(p)) owner=&p;
     if(!owner) continue;
-    if(command.action==Action::Select || command.action==Action::Keyboard) {
-      if(command.action==Action::Select) selected=owner->id;
-      else {if(owner->id!=selected || (command.value!=0 && command.value!=1)) continue;keyboard=command.value!=0;}
+    if(command.action==Action::Keyboard){
+      if(owner->bindings.empty()||(command.value!=0&&command.value!=1))continue;
+      bool enabled=command.value!=0;if(keySwitchEnabled.at(owner->id)!=enabled){
+        keySwitchEnabled.at(owner->id)=enabled;keySettings.Capture(*owner,enabled);publish=true;
+        for(const auto& key:owner->bindings)held[owner->id+"/"+key.id]=sample(key.key);
+      }continue;
+    }
+    if(command.action==Action::Select) {
+      selected=owner->id;
       ++scopeRevision;uiHold.clear();
       // Resample every binding so selecting a target with a held chord cannot
       // turn it into a fresh cycle/press, even between polling frames.
@@ -178,13 +184,13 @@ void PollControls(bool focused,double elapsed,bool (*sample)(const EiemKeyChord&
     // Observe physical edges even while unfocused; returning to the game with
     // an already-held cycle key must not manufacture a new press.
     bool physical=sample(key.key),previous=held[id];held[id]=physical;
-    bool down=focused && keyboard && !panel.open && package.first==selected && physical;
+    bool down=focused && keySwitchEnabled.at(package.first) && !panel.open && physical;
     bool uiDown=focused && panel.open && package.first==selected && key.type=="hold" && key.id==uiHold;
     auto& value=variables.at(package.first).at(key.variable);double before=value;
     if (uiDown || down && (key.type=="hold" || !previous)) value=Advance(key,value,elapsed);
     if (before!=value) changed.insert(package.first);
     if (physical!=previous || before!=value && key.type!="hold")
-      Log("[CONTROL-RUNTIME-KEY] package=%s binding=%s vk=%u down=%d focused=%d selected=%d keyboard=%d panel=%d value=%.6g",package.first.c_str(),key.id.c_str(),key.key.vk,int(physical),int(focused),int(package.first==selected),int(keyboard),int(panel.open.load()),value);
+      Log("[CONTROL-RUNTIME-KEY] package=%s binding=%s vk=%u down=%d focused=%d enabled=%d panel=%d value=%.6g",package.first.c_str(),key.id.c_str(),key.key.vk,int(physical),int(focused),int(keySwitchEnabled.at(package.first)),int(panel.open.load()),value);
   }
   Capture(changed);if(!changed.empty()) PublishPanel();
 }

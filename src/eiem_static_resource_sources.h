@@ -113,24 +113,12 @@ inline void Ensure(const Selection& s,const std::filesystem::path& baseline,cons
   while(std::getline(rows,row)){auto fields=TabFields(EiemOfflineCompile::Trim(row));Require(fields.size()==5,"prior static source range differs");if(!previous.count(fields[0]))continue;Require(fields[4]==previous.at(fields[0]).hash,"prior static source digest differs");Require(previousRanges.emplace(fields[0],EiemOfflineCompile::Trim(row)+"\n").second,"duplicate prior source range");}
  }
  for(const auto& m:package.materials)add(m.second.source.path);for(const auto& t:package.textures)add(t.second.source.path);
- // Custom textures use the original material slot only as a serialization
- // template. Locate those exact texture CABs, without copying shader/audio or
- // every forward dependency of the Prefab.
- std::map<std::string,EndfieldInput::Bundle> inspected;
- auto inspect=[&](const std::string& source)->const EndfieldInput::Bundle&{auto it=inspected.find(source);if(it==inspected.end())it=inspected.emplace(source,EndfieldInput::Decode(Payload(s.inputs.at(source)))).first;return it->second;};
- for(const auto& material:package.materials){auto source=s.assets.at(Logical(material.second.source.path));const auto& bundle=inspect(source);
-  for(const auto& member:bundle.members)if(SerializedHeader(member.bytes)){auto l=ParseSerialized(member.bytes);
-   for(const auto& asset:SerializedAssets(member.bytes,member.name,l))if(asset.classId==21&&Logical(asset.path)==Logical(material.second.source.path)&&asset.asset==material.second.source.asset){
-    const auto& t=l.types.at(l.objects.at(asset.pathId).type);auto v=ObjectValue(member.bytes,l,asset.pathId);
-    for(const auto& env:ConstArray(t,Child(t,Child(t,v,"m_SavedProperties"),"m_TexEnvs")).children){const auto& key=Child(t,env,"first");auto label=Text(key.raw.data(),key.raw.size());auto selected=material.second.textures.find(label);if(selected==material.second.textures.end()||!package.textures.at(selected->second).source.path.empty())continue;
-     auto ref=NullableReference(t,Child(t,Child(t,env,"second"),"m_Texture"),l,member.name);bool found=false;
-     auto dependencies=s.dependencies.find(source);Require(dependencies!=s.dependencies.end(),"material source dependency locators absent");auto possible=dependencies->second;possible.insert(source);
-     for(const auto& candidate:possible){for(const auto& m:inspect(candidate).members)if(Cab(m.name)==Cab(ref.first)){d.sources.insert(candidate);found=true;break;}if(found)break;}
-     Require(found,"material texture serialization template not located: "+label);
-    }
-   }
-  }
- }
+ // Keep inherited textures and Shader dependencies of borrowed Materials.
+ // This selects game file ranges, never copies original pixels into the Mod.
+ std::set<std::string> materialSources;
+ for(const auto& material:package.materials)materialSources.insert(s.assets.at(Logical(material.second.source.path)));
+ auto materialClosure=Closure(s,std::move(materialSources));
+ d.sources.insert(materialClosure.begin(),materialClosure.end());
  if(d.roots.empty())return;auto sources=std::move(d.sources);std::filesystem::create_directories(baseline);std::string table="EFF_RESOURCE_RELOAD_BASELINE\t1\n",ranges="EFF_RESOURCE_SOURCE_RANGES\t1\n";
  auto game=gameRoot.empty()?baseline.parent_path().parent_path():gameRoot;
  auto sourceRow=[&](const EiemResourceReloadPlan::Source& entry){auto relative=entry.physical.lexically_relative(game).u8string();Require(!relative.empty()&&relative.find("..") ==std::string::npos,"rule original outside game");return "input\t"+entry.file+"\t"+entry.hash+"\t"+relative+"\t"+std::to_string(entry.offset)+"\t"+std::to_string(entry.size)+"\n";};

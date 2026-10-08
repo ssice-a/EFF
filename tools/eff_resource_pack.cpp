@@ -9,7 +9,7 @@ void SourceRequest(const Package& p){
  std::cout<<"{\"sources\":[";bool first=true;for(const auto& row:sources){if(!first)std::cout<<',';first=false;std::cout<<"{\"kind\":"<<JsonString(row.second)<<",\"path\":"<<JsonString(row.first.path)<<",\"asset\":"<<JsonString(row.first.asset)<<'}';}std::cout<<"]}"<<std::endl;
 }
 int wmain(int argc,wchar_t** argv){try{
- if(argc==4&&std::wstring(argv[1])==L"--export-mod"){EiemCompiledModWriter::Export(std::filesystem::canonical(argv[2]),std::filesystem::canonical(argv[3]));std::cout<<"COMPILED-MOD-PUBLISHED"<<std::endl;return 0;}
+ if(argc==4&&std::wstring(argv[1])==L"--export-mod"){std::map<std::string,double> costs;std::mutex costsMutex;auto start=std::chrono::steady_clock::now();EiemCompiledModWriter::Export(std::filesystem::canonical(argv[2]),std::filesystem::canonical(argv[3]),[&](const char* name,double elapsed){std::lock_guard<std::mutex> lock(costsMutex);costs[name]+=elapsed;});for(const auto& row:costs)std::cout<<"COMPILED-MOD-COST "<<row.first<<' '<<row.second<<'\n';std::cout<<"COMPILED-MOD-COST total "<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<<"\nCOMPILED-MOD-PUBLISHED"<<std::endl;return 0;}
  if(argc==3&&std::wstring(argv[1])==L"--source-request"){SourceRequest(Load(argv[2]));return 0;}
  if(argc==2&&std::wstring(argv[1])==L"--protocol") {
   std::cout<<"{\"format\":\"EFF_OFFLINE_PACKAGE_PROTOCOL\",\"version\":1,\"abi\":"<<EiemPackageProtocol::abi

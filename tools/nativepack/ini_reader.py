@@ -47,7 +47,7 @@ def read_package(root, resource_cache=None):
         return [dict(row, file=relative) for row in resource["descriptors"] if not row["name"].startswith("@")]
 
     require("Mod" in ini and "Constants" in ini, "Mod/Constants sections are required")
-    mod = keys("Mod", ("format", "id"))
+    mod = keys("Mod", ("format", "id"), ("key_switch_enabled",))
     identifier(mod["id"])
     known = {"Mod", "Constants"}
     states, persistence = {}, set()
@@ -201,12 +201,19 @@ def read_package(root, resource_cache=None):
             control = shape_controls[variable]
             require(all(control["minimum"] <= v <= control["maximum"] for b in bindings if b["variable"] == variable for v in b["values"]),
                     "shape key target outside control range")
-    if (root / "source-inputs.bin").is_file():
-        allowed.add("source-inputs.bin")
+    for generated in ("source-inputs.bin", "compiled.bin"):
+        if (root / generated).is_file():
+            allowed.add(generated)
     actual = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()
               and not re.fullmatch(r"state\.ini(?:\.tmp-[0-9]+)?", p.relative_to(root).as_posix())
               and p.suffix.lower() not in (".png", ".psd") and p.name.lower() != "eff_texture_convert.exe"}
     require(actual == allowed, "unreferenced/source files in Mod directory: " + str(sorted(actual ^ allowed)))
-    return dict(format="EFF_NATIVE_MOD_DIRECTORY", version=2, modId=mod["id"], parts=parts, materials=materials,
+    return dict(format="EFF_NATIVE_MOD_DIRECTORY", version=2, modId=mod["id"], keySwitchEnabled=key_switch_enabled(mod.get("key_switch_enabled", "1")), parts=parts, materials=materials,
                 textures=textures, rules=rules, states=states, persistentStates=persistence, keyBindings=bindings,
                 shapeControls=controls, _resources=resources, _files=allowed)
+
+
+def key_switch_enabled(value="1"):
+    value = str(value).lower()
+    require(value in ("0", "1", "false", "true"), "key_switch_enabled must be 0/1 or false/true")
+    return value in ("1", "true")

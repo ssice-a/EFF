@@ -1062,15 +1062,25 @@ void *__fastcall StreamAsync(void *input, uint32_t crc, uint32_t bufferSize,
 #include "eiem_entry_reload_observation.h"
 #include "eiem_entry_loading_observation.h"
 #include "eiem_native_bundle_loader.h"
+#include "eiem_entry_bundle_dependencies.h"
 void CompleteRuleInput(void* request,void* bundle){NativeBundle::CompleteMemory(request,bundle);}
+struct StartupArray {std::weak_ptr<const EiemDirectory::Bytes> packet;RuntimeShapes::Ref array;};
+std::mutex startupArrayMutex;std::map<const EiemDirectory::Bytes*,StartupArray> startupArrays;
 void* LoadRuleInput(void* path,uint32_t callerCrc,uint64_t offset,bool asynchronous,bool& matched){
  auto rules=std::atomic_load(&resourceRules);if(!rules)return nullptr;auto label=EiemNativeInput::InputPath(String(path));
  for(size_t i=0;i<rules->plan->originals.size();++i){const auto& source=rules->plan->originals[i];if(source.offset!=offset||EiemNativeInput::InputPath(source.physical.u8string())!=label)continue;
-  Require(callerCrc==0,"runtime rules require caller CRC zero");Require(NativeBundle::enabled,"runtime rule memory bindings not ready");auto bytes=rules->Materialize(i,false);auto array=NativeBundle::Array(bytes);auto result=NativeBundle::LoadMemory(array.Get(),0,asynchronous);
+  if(rules->plan->startupHashes.at(i)==source.hash)return nullptr;
+  auto begin=std::chrono::steady_clock::now();Require(callerCrc==0,"runtime rules require caller CRC zero");Require(NativeBundle::enabled,"runtime rule memory bindings not ready");
+  auto ready=rules->startupInputs.find(i);RuntimeShapes::Ref array;bool reused=false;size_t nativeBytes=0;
+  if(ready!=rules->startupInputs.end()){std::lock_guard<std::mutex> lock(startupArrayMutex);auto found=startupArrays.find(ready->second.get());if(found!=startupArrays.end()&&found->second.packet.lock()==ready->second){auto object=found->second.array.Get();if(object){array=RuntimeShapes::Ref::Make(object,false);reused=true;ArrayLength(object,&nativeBytes);}}}
+  std::shared_ptr<const Bytes> bytes;if(!reused){bytes=ready==rules->startupInputs.end()?std::make_shared<const Bytes>(rules->Materialize(i,false)):rules->startupInputsPacked?std::make_shared<const Bytes>(EiemCompiledMod::Unpack(*ready->second)):ready->second;nativeBytes=bytes->size();}auto prepared=std::chrono::steady_clock::now();
+  if(!reused)array=NativeBundle::Array(*bytes);auto uploaded=std::chrono::steady_clock::now();auto result=NativeBundle::LoadMemory(array.Get(),0,asynchronous);auto submitted=std::chrono::steady_clock::now();
   Require(result,"runtime rule Bundle load returned null");
+  if(!reused&&ready!=rules->startupInputs.end()){std::lock_guard<std::mutex> lock(startupArrayMutex);for(auto it=startupArrays.begin();it!=startupArrays.end();)if(it->second.packet.expired())it=startupArrays.erase(it);else ++it;startupArrays[ready->second.get()]={ready->second,RuntimeShapes::Ref::Make(array.Get(),true)};}
   Observe([&]{{std::lock_guard<std::mutex> lock(submissionMutex);if(asynchronous)submittedRequests[result]=source.file;else{submittedBundles[result]=source.file;++completedInputs;}}++submittedInputs;
    LoadingObservation::Submitted(result,source.file,generation.load(),asynchronous,rules->plan->startupHashes.at(i));});
-  Log("[ENTRY-RULE-SUBMIT] input=%s rendererRules=%zu sourceBytes=%llu nativeBytes=%zu fullPrefabFile=0 archiveMemoryStream=1 async=%d",source.file.c_str(),rules->plan->rendererRules[i].size(),source.size,bytes.size(),int(asynchronous));matched=true;return result;
+  auto ms=[](auto a,auto b){return std::chrono::duration<double,std::milli>(b-a).count();};
+  Log("[ENTRY-RULE-SUBMIT] input=%s rendererRules=%zu sourceBytes=%llu nativeBytes=%zu startupCached=%d arrayReused=%d replayMs=%.3f uploadMs=%.3f nativeSubmitMs=%.3f fullPrefabFile=0 archiveMemoryStream=1 async=%d",source.file.c_str(),rules->plan->rendererRules[i].size(),source.size,nativeBytes,int(ready!=rules->startupInputs.end()),int(reused),ms(begin,prepared),ms(prepared,uploaded),ms(uploaded,submitted),int(asynchronous));matched=true;return result;
  }return nullptr;
 }
 #include "eiem_entry_full_resource_reload.h"
@@ -1083,6 +1093,7 @@ void InstallHooks(void **assemblies, size_t count) {
   CaptureObservation::InstallOptional(assemblies, count);
   RuntimeShapes::Arm();
   NativeBundle::Install(assemblies,count);
+  StartupDependencies::Install(assemblies,count);
   auto vfsClass =
       FindClass("Beyond.VFS", "VirtualFileSystem", assemblies, count);
   auto readClass =
@@ -1463,6 +1474,7 @@ DWORD StartImpl() {
       Observe([&]{LoadingObservation::Counters();});
     }
     RuntimeControls::preferences.Flush(Log);
+    RuntimeControls::keySettings.Flush(Log);
     Sleep(25);
   }
 }

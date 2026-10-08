@@ -97,7 +97,7 @@ jobs:
         $buildRoot = "bin/resource-directory-entry-v35"
         Copy-Item "$buildRoot/eff.dll", "$buildRoot/eff.ini", "$buildRoot/package-protocol.json" -Destination $pluginRoot
         Copy-Item "$buildRoot/d3dcompiler_47.dll", "$buildRoot/vulkan-1.dll" -Destination $gameRoot
-        Copy-Item README.md,README_EN.md,LICENSE,THIRD_PARTY_NOTICES -Destination $gameRoot
+        Copy-Item LICENSE,THIRD_PARTY_NOTICES -Destination $pluginRoot
         $archivePath = "EFF_${tag}_dll.zip"
         Compress-Archive -Path "$gameRoot\*" -DestinationPath $archivePath -Force
         Add-Type -AssemblyName System.IO.Compression
@@ -126,7 +126,7 @@ jobs:
           $expectedFiles = @(
             'plugin/eff.dll', 'plugin/eff.ini', 'plugin/package-protocol.json',
             'd3dcompiler_47.dll', 'vulkan-1.dll',
-            'README.md', 'README_EN.md', 'LICENSE', 'THIRD_PARTY_NOTICES'
+            'plugin/LICENSE', 'plugin/THIRD_PARTY_NOTICES'
           )
           $actualFiles = @($archiveNames | Where-Object { -not $_.EndsWith('/') })
           if (@(Compare-Object $expectedFiles $actualFiles).Count -ne 0) {

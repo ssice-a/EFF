@@ -133,7 +133,7 @@ int main(int argc,char** argv) {
     for(auto& key:domain.bindings) if(key.variable==shape) key.values={.1};
     auto state=RuntimeControls::Prepare(Graph(domain),config);RuntimeControls::MergeLive(state,Sample);
     Require(state.variables.at(package.id).at(shape)==.1,"out-of-domain persistent value retained");
-    for(int scenario=0;scenario<7;++scenario) {
+    for(int scenario=0;scenario<6;++scenario) {
       auto invalid=removed;auto reserved=config;
       if(scenario==0) invalid.meshes.erase(invalid.meshes.begin());
       if(scenario==1) invalid.materials.begin()->second.textures["_BaseMap"]="different";
@@ -141,10 +141,11 @@ int main(int argc,char** argv) {
       if(scenario==3) invalid.parts.at(part).material="different";
       if(scenario==4) invalid.rules.begin()->second.skip=!invalid.rules.begin()->second.skip;
       if(scenario==5) {auto resource=std::make_shared<Resource>(*invalid.resources.begin()->second);resource->bytes.back()^=1;invalid.resources.begin()->second=resource;}
-      if(scenario==6) reserved.reload=invalid.bindings.front().key;
       bool rejected=false;try {EntryReload::Validate(Graph(invalid),reserved);}catch(const std::exception&){rejected=true;}
-      Require(rejected && generation==42 && std::atomic_load(&published)==beforeGraph,"changed native contract/reserved key accepted or old generation lost");
+      Require(rejected && generation==42 && std::atomic_load(&published)==beforeGraph,"changed native contract accepted or old generation lost");
     }
+    auto sharedKey=config;sharedKey.reload=removed.bindings.front().key;
+    EntryReload::Validate(Graph(removed),sharedKey);
     Save(temp/"mod.ini","[Mod]\nformat=bad\n");bool parseRejected=false;try {EiemDirectory::Load(temp);}catch(const std::exception&){parseRejected=true;}
     Require(parseRejected && generation==42,"invalid INI accepted/published");
     {std::lock_guard<std::mutex> lock(EntryReload::mutex);EntryReload::pending=failing;}
@@ -170,6 +171,6 @@ int main(int argc,char** argv) {
     for(const auto& file:original.resources) {auto path=temp/std::filesystem::u8path(file.first);std::filesystem::remove(path);folders.insert(path.parent_path());}
     for(const auto& folder:folders) std::filesystem::remove(folder);std::filesystem::remove(temp);
     std::filesystem::remove(sandbox/"plugin/mods");std::filesystem::remove(sandbox/"plugin/eff.ini");std::filesystem::remove(sandbox/"plugin");std::filesystem::remove(sandbox);
-    std::cout<<"PASS entry configuration reload: actual LZY INI/v3 table; all 43 declared identities; worker/main publication and actual frame deduplication; keys/constant visibility; live persist/domain/defaults; removed shape reset; held edges; injected AFTER-write rollback; stale/invalid/reserved/resource contracts rejected; active snapshots retained; 60 loading rows retained\n";
+    std::cout<<"PASS entry configuration reload: actual LZY INI/v3 table; all 43 declared identities; worker/main publication and actual frame deduplication; keys/constant visibility; live persist/domain/defaults; removed shape reset; held edges; injected AFTER-write rollback; stale/invalid/resource contracts rejected; shared keys accepted; active snapshots retained; 60 loading rows retained\n";
   } catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }
