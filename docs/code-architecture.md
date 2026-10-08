@@ -25,7 +25,7 @@ AnimeStudio source exchange + existing author index
 | Static source selection | `eiem_static_resource_sources.h` (compiler), `StaticModSourceCommand.cs` (author tool) | Reuse the existing author index, read selected game ranges, resolve exact Mesh/Prefab consumers before publication; no runtime catalog queries |
 | Offline assembly | `eiem_mesh_input_builder.h`, `eiem_renderer_input_builder.h`, `eiem_texture_input_builder.h` | Build geometry, Renderer expansion and Material/Texture references outside the game frame |
 | Package and cache | `eiem_composed_package.h`, `eiem_loading_generation.h`, `eiem_resource_reload_plan.h`, `eiem_offline_resource_package.h`, `eiem_offline_cache.h`, `eiem_package_protocol.h` | Author-set composition, complete generation, field contracts, hashes, assembly expectations, cache ownership and publication |
-| Native transaction | `eiem_native_bundle_loader.h`, `eiem_entry_full_resource_reload.h` | Hold files/GC roots, load isolated Bundle/PFB closure, verify and migrate known game owners |
+| Native transaction | `eiem_native_bundle_loader.h`, `eiem_entry_full_resource_reload.h`, `eiem_entry_ui_models.h` | Hold files/GC roots, load isolated Bundle/PFB closure, verify and migrate known game owners |
 | Controls/settings | `eiem_entry_controls.h`, `eiem_entry_preferences.h`, `eiem_entry_reload.h`, `eiem_global_settings.h`, `eiem_entry_settings.h` | Shared Mod numbers, independent Renderer bindings, persistent preferences and settings publication |
 | Built-in panel | `eiem_control_panel.h`, `eiem_control_panel_win32.h` | Immutable snapshots, bounded versioned commands, selected-Mod input scope and independent native Windows controls |
 | Shapes/capture | `eiem_entry_runtime_shapes.h`, `eiem_entry_capture_observation.h` | Public visibility/shape operations and native capture adaptation |
@@ -72,6 +72,41 @@ game model, alongside the native material-controller Init callback. F10 restores
 bindings after model/control publication or rollback; native Init does not enter
 another frame transaction. There is no periodic global Renderer scan or arbitrary
 Renderer-list capacity limit.
+
+UIModelLoader is a separate game owner. Native completion registers the exact
+loaded root, and the loader dictionary confirms handle ownership. UI key control
+registration does not depend on the Lua page-transfer API. The adapter obtains
+the game's LuaManager instance and calls its instance DoString method. Its
+embedded chunk uses the game's current LuaCypher key and XXTEA encoder because
+the native loadbuffer decrypts scripts. A full game-codec round trip precedes
+the first load; the returned LuaFunction factory is cached. No key or script
+file is bundled. Missing page APIs reject matching F10 owners before mutation.
+Loader ownership is not
+proof that a page owns that root. PhaseBase's loader callback resumes a one-shot
+coroutine; BindGameObject, layer setup and the page initializer run after the
+wait. Replaying the callback after its coroutine finished cannot reload a page.
+
+F10 records the actual PhaseCharItem which holds the root in the loader's game
+phase. Phase item collections also contain panels and scenery, so the adapter
+checks the game's HL.Is type before reading character fields, uses actual stack
+bounds and HL.TryGet for optional page fields. Lua call failures preserve their
+managed exception message. A fresh LoadModelAsync request has no old coroutine callback. The native
+completion and exact request proxy are retained across frames while the old
+world/UI instances remain visible. After all candidates pass resource checks,
+normal native completion accepts the handle and parent. The existing page item
+calls its game's BindGameObject API for the new root; public model APIs restore
+layer, position, visibility, animation parameters/states, weapon, decoration and
+configured light follower. Page and formation-cache item identity is preserved.
+Only successful page binding plus control publication permits old-root unload.
+A rejected page binding retains the original display; partial UI/world transfers
+roll back. Cancelled native jobs drain before candidate retirement. Public routes
+stay unchanged during the wait, and only each actual request proxy gets its
+prepared prefab. Ordinary loads and unrelated proxies use normal routing.
+
+There are no private native/Animator pointer writes, no replay of finished
+coroutines and no global Renderer scan. Instances without an actual page-item
+adapter reject before mutation. Game visual/animation validation is still
+pending; native and Lua seam regressions are not visual acceptance.
 
 When no full-resource package is configured, `eiem_entry_reload.h` only accepts
 configuration/control changes with an unchanged native input contract. This

@@ -4,7 +4,7 @@
 
 EFF 在《明日方舟：终末地》创建资源和实例前应用 Mod。AnimeStudio 导出来源，Blender 制作并编译独立 Mod，EFF DLL 读取结果并完成游戏内加载与热重载。
 
-配套发布：**EFF v1.3.1、EFF Blender v0.40.1、AnimeStudio v1.3.1**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
+配套发布：**EFF v1.3.2、EFF Blender v0.40.1、AnimeStudio v1.3.1**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
 
 ## 功能
 
@@ -16,7 +16,7 @@ EFF 在《明日方舟：终末地》创建资源和实例前应用 Mod。AnimeS
 
 ## 安装
 
-从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v1.3.1_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和各 Mod 的 `state.ini`。
+从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v1.3.2_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和各 Mod 的 `state.ini`。
 
 ```text
 d3dcompiler_47.dll
@@ -45,6 +45,8 @@ DLL 包不包含编译器、AnimeStudio 运行库或来源工具。已有安装�
 2. 按 **Ins** 选择要控制的 Mod，关闭面板后使用其按键切换款式或形态。选择不影响其他角色加载资源。
 3. 从 Blender 导出修改、添加或删除 Mod 后，按 **F10** 提交当前完整集合。空集合恢复原版；模型尚在异步加载时请待加载完成后重试。
 
+同一 Mod 的 UI 与大世界模型共用切换值。UI 原地刷新通过游戏加载器和页面项的模型绑定流程完成，保留旧人物直到候选校验、页面绑定和控制发布完成；无法确认页面归属的实例会在修改前拒绝刷新。
+
 F10 更新 Mod 资源和规则；DLL 代码更新需要退出并重启游戏。全局设置位于 `plugin/eff.ini`：
 
 ```ini
@@ -69,7 +71,7 @@ disable_camera_fade=true
 
 ## 验证边界
 
-离线回归覆盖同 PFB 多 Mod、增删恢复、流偏移、静态网格、连续世界/展示重载、动画消费者与回滚。新职责划分已通过构建和真实 LZY 离线回放，实机画面需单独验证。独立人群 NPC/场景物件的原地 F10、完整多代资源退休和 20–30 个 Mod 的压力尚未验证；数量不等于同时渲染数量。全 LOD 导出不会自动减面。Skeleton/Physics 作者工具尚未接入完整游戏模拟链。详细边界见[热重载验收](docs/hot-reload-testing.md)。
+离线回归覆盖同 PFB 多 Mod、增删恢复、流偏移、静态网格、连续世界/展示重载、动画消费者与回滚。v1.3.2 实机连续四次 F10 完成世界/UI 资源提交与页面引用更新，耗时约 97–100 ms；UI 最终画面、动作及显隐仍待确认。独立人群 NPC/场景物件的原地 F10、完整多代资源退休和 20–30 个 Mod 的压力尚未验证；数量不等于同时渲染数量。全 LOD 导出不会自动减面。Skeleton/Physics 作者工具尚未接入完整游戏模拟链。详细边界见[热重载验收](docs/hot-reload-testing.md)。
 
 ## 致谢与许可
 

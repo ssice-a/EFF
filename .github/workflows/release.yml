@@ -64,6 +64,12 @@ jobs:
         & bin/compiled-mod-set/compiled_mod_set_smoke.exe
         if ($LASTEXITCODE -ne 0) { throw 'Compiled Mod test failed' }
 
+    - name: Verify game UI page binding
+      shell: pwsh
+      run: |
+        cmd /c tools\diagnostics\build_ui_page_bind_smoke.cmd
+        if ($LASTEXITCODE -ne 0) { throw 'UI page binding test failed' }
+
     - name: Verify static Mesh consumers and assembly
       shell: pwsh
       run: |
@@ -116,6 +122,15 @@ jobs:
           })
           if (-not ($archiveNames -contains "plugin/mods/")) {
             throw "Release archive is missing the empty plugin/mods directory"
+          }
+          $expectedFiles = @(
+            'plugin/eff.dll', 'plugin/eff.ini', 'plugin/package-protocol.json',
+            'd3dcompiler_47.dll', 'vulkan-1.dll',
+            'README.md', 'README_EN.md', 'LICENSE', 'THIRD_PARTY_NOTICES'
+          )
+          $actualFiles = @($archiveNames | Where-Object { -not $_.EndsWith('/') })
+          if (@(Compare-Object $expectedFiles $actualFiles).Count -ne 0) {
+            throw 'Release archive must contain one runtime DLL variant and only its install files'
           }
         } finally {
           $archive.Dispose()

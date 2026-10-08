@@ -4,11 +4,11 @@
 
 AnimeStudio exports source assets and templates. Blender creates and compiles each independent Mod. EFF applies the compiled rules before the game creates resources and uses the game's model lifecycle for reloads.
 
-Paired releases: **EFF v1.3.1, EFF Blender v0.40.1, AnimeStudio v1.3.1**. There is one production DLL package. Compatibility follows byte structures, fields, source hashes and references.
+Paired releases: **EFF v1.3.2, EFF Blender v0.40.1, AnimeStudio v1.3.1**. There is one production DLL package. Compatibility follows byte structures, fields, source hashes and references.
 
 ## Install
 
-Download `EFF_v1.3.1_dll.zip` from [Releases](https://github.com/ssice-a/EFF/releases), quit the game and extract beside `Endfield.exe`. Preserve `plugin/eff.ini`, your Mods and their `state.ini` when upgrading.
+Download `EFF_v1.3.2_dll.zip` from [Releases](https://github.com/ssice-a/EFF/releases), quit the game and extract beside `Endfield.exe`. Preserve `plugin/eff.ini`, your Mods and their `state.ini` when upgrading.
 
 ```text
 d3dcompiler_47.dll
@@ -37,6 +37,11 @@ The DLL distribution has no compiler, source tools or AnimeStudio libraries. Pre
 - **Ins** opens the panel and selects the Mod receiving physical keys. The first controllable Mod is selected by default. Key switches, shape controls and saved player values remain supported.
 - **F10** reads the full current Mod set, handles additions/removals/changes and the empty set, and reloads supported world/display owners with animation, weapon and audio rebinding. Failed preparation or submission keeps the current generation.
 
+UI and world instances of a Mod share control values. UI reload uses the game's
+loader and page item binding, retaining the displayed model until candidate
+verification, page binding and control publication complete. Instances without
+a verified page owner reject reload before mutation.
+
 DLL updates require a game restart. Wait for active model loads to finish before requesting reload. Global shortcuts and camera fade behavior are configured in `plugin/eff.ini`.
 
 ## Author workflow
@@ -52,7 +57,7 @@ Complete original bundles are not saved in the Mod. The measured LZY folder grew
 
 ## Validation limits
 
-Regression checks cover shared-PFB composition, removals, stream relocation, static Meshes, sequential world/display reloads, animation consumers and rollback. The new separation passes builds and real LZY offline replay; in-game visuals require separate validation. Independent crowd NPC/scene-object refresh, complete generation retirement and 20–30 Mod pressure remain unverified. Exporting all LOD targets does not generate reduced geometry. Skeleton/Physics author support is not connected to the complete game simulation chain.
+Regression checks cover shared-PFB composition, removals, stream relocation, static Meshes, sequential world/display reloads, animation consumers and rollback. Four consecutive in-game v1.3.2 reloads committed world/UI resources and transferred page references in about 97–100 ms; final UI visuals, animation and visibility still require confirmation. Independent crowd NPC/scene-object refresh, complete generation retirement and 20–30 Mod pressure remain unverified. Exporting all LOD targets does not generate reduced geometry. Skeleton/Physics author support is not connected to the complete game simulation chain.
 
 ## Credits and license
 

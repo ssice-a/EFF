@@ -1,3 +1,67 @@
+## 2026-10-08 UI 页面项类型与角色切换
+
+编码候选的实机 PID 32416 已启用全部 UI 接口，10:28:13 世界 F10 提交 generation 2；随后 UI 根 -342026 登记 controlsReady=15。10:28:16 的 UI F10 已记录 gameCodec=1、roundTripVerified=1、factoryReturned=1，说明编码与工厂加载通过；下一次 Lua 调用抛出 managed exception，仍未提交 UI 事务，原代 2 保留。此次日志尚未包含异常原文，不能据此写为 UI 显示、动作或刷新通过。
+
+只读游戏脚本确认 m_phaseItems 是混合集合，含 PhasePanelItem、PhaseGameObjectItem 与 PhaseCharItem；PhasePanelItem 未声明 go，HL 的类型检查不等同于普通 Lua table 的缺字段返回 nil。旧适配器逐项读取 candidate.go。加入混合项与严格成员读取的生产 Lua 回归后复现 `HyperLua undeclared panel member: go`。这锁定了真实集合结构下的一条失败路径，但此前实机泛化异常未能证明其完整内容。
+
+新候选使用游戏 HL.Is 与真实 PhaseCharItem 类型筛选，再核对模型、页面和加载器；栈按实际 BottomIndex/TopIndex 遍历，灯光映射通过游戏 HL.TryGet 读取可选成员。LuaFunction.Call 的异常通过 System.Exception.get_Message 保留原文，失败前仍保留旧人物。回归覆盖混合页面项、非默认栈下标、没有灯光字段的页面、连续绑定、显隐/动画和失败回滚。
+
+用户提出切换角色再切回：游戏 PhaseCharInfo._RefreshCharModel 确实先 RemoveAllPhaseCharItems 再 CreatePhaseCharItem，已提交资源会在重新创建时使用。PhaseCharFormation 则使用 m_charModelCache，切换可能复用旧实例。手动切换不等于提交新 Mod 集合，也不能替代编队缓存与当前 UI 的 F10 验收。
+
+类型筛选候选已在游戏退出时部署：eff.dll SHA256 `752B5861A4559B316AEF642FF5B6681DBACED892DE2044D61EC6566A1A2F5E85`（1,479,680 字节）。生产 v35 构建、v35/v36 完整事务回归、生产内嵌 Lua 混合页面项回归与 diff 检查通过；34 个 Mod/配置/协议文件前后校验未变。未重导出、未保存工程或修改游戏脚本。UI 画面和 F10 仍待实机，v1.3.2 未发布。
+
+## 2026-10-08 UI 适配器脚本加载格式
+
+签名修正版的实机 PID 36172 已启用 UI-LIFECYCLE 与 UI-PAGE-API；10:18:03 的 UI-READY 记录实际根 -322454，controlsReady=15。后续小键盘按键触发这些 UI Renderer 的显隐写入，与世界实例共用控制值。这证明 UI 控制登记与写入已发生；用户仍未确认最终视觉结果。
+
+10:18:12 的 F10 在任何实例修改前拒绝，reason=reload native reference array coverage/limit，未提交新代。对应 Player.log F:2818 报告 LuaCypher.DecryptLua 对适配器明文发生 Base64 FormatException；实际 LuaDLL.xluaL_loadbuffer 会先调用游戏解密，随后 DoString 没有返回数组。该错误与 Mesh、Mod 编译结果及容量无关，原代继续使用。
+
+新候选通过游戏 LuaCypher.GetKey 和 Security.XXTEA.EncryptToBase64String(String,String) 编码内嵌适配器，再用游戏 DecryptLuaString 与完整 String.Equals 验证往返内容一致后提交给 LuaManager.DoString。编码与工厂创建仅首次执行；不保存脚本、不硬编码密钥、不修改游戏解密流程。页面定位和绑定调用仍使用已缓存 LuaFunction，世界模型继续使用原组件生命周期，不经过此 UI 适配器。
+
+回归先复现强制解密加载器拒绝明文、DoString 返回 null，再验证真实调用接收者、动态游戏编码 API、完整内容往返、不重复编码，以及内容不一致时保持旧页面且不执行工厂。各编码方法的实际签名与现有本机游戏元数据核对；模拟成功仍不能替代实机页面刷新验收。
+
+编码候选已在游戏退出时部署：eff.dll SHA256 `19E069237A8EB98872D34CA7A1C2DB7558A33AB64D1DA8497A4C55DA079EFB20`（1,479,680 字节）。生产 v35 构建、v35/v36 事务回归、生产内嵌 Lua 页面回归与 diff 检查通过；34 个 Mod/配置/协议文件校验未变。未重导出、未保存工程、未修改游戏脚本。实机页面接管、显示和动作仍待验证，v1.3.2 未发布。
+
+## 2026-10-08 UI 控制初始化签名
+
+页面绑定候选的实机 PID 35724 在 10:06:04 记录 `LuaManager::DoString(System.String)->System.Object[] static=1` 签名不存在。该异常发生在 UIModelLoader 生命周期 hook 安装前，因此这次没有 UI-READY，也没有把 UI 网格置为 modelReady；用户观察到 UI 显示全部网格，按键无效。按键日志仅证明已登记实例的控制值在变化，不能证明 UI 已接管，更不能证明上一轮页面绑定成功。
+
+只读元数据确认 DoString 是实例方法（flags=0x1e6），get_instance 是静态属性（flags=0x896）。修正为从游戏 LuaManager.get_instance 获取对象再调用 DoString。回归使用同样的真实签名布局，先复现初始化失败再通过，并检查实际调用接收者；此前仅注入模拟 API 句柄，漏掉了初始化绑定。
+
+普通 UI 生命周期和按键登记独立于 Lua 页面接管 API：页面 API 缺失时仍登记 UI 控制，匹配它的 F10 在修改前明确拒绝。回归覆盖 UI 同步/延迟/即时完成的显隐、游戏禁用意图和 API 缺失保护。UI-READY 增加实际 rootId 与 controlsReady 数量，统计复用该实例加载完成时已有的子节点登记，不增加场景 Renderer 扫描。此次修正仍需实机确认 UI 显隐及 F10 页面接管。
+
+本候选已在游戏退出时部署：eff.dll SHA256 `77434B3A7F83D60F3858380D87F4C046D608F789182903331D1CEC3F3C67D868`（1,476,096 字节）。生产 v35 构建、v35/v36 事务回归、生产 Lua 页面绑定回归和 diff 检查通过。34 个 Mod/配置/协议文件前后校验未变；未重导出、未保存 Blender 工程。实机显隐与 F10 仍待用户测试，未发布 v1.3.2。
+
+## 2026-10-08 UI 页面接管与一次性协程
+
+实机 PID 32072 的代理路由候选在 09:30:51 校验了新 Mesh/Texture，世界和 UI 共提交 generation 2，requestToCommitMs=90.1988，UI 新根 hierarchyActive=1。用户仍确认人物消失。因此此前“COMMIT/加载器字典登记即页面接管”的假设错误，不能写为视觉通过。
+
+只读查看游戏 VFS 中的相关 LuaScripts：PhaseBase.CreatePhaseCharItem 的 LoadModelAsync 回调仅设置 modelGo 并调用 onComplete；coroutine.waitAsyncRequest 在 corInRequest 已清除后直接返回。BindGameObject、ChangeLayer、装饰/特效和页面初始化都位于协程后半段。回调重放不会再执行这些代码。诊断仅在内存中读取目标脚本，没有导出或修改游戏脚本。
+
+新候选移除 F10 的一次性回调重放。通过游戏 PhaseManager 的实际页面项、加载器和原根找到 PhaseCharItem，以它的 BindGameObject 接管新根，页面项及编队缓存身份保持不变；公开模型/Animator/Transform API 恢复当前层、姿态、显隐、参数/播放状态、武器、装饰和已有灯光组。未知页面项在变更前拒绝。原生完成必须接受句柄且页面绑定必须返回成功，之后才卸载旧根；部分 UI/世界提交失败会回滚。
+
+回归使用生产内嵌 Lua，复现一次性回调造成空白，再验证连续绑定、编队移动后的父节点、隐藏缓存、层/位置/动画/武器/灯光、页面退出和初始化失败回滚。原生事务模拟将回调改为只绑定一次，验证后续 F10 不重放它；页面拒绝新根时不提交且卸载新请求、保留旧人物。实机 UI 显示、切换及动作仍待验证，v1.3.2 未发布。
+
+页面绑定候选已在游戏退出时部署：eff.dll SHA256 `F5BA2B1B599DE05A9882A68CBE8746D45A7422AD2835268BEF38551952BB70E5`（1,474,560 字节）。生产 v35 构建、v35/v36 完整事务回归、生产内嵌 Lua 页面绑定回归及 diff 检查通过。实际 UIModelLoader 完成闭包对空回调有显式判断，因此 F10 可不传旧协程回调。32 个 Mod 文件与 eff.ini/package-protocol.json 共 34 个文件部署前后 SHA256 一致，未重导出或保存用户工程。此候选尚未获得实机画面验收。
+
+## 2026-10-08 UIModelLoader 控制与重载适配（历史候选）
+
+v1.3.1 实机 PID 3184 连续世界 F10 已提交 generation 2、3，耗时分别为 64.5493、56.5488 ms；角色详情/编队 UI 的 F10 因缺少独立 UIModelLoader 生命周期拒绝，控制网格未进入 modelReady 状态。
+
+候选 v1.3.2 接入 UIModelLoader 同步返回、异步完成、卸载、取消及 Dispose，按实际路径、父节点、委托结构和加载器字典记录所有者，不扫描场景 Renderer。世界和 UI 共用 Mod 控制值。没有可重放回调的同步 UI 实例仍在变更前拒绝 F10。
+
+两次实机失败：PID 40880 的同步 LoadModel 加回调重放虽提交世界/UI 两个实例，人物消失；PID 36808 改用 LoadModelAsync 加 LoadImmediate，08:43:40 日志证明异步创建仍未完成，旧 UI 已释放，回滚失败，用户再次确认人物消失。两条路线均已移除。正常 UI 完成时 hierarchyActive=0，不能用这一次读数宣称画面失败或正常。原模拟将异步完成设为立即完成，漏掉了实机的跨帧执行。
+
+当前候选先保留旧 UI 人物和页面引用，再提交原 LoadModelAsync；游戏完成后暂存实际完成委托与未跟踪句柄、校验所有 UI 候选，再执行原生完成逻辑。原生代码负责父节点、组件和页面回调；随后发布控制并卸载旧 UI 根。等待期间交还帧循环、恢复公开资源路由。取消、关闭页面、验证失败或新 F10 覆盖时保留原显示，原取消分支负责新请求的句柄释放；未完成的原生任务阻止候选退休。未写私有 UI/Animator 字段，未改作者协议。
+
+回归先红后绿覆盖延迟数帧、原人物/控制保留、完成后才移交页面、候选验证失败、取消后迟到回调、关闭页面、混合世界/UI 的真实 Frame 推进、无关模型出现、新 F10 覆盖与请求排空；连续世界重载、动画/武器/音频、连续 UI、显隐及既有回滚保留。**候选仍待实机画面验证，未发布 v1.3.2，不能把原生模拟或 COMMIT 当成视觉通过。**
+
+上一失败候选 eff.dll SHA256 `467DFAEA01FABCB144476052E5A20CBF618D80596E677766729C54BBF1AC3771`。跨帧保护候选曾在游戏退出时部署，SHA256 `C3239B5B08231ACCB2F3FC52CDA2D537F9A42CABB41A225224FE4D1FCAA1D93C`（1,454,080 字节）。生产 v35 构建、v35/v36 完整事务回归及 diff 检查通过。32 个 Mod 文件与 eff.ini/package-protocol.json 共 34 个文件部署前后 SHA256 一致。未重导出、未修改或保存 .blend，其实际结果见下方 PID 36636。
+
+跨帧候选的实机 PID 36636：09:14:16.422 进入 UIWait，09:14:16.435 收到游戏完成回调；随后校验发现新 UI 根仍引用旧 Mesh/Texture，在任何原实例卸载前拒绝，代际仍为 1。用户只确认按了 F10、无法判断是否刷新，未报告该次人物消失。日志表明仅在 LoadModelAsync 提交期间提供候选不足以覆盖稍后执行的代理实例创建。
+
+后续候选通过 FAssetProxyHandle 的公开完成注册及实际闭包关联这次 PrefabInstantiateProxy，在其稍后的 _PreloadPrefab 同步/异步流程中按实际代理身份和游戏路径哈希提供已校验的候选；普通代理和公开路由保持原状态。候选强引用持续到原生请求完成。补充回归先复现提交范围结束后实例取旧资源，再验证后续代理使用新 Mesh/Texture，其他代理/Clone 不受该临时路由影响。代理路由候选已在游戏退出时部署，eff.dll SHA256 `74346BADE87041879AA8A326B765DDFE47121661385CD75A828C79C6823195A8`（1,463,296 字节），34 个受保护文件前后 SHA256 一致。生产构建和 v35/v36 回归通过，实机提交、UI 显示及动作仍待验证。
+
 ## 2026-10-08 独立 Mod 编译与三端隔离
 
 当前源码由 Blender 自带编译器为单 Mod 写 compiled.bin，DLL 不启动内嵌或外部作者编译器。真实 LZY 离线样本：62 输入、46 根，131.173 MiB 原资源 + 11.245 MiB 编译规则。原资源/INI 保持不变。已部署 eff.dll SHA256 6086A3DE0415A2145A6948ABA32B33DA576D43E275BED420632232E9505EECF5、LZY compiled.bin 758A7C4D31130C895BE775BC8DB61C43E72662BEFB2BB675273C776E713A6794、Blender 编译器 9BA8208CBA319E2688D9C760642DE436A54209D64542B20440DECFD2E704E73F。31 个现有 Mod 文件核验未变，未保存 .blend。旧工具目录清理被自动审批拒绝，仅替换新版文件，旧目录保留且不被新版调用。
@@ -316,3 +380,12 @@ v35/v36 构建、原生事务 mock、控制/偏好回归、Win32 控件消息、
 | 多代资源退休、闲置池和完整生命周期 | 尚未验证 |
 
 贴图单项通过不等于完整热重载完成，不另设贴图专用的运行时提交路线。
+## 2026-10-08 UI F10 空委托调用崩溃
+
+实机 PID 39824 在 10:38:09 完成 UI 页面定位并捕获世界/UI 两个所有者，下一帧尚未记录 UI-REQUEST 就崩溃。游戏生成的 Player.log 原生调用栈明确落在 `LoadUIModel` 的 `Delegate.get_Target` 调用（旧第 59 行），随后是 Rebuild 与 Frame；游戏已有 crash.dmp 的异常记录为 0xc0000005、读取地址 0x20。F10 为避免重放一次性协程刻意传入空回调，旧诊断日志却仍用它作为实例接收者；该原生调用不能靠 C++ 的 std::exception 捕获恢复。
+
+原事务模拟对空委托接收者返回普通目标，漏掉了这条崩溃路径。先补强模拟以记录并拒绝空接收者，再通过真实混合世界/UI 的 Frame 回归复现失败：`mixed F10 inspected a null page callback through Delegate.get_Target`。修正移除仅供日志使用的委托目标读取，日志直接记录 callbackProvided；游戏异步创建、页面绑定、取消和回滚流程保持原有调用方式。
+
+生产 v35 构建、v35/v36 完整事务回归、生产内嵌 Lua 页面回归与 diff 检查通过。修正版已在游戏退出时部署，eff.dll SHA256 `04C4B069778A563E302421426CB8FEFD9B2A24086AAA1D9CD69F8731405F1A0F`（1,478,144 字节）；34 个 Mod/配置/协议文件前后校验未变，compiled.bin 仍为 `758A7C4D31130C895BE775BC8DB61C43E72662BEFB2BB675273C776E713A6794`。未重导出、保存工程或修改游戏脚本。
+
+部署后的实机 PID 39344 在 10:59:00—10:59:03 连续四次 F10 提交 generation 2、3、4、5，每次均迁移世界和 UI 两个所有者，并记录 pageItemRebound=1、oldContinuationReplayed=0。请求到提交分别为 96.642、100.068、96.550、97.148 ms；最后提交帧的主线程工作约 56.6—61.2 ms。日志确认真实请求、候选校验和页面引用移交走通；四次使用相同 Mod 集合键，不能据此宣称新导出内容已经实机覆盖。真实 UI 最终画面、动作及显隐仍待用户确认，此边界随 v1.3.2 发布说明保留。

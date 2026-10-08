@@ -30,6 +30,14 @@ void *factoryParent=(void*)0x4100,*factoryPosition=(void*)0x4101,*factoryRotatio
 void *oldRenderer=(void*)0x1020,*newRenderer=(void*)0x1021,*oldMesh=(void*)0x1022,*newMesh=(void*)0x1023;
 bool staticRenderers=false;void *skinClass=(void*)0x2020,*staticClass=(void*)0x2021,*filterObject=(void*)0x2022;
 unsigned staticSkinCalls=0;unsigned char staticEnabled=1;
+void *uiLoader=(void*)0x2050,*uiDictionary=(void*)0x2051,*uiClosure=(void*)0x2052,*uiCallback=(void*)0x2053,*uiProxy=(void*)0x2054;
+void *uiObjectClass=(void*)0x2057,*uiBooleanClass=(void*)0x2058,*uiFactory=(void*)0x2059,*uiPage=(void*)0x205a;
+void* uiLuaManager=(void*)0x205b;
+void *uiLuaKey=(void*)0x205c,*uiEncryptedCode=(void*)0x205d;void* uiPlainCode=nullptr;bool uiEncryptedOnly=false,uiEncodingMismatch=false;unsigned uiEncryptions=0;
+void* uiLuaException=(void*)0x205e;bool uiLuaRaises=false;
+void* uiRequestCallback=nullptr;unsigned uiPageBinds=0,nullDelegateTargetCalls=0;bool uiPageAvailable=true,uiPageReject=false;
+std::set<void*> uiOwned;void* uiRoot=nullptr;unsigned uiCallbacks=0,uiUnloads=0;bool uiInline=false;
+void* uiCompletionDelegate=(void*)0x2055;void* uiProxyRoot=nullptr;void* uiResultRoot=nullptr;bool creatingUI=false,uiLateInstantiate=false;void* uiUntrackedClass=(void*)0x2056;bool uiNativeReady=false,uiDelayed=false,uiCancelled=false;unsigned uiCancelledCompletions=0;
 void *material=(void*)0x1030,*shader=(void*)0x1031,*bone=(void*)0x1032,*pathValue=(void*)0x1033,*leaseHandle=(void*)0x1034;
 void *createRequest=(void*)0x1040,*bundle=(void*)0x1041,*assetRequest=(void*)0x1042;
 void *handleClass=(void*)0x2000,*pathClass=(void*)0x2001,*instanceClass=(void*)0x2002,*configClass=(void*)0x2003,*configBox=(void*)0x2004;
@@ -60,15 +68,17 @@ void* PropertyIds(){auto b=std::make_unique<Bytes>(32+propertyIds.size()*4);uint
 uint32_t Root(void* p,bool){handles[++sequence]=p;return sequence;}
 void* Target(uint32_t h){return handles.at(h);}
 void Free(uint32_t h){Require(handles.erase(h)==1,"fixture handle double free");}
-void* GetClass(void* p){if(p==oldRenderer||p==newRenderer||p==unrelatedRenderer||p==auxiliaryRenderer)return staticRenderers?staticClass:skinClass;return propertyArrays.count(p)?propertyArrayClass:p==assetProxyObject?assetProxyClass:(p==source||p==candidate||p==lazyCandidate||p==unrelatedRoot)?gameObjectClass:p==audio?audioClass:(p==model||p==unrelatedModel)?modelClass:p==loadCallback?delegateClass:p==leaseHandle?handleClass:p==pathValue?pathClass:(p==configBox||p==unrelatedConfig)?configClass:instanceClass;}
-void* Fields(void*,void** it){auto n=uintptr_t(*it);if(n==10)return nullptr;*it=(void*)(n+1);return (void*)(n+1);}
-const char* FieldName(void* f){const char* names[]={"","modelManager","effectManager","m_entity","m_mainPart","m_cfg","usePersistentPool","modelPath","m_model","m_loadFinishCb","hash"};return names[uintptr_t(f)];}
-const char* TypeName(void* t){const char* names[]={"","Beyond.Gameplay.View.ModelManager","Beyond.Gameplay.EffectManager","Beyond.Gameplay.Core.Entity","Beyond.Gameplay.View.ComplexModelViewPart","Beyond.Gameplay.View.BaseModelViewPartData","System.Boolean","System.String","UnityEngine.GameObject","System.Action<System.Boolean,Beyond.Gameplay.View.BaseModelViewPart>","System.UInt64"};return names[uintptr_t(t)];}
+void* GetClass(void* p){if(p==&yes||p==&no)return uiBooleanClass;if(p==uiProxy)return uiUntrackedClass;if(p==oldRenderer||p==newRenderer||p==unrelatedRenderer||p==auxiliaryRenderer)return staticRenderers?staticClass:skinClass;return propertyArrays.count(p)?propertyArrayClass:p==assetProxyObject?assetProxyClass:(p==source||p==candidate||p==lazyCandidate||p==unrelatedRoot)?gameObjectClass:p==audio?audioClass:(p==model||p==unrelatedModel)?modelClass:p==loadCallback?delegateClass:p==leaseHandle?handleClass:p==pathValue?pathClass:(p==configBox||p==unrelatedConfig)?configClass:instanceClass;}
+void* Fields(void*,void** it){auto n=uintptr_t(*it);if(n==17)return nullptr;*it=(void*)(n+1);return (void*)(n+1);}
+const char* FieldName(void* f){const char* names[]={"","modelManager","effectManager","m_entity","m_mainPart","m_cfg","usePersistentPool","modelPath","m_model","m_loadFinishCb","hash","m_untrackedHandle","m_instance2AssetHandle","<>4__this","parent","callback","requestId","m_disposed"};return names[uintptr_t(f)];}
+const char* TypeName(void* t){const char* names[]={"","Beyond.Gameplay.View.ModelManager","Beyond.Gameplay.EffectManager","Beyond.Gameplay.Core.Entity","Beyond.Gameplay.View.ComplexModelViewPart","Beyond.Gameplay.View.BaseModelViewPartData","System.Boolean","System.String","UnityEngine.GameObject","System.Action<System.Boolean,Beyond.Gameplay.View.BaseModelViewPart>","System.UInt64","Beyond.Resource.FAssetProxyUntrackedHandle","Dictionary","Beyond.UI.UIModelLoader","UnityEngine.Transform","System.Action<UnityEngine.GameObject>","System.Int32","System.Boolean"};return names[uintptr_t(t)];}
 int FieldFlags(void* f){return (f==(void*)1||f==(void*)2)&&managersStatic?0x16:0x6;}
-void FieldValue(void* self,void* f,void* out){Require(!(FieldFlags(f)&0x10)&&self,"instance getter used for a static field");if(f==(void*)11){memset(out,0,64);return;}if(f==(void*)10){*(uint64_t*)out=pathHashValue;return;}if(f==(void*)5){memset(out,0,64);memcpy(out,&self,8);return;}if(f==(void*)6){*(unsigned char*)out=0;return;}
+void FieldValue(void* self,void* f,void* out){Require(!(FieldFlags(f)&0x10)&&self,"instance getter used for a static field");
+ if(f==(void*)12){*(void**)out=uiDictionary;return;}if(f==(void*)13){*(void**)out=uiLoader;return;}if(f==(void*)14){*(void**)out=factoryParent;return;}if(f==(void*)15){*(void**)out=uiRequestCallback;return;}if(f==(void*)16){*(int*)out=7;return;}if(f==(void*)17){*(bool*)out=false;return;}
+ if(f==(void*)11){memset(out,0,64);return;}if(f==(void*)10){*(uint64_t*)out=pathHashValue;return;}if(f==(void*)5){memset(out,0,64);memcpy(out,&self,8);return;}if(f==(void*)6){*(unsigned char*)out=0;return;}
  auto v=f==(void*)1?manager:f==(void*)2?effect:f==(void*)3?(self==unrelatedHelper?unrelatedEntity:hasEntity?entity:nullptr):f==(void*)4?(self==unrelatedModel?unrelatedPart:hasPart?mainPart:nullptr):f==(void*)7?StringValue(self==unrelatedConfig?"assets/unmodified-character.prefab":modelPath):self==unrelatedPart?unrelatedRoot:currentRoot;memcpy(out,&v,8);}
 void StaticFieldValue(void* f,void* out){Require((FieldFlags(f)&0x10)&&(f==(void*)1||f==(void*)2),"static getter used for an instance field");auto v=f==(void*)1?manager:effect;memcpy(out,&v,8);}
-void* NativeClone(void* p){++cloneCalls;return p==lazyCandidate?lazyRoot:p==candidate&&!ignoreCandidate?newRoot:restoredRoot;}
+void* NativeClone(void* p){++cloneCalls;return p==lazyCandidate?lazyRoot:p==candidate&&!ignoreCandidate?(creatingUI&&uiResultRoot?uiResultRoot:newRoot):restoredRoot;}
 void* NativePosition(void* p,void* position,void* rotation){Require(position==factoryPosition&&rotation==factoryRotation,"Instantiate position/rotation changed");return NativeClone(p);}
 void* NativeParentPosition(void* p,void* parent,void* position,void* rotation){Require(parent==factoryParent,"Instantiate parent changed");return NativePosition(p,position,rotation);}
 void* NativeParent(void* p,void* parent,bool world){Require(parent==factoryParent&&world,"Instantiate parent/world-space flag changed");return NativeClone(p);}
@@ -89,7 +99,7 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==2){++aliveCalls;auto p=args[0];return !p||(p==source&&!sourceAlive)||unloadedStreamBundles.count(p)?&no:&yes;}
  if(m==3){id=int(uintptr_t(self));return &id;}
  if(m==4)return StringValue(self==material?"body":self==skeletonRoot?"Root":self==bip?"Bip001":self==left?"Left":self==right?"Right":(self==bone||self==leftBone||self==rightBone)?"Bone":"marker");
- if(m==5)return Array(self==unrelatedRoot?unrelatedRenderer:self==newRoot||self==candidate||self==lazyCandidate?newRenderer:oldRenderer);
+ if(m==5)return Array(self==unrelatedRoot?unrelatedRenderer:self==newRoot||self==uiResultRoot||self==candidate||self==lazyCandidate?newRenderer:oldRenderer);
  if(m==6)return self==newMesh&&rejectVertex?&badVertex:&two;
  if(m==7)return &zero;
  if(m==8){Require(!staticRenderers,"static Renderer called get_bones");++staticSkinCalls;return Array(bone);}
@@ -98,6 +108,25 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==107){Require(args&&args[0]==(void*)109,"static MeshFilter query used wrong type");return filterObject;}
  if(m==108){Require(self==filterObject,"static getter used Renderer instead of MeshFilter");return newMesh;}
  if(m==110)return &staticEnabled;
+ if(m==111){Require(self==uiDictionary,"UI ownership query used another loader dictionary");return uiOwned.count(args[0])?&yes:&no;}
+ if(m==112)return uiProxyRoot;
+ if(m==113){Require(self==uiCallback&&args&&uiOwned.count(args[0]),"UI completion bypassed game loader ownership");++uiCallbacks;if(uiCallbacks==1)uiRoot=args[0];return nullptr;}
+ if(m==114)return FullResourceReload::UILoad(self,args[0],args[1],nullptr);
+ if(m==115){FullResourceReload::UIUnload(self,args[0],nullptr);return nullptr;}
+ if(m==116){if(!uiDelayed)FullResourceReload::UIComplete(uiClosure,uiProxy,nullptr);return nullptr;}
+ if(m==117){static int request;request=FullResourceReload::UIAsync(self,args[0],args[1],args[2],nullptr);return &request;}
+ if(m==119){Require(self==uiLuaManager,"DoString was invoked without the game's LuaManager instance");return uiEncryptedOnly&&args[0]!=uiEncryptedCode?nullptr:Array(uiFactory);}
+ if(m==122){Require(!self,"LuaManager getter was invoked as an instance method");return uiLuaManager;}
+ if(m==123){Require(!self,"Lua cipher getter must be static");return uiLuaKey;}
+ if(m==124){Require(!self&&args[1]==uiLuaKey,"UI adapter encoding did not use the live game's cipher key");uiPlainCode=args[0];++uiEncryptions;return uiEncryptedCode;}
+ if(m==125){Require(!self&&args[0]==uiEncryptedCode,"UI adapter round trip used different encoded content");return uiEncodingMismatch?StringValue("different script"):uiPlainCode;}
+ if(m==126){Require(!self,"UI code equality must be static");return args[0]==args[1]?&yes:&no;}
+ if(m==127){Require(self==uiLuaException,"UI exception formatting used a different exception");return StringValue("HyperLua undeclared panel member: go");}
+ if(m==120){if(uiLuaRaises){*exception=uiLuaException;return nullptr;}auto values=FullResourceReload::ReferenceArray(args[0]);if(self==uiFactory){Require(values.size()==2&&values[0]==uiLoader&&values[1]==uiRoot,"UI page lookup used another owner");return Array(uiPageAvailable?uiPage:nullptr);}
+  Require(self==uiPage&&values.size()==1,"UI page used a different binding");if(!values[0])return Array(&yes);
+  Require(uiOwned.count(values[0]),"page binding bypassed native loader completion");if(uiPageReject)return Array(&no);++uiPageBinds;uiRoot=values[0];return Array(&yes);}
+ if(m==121){auto index=*(int*)args[1];memcpy((unsigned char*)self+32+index*8,&args[0],8);return nullptr;}
+ if(m==118)return &no; // UI page activation can occur after native completion.
  if(m==11)return Array(material);
  if(m==12)return shader;
  if(m==20){++instanceCalls;return hasInstance?instance:nullptr;}
@@ -114,7 +143,7 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==32){auto it=scheduleBundles.find(self);return it==scheduleBundles.end()?bundle:it->second;}
  if(m==33){Require(args&&*(unsigned char*)args[0]==0,"unloaded candidate objects still in use");++unloadCalls;return nullptr;}
  if(m==40){Require(self==oldRenderer||self==newRenderer||self==animator,"Component getter invoked on a GameObject");return renderTransform;}
- if(m==41){Require(self==currentRoot||self==oldRoot||self==newRoot||self==restoredRoot||self==candidate||self==lazyCandidate,"GameObject getter invoked on a Component");return prefabTransform;}
+ if(m==41){Require(uiOwned.count(self)||self==uiProxyRoot||self==currentRoot||self==oldRoot||self==newRoot||self==restoredRoot||self==candidate||self==lazyCandidate,"GameObject getter invoked on a Component");return prefabTransform;}
  if(m==42)return transformParents.at(self);
  if(m==50){auto request=(void*)(uintptr_t(0x8000)+ ++opened);scheduleDone[request]=false;scheduleBundles[request]=(void*)(uintptr_t(0x9000)+opened);return request;}
  if(m==87){Require(!self&&args&&args[0]&&*(uint32_t*)args[1]==0&&*(uint32_t*)args[2]==0,"archive stream Bundle load argument ABI differs");auto array=*(void**)args[0];size_t length=0;Require(Entry::ArrayLength(array,&length)&&length==4&&memcmp((char*)array+32,"\1\2\3\4",4)==0,"archive stream Bundle payload differs");++memoryCalls;return Invoke((void*)50,nullptr,nullptr,exception);}
@@ -134,7 +163,7 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==92)return assetProxyObject;
  if(m==93)return &fixtureProxyHash;
  if(m==94)return resourceSource;
- if(m==95)return instanceHandle?instance:assetProxyObject;
+ if(m==95)return creatingUI||instanceHandle?instance:assetProxyObject;
  if(m==61)return &no;
  if(m==62){Require(discardCalls>=removeCalls,"display loaded before old root pool discard");++loadCalls;currentRoot=NativeCreate(source);FullResourceReload::PartFinished(mainPart,nullptr);return &yes;}
  if(m==63){Require(args&&args[0]==configBox,"display SetupData did not use preserved value config");FullResourceReload::PartConfigured(self,args[0],nullptr);return nullptr;}
@@ -161,25 +190,25 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==80){++sceneQueries;return Array(sceneRenderers);}
  if(m==82)return PropertyIds();
  if(m==83){Require(self==material&&args&&args[0],"public Texture ID getter arguments absent");auto property=*(int32_t*)args[0];Require(std::find(propertyIds.begin(),propertyIds.end(),property)!=propertyIds.end(),"public Texture ID getter received wrong ABI value");auto found=propertyTextures.find(property);return found==propertyTextures.end()?textureValue:found->second;}
- if(m==84)return callbackTarget;
+ if(m==84){if(!self){++nullDelegateTargetCalls;throw std::runtime_error("Delegate.get_Target invoked with a null receiver");}return self==uiCompletionDelegate?uiClosure:callbackTarget;}
  if(m==85)return self==model?entity:unrelatedEntity;
  if(m==86){Require(self&&args&&args[0]==(void*)81&&*(unsigned char*)args[1]==1,"controls queried scene objects instead of inactive model children");
-  auto found=controlRenderers.find(self);return found==controlRenderers.end()?Array(self==newRoot?newRenderer:oldRenderer):Array(found->second);}
+  auto found=controlRenderers.find(self);return found==controlRenderers.end()?Array(self==newRoot||self==uiResultRoot?newRenderer:oldRenderer):Array(found->second);}
  throw std::runtime_error("unexpected fixture managed call: "+std::to_string(m));
 }
 void Setup(){
  il2cpp_gchandle_new=Root;il2cpp_gchandle_get_target=Target;il2cpp_gchandle_free=Free;il2cpp_object_get_class=GetClass;
  RuntimeShapes::Ref::weakHandle=Root;
  il2cpp_object_get_virtual_method=[](void*,void* method)->void*{return displayOverride?(void*)97:method;};
- il2cpp_class_get_name=[](void* klass){return klass==skinClass?"SkinnedMeshRenderer":klass==staticClass?"MeshRenderer":klass==assetProxyClass?"AssetProxy":klass==gameObjectClass?"GameObject":klass==audioClass?"CharacterAudioComponent":klass==modelClass?"BaseModelComponent":klass==delegateClass?"Delegate":"fixture";};
- il2cpp_class_get_namespace=[](void* klass){return klass==skinClass||klass==staticClass||klass==gameObjectClass?"UnityEngine":klass==assetProxyClass?"":klass==modelClass?"Beyond.Gameplay.View":klass==delegateClass?"System":"Beyond.Gameplay.Core";};
+ il2cpp_class_get_name=[](void* klass){return klass==uiBooleanClass?"Boolean":klass==skinClass?"SkinnedMeshRenderer":klass==staticClass?"MeshRenderer":klass==assetProxyClass?"AssetProxy":klass==gameObjectClass?"GameObject":klass==audioClass?"CharacterAudioComponent":klass==modelClass?"BaseModelComponent":klass==delegateClass?"Delegate":"fixture";};
+ il2cpp_class_get_namespace=[](void* klass){return klass==skinClass||klass==staticClass||klass==gameObjectClass?"UnityEngine":klass==assetProxyClass?"":klass==modelClass?"Beyond.Gameplay.View":klass==delegateClass||klass==uiBooleanClass?"System":"Beyond.Gameplay.Core";};
  il2cpp_object_unbox=[](void* p){return p;};il2cpp_class_get_fields=Fields;il2cpp_class_get_parent=[](void*)->void*{return nullptr;};
  il2cpp_field_get_name=FieldName;il2cpp_field_get_flags=FieldFlags;il2cpp_field_static_get_value=StaticFieldValue;il2cpp_field_get_type=[](void* p){return p;};
  il2cpp_type_get_name=TypeName;il2cpp_free=[](void*){};il2cpp_field_get_value=FieldValue;il2cpp_runtime_invoke=Invoke;
- il2cpp_class_from_type=[](void*)->void*{return configClass;};il2cpp_class_value_size=[](void* klass,uint32_t* alignment)->int32_t{*alignment=8;return klass==propertyElementClass?propertyElementWidth:64;};il2cpp_value_box=[](void* klass,void* data)->void*{return klass==handleClass?leaseHandle:*(void**)data==unrelatedPart?unrelatedConfig:configBox;};
+ il2cpp_class_from_type=[](void*)->void*{return configClass;};il2cpp_class_value_size=[](void* klass,uint32_t* alignment)->int32_t{*alignment=8;return klass==propertyElementClass?propertyElementWidth:64;};il2cpp_value_box=[](void* klass,void* data)->void*{return klass==uiUntrackedClass?uiProxy:klass==handleClass?leaseHandle:*(void**)data==unrelatedPart?unrelatedConfig:configBox;};
  il2cpp_class_get_element_class=[](void* klass)->void*{return klass==propertyArrayClass?propertyElementClass:nullptr;};
  il2cpp_string_new=[](const char* value)->void*{return StringValue(value);};
- il2cpp_array_new=[](void* klass,size_t size)->void*{Require(klass==byteClass,"memory Bundle array element type differs");auto b=std::make_unique<Bytes>(32+size);uint64_t count=size;memcpy(b->data()+24,&count,8);auto p=b->data();storage.push_back(std::move(b));return p;};
+ il2cpp_array_new=[](void* klass,size_t size)->void*{Require(klass==byteClass||klass==uiObjectClass,"managed array element type differs");auto b=std::make_unique<Bytes>(32+size*(klass==uiObjectClass?8:1));uint64_t count=size;memcpy(b->data()+24,&count,8);auto p=b->data();storage.push_back(std::move(b));return p;};
  RuntimeShapes::api.main=(void*)1;RuntimeShapes::api.alive=(void*)2;RuntimeShapes::api.name=(void*)4;
  RuntimeShapes::api.vertexCount=(void*)6;RuntimeShapes::api.shapeCount=(void*)7;RuntimeShapes::api.bones=(void*)8;
  RuntimeShapes::api.bindPoses=(void*)9;RuntimeShapes::api.rootBone=(void*)10;RuntimeShapes::originalMeshGetter=Mesh;
@@ -210,6 +239,31 @@ void Setup(){
  FullResourceReload::originalPartLoading=[](void*,void*,void*,void*){if(completePartLoading){currentRoot=NativeCreate(source);FullResourceReload::PartFinished(mainPart,nullptr);}};
  FullResourceReload::originalPartConfigured=[](void*,void*,void*){};
  FullResourceReload::originalPartAdded=[](void*,void*,void*){};
+ a.uiLoad=(void*)114;a.uiUnload=(void*)115;a.uiDictionaryContains=(void*)111;a.uiCallbackInvoke=(void*)113;a.uiUntrackedGet=(void*)112;a.uiAsyncLoad=(void*)117;a.handleUntrackedClass=uiUntrackedClass;
+ a.uiActiveHierarchy=(void*)118;a.uiLuaInstance=(void*)122;a.uiLuaDo=(void*)119;a.uiLuaCall=(void*)120;a.uiArraySet=(void*)121;a.uiObjectClass=uiObjectClass;
+ a.uiLuaKey=(void*)123;a.uiLuaEncode=(void*)124;a.uiLuaDecode=(void*)125;a.uiLuaCodeEquals=(void*)126;
+ a.uiLuaExceptionMessage=(void*)127;
+ FullResourceReload::uiLifecycleReady=true;
+ FullResourceReload::originalUILoad=[](void*,void*,void*,void*)->void*{
+  auto root=FullResourceReload::rebuilding?NativeCreate(source):uiRoot;uiOwned.insert(root);uiRoot=root;
+  uiNativeReady=false;
+  if(RuntimeShapes::enabled)RuntimeShapes::RegisterRenderer(root==newRoot?newRenderer:oldRenderer,root==newRoot?newMesh:oldMesh,false);return root;
+ };
+ FullResourceReload::originalUIComplete=[](void*,void*,void*){
+  if(uiCancelled){++uiCancelledCompletions;return;}
+  uiNativeReady=true;
+  uiOwned.insert(uiProxyRoot);if(RuntimeShapes::enabled)RuntimeShapes::RegisterRenderer(uiProxyRoot==newRoot||uiProxyRoot==uiResultRoot?newRenderer:oldRenderer,uiProxyRoot==newRoot||uiProxyRoot==uiResultRoot?newMesh:oldMesh,false);
+  if(uiRequestCallback){void* args[]={uiProxyRoot};void* error=nullptr;Invoke((void*)113,uiRequestCallback,args,&error);}
+ };
+ FullResourceReload::originalUIHandleCallback=[](void*,void*,void*){};
+ FullResourceReload::originalUIAsync=[](void*,void*,void*,void* callback,void*)->int{
+  uiRequestCallback=callback;creatingUI=true;uiProxyRoot=FullResourceReload::rebuilding?(uiLateInstantiate?nullptr:NativeCreate(source)):uiRoot;creatingUI=false;uiCancelled=false;
+  creatingUI=true;FullResourceReload::UIHandleCallback(leaseHandle,uiCompletionDelegate,nullptr);creatingUI=false;
+  if(uiInline||(FullResourceReload::rebuilding&&!uiDelayed))FullResourceReload::UIComplete(uiClosure,uiProxy,nullptr);return 7;
+ };
+ FullResourceReload::originalUIUnload=[](void*,void* root,void*){Require(uiOwned.erase(root)==1,"UI loader released an instance twice");++uiUnloads;};
+ FullResourceReload::originalUICancel=[](void*,int,void*){uiCancelled=true;};
+ FullResourceReload::originalUIDispose=[](void*,void*){uiOwned.clear();uiCancelled=true;};
  FullResourceReload::originalCloneParent=NativeParent;FullResourceReload::originalInstantiate=NativePosition;FullResourceReload::originalInstantiateParent=NativeParentPosition;
  FullResourceReload::originalInstantiateImmediate=NativeParent;FullResourceReload::originalInstantiateAsync=NativeAsync;
 }
@@ -235,6 +289,7 @@ FullResourceReload::Attempt MakeAttempt(){
  owner.pathHash=RuntimeShapes::Ref::Make(pathValue,false);owner.path="assets/model.prefab";owner.oldRootId=int(uintptr_t(oldRoot));owner.originalMeshes=FullResourceReload::MeshProfile(oldRoot);a.owners.push_back(owner);return a;
 }
 void Reset(){
+ nullDelegateTargetCalls=0;
  unloadedStreamBundles.clear();
  propertyArrays.clear();propertyIds={314};propertyTextures.clear();propertyElementWidth=4;
  std::atomic_store(&FullResourceReload::routes,std::shared_ptr<const FullResourceReload::Routes>(std::make_shared<FullResourceReload::Routes>()));
@@ -245,6 +300,7 @@ void Reset(){
  hasHelper=hasEntity=hasModel=hasPart=helperMatches=rendererInside=true;released=false;modelPath="assets/model.prefab";
  RuntimeShapes::bound.clear();RuntimeShapes::boundCount=0;
  FullResourceReload::sourceLeases.clear();FullResourceReload::liveParts.clear();
+ FullResourceReload::uiPageFactory={};uiPageAvailable=true;uiPageReject=false;uiPageBinds=0;uiRequestCallback=nullptr;FullResourceReload::liveUIModels.clear();FullResourceReload::pendingUIModels.clear();FullResourceReload::uiReloadRequests.clear();FullResourceReload::uiProxyRequests.clear();uiOwned.clear();uiRoot=uiProxyRoot=oldRoot;uiResultRoot=nullptr;creatingUI=uiLateInstantiate=false;uiCallbacks=uiUnloads=uiCancelledCompletions=0;uiInline=false;uiNativeReady=false;uiDelayed=uiCancelled=false;
  std::atomic_store(&FullResourceReload::activeNative,std::shared_ptr<FullResourceReload::Attempt>{});FullResourceReload::retained.clear();
  FullResourceReload::observedPrefabs.clear();FullResourceReload::ownerRevision=0;resourceSource=source;resourceLabel="assets/model.prefab";
  instanceHandle=false;
@@ -354,6 +410,61 @@ void MaterialBindingRegression(){
  il2cpp_class_get_type=[](void*)->void*{return const_cast<char*>("UnityEngine.Material");};
  try{FullResourceReload::BindMaterialTextureProperties((void*)1);Require(FullResourceReload::api.textureIds==&rows[0]&&FullResourceReload::api.textureById==&rows[2],"Material exact binding chose a different parameter layout");}catch(...){restore();throw;}
  restore();Setup();
+}
+void UIEncryptedLoadRegression(){
+ using namespace FullResourceReload;Reset();uiEncryptedOnly=true;uiEncryptions=0;uiPlainCode=nullptr;
+ // The actual game LuaDLL loadbuffer decrypts every long script. A plaintext
+ // DoString produces a decryption error and a null result before any mutation.
+ auto code=Ref::Make(il2cpp_string_new(UIPageFactorySource),false);void* args[]={code.Get()};
+ Require(!Call(api.uiLuaDo,uiLuaManager,args),"fixture did not reproduce plaintext decryption failure");
+ try{
+  auto page=CaptureUIPage(uiLoader,oldRoot);Require(page.Get()==uiPage&&uiEncryptions==1,"UI page factory was not encoded through the game's cipher");
+  Require(CaptureUIPage(uiLoader,oldRoot).Get()==uiPage&&uiEncryptions==1,"cached page factory was needlessly reencoded");
+  uiPageFactory={};uiEncodingMismatch=true;bool refused=false;try{CaptureUIPage(uiLoader,oldRoot);}catch(const std::exception&){refused=true;}
+  Require(refused&&!uiPageFactory.Get()&&uiRoot==oldRoot&&uiPageBinds==0,"mismatched encoded adapter was executed or changed the page");
+ }catch(...){uiEncryptedOnly=uiEncodingMismatch=false;Reset();throw;}
+ uiEncryptedOnly=uiEncodingMismatch=false;Reset();
+}
+void UIPageApiBindingRegression(){
+ // Real LuaManager metadata exposes static get_instance, but DoString is an
+ // instance method (0x1e6). A direct fixture API handle missed this contract.
+ void *managerClass=(void*)0x2060,*functionClass=(void*)0x2061,*arrayClass=(void*)0x2062,*cipherClass=(void*)0x2063,*cryptoClass=(void*)0x2064,*stringClass=(void*)0x2065,*exceptionClass=(void*)0x2066;
+ struct MethodRow {MInfo info{};void* owner;const char* name;const char* result;std::vector<const char*> parameters;uint32_t flags;};
+ static MethodRow rows[]={{{},managerClass,"get_instance","Beyond.Lua.LuaManager",{},0x896},
+  {{},managerClass,"DoString","System.Object[]",{"System.String"},0x1e6},
+  {{},functionClass,"Call","System.Object[]",{"System.Object[]"},0x86},
+  {{},arrayClass,"SetValue","System.Void",{"System.Object","System.Int32"},0x86},
+  {{},cipherClass,"GetKey","System.String",{},0x91},
+  {{},cryptoClass,"EncryptToBase64String","System.String",{"System.String","System.String"},0x96},
+  {{},cipherClass,"DecryptLuaString","System.String",{"System.String"},0x96},
+  {{},stringClass,"Equals","System.Boolean",{"System.String","System.String"},0x96},
+  {{},exceptionClass,"get_Message","System.String",{},0x1c6}};
+ for(auto& row:rows)row.info.mp=(void*)1;
+ auto previous=std::make_tuple(il2cpp_class_get_methods,il2cpp_method_get_name,il2cpp_method_get_param_count,
+  il2cpp_method_get_flags,il2cpp_method_get_return_type,il2cpp_method_get_param,il2cpp_type_get_name,il2cpp_class_get_type);
+ auto restore=[&]{std::tie(il2cpp_class_get_methods,il2cpp_method_get_name,il2cpp_method_get_param_count,
+  il2cpp_method_get_flags,il2cpp_method_get_return_type,il2cpp_method_get_param,il2cpp_type_get_name,il2cpp_class_get_type)=previous;};
+ il2cpp_class_get_methods=[](void* klass,void** it)->void*{for(auto index=uintptr_t(*it);index<std::size(rows);++index){*it=(void*)(index+1);if(rows[index].owner==klass)return &rows[index];}return nullptr;};
+ il2cpp_method_get_name=[](void* method)->const char*{return static_cast<MethodRow*>(method)->name;};
+ il2cpp_method_get_param_count=[](void* method)->uint32_t{return uint32_t(static_cast<MethodRow*>(method)->parameters.size());};
+ il2cpp_method_get_flags=[](void* method,uint32_t*)->uint32_t{return static_cast<MethodRow*>(method)->flags;};
+ il2cpp_method_get_return_type=[](void* method)->void*{return const_cast<char*>(static_cast<MethodRow*>(method)->result);};
+ il2cpp_method_get_param=[](void* method,uint32_t index)->void*{return const_cast<char*>(static_cast<MethodRow*>(method)->parameters.at(index));};
+ il2cpp_type_get_name=[](void* type)->const char*{return static_cast<const char*>(type);};
+ il2cpp_class_get_type=[](void*)->void*{return const_cast<char*>("Beyond.Lua.LuaManager");};
+ try{
+  Require(!Exact(managerClass,"DoString",{"System.String"},"System.Object[]",true),"fixture accepted an invented static DoString");
+  FullResourceReload::BindUIPageApi(managerClass,functionClass,arrayClass,uiObjectClass,exceptionClass);
+  Require(FullResourceReload::api.uiLuaInstance==&rows[0]&&FullResourceReload::api.uiLuaDo==&rows[1]&&FullResourceReload::api.uiLuaCall==&rows[2]&&FullResourceReload::api.uiArraySet==&rows[3]&&FullResourceReload::api.uiLuaExceptionMessage==&rows[8],"UI page binding did not use the actual manager instance and signatures");
+  FullResourceReload::BindUIPageCodec(cipherClass,cryptoClass,stringClass);
+  Require(FullResourceReload::api.uiLuaKey==&rows[4]&&FullResourceReload::api.uiLuaEncode==&rows[5]&&FullResourceReload::api.uiLuaDecode==&rows[6]&&FullResourceReload::api.uiLuaCodeEquals==&rows[7],"UI encoding bound a different live-game codec layout");
+ }catch(...){restore();throw;}
+ restore();Setup();
+}
+void UILuaExceptionRegression(){
+ using namespace FullResourceReload;Reset();uiLuaRaises=true;bool refused=false;
+ try{CaptureUIPage(uiLoader,oldRoot);}catch(const std::exception& e){refused=true;Require(std::string(e.what()).find("HyperLua undeclared panel member: go")!=std::string::npos,"UI Lua exception lost the game's actual error message");}
+ uiLuaRaises=false;Require(refused&&uiRoot==oldRoot&&!uiPageBinds&&!uiUnloads,"UI Lua error changed the displayed character");Reset();
 }
 void EnumRegression(){
  struct Case{const char* type;int width;uint64_t bits;};
@@ -564,6 +675,175 @@ void ModelControlRegistrationRegression(){
  Require(refused&&generation==2&&currentRoot==restoredRoot&&RuntimeShapes::bound.count(oldRenderer)&&!RuntimeShapes::registrationPaused,
          "failed F10 did not restore the old model control registration");
 }
+void UIControlCompletionRegression(){
+ Reset();RuntimeShapes::enabled=true;
+ RuntimeShapes::packageGeneration=RuntimeShapes::checkedGeneration=generation.load();
+ auto variables=RuntimeShapes::variables;auto setter=RuntimeShapes::originalEnabledSetter;
+ struct Cleanup {decltype(variables) values;decltype(setter) original;
+  ~Cleanup(){RuntimeShapes::enabled=false;RuntimeShapes::variables=std::move(values);RuntimeShapes::originalEnabledSetter=original;Reset();}
+ } cleanup{variables,setter};
+ RuntimeShapes::api.getEnabled=(void*)110;staticEnabled=1;
+ RuntimeShapes::originalEnabledSetter=[](void*,bool value){staticEnabled=value;};
+ auto& spec=RuntimeControls::specs.at("marker");spec.package="UI-test";spec.part="sleeve";spec.vertices=2;
+ spec.visible=EiemExpression::Make();spec.visible->op=EiemExpression::Variable;spec.visible->variable="shown";
+ RuntimeShapes::variables[spec.package]["shown"]=0;
+ // Initialization leaves enabled state unfiltered; the UI loader's completion
+ // activates it without BaseModelViewPart or any scene Renderer query.
+ RuntimeShapes::RegisterRenderer(oldRenderer,oldMesh,false);
+ Require(staticEnabled&&!RuntimeShapes::bound.at(oldRenderer).modelReady,"UI initialization filtered native enabled state too early");
+ auto root=FullResourceReload::UILoad(uiLoader,StringValue(modelPath),factoryParent,nullptr);
+ Require(root==oldRoot,"UI sync loader changed the native return value");
+ RuntimeShapes::ApplyVisibility(oldRenderer,RuntimeShapes::bound.at(oldRenderer),spec);
+ Require(!staticEnabled,"completed UI model keeps every Mesh enabled and ignores author visibility");
+ RuntimeShapes::variables[spec.package]["shown"]=1;
+ RuntimeShapes::ApplyVisibility(oldRenderer,RuntimeShapes::bound.at(oldRenderer),spec);
+ Require(staticEnabled,"UI key state did not restore the visible Mesh");
+ if(!FullResourceReload::api.uiLuaInstance){
+  bool refused=false;try{FullResourceReload::CaptureUIPage(uiLoader,oldRoot);}catch(const std::exception&){refused=true;}
+  Require(refused&&FullResourceReload::liveUIModels.count(oldRoot)&&RuntimeShapes::bound.at(oldRenderer).modelReady&&staticEnabled,"missing page transfer API disabled UI key controls or allowed an unsafe F10");
+ }
+ RuntimeShapes::SetEnabled(oldRenderer,false);
+ RuntimeShapes::variables[spec.package]["shown"]=0;RuntimeShapes::ApplyVisibility(oldRenderer,RuntimeShapes::bound.at(oldRenderer),spec);
+ RuntimeShapes::variables[spec.package]["shown"]=1;RuntimeShapes::ApplyVisibility(oldRenderer,RuntimeShapes::bound.at(oldRenderer),spec);
+ Require(!staticEnabled,"UI author visibility enabled a game-disabled Renderer");
+ FullResourceReload::UIUnload(uiLoader,oldRoot,nullptr);
+ Require(RuntimeShapes::bound.empty()&&FullResourceReload::liveUIModels.empty(),"UI unload retained instance control bindings");
+ for(bool inlineCompletion:{false,true}){
+  staticEnabled=1;uiRoot=oldRoot;uiInline=inlineCompletion;RuntimeShapes::variables[spec.package]["shown"]=0;
+  FullResourceReload::UIAsync(uiLoader,StringValue(modelPath),factoryParent,uiCallback,nullptr);
+  if(!inlineCompletion){Require(FullResourceReload::pendingUIModels.size()==1,"asynchronous UI request was not tracked");FullResourceReload::UIComplete(uiClosure,uiProxy,nullptr);}
+  Require(!staticEnabled&&RuntimeShapes::bound.at(oldRenderer).modelReady&&FullResourceReload::pendingUIModels.empty(),"UI async completion did not activate author visibility or retire its pending request");
+  Require(FullResourceReload::liveUIModels.at(oldRoot).callback.Get()==uiCallback,"UI completion lost the game's panel callback");
+  FullResourceReload::UIUnload(uiLoader,oldRoot,nullptr);
+ }
+ uiInline=false;FullResourceReload::UIAsync(uiLoader,StringValue(modelPath),factoryParent,uiCallback,nullptr);
+ FullResourceReload::UICancel(uiLoader,7,nullptr);Require(FullResourceReload::pendingUIModels.empty(),"cancelled UI request blocks F10");
+ Require(!sceneQueries,"UI completion searched the scene for Renderers");
+}
+void UIControlWithoutPageApiRegression(){
+ auto previous=FullResourceReload::api.uiLuaInstance;FullResourceReload::api.uiLuaInstance=nullptr;
+ try{UIControlCompletionRegression();}catch(...){FullResourceReload::api.uiLuaInstance=previous;throw;}
+ FullResourceReload::api.uiLuaInstance=previous;
+}
+void UIDelayedCompletionRegression(){
+ using namespace FullResourceReload;
+ for(int outcome:{0,1,2,3}){
+  Reset();UIAsync(uiLoader,StringValue(modelPath),factoryParent,uiCallback,nullptr);UIComplete(uiClosure,uiProxy,nullptr);
+  currentRoot=nullptr;auto a=MakeAttempt();a.owners.clear();DiscoverOwners(a);uiDelayed=true;
+  Rebuild(a);
+  Require(a.phase==Phase::UIWait&&generation==2&&uiRoot==oldRoot&&uiOwned.count(oldRoot)&&uiCallbacks==1&&!uiUnloads,
+   "delayed UI completion removed the displayed model or rejected before the game could finish next frame");
+  auto previous=std::atomic_load(&routes);Rebuild(a);
+  Require(a.phase==Phase::UIWait&&uiRoot==oldRoot&&!removeCalls&&!loadCalls&&previous->empty(),"waiting UI job exposed routes, blocked the frame, or released old models");
+  if(outcome==2){UICancel(uiLoader,7,nullptr);bool refused=false;try{Rebuild(a);}catch(const std::exception&){refused=true;}
+   Require(refused&&generation==2&&uiRoot==oldRoot&&uiOwned.count(oldRoot)&&uiCallbacks==1,"cancelled request removed the displayed UI");
+   UIComplete(uiClosure,uiProxy,nullptr);Require(uiCallbacks==1&&uiCancelledCompletions==1&&uiReloadRequests.empty(),"cancelled late completion reached the page or leaked request state");continue;
+  }
+  if(outcome==3){UIDispose(uiLoader,nullptr);bool refused=false;try{Rebuild(a);}catch(const std::exception&){refused=true;}
+   Require(refused&&generation==2&&uiCallbacks==1&&!uiReloadRequests.empty(),"disposed UI page was revived by a pending F10");
+   UIComplete(uiClosure,uiProxy,nullptr);Require(uiCallbacks==1&&uiReloadRequests.empty(),"disposed UI completion revived the page or retained its request");continue;
+  }
+  UIComplete(uiClosure,uiProxy,nullptr);
+  Require(uiRoot==oldRoot&&uiCallbacks==1&&uiOwned.count(oldRoot),"native completion updated the page before candidate validation");
+  rejectVertex=outcome==1;bool refused=false;try{Rebuild(a);}catch(const std::exception&){refused=true;}
+  Require(refused==(outcome==1),"UI candidate validation outcome differs");
+  if(outcome==1)Require(generation==2&&uiRoot==oldRoot&&uiOwned.count(oldRoot)&&uiCallbacks==1&&!uiUnloads&&uiCancelledCompletions==1,"invalid asynchronous UI candidate blanked the original display");
+  else Require(a.phase==Phase::Passed&&generation==3&&uiRoot==newRoot&&uiCallbacks==1&&uiPageBinds==1&&uiUnloads==1&&uiOwned.count(newRoot)&&!uiOwned.count(oldRoot)&&uiReloadRequests.empty(),"completed UI F10 did not transfer page ownership exactly once");
+ }
+ Reset();
+}
+void UILateProxyRoutingRegression(){
+ using namespace FullResourceReload;
+ Reset();UIAsync(uiLoader,StringValue(modelPath),factoryParent,uiCallback,nullptr);UIComplete(uiClosure,uiProxy,nullptr);
+ currentRoot=nullptr;auto a=MakeAttempt();a.owners.clear();DiscoverOwners(a);uiDelayed=uiLateInstantiate=true;
+ Rebuild(a);Require(a.phase==Phase::UIWait&&std::atomic_load(&routes)->empty()&&uiRoot==oldRoot,"UI submission changed public routes or display before instantiation");
+ auto path=Path(modelPath);il2cpp_field_get_value(path.Get(),api.pathHashField,&fixtureProxyHash);
+ // The actual game can start instantiation on the later proxy update, after
+ // LoadModelAsync returned and the submission's temporary route was restored.
+ creatingUI=true;ProxyPreload(instance,true,nullptr);creatingUI=false;uiProxyRoot=proxyCloneResult;
+ ProxyPreload(effect,true,nullptr);
+ Require(proxyCloneResult==restoredRoot&&Clone(source)==restoredRoot&&!proxyUIOverride.Get(),"UI request routing escaped into another proxy or the public clone route");
+ UIComplete(uiClosure,uiProxy,nullptr);bool refused=false;try{Rebuild(a);}catch(const std::exception&){refused=true;}
+ Require(!refused&&a.phase==Phase::Passed&&uiRoot==newRoot&&generation==3,
+  "later UI proxy instantiation used old resources after the submission route ended");
+ Reset();
+}
+void UIDelayedFrameRegression(){
+ using namespace FullResourceReload;
+ struct Cleanup {~Cleanup(){attempt.reset();pending.reset();std::atomic_store(&requested,std::shared_ptr<const Ticket>{});std::atomic_store(&latest,std::shared_ptr<const EiemOfflinePackage::Pointer>{});std::atomic_store(&failedKey,std::shared_ptr<const std::string>{});enabled=false;RuntimeShapes::enabled=false;Reset();}}cleanup;
+ for(bool superseded:{false,true}){
+  Reset();enabled=true;RuntimeShapes::enabled=true;pending.reset();RuntimeShapes::packageGeneration=RuntimeShapes::checkedGeneration=generation.load();
+  RuntimeShapes::api.getEnabled=(void*)110;RuntimeControls::specs.at("marker").vertices=2;
+  uiRoot=uiProxyRoot=(void*)0x1006;uiResultRoot=(void*)0x1007;auto oldUI=uiRoot;
+  UIAsync(uiLoader,StringValue(modelPath),factoryParent,uiCallback,nullptr);UIComplete(uiClosure,uiProxy,nullptr);
+  attempt=std::make_shared<Attempt>(MakeAttempt());auto& a=*attempt;a.prepared->controls.specs=RuntimeControls::specs;
+  // World and UI roots are independent consumers of the same prefab.
+  CaptureConsumers(a.owners.front());a.owners.clear();
+  // Record the normal world lifecycle before discovering both instances.
+  recordPartFinished=true;RecordPart();
+  DiscoverOwners(a);Require(a.owners.size()==2,"mixed UI/world fixture did not capture both native owners");
+  a.prepared->pointer={std::string(64,'A'),std::string(64,'B')};a.phase=Phase::Rebuild;
+  std::atomic_store(&latest,std::make_shared<const EiemOfflinePackage::Pointer>(a.prepared->pointer));
+  std::atomic_store(&requested,std::shared_ptr<const Ticket>{});uiDelayed=true;
+  Frame();Require(a.phase==Phase::UIWait&&currentRoot==oldRoot&&animationRoot==oldRoot&&uiRoot==oldUI&&uiCallbacks==1&&!removeCalls,"mixed F10 released world/UI owners before native UI completion");
+  Require(!uiRequestCallback&&!nullDelegateTargetCalls,"mixed F10 inspected a null page callback through Delegate.get_Target");
+  // Unrelated models appearing during the wait must not block this Mod.
+  liveParts[unrelatedPart]={};liveParts[unrelatedPart].part=RuntimeShapes::Ref::Make(unrelatedPart,true);liveParts[unrelatedPart].root=RuntimeShapes::Ref::Make(unrelatedRoot,true);liveParts[unrelatedPart].path="assets/unmodified-character.prefab";++ownerRevision;
+  Frame();Require(a.phase==Phase::UIWait&&currentRoot==oldRoot&&uiCallbacks==1,"UI wait blocked the frame or unrelated lifecycle changed the transaction");
+  if(superseded){auto ticket=std::make_shared<Ticket>();ticket->pointer=a.prepared->pointer;ticket->clock=1;std::atomic_store(&requested,std::shared_ptr<const Ticket>(ticket));
+   Frame();Require(a.phase==Phase::Reject&&currentRoot==oldRoot&&uiRoot==oldUI&&!removeCalls&&uiCallbacks==1,"superseded pending UI request mutated an old owner");
+   Frame();Require(a.phase==Phase::Reject,"native candidate retired while cancelled UI instantiation was still running");
+   UIComplete(uiClosure,uiProxy,nullptr);Frame();Require(a.phase==Phase::Drained&&uiCallbacks==1&&uiReloadRequests.empty(),"cancelled UI job did not drain through its native completion");
+  }else{UIComplete(uiClosure,uiProxy,nullptr);Frame();
+   Require(a.phase==Phase::Passed&&generation==3&&currentRoot==newRoot&&animationRoot==currentRoot&&uiRoot==uiResultRoot&&uiCallbacks==1&&uiPageBinds==1&&uiUnloads==1&&animationRebinds==1,
+    "mixed async UI/world Frame did not preserve animation and complete the native page callback: "+a.error);
+  }
+  attempt.reset();std::atomic_store(&requested,std::shared_ptr<const Ticket>{});
+ }
+}
+void UIModelReloadRegression(){
+ using namespace FullResourceReload;
+ // The real PhaseBase callback resumes coroutine.waitAsyncRequest once.
+ // Native acceptance/active hierarchy alone does not update the page item.
+ Reset();UIAsync(uiLoader,StringValue(modelPath),factoryParent,uiCallback,nullptr);UIComplete(uiClosure,uiProxy,nullptr);
+ uiOwned.insert(newRoot);{void* args[]={newRoot};Call(api.uiCallbackInvoke,uiCallback,args);}
+ UIUnload(uiLoader,oldRoot,nullptr);
+ Require(uiCallbacks==2&&uiRoot==oldRoot&&!uiOwned.count(uiRoot)&&uiOwned.count(newRoot),"one-shot continuation did not reproduce native COMMIT with a blank page");
+ // Sync-load/replay skips native async parent/component initialization even
+ // when the panel delegate itself runs. Lock down that failed game sequence.
+ Reset();UILoad(uiLoader,StringValue(modelPath),factoryParent,nullptr);
+ {void* args[]={oldRoot};Call(api.uiCallbackInvoke,uiCallback,args);}
+ Require(uiCallbacks==1&&!uiNativeReady,"sync-load replay did not reproduce skipped native UI initialization");
+ for(bool reject:{false,true}){
+  Reset();RuntimeShapes::enabled=true;RuntimeShapes::packageGeneration=RuntimeShapes::checkedGeneration=generation.load();
+  struct Cleanup {~Cleanup(){RuntimeShapes::enabled=false;Reset();}} cleanup;
+  RuntimeShapes::api.getEnabled=(void*)110;
+  RuntimeControls::specs.at("marker").vertices=2;
+  UIAsync(uiLoader,StringValue(modelPath),factoryParent,uiCallback,nullptr);UIComplete(uiClosure,uiProxy,nullptr);
+  currentRoot=nullptr;auto a=MakeAttempt();a.prepared->controls.specs=RuntimeControls::specs;a.owners.clear();DiscoverOwners(a);
+  Require(a.owners.size()==1&&a.owners[0].uiModel&&!sceneQueries,"UI loader instance has no captured game lifecycle owner");
+  rejectVertex=reject;bool refused=false;try{Rebuild(a);}catch(const std::exception&){refused=true;}
+  Require(refused==reject,"UI transaction failure/result differs");
+  if(reject){Require(generation==2&&uiRoot==oldRoot&&uiCallbacks==1&&uiUnloads==0&&uiOwned.count(oldRoot)&&uiCancelledCompletions==1&&RuntimeShapes::bound.count(oldRenderer),"failed UI candidate changed the displayed model or replayed its page callback");}
+  else{
+   Require(a.phase==Phase::Passed&&generation==3&&uiRoot==newRoot&&uiCallbacks==1&&uiPageBinds==1&&uiUnloads==1&&uiNativeReady&&RuntimeShapes::bound.count(newRenderer),"UI F10 skipped native async completion or did not update the panel's instance reference");
+   newRoot=(void*)0x1005;a=MakeAttempt();a.prepared->controls.specs=RuntimeControls::specs;a.prepared->base=generation.load();a.owners.clear();DiscoverOwners(a);Rebuild(a);
+   Require(a.phase==Phase::Passed&&generation==4&&uiRoot==newRoot&&uiCallbacks==1&&uiPageBinds==2&&uiUnloads==2&&!sceneQueries,"consecutive UI F10 lost its original panel callback");
+  }
+  UIDispose(uiLoader,nullptr);Require(liveUIModels.empty()&&RuntimeShapes::bound.empty(),"disposed UI loader retained callbacks or control bindings");
+  newRoot=(void*)0x1003;
+ }
+ Reset();UIAsync(uiLoader,StringValue(modelPath),factoryParent,uiCallback,nullptr);auto a=MakeAttempt();a.owners.clear();bool refused=false;
+ try{DiscoverOwners(a);}catch(const std::exception&){refused=true;}Require(refused,"F10 committed over an affected unfinished UI creation");
+ UICancel(uiLoader,7,nullptr);a.owners.clear();DiscoverOwners(a);Require(a.owners.empty(),"cancelled UI creation remained a live reload owner");Reset();
+ UILoad(uiLoader,StringValue(modelPath),factoryParent,nullptr);uiPageAvailable=false;a=MakeAttempt();a.owners.clear();refused=false;
+ try{DiscoverOwners(a);}catch(const std::exception&){refused=true;}
+ Require(refused&&uiOwned.count(oldRoot)&&generation==2,"UI model without a page binding was silently replaced behind its caller");Reset();
+ UIAsync(uiLoader,StringValue(modelPath),factoryParent,uiCallback,nullptr);UIComplete(uiClosure,uiProxy,nullptr);
+ currentRoot=nullptr;a=MakeAttempt();a.owners.clear();DiscoverOwners(a);uiPageReject=true;refused=false;
+ try{Rebuild(a);}catch(const std::exception&){refused=true;}
+ Require(refused&&uiOwned.count(oldRoot)&&!uiOwned.count(newRoot)&&uiRoot==oldRoot&&uiCallbacks==1&&generation==2,"loader acceptance was committed despite a page refusing the new instance");Reset();
+}
 void PartCallbackBindingRegression(){
  struct MethodRow {MInfo info{};const char* name;const char* parameters[2];};
  static MethodRow rows[]={{ {},"Invoke",{"System.Boolean","Beyond.Gameplay.View.BaseModelViewPart"}},
@@ -688,7 +968,7 @@ void LatestPublicationRegression(){
  ticket->pointer={};std::atomic_store(&requested,std::shared_ptr<const Ticket>(ticket));Frame();Require(attempt->phase==Phase::Ready&&!removeCalls,"waiting offline build exposed the previous candidate");
  // A publication or newer F10 arriving between owner discovery and rebuild
  // must also prevent an old candidate from touching the live model.
- for(auto phase:{Phase::Owners,Phase::Rebuild}){attempt->phase=phase;bool refused=false;try{Step(*attempt);}catch(const std::exception&){refused=true;}
+ for(auto phase:{Phase::Owners,Phase::Rebuild,Phase::UIWait}){attempt->phase=phase;bool refused=false;try{Step(*attempt);}catch(const std::exception&){refused=true;}
   Require(refused&&!removeCalls&&!loadCalls,"superseded candidate mutated the owner after ticket consumption");}
  std::atomic_store(&latest,std::make_shared<const EiemOfflinePackage::Pointer>(prepared->pointer));
  attempt->requestClock=1;ticket->clock=2;attempt->phase=Phase::Rebuild;bool refused=false;try{Step(*attempt);}catch(const std::exception&){refused=true;}
@@ -901,9 +1181,18 @@ int main(){
     RuntimeShapes::variables["static"]["shown"]=1;RuntimeShapes::ApplyVisibility(newRenderer,RuntimeShapes::bound.at(newRenderer),spec);Require(staticEnabled,"static visibility did not return");
     RuntimeShapes::bound.clear();RuntimeShapes::specs=std::move(specs);RuntimeShapes::variables=std::move(variables);RuntimeShapes::originalEnabledSetter=setter;staticRenderers=false;Reset();
   });
+  check("UI model completion visibility",UIControlCompletionRegression);
+  check("UI delayed completion keeps displayed model",UIDelayedCompletionRegression);
+  check("UI asynchronous proxy retains candidate route",UILateProxyRoutingRegression);
+  check("UI delayed completion through Frame",UIDelayedFrameRegression);
+  check("UI model lifecycle reload",UIModelReloadRegression);
   check("synchronous world owner",SynchronousOwnerRegression);
   check("LoadModel release ownership",LoadReleaseOwnershipRegression);
   check("bone verification cost",BoneVerificationCostRegression);
+  check("UI page API binding",UIPageApiBindingRegression);
+  check("UI Lua exception details",UILuaExceptionRegression);
+  check("UI encrypted script loading",UIEncryptedLoadRegression);
+  check("UI controls without page transfer API",UIControlWithoutPageApiRegression);
   check("background candidate readiness",BackgroundReadyRegression);
   check("enum",EnumRegression);check("bones",BonePathRegression);check("root paths",RootPathRegression);check("managers",ManagerContractRegression);
   check("Material property bindings",MaterialBindingRegression);check("native lifecycle",NativeLifecycleRegression);check("typed character audio",[]{typedAudioOnly=true;NativeLifecycleRegression();typedAudioOnly=false;});check("texture identity",TextureIdentityRegression);check("load scheduling",PrewarmScheduleRegression);check("committed retry",CommittedRetryRegression);check("released pool",ReleasedPoolRegression);check("display virtual override",DisplayOverrideRegression);check("rule memory loads",RuleMemoryRegression);
@@ -945,6 +1234,6 @@ int main(){
   {Attempt a;a.phase=Phase::Reject;a.exposed=true;Lease l;l.handle=RuntimeShapes::Ref::Make(leaseHandle,false);l.done=true;a.leases.push_back(l);Drain(a);Require(!disposeCalls&&a.phase==Phase::Drained,"exposed generation lost game dependency lease");}
   {Attempt a;a.phase=Phase::Reject;a.bundles.emplace(0,Bundle{});Drain(a);Require(a.phase==Phase::Drained,"pre-native load failure polled null request or stuck");}
   std::atomic_store(&routes,std::shared_ptr<const Routes>(std::make_shared<Routes>()));Require(handles.empty(),"fixture GC handles leaked");
-  std::cout<<"PASS full resource transaction (mock native APIs): rule archive stream ABI and async/lazy roots; stripped stream methods via engine icalls; failed/unmatched rule preserves original load; six native prefab factories preserve arguments; native animation resume/weapons/audio lifecycle; stale animation reproduced; old Mesh/Texture identity rejection with animated rollback; exact typed static/instance manager getters; startup zero extra native requests; full Frame world/display -> commit; eight consecutive world reloads without resetting state; asynchronous/display/retired callback owners; structural callback binding; full bone paths; enum ABI; superseded tickets; rollback; native retirement\n";
+  std::cout<<"PASS full resource transaction (mock native APIs): rule archive stream ABI and async/lazy roots; stripped stream methods via engine icalls; failed/unmatched rule preserves original load; six native prefab factories preserve arguments; native animation resume/weapons/audio lifecycle; stale animation reproduced; old Mesh/Texture identity rejection with animated rollback; exact typed static/instance manager getters; startup zero extra native requests; full Frame world/display -> commit; delayed UI completion retains displayed models; mixed UI/world frames, cancellation and supersession; eight consecutive world reloads without resetting state; asynchronous/display/retired callback owners; structural callback binding; full bone paths; enum ABI; superseded tickets; rollback; native retirement\n";
  }catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
 }

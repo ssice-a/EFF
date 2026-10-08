@@ -600,17 +600,23 @@ bool CurrentGeneration() {
 }
 // The game's model completion callback supplies this exact instance root.
 // Include inactive children so later visibility/LOD changes need no scene scan.
-void RegisterModel(void* root) {
-  if (!enabled || registrationPaused || !Main() || !Alive(root) || !CurrentGeneration()) return;
+size_t RegisterModel(void* root) {
+  if (!enabled || registrationPaused || !Main() || !Alive(root) || !CurrentGeneration()) return 0;
   Require(api.modelRenderers && api.rendererType,"runtime model registration unavailable");
   unsigned char inactive=1;void* args[]={api.rendererType,&inactive};
   auto objects=Ref::Make(Call(api.modelRenderers,root,args),false);size_t count=0;
   Require(ArrayLength(objects.Get(),&count),"runtime model renderer array absent");
+  size_t ready=0;
   for (size_t i=0;i<count;++i) {
     void* renderer=nullptr;
     Require(CopyRaw((char*)objects.Get()+32+i*sizeof(void*),&renderer,sizeof(renderer)),"runtime model renderer element");
-    if (Alive(renderer)) RegisterRenderer(renderer,SourceMesh(renderer));
+    if (Alive(renderer)) {
+      auto mesh=SourceMesh(renderer);RegisterRenderer(renderer,mesh);
+      auto binding=bound.find(renderer);
+      if(binding!=bound.end()&&binding->second.renderer.Get()==renderer&&binding->second.mesh.Get()==mesh&&binding->second.modelReady)++ready;
+    }
   }
+  return ready;
 }
 void Update() {
   if (!enabled || !Main()) return;
