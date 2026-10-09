@@ -1,4 +1,7 @@
 # EFF Mod制作流程及插件的约定
+
+[English](Mod%20Tutorial_EN.md)
+
 ## 概览
 这是一个插件,旨在帮助用户更快捷方便地加载以及制作明日方舟终末地的mod.插件主要分为解包,blender制作以及插件加载的三个部分.
 ## 功能
@@ -10,10 +13,10 @@
 ## 制作流程
 
 - 插件下载与安装
-  - 下载[dll插件](https://github.com/ssice-a/EFF/releases/tag/v1.3.3),解压并负责里面的内容到游戏路径:如D:\Hypergryph Launcher\games\Endfield Game
+  - 下载[dll插件](https://github.com/ssice-a/EFF/releases/tag/v1.3.4),解压并复制里面的内容到游戏路径:如D:\Hypergryph Launcher\games\Endfield Game
     ![](image/安装0.png)
     ![](image/安装1.png)
-  - 下载[blender插件](https://github.com/ssice-a/EFF-blender/releases/tag/v0.40.2)以及[animestudio](https://github.com/ssice-a/AnimeStudio/releases/tag/v1.3.1)并自行安装
+  - 下载[blender插件](https://github.com/ssice-a/EFF-blender/releases/tag/v0.40.3)以及[animestudio](https://github.com/ssice-a/AnimeStudio/releases/tag/v1.3.1)并自行安装
 
 - 解包
 

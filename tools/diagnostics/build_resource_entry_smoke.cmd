@@ -12,7 +12,7 @@ if errorlevel 1 exit /b 1
 where cl >nul 2>nul
 if errorlevel 1 exit /b 1
 if not exist bin\resource-directory-entry mkdir bin\resource-directory-entry
-cl /nologo /utf-8 /O2 /MD /EHsc /std:c++17 /Ideps\minhook_lib\include ^
+cl /nologo /utf-8 /O2 /MD /EHsc /std:c++17 /bigobj /Ideps\minhook_lib\include ^
  /Fo"bin\resource-directory-entry\resource_entry_smoke.obj" ^
  tools\diagnostics\resource_entry_smoke.cpp deps\minhook_lib\lib\libMinHook.x64.lib ^
  /Fe"bin\resource-directory-entry\resource_entry_smoke.exe" /link bcrypt.lib user32.lib

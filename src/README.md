@@ -1,6 +1,8 @@
 # EFF source map
 
-The production DLL is one translation unit, `eiem_resource_entry.cpp`. Run `build.bat v36` (the default) or `build.bat v35`; the resulting DLL, compiler, proxies and settings share one ABI and output folder. Builds never deploy into the game. The installed v35c probe is a separate verified binary, not the current source build.
+The production DLL is one translation unit, `eiem_resource_entry.cpp`. Run `build.bat` (v35 by default) or `build.bat v36` for development against that serialized layout. Builds output the runtime DLL, two proxies and settings, and never deploy into the game. The Blender author compiler has its own build and distribution.
+
+The default build excludes temporary performance/skin/material probes, VFS input capture, periodic observation counters and per-session diagnostic folders. Essential outcomes and failures use one `plugin/eff_log.txt`. `build.bat v35 capture` explicitly enables developer diagnostics and optional GPU capture; this is not a release artifact. Native attachment cleanup and configured idle/dash preloads remain production behavior.
 
 | Module | Interface and implementation |
 |---|---|
@@ -20,10 +22,10 @@ The production DLL is one translation unit, `eiem_resource_entry.cpp`. Run `buil
 
 The compiler validates serialized changes in memory and publishes small compressed rules, without complete Prefab/resource files or duplicated author payloads. The DLL reads exact pristine game ranges, applies the same builders, verifies hashes and submits memory bundles before resource/instance creation. F10 prepares isolated bytes on a worker, checks consumers and asks the game to rebuild owners. Original materials are preserved as templates. This uses TypeTree codecs, not Unity Mesh/Material setters or private native memory patches.
 
-ABI v36 verifies the serialized Renderer address map and per-Mesh bone order. ABI v35 uses its manifest marker coverage and per-Mesh bone validation; it does not claim an address map is present. Current source composes 0/1/N original author packages, builds shared CAB/PFB inputs once, and binds the cache to the containing mods directory. F10 commits additions/removals/edits; original resources remain for characters without a Mod. Character baseline coverage is required, and current game evidence still covers only LZY.
+ABI v36 verifies the serialized Renderer address map and per-Mesh bone order. ABI v35 uses its manifest marker coverage and per-Mesh bone validation; it does not claim an address map is present. Current source composes 0/1/N original author packages, builds shared CAB/PFB inputs once, and binds the cache to the containing mods directory. F10 commits additions/removals/edits; original resources remain for characters without a Mod. Character baseline coverage is required, and the documented in-game evidence has specific coverage limits.
 
 `eiem_lua_ui.h` is a reusable sandboxed Lua/ImGui adapter, with variables from `eiem_expression.h` and strict file paths from `eiem_file_io.h`. It is not wired into the current DLL host. The pure author codecs `eiem_skeleton_document.h`, `eiem_physics_document.h` and `eiem_physics_native_document.h` remain available for author tools; they create no runtime objects. The retired format 1 INI parser and runtime resource replacement entry have been removed.
 
-The built-in Ins panel runs native Windows controls on a separate worker. It reads immutable Mod snapshots and queues commands for Unity-frame application with graph/selection revisions. Physical keys update only the selected Mod and pause while the panel is open. Defaults select the first controllable Mod; successful F10 commits retain the selection or select another surviving Mod. Empty sets expose no controls, and readdition selects a Mod again.
+The built-in Ins panel uses an ImGui-style Windows panel on a separate worker. It reads immutable Mod snapshots and queues commands for Unity-frame application with graph/selection revisions. Each Mod independently enables keyboard handling through `[Mod] key_switch_enabled`; missing flags default to enabled. Ins edits save the same field. Several enabled Mods may respond to one key, while the dropdown selects only the Mod shown by manual controls. Keys pause while the panel is open. F10 preserves settings for surviving Mods and publishes the full current Mod set.
 
 Source builds, automated checks, installed binaries and game acceptance are distinct evidence. See [the current documentation index](../docs/README.md).

@@ -127,6 +127,21 @@ inline EiemRenderAssemblyDescription::Description MergeAssembly(const Root& pris
  for(auto& helper:result.helpers){expand(helper.renderers);for(const auto& variant:variants){auto next=std::find_if(variant.first->assembly.helpers.begin(),variant.first->assembly.helpers.end(),[&](const auto& h){return h.component==helper.component;});if(next!=variant.first->assembly.helpers.end())helper.custom=helper.custom||next->custom;}}
  return result;
 }
+inline void SelectIsolatedInputs(Set& set){
+ auto& plan=set.manifest.plan;Require(plan.startupHashes.size()==set.catalog.size(),"compiled source hash coverage differs");
+ std::set<size_t> isolated;for(const auto& root:plan.roots){Require(root.input<set.catalog.size(),"compiled root input differs");isolated.insert(root.input);}
+ for(size_t i=0;i<set.catalog.size();++i)if(plan.startupHashes[i]!=set.catalog[i].source.hash)isolated.insert(i);
+ // A new Prefab/edited object needs an independent identity. Unchanged
+ // dependencies keep the game's CAB identity and ResourceManager ownership;
+ // opening renamed copies would duplicate their textures and GPU resources.
+ for(size_t i=0;i<set.catalog.size();++i){const auto& catalog=set.catalog[i];bool own=isolated.count(i)!=0;
+  for(const auto& member:catalog.members){auto& name=plan.names.members.at(member.first);name=own?"CAB-"+EiemLoadingGeneration::Token(plan.key,member.first,32):member.first;
+   if(!own)plan.shared.insert(member.first);}
+  if(!catalog.input.bundle.empty())plan.names.bundles.at(catalog.input.bundle)=own?EiemLoadingGeneration::BundleIdentity(plan.key,catalog.input.bundle):catalog.input.bundle;
+ }
+ for(auto& member:plan.names.members){auto cab=member.first.substr(0,36);if(member.first==cab+".resS")member.second=plan.names.members.at(cab)+".resS";}
+ plan.closure.assign(isolated.begin(),isolated.end());
+}
 inline std::shared_ptr<Set> RefreshKeySwitches(const std::shared_ptr<const Set>& previous,const std::filesystem::path& directory){
  if(!previous||!EiemComposedPackage::Matches(directory,previous->manifest.packages))return {};
  std::vector<Package> authors=previous->manifest.packages;std::map<std::filesystem::path,InputFileStamp> files;std::map<std::filesystem::path,Bytes> iniBytes;
@@ -173,10 +188,12 @@ inline std::shared_ptr<Set> Read(const std::filesystem::path& game,const std::sh
  if(previous&&set->pointer==previous->pointer){
   Require(plan.inputs.size()==previous->manifest.plan.inputs.size(),"same compiled identity changed input count");
   plan.startupHashes=previous->manifest.plan.startupHashes;for(size_t i=0;i<plan.inputs.size();++i)plan.inputs[i].hash=previous->manifest.plan.inputs[i].hash;
-  set->startup=previous->startup;set->isolatedRefs=previous->isolatedRefs;for(const auto& row:set->isolatedRefs)if(auto bytes=row.second.lock())set->isolated.emplace(row.first,std::move(bytes));
+  SelectIsolatedInputs(*set);set->startup=previous->startup;set->isolatedRefs=previous->isolatedRefs;for(const auto& row:set->isolatedRefs)if(auto bytes=row.second.lock())set->isolated.emplace(row.first,std::move(bytes));
   Require(Unchanged(*set,directory),"Mod changed during compiled snapshot refresh");return set;
  }
- for(size_t i=0;i<plan.inputs.size();++i){auto startup=Materialize(*set,i,false);plan.startupHashes[i]=Hash(startup);if(plan.startupHashes[i]!=plan.originals[i].hash)set->startup.emplace(i,std::make_shared<const Bytes>(Pack(startup)));auto bytes=std::make_shared<const Bytes>(Materialize(*set,i,true));plan.inputs[i].hash=Hash(*bytes);set->isolatedRefs.emplace(i,bytes);set->isolated.emplace(i,std::move(bytes));}
+ for(size_t i=0;i<plan.inputs.size();++i){auto startup=Materialize(*set,i,false);plan.inputs[i].hash=plan.startupHashes[i]=Hash(startup);if(plan.startupHashes[i]!=plan.originals[i].hash)set->startup.emplace(i,std::make_shared<const Bytes>(Pack(startup)));}
+ SelectIsolatedInputs(*set);
+ for(auto i:plan.closure){auto bytes=std::make_shared<const Bytes>(Materialize(*set,i,true));plan.inputs[i].hash=Hash(*bytes);set->isolatedRefs.emplace(i,bytes);set->isolated.emplace(i,std::move(bytes));}
  Require(Unchanged(*set,directory),"Mod changed during compiled rule preparation");return set;
 }
 inline std::shared_ptr<EiemPrefabRules::Context> Context(const std::shared_ptr<const Set>& set){

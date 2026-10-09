@@ -48,6 +48,12 @@ jobs:
       run: |
         cmd /c build.bat v35
 
+    - name: Verify production DLL excludes temporary diagnostics
+      shell: pwsh
+      run: |
+        python tools/diagnostics/verify_production_dll.py bin/resource-directory-entry-v35/eff.dll
+        if ($LASTEXITCODE -ne 0) { throw 'Production diagnostic isolation failed' }
+
     - name: Verify native reload transaction
       shell: pwsh
       run: |

@@ -119,6 +119,7 @@ std::atomic<unsigned long long> vfsCalls{0}, readCalls{0}, memoryCalls{0},
     fileCalls{0}, publicFileCalls{0}, streamCalls{0};
 std::atomic<unsigned long long> helperCalls[6]{};
 std::atomic<unsigned> publicFileSamples[2]{};
+#if defined(EIEM_DIAGNOSTICS)
 std::atomic<unsigned> fileSnapshotRequests{0}, fileSnapshots{0}, captureIds{0};
 using SnapshotKey = std::pair<std::string, uint64_t>;
 std::map<SnapshotKey, size_t> selectedSnapshots;
@@ -179,6 +180,7 @@ void LoadSnapshotSelection() {
       "purpose=diagnostic-copies replacementIdentity=decoded-path-and-asset",
       selectedSnapshots.size());
 }
+#endif
 std::mutex samplesMutex;
 std::set<std::pair<uintptr_t, unsigned>> sampled;
 std::atomic<unsigned> inputSamples{0}, pathSamples{0};
@@ -195,6 +197,7 @@ struct Context {
   }
   ~Context() { bundleContext = previous; }
 };
+#if defined(EIEM_DIAGNOSTICS)
 constexpr size_t captureLimit = 64ull * 1024 * 1024,
                  queueLimit = 128ull * 1024 * 1024;
 struct Job {
@@ -209,8 +212,11 @@ struct Job {
 std::mutex queueMutex;
 std::deque<Job> jobs;
 size_t queuedBytes = 0;
+#endif
 HANDLE queueEvent = nullptr;
+#if defined(EIEM_DIAGNOSTICS)
 std::atomic<unsigned> captures{0};
+#endif
 
 bool CopyRaw(const void *input, void *output, size_t bytes) {
   if (!input || !output || uintptr_t(input) > UINTPTR_MAX - bytes)
@@ -511,6 +517,7 @@ void PrepareInputSubstitutions() {
       pendingSubstitutions->packageDigest.c_str(),
       pendingSubstitutions->control.empty() ? "replacement" : pendingSubstitutions->control.c_str());
 }
+#if defined(EIEM_DIAGNOSTICS)
 void Sample(const char *kind, void *identity, const void *data, size_t length,
             const std::string &path) {
   if (!active.load() || !length || !data)
@@ -626,6 +633,12 @@ void PathEvent(const char *kind, void *path) {
         String(path).c_str(), bundleContext ? bundleContext : "<none>",
         GetCurrentThreadId());
 }
+#else
+void Sample(const char*,void*,const void*,size_t,const std::string&) {}
+void CaptureMemory(const char*,void*) {}
+void QueueFileSnapshot(const char*,void*,uint64_t) {}
+void PathEvent(const char*,void*) {}
+#endif
 void RememberHash(int64_t hash, void *path) {
   auto text = String(path);
   if (text.empty() || text[0] == '<' || text.size() > 2047)
@@ -715,10 +728,12 @@ struct VfsLoadWitness {void* instance=nullptr;int64_t hash=0;};
 thread_local VfsLoadWitness lastVfsSync;
 
 void *__fastcall Vfs(void *self, int64_t path, void *info) {
+#if defined(EIEM_DIAGNOSTICS)
   ++vfsCalls;
   std::string text;
   Observe([&] { text = HashEvent("VFS.sync", path, hashLoadSamples); });
   Context c(text.c_str());
+#endif
   auto result=vfs(self, path, info);
   if(result)lastVfsSync={self,path};
   return result;
@@ -732,10 +747,12 @@ void *__fastcall VfsAsync(void *self, int64_t path, void *info) {
 }
 void *__fastcall VfsPos(void *self, int64_t path, void *pos, uint32_t crc,
                         void *info) {
+#if defined(EIEM_DIAGNOSTICS)
   ++vfsCalls;
   std::string text;
   Observe([&] { text = HashEvent("VFS.syncPos", path, hashLoadSamples); });
   Context c(text.c_str());
+#endif
   auto result=vfsPos(self, path, pos, crc, info);
   if(result)lastVfsSync={self,path};
   return result;
@@ -917,6 +934,7 @@ void *__fastcall HelperPersistAsync(void *dir, void *name, uint64_t offset,
 void *ObservePublicFile(const char *kind, size_t index, FileFn call, void *path,
                         uint32_t crc, uint64_t offset, void *info) {
   ++publicFileCalls;
+#if defined(EIEM_DIAGNOSTICS)
   auto sequence = ++publicFileSamples[index];
   std::string text, context;
   bool observed = false;
@@ -930,6 +948,7 @@ void *ObservePublicFile(const char *kind, size_t index, FileFn call, void *path,
         kind, sequence, text.c_str(), offset, crc, context.c_str());
     observed = true;
   });
+#endif
   void* selectedPath = path;
   uint64_t selectedOffset = offset;
   std::string selectedInput,selectedInputHash;
@@ -970,13 +989,17 @@ void *ObservePublicFile(const char *kind, size_t index, FileFn call, void *path,
         if (index % 2) submittedRequests[result] = selectedInput;
         else { submittedBundles[result] = selectedInput; ++completedInputs; }
       }
+#if defined(EIEM_DIAGNOSTICS)
       LoadingObservation::Submitted(result,selectedInput,selectedInputGeneration,bool(index%2),selectedInputHash);
+#endif
     }
+#if defined(EIEM_DIAGNOSTICS)
     if (result)
       QueueFileSnapshot(kind, path, offset);
     if (observed)
       Log("[ENTRY-FILE] event=%s sequence=%u phase=return result=%p async=%d",
           kind, sequence, result, int(index % 2));
+#endif
   });
   return result;
 }
@@ -984,7 +1007,9 @@ void* __fastcall RequestBundle(void* self, void* info) {
   auto result = requestBundle(self, info);
   CompleteRuleInput(self,result);
   Observe([&] {
+#if defined(EIEM_DIAGNOSTICS)
     if(LoadingObservation::Active()){LoadingObservation::Completed(self,result,"managed.get_assetBundle");return;}
+#endif
     std::lock_guard<std::mutex> lock(submissionMutex);
     auto found = submittedRequests.find(self);
     if (found == submittedRequests.end()) return;
@@ -996,11 +1021,17 @@ void* __fastcall RequestBundle(void* self, void* info) {
   return result;
 }
 void* __fastcall LoadAsset(void* self, void* name, void* type, void* info) {
+#if defined(EIEM_DIAGNOSTICS)
   auto probeStart=ReloadObservation::Clock();
+#endif
   auto result = loadAsset(self, name, type, info);
+#if defined(EIEM_DIAGNOSTICS)
   Observe([&]{ReloadObservation::Asset(self,name,result,probeStart);});
+#endif
   Observe([&] {
+#if defined(EIEM_DIAGNOSTICS)
     if(LoadingObservation::Active()){if(!LoadingObservation::NativeStringObserved())LoadingObservation::Asset(self,result,"managed.LoadAsset.String",name,0,type,probeStart);return;}
+#endif
     std::string input;
     {
       std::lock_guard<std::mutex> lock(submissionMutex);
@@ -1078,7 +1109,10 @@ void* LoadRuleInput(void* path,uint32_t callerCrc,uint64_t offset,bool asynchron
   Require(result,"runtime rule Bundle load returned null");
   if(!reused&&ready!=rules->startupInputs.end()){std::lock_guard<std::mutex> lock(startupArrayMutex);for(auto it=startupArrays.begin();it!=startupArrays.end();)if(it->second.packet.expired())it=startupArrays.erase(it);else ++it;startupArrays[ready->second.get()]={ready->second,RuntimeShapes::Ref::Make(array.Get(),true)};}
   Observe([&]{{std::lock_guard<std::mutex> lock(submissionMutex);if(asynchronous)submittedRequests[result]=source.file;else{submittedBundles[result]=source.file;++completedInputs;}}++submittedInputs;
-   LoadingObservation::Submitted(result,source.file,generation.load(),asynchronous,rules->plan->startupHashes.at(i));});
+#if defined(EIEM_DIAGNOSTICS)
+   LoadingObservation::Submitted(result,source.file,generation.load(),asynchronous,rules->plan->startupHashes.at(i));
+#endif
+  });
   auto ms=[](auto a,auto b){return std::chrono::duration<double,std::milli>(b-a).count();};
   Log("[ENTRY-RULE-SUBMIT] input=%s rendererRules=%zu sourceBytes=%llu nativeBytes=%zu startupCached=%d arrayReused=%d replayMs=%.3f uploadMs=%.3f nativeSubmitMs=%.3f fullPrefabFile=0 archiveMemoryStream=1 async=%d",source.file.c_str(),rules->plan->rendererRules[i].size(),source.size,nativeBytes,int(ready!=rules->startupInputs.end()),int(reused),ms(begin,prepared),ms(prepared,uploaded),ms(uploaded,submitted),int(asynchronous));matched=true;return result;
  }return nullptr;
@@ -1094,12 +1128,13 @@ void InstallHooks(void **assemblies, size_t count) {
   RuntimeShapes::Arm();
   NativeBundle::Install(assemblies,count);
   StartupDependencies::Install(assemblies,count);
+  auto bundleClass = FindClass("UnityEngine", "AssetBundle", assemblies, count);
+  auto requestClass = FindClass("UnityEngine", "AssetBundleCreateRequest", assemblies, count);
+#if defined(EIEM_DIAGNOSTICS)
   auto vfsClass =
       FindClass("Beyond.VFS", "VirtualFileSystem", assemblies, count);
   auto readClass =
       FindClass("Beyond.VFS", "VFSFileReadStream", assemblies, count);
-  auto bundleClass = FindClass("UnityEngine", "AssetBundle", assemblies, count);
-  auto requestClass = FindClass("UnityEngine", "AssetBundleCreateRequest", assemblies, count);
   auto hashClass =
       FindClass("Beyond.Resource", "StringPathHash", assemblies, count);
   auto mappingClass =
@@ -1180,6 +1215,7 @@ void InstallHooks(void **assemblies, size_t count) {
           "System.Int32", false, (void *)Read, (void **)&read);
   Install(readClass, "Read", {"System.Span<System.Byte>"}, "System.Int32",
           false, (void *)ReadSpan, (void **)&readSpan);
+#endif
   Install(bundleClass, "LoadFromFile_Internal",
           {"System.String", "System.UInt32", "System.UInt64"},
           "UnityEngine.AssetBundle", true, (void *)File, (void **)&file);
@@ -1201,6 +1237,7 @@ void InstallHooks(void **assemblies, size_t count) {
           (void*)RequestBundle, (void**)&requestBundle);
   Install(bundleClass, "LoadAsset", {"System.String", "System.Type"}, "UnityEngine.Object", false,
           (void*)LoadAsset, (void**)&loadAsset);
+#if defined(EIEM_DIAGNOSTICS)
   Install(bundleClass, "LoadFromMemory_Internal",
           {"System.Byte[]", "System.UInt32"}, "UnityEngine.AssetBundle", true,
           (void *)Memory, (void **)&memory);
@@ -1215,6 +1252,7 @@ void InstallHooks(void **assemblies, size_t count) {
           {"System.IO.Stream", "System.UInt32", "System.UInt32"},
           "UnityEngine.AssetBundleCreateRequest", true, (void *)StreamAsync,
           (void **)&streamAsync);
+#endif
   if (pendingSubstitutions) {
     Require(filePublic && fileAsyncPublic && requestBundle && loadAsset,
             "prepared loading input requires sync/async file and acceptance observer hooks");
@@ -1228,12 +1266,16 @@ void InstallHooks(void **assemblies, size_t count) {
   // Optional diagnostics must never prevent validated inputs from being
   // published, nor unwind the production startup and thread-detach sequence.
   EntryCameraFade::InstallOptional(assemblies,count);
+#if defined(EIEM_DIAGNOSTICS)
   ReloadObservation::InstallOptional(assemblies,count);
   LoadingObservation::InstallOptional(assemblies,count);
+#endif
   FullResourceReload::Install(assemblies,count);
+#if defined(EIEM_DIAGNOSTICS)
   SkinningObservation::StartOptionalReadback([&] {
     SkinningObservation::InstallReadback(assemblies, count);
   });
+#endif
   auto armed = std::atomic_load(&substitutions);
   auto rules = std::atomic_load(&resourceRules);
   const bool ruleArmed = rules && NativeBundle::enabled;
@@ -1260,6 +1302,7 @@ DWORD WINAPI ProcessJobs(void *) {
       } else {EntryReload::Prepare();}
     }
     if(FullResourceReload::configured) FullResourceReload::PollOffline();
+#if defined(EIEM_DIAGNOSTICS)
     for (;;) {
       Job job;
       {
@@ -1337,12 +1380,14 @@ DWORD WINAPI ProcessJobs(void *) {
             e.what(), job.origin.c_str());
       }
     }
+#endif
   }
 }
 DWORD StartImpl() {
   wchar_t executable[32768] = {};
   GetModuleFileNameW(nullptr, executable, _countof(executable));
   gameDirectory = std::filesystem::path(executable).parent_path();
+#if defined(EIEM_DIAGNOSTICS)
   FILETIME created{}, exited{}, kernel{}, user{};
   Require(
       GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user),
@@ -1356,16 +1401,23 @@ DWORD StartImpl() {
   std::filesystem::create_directories(sessionDirectory);
   auto logPath = sessionDirectory / "entry.log";
   logFile = OpenLog(logPath, true);
+#else
+  std::filesystem::create_directories(gameDirectory / "plugin");
+  auto logPath = gameDirectory / "plugin" / "eff_log.txt";
+  logFile = OpenLog(logPath);
+#endif
   if (!logFile) {
     OutputDebugStringA("EFF entry log could not be opened; observer "
                        "initialization cancelled\n");
     return 1;
   }
+#if defined(EIEM_DIAGNOSTICS)
   logMirror = OpenLog(gameDirectory / "plugin" / "eff_log.txt");
+#endif
   Log("[BUILD] resource-directory-entry %s %s pid=%lu abi=%u compiler=%s "
       "mode=serialized-loading-input startup=initializing replacement=not-yet-armed",
       __DATE__, __TIME__, GetCurrentProcessId(), EiemPackageProtocol::abi, EiemPackageProtocol::compiler);
-  Log("[ENTRY-LOG] session=%s mirror=%d readers=shared writers=exclusive",
+  Log("[ENTRY-LOG] path=%s diagnostics=%d readers=shared writers=exclusive",
       logPath.u8string().c_str(), !!logMirror);
   while (!GetModuleHandleW(L"GameAssembly.dll"))
     Sleep(100);
@@ -1411,7 +1463,9 @@ DWORD StartImpl() {
   // Read author-compiled rules before observing game loading requests.
   LoadInitialPackages();
   Observe([] { PrepareInputSubstitutions(); });
+#if defined(EIEM_DIAGNOSTICS)
   Observe([] { LoadSnapshotSelection(); });
+#endif
   InstallHooks(assemblies, count);
   managed.Detach();
   if(!RuntimeControls::panel.Read()) RuntimeControls::PublishPanel();
@@ -1426,7 +1480,9 @@ DWORD StartImpl() {
   else
     Log("[ENTRY-FATAL] evidence worker failed err=%lu", GetLastError());
   EiemControlPanel::Shortcut reloadKey, guiKey;
+#if defined(EIEM_DIAGNOSTICS)
   ULONGLONG report = GetTickCount64();
+#endif
   for (;;) {
     HWND window = GetForegroundWindow();
     DWORD process = 0;
@@ -1452,6 +1508,7 @@ DWORD StartImpl() {
       SetEvent(queueEvent);
       Log("[ENTRY-RELOAD] requested vk=%u modifiers=%u transaction=queued",shortcut.vk,shortcut.modifiers);
     }
+#if defined(EIEM_DIAGNOSTICS)
     auto now = GetTickCount64();
     if (now - report >= 10000) {
       report = now;
@@ -1473,6 +1530,7 @@ DWORD StartImpl() {
           completedInputs.load(), loadedAssets.load(), RuntimeShapes::boundCount.load());
       Observe([&]{LoadingObservation::Counters();});
     }
+#endif
     RuntimeControls::preferences.Flush(Log);
     RuntimeControls::keySettings.Flush(Log);
     Sleep(25);

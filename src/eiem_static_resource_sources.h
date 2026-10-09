@@ -67,7 +67,12 @@ inline Discovery FindConsumers(const Selection& s,const std::set<Identity>& targ
   for(const auto& m:bundle.members)if(SerializedHeader(m.bytes))for(const auto& a:SerializedAssets(m.bytes,m.name,ParseSerialized(m.bytes))){Identity id{Logical(a.path),a.asset};if(!targets.count(id))continue;
    Require(a.classId==43,"INI target is not an original Mesh");NativeReference ref{Cab(a.cab),a.pathId};auto old=resolved.emplace(id,ref);Require(old.second||old.first->second==ref,"ambiguous Mesh path+asset");selected.insert(ref);}}
  Require(resolved.size()==targets.size(),"original Mesh path+asset missing in game-selected source");Discovery result;result.sources=targetSources;
- for(const auto& source:s.candidates){auto bundle=EndfieldInput::Decode(Payload(s.inputs.at(source)));
+ std::vector<std::string> candidates(s.candidates.begin(),s.candidates.end());
+ struct Consumers {Discovery discovery;std::set<NativeReference> covered;};
+ std::vector<Consumers> consumers(candidates.size());
+ EiemOfflineCompile::ParallelInputs(candidates.size(),[&](size_t input){
+  const auto& source=candidates[input];auto& result=consumers[input].discovery;auto& covered=consumers[input].covered;
+  auto bundle=EndfieldInput::Decode(Payload(s.inputs.at(source)));
   for(const auto& m:bundle.members)if(SerializedHeader(m.bytes)){auto layout=ParseSerialized(m.bytes);std::vector<int64_t> matched;
    for(const auto& consumer:MeshConsumers(m.bytes,layout,m.name,selected,Cab)){matched.push_back(consumer.renderer);auto ref=consumer.mesh;ref.first=Cab(ref.first);covered.insert(ref);}
    if(matched.empty())continue;std::set<int64_t> owned;
@@ -75,7 +80,13 @@ inline Discovery FindConsumers(const Selection& s,const std::set<Identity>& targ
     Require(Cab(a.cab)==Cab(m.name),"external Prefab root requires cross-file hierarchy resolution");EiemRenderAssemblyDescription::Graph graph(m.bytes,m.name,a.pathId);bool hit=false;
     for(auto id:matched)if(graph.Contains(id)){owned.insert(id);hit=true;}if(hit){result.roots.insert(Logical(a.path));result.sources.insert(source);}}
    Require(owned.size()==matched.size(),"matching Renderer has no exact Prefab container root in "+source);result.renderers+=matched.size();
-  }}Require(covered==selected,"Mesh target has no verified Prefab Renderer consumer");return result;
+  }});
+ // Merge in candidate order, independently of worker completion order.
+ for(const auto& input:consumers){covered.insert(input.covered.begin(),input.covered.end());
+  result.roots.insert(input.discovery.roots.begin(),input.discovery.roots.end());
+  result.sources.insert(input.discovery.sources.begin(),input.discovery.sources.end());result.renderers+=input.discovery.renderers;
+ }
+ Require(covered==selected,"Mesh target has no verified Prefab Renderer consumer");return result;
 }
 inline Selection LoadMod(const std::filesystem::path& mod,const std::filesystem::path& game){
  auto s=Decode(Read(mod/"source-inputs.bin"));auto base=std::filesystem::weakly_canonical(std::filesystem::absolute(game));

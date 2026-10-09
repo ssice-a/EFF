@@ -11,9 +11,12 @@ std::atomic<unsigned> samples{0};
 std::mutex seenMutex;
 std::set<std::pair<void*, bool>> seen;
 bool Finished(void* self, void* methodInfo) {
+#if defined(EIEM_DIAGNOSTICS)
   void* caller = _ReturnAddress();
+#endif
   bool result = originalFinished(self, methodInfo);
   if (afterFinished) afterFinished(self, result);
+#if defined(EIEM_DIAGNOSTICS)
   if (!self || samples.load() >= 256) return result;
   bool first;
   { std::lock_guard<std::mutex> guard(seenMutex); first = seen.emplace(self, result).second; }
@@ -29,22 +32,29 @@ bool Finished(void* self, void* methodInfo) {
         self, rendererName.c_str(), mesh, meshName.c_str(), shapes, readable, result,
         (unsigned long long)((uintptr_t)caller-(uintptr_t)hGA));
   } catch (const std::exception& error) { Log("[CAPTURE-OBSERVATION] read-failed=%s originalResult=%d", error.what(), result); }
+#endif
   return result;
 }
 void InstallOptional(void** assemblies, size_t count) {
+#if defined(EIEM_DIAGNOSTICS)
   if (!afterFinished && !std::filesystem::exists(gameDirectory/"plugin/resource-input-diagnostics/capture-observation.enabled")) return;
+#else
+  if (!afterFinished) return;
+#endif
   try {
-    auto object = FindClass("UnityEngine", "Object", assemblies, count);
     auto skin = FindClass("UnityEngine", "SkinnedMeshRenderer", assemblies, count);
+#if defined(EIEM_DIAGNOSTICS)
+    auto object = FindClass("UnityEngine", "Object", assemblies, count);
     auto mesh = FindClass("UnityEngine", "Mesh", assemblies, count);
     nameMethod = Exact(object, "get_name", {}, "System.String", false);
     meshMethod = Exact(skin, "get_sharedMesh", {}, "UnityEngine.Mesh", false);
     shapeMethod = Exact(mesh, "get_blendShapeCount", {}, "System.Int32", false);
     readableMethod = Exact(mesh, "get_isReadable", {}, "System.Boolean", false);
     Require(nameMethod && meshMethod && shapeMethod && readableMethod, "capture readback signature unavailable");
+#endif
     Install(skin, "SkinMatricesRequestFinished", {}, "System.Boolean", false,
             (void*)Finished, (void**)&originalFinished);
-    Log("[CAPTURE-OBSERVATION] installed=%d sampleLimit=256 readonly=1 resourceSubmissionUnaffected=1", !!originalFinished);
+    Log("[SHAPE-CAPTURE-COMPLETION] installed=%d originalResultPreserved=1", !!originalFinished);
   } catch (const std::exception& error) { Log("[CAPTURE-OBSERVATION] optional-install-failed=%s resourceSubmissionUnaffected=1", error.what()); }
 }
 }

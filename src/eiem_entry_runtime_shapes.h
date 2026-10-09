@@ -300,6 +300,7 @@ bool Supplied(void* mesh) {
   for (const auto& item:scope->supplied) if (item.second==mesh) return true;
   return false;
 }
+#if defined(EIEM_DIAGNOSTICS)
 void ObserveLayout(void* mesh,const char* phase) {
   if (!traceBoundaries || snapshotSequence>=3 || !api.attributeCount || !api.attributeDescriptor || !api.bonesPerVertex) return;
   try {
@@ -345,6 +346,7 @@ void SetFilterMesh(void* filter,void* mesh) {
         filter,mesh,actual,int(actual==mesh),(unsigned long long)((uintptr_t)caller-(uintptr_t)hGA));
   } catch(const std::exception& e) { Log("[DEBUG-shape-v20-GAP] phase=assignment reason=%s nativeCallUnaffected=1",e.what()); }
 }
+#endif
 bool RequestMatrices(void* renderer,void* pointer,int size) {
   const bool nativeResult=originalMatrixRequest(renderer,pointer,size);
   bool result=nativeResult;
@@ -359,6 +361,7 @@ bool RequestMatrices(void* renderer,void* pointer,int size) {
     result=EiemCaptureSkin::Deliver(palette->second,pointer,size);
     Log("[SHAPE-CAPTURE-MATRICES] renderer=%p bytes=%d matrices=%zu nativeAccepted=0 delivered=%d synchronous=1 callerBufferOnly=1",
         renderer,size,palette->second.size(),int(result));
+#if defined(EIEM_DIAGNOSTICS)
     if (result && traceBoundaries && snapshotSequence<=3) try {
       const auto path=gameDirectory/"plugin/resource-input-diagnostics"/
         ("capture-palette-v24-pid"+std::to_string(GetCurrentProcessId())+"-seq"+std::to_string(snapshotSequence)+".bin");
@@ -367,12 +370,15 @@ bool RequestMatrices(void* renderer,void* pointer,int size) {
       Require(bool(file),"capture palette evidence write failed");
       Log("[DEBUG-shape-v24-PALETTE] path=%s bytes=%d",path.u8string().c_str(),size);
     } catch(const std::exception& e) { Log("[DEBUG-shape-v24-GAP] phase=palette-evidence reason=%s delivered=%d",e.what(),int(result)); }
+#endif
   }
+#if defined(EIEM_DIAGNOSTICS)
   if (traceBoundaries && boundarySamples<128) {
     ++boundarySamples;
     Log("[DEBUG-shape-v24-MATRICES] renderer=%p destination=%p bytes=%d nativeAccepted=%d returned=%d nativeRequestForwarded=1",
         renderer,pointer,size,int(nativeResult),int(result));
   }
+#endif
   return result;
 }
 EiemCaptureSkin::Palette CapturePaletteFor(void* renderer,void* mesh) {
@@ -409,11 +415,13 @@ EiemCaptureSkin::Palette CapturePaletteFor(void* renderer,void* mesh) {
   };
   const auto rootWorld=matrix(api.localToWorld,root);
   const auto inverse=captureRoot?matrix(api.worldToLocal,captureRoot):EiemSkinProbe::Identity();
+#if defined(EIEM_DIAGNOSTICS)
   if (traceBoundaries && snapshotSequence<3) {
     const auto rows=EiemCaptureSkin::RowMatrix(inverse);
     Log("[DEBUG-shape-v24-FRAME] renderer=%p inverseSource=%s parent=%p rootBone=%p rows=%.9g,%.9g,%.9g,%.9g;%.9g,%.9g,%.9g,%.9g;%.9g,%.9g,%.9g,%.9g",
         renderer,frameSource,captureRoot,rootBone,rows[0],rows[1],rows[2],rows[3],rows[4],rows[5],rows[6],rows[7],rows[8],rows[9],rows[10],rows[11]);
   }
+#endif
   std::vector<EiemCaptureSkin::Matrix> world,bindPoses;world.reserve(count);bindPoses.reserve(count);
   for (size_t slot=0;slot<count;++slot) {
     Require(Alive(bones[slot]),"capture bone Transform absent from this renderer");
@@ -437,20 +445,28 @@ void* SnapshotFor(void* renderer, void* source, const Spec& spec) {
   }
   auto geometry = Evaluate(data.base,data.channels,weights);
   auto palette=CapturePaletteFor(renderer,source);
+#if defined(EIEM_DIAGNOSTICS)
   ObserveLayout(source,"source");
+#endif
   void* args[] = {source};
   auto mesh = Call(api.instantiate,nullptr,args);
   Require(mesh && mesh != source, "runtime shape snapshot allocation");
   // Attach ownership immediately: any later failure retires this copy.
   auto rooted = Ref::Make(mesh,false);
   scope->snapshots.push_back({rooted}); ++liveSnapshots;
+#if defined(EIEM_DIAGNOSTICS)
   ObserveLayout(mesh,"clone");
+#endif
   if (api.clear) Call(api.clear,mesh); else api.clearIcall(mesh);
+#if defined(EIEM_DIAGNOSTICS)
   ObserveLayout(mesh,"clear");
+#endif
   SetChannel(mesh,0,3,geometry.positions.data(),int(spec.vertices));
   SetChannel(mesh,1,3,geometry.normals.data(),int(spec.vertices));
   SetChannel(mesh,2,4,geometry.tangents.data(),int(spec.vertices));
+#if defined(EIEM_DIAGNOSTICS)
   ObserveLayout(mesh,"channels");
+#endif
   Call(api.recalculateBounds,mesh);
   Require(Scalar<int>(api.shapeCount,mesh) == 0 && Scalar<int>(api.vertexCount,mesh) == int(spec.vertices),
           "runtime shape snapshot native channel contract");
@@ -623,8 +639,10 @@ void Update() {
   int frame = Scalar<int>(api.frame);
   if (frame == lastFrame) return;
   lastFrame = frame;
+#if defined(EIEM_DIAGNOSTICS)
   ReloadObservation::Frame(frame);
   LoadingObservation::Frame(frame);
+#endif
   CommitPendingReload();
   if (!CurrentGeneration()) return;
   PollGpuCapture();
@@ -635,9 +653,11 @@ void Update() {
   bool focused = active.load() && pid == GetCurrentProcessId();
   PanelCommands(focused);
   PollControls(focused,elapsed);
+#if defined(EIEM_DIAGNOSTICS)
   if (traceBoundaries && frame%300==0)
     Log("[DEBUG-shape-v24-INPUT] frame=%d focusPid=%lu focused=%d packages=%zu bound=%zu delta=%.9g",
         frame,pid,int(focused),keys.size(),bound.size(),elapsed);
+#endif
   for (auto it=bound.begin();it!=bound.end();) {
     auto renderer=it->second.renderer.Get(), mesh=it->second.mesh.Get();
     if (!Alive(renderer) || !Alive(mesh)) { it=bound.erase(it); continue; }
@@ -654,7 +674,9 @@ void Update() {
       if (before!=target) {
         void* writeArgs[]={&index,&target}; Call(api.setWeight,renderer,writeArgs);
         Require(std::abs(Scalar<float>(api.getWeight,renderer,readArgs)-target)<0.0001f,"runtime shape weight readback");
+#if defined(EIEM_DIAGNOSTICS)
         if (frame%30==0) Log("[SHAPE-RUNTIME-WEIGHT] renderer=%p channel=%s value=%.6g",renderer,control.first.c_str(),target);
+#endif
       }
     }
     ++it;
@@ -677,8 +699,11 @@ void FrameTick(void* self,void* info) {
 void Init(void* self, void* renderers, void* configs, void* custom, bool skip, void* info) {
   // Share the existing exact Init detour with optional observation. The
   // observer calls this same original once; no second MinHook layer.
+#if defined(EIEM_DIAGNOSTICS)
   if(ReloadObservation::ShareMaterialInit()) ReloadObservation::Material(self,renderers,configs,custom,skip,info);
-  else originalInit(self,renderers,configs,custom,skip,info);
+  else
+#endif
+    originalInit(self,renderers,configs,custom,skip,info);
   try {
     if (!enabled || registrationPaused || !renderers || !Main()) return;
     auto klass=il2cpp_object_get_class(renderers); void *iterator=nullptr,*itemsField=nullptr,*sizeField=nullptr;
@@ -818,6 +843,7 @@ void InstallOptional(void** assemblies,size_t count) {
     // Registered binding: self, void* destination, int bytes; no MethodInfo.
     installIcall("UnityEngine.SkinnedMeshRenderer::RequestCurrentFrameSkinMatrices",(void*)RequestMatrices,(void**)&originalMatrixRequest);
     Log("[SHAPE-CAPTURE-MATRIX-API] installed=1 perRendererSlots=1 publicTransforms=1 synchronousRefusalFallback=1");
+#if defined(EIEM_DIAGNOSTICS)
     traceBoundaries=std::filesystem::exists(gameDirectory/"plugin/resource-input-diagnostics/shape-capture-boundaries.enabled");
 #if defined(EIEM_SHAPE_CAPTURE_GFXTRACE)
     gpuCaptureEnabled=std::filesystem::exists(gameDirectory/"plugin/resource-input-diagnostics/shape-capture-gpu.enabled");
@@ -835,6 +861,7 @@ void InstallOptional(void** assemblies,size_t count) {
             int(api.attributeCount && api.attributeDescriptor && api.bonesPerVertex && api.filterMesh));
       } catch(const std::exception& e) { Log("[DEBUG-shape-v20-GAP] phase=install reason=%s shapeBridgePreserved=1",e.what()); }
     }
+#endif
     packageGeneration=generation.load();
     CaptureObservation::afterFinished=Finished;
     Log("[SHAPE-RUNTIME-PREPARED] controlledMeshes=%zu generation=%u nativeShapeChannelsRetained=1 captureLocalSnapshot=1 captureMatrixFallback=1",specs.size(),packageGeneration);

@@ -42,24 +42,64 @@ def save_ini(root, ini):
     (Path(root) / 'mod.ini').write_text('; EFF resource-input Mod format 2\n' + text.getvalue(), encoding='utf-8')
 
 
-def texture_sections(root, ini, textures):
-    updated = {identifier('Texture' + t['sourceAsset']) for t in textures}
+def texture_section(texture):
+    section = identifier(texture.get('section') or 'Texture' + texture['sourceAsset'])
+    require(section.startswith('Texture'), 'texture section prefix')
+    return section
+
+
+def texture_output_paths(root, ini, textures, materials=()):
+    """Plan filenames before writes so partial staging can detach hardlinks."""
+    updated = {texture_section(t) for t in textures}
     retained = {s: ini[s]['path'] for s in ini.sections() if s.startswith('Texture') and s not in updated}
-    assigned, ids, sections = {}, {}, set()
+    if materials:
+        # Match update_directory's removal of superseded bindings. A legacy
+        # section no longer used after this update must not reserve its file.
+        replaced = {identifier(m['id']) for m in materials}
+        used = {v for s in ini.sections() if s.startswith('Material') and s not in replaced
+                for k, v in ini[s].items() if k.startswith('texture.')}
+        ids = {t['id']: texture_section(t) for t in textures}
+        used.update(ids[edit['texture']] for m in materials for edit in m['textureEdits'])
+        retained = {s: path for s, path in retained.items() if s in used}
+    assigned, paths, data_cache = {}, {}, {}
+
+    def data(texture):
+        key = texture['id']
+        if key not in data_cache:
+            data_cache[key] = encode_resource(PIXELS, '00' * 16, texture_blocks(texture))
+        return data_cache[key]
+
+    def conflicts(relative, texture):
+        return ((relative in assigned and data(assigned[relative]) != data(texture)) or
+                (relative in retained.values() and resource_path(root, relative).read_bytes() != data(texture)))
+
+    for texture in sorted(textures, key=texture_section):
+        tid = texture_section(texture)
+        label = identifier(texture['pixelLabel'])
+        relative = 'textures/' + label + '.tex'
+        qualified = 'textures/' + label + '_' + digest(tid.encode('utf-8'))[:12].lower() + '.tex'
+        if texture.get('section') and tid in ini and ini[tid]['path'] == qualified:
+            relative = qualified
+        if conflicts(relative, texture) and texture.get('section'):
+            relative = qualified
+        require(not conflicts(relative, texture), 'different images use the same TEX filename: ' + relative +
+                '; rename the source image or export all declarations sharing it')
+        assigned[relative] = texture
+        paths[texture['id']] = relative
+    return paths
+
+
+def texture_sections(root, ini, textures, paths=None):
+    paths = texture_output_paths(root, ini, textures) if paths is None else paths
+    ids, sections = {}, set()
     for texture in textures:
-        tid = identifier('Texture' + texture['sourceAsset'])
+        tid = texture_section(texture)
         require(texture['id'] not in ids, 'duplicate texture ID')
         require(tid not in sections, 'duplicate texture section: ' + tid)
         sections.add(tid)
         ids[texture['id']] = tid
         data = encode_resource(PIXELS, '00' * 16, texture_blocks(texture))
-        pixel_hash = digest(data)
-        relative = 'textures/' + identifier(texture['pixelLabel']) + '.tex'
-        conflict = ((relative in assigned and assigned[relative] != pixel_hash) or
-                    (relative in retained.values() and resource_path(root, relative).read_bytes() != data))
-        require(not conflict, 'different images use the same TEX filename: ' + relative +
-                '; rename the source image or export all declarations sharing it')
-        assigned[relative] = pixel_hash
+        relative = paths[texture['id']]
         path = resource_path(root, relative)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
@@ -82,7 +122,8 @@ def update_directory(root, *, parts=(), materials=(), textures=(), texture_only=
     if 'key_switch_enabled' not in ini['Mod']:
         ini['Mod']['key_switch_enabled'] = '1'
     old_paths = {ini[s]['path'] for s in ini.sections() if s.startswith(('Mesh', 'Material', 'Texture'))}
-    texture_ids = {t['id']: identifier('Texture' + t['sourceAsset']) for t in textures}
+    texture_paths = texture_output_paths(root, ini, textures, materials)
+    texture_ids = {t['id']: texture_section(t) for t in textures}
     for material in materials:
         mid = identifier(material['id'])
         require(mid in ini, 'partial material export requires an existing material: ' + mid)
@@ -103,7 +144,7 @@ def update_directory(root, *, parts=(), materials=(), textures=(), texture_only=
         for s in list(ini.sections()):
             if s.startswith('Texture') and s not in used_textures:
                 ini.remove_section(s)
-    texture_sections(root, ini, textures)
+    texture_sections(root, ini, textures, texture_paths)
     for part in parts:
         mesh_id = identifier(part['object'])
         require(mesh_id in ini, 'new or renamed Mesh requires a full export: ' + mesh_id)

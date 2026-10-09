@@ -54,6 +54,11 @@ int main(){try{
  auto folder=std::filesystem::temp_directory_path()/("eff-static-mesh-"+std::to_string(GetCurrentProcessId()));Require(!std::filesystem::exists(folder),"fixture directory exists");std::filesystem::create_directory(folder);
  struct Cleanup {std::filesystem::path path;~Cleanup(){std::filesystem::remove_all(path);}}cleanup{folder};auto bundle=Bundle(before,f.cab);auto file=folder/"input.vfs";EiemResourceReloadPlan::Save(file,bundle);
  EiemStaticSources::Selection selection;selection.manifest="fixture";selection.assets[target.path]="input";selection.inputs["input"]={"input",EiemResourceReloadPlan::Hash(bundle),file,0,bundle.size()};selection.candidates={"input"};auto found=EiemStaticSources::FindConsumers(selection,{target});Require(found.renderers==2&&found.roots==std::set<std::string>{"assets/a.prefab","assets/b.prefab"},"offline static consumers/PFB roots differ");
+ // Independent inputs may finish out of order. Keep their complete consumer
+ // and root sets, including multiple Prefabs in one serialized member.
+ auto multiple=selection;multiple.inputs["second"]=multiple.inputs.at("input");multiple.inputs["second"].logical="second";multiple.candidates.insert("second");
+ auto repeated=EiemStaticSources::FindConsumers(multiple,{target});Require(repeated.roots==found.roots&&repeated.renderers==4&&repeated.sources==std::set<std::string>{"input","second"},"parallel source discovery omitted a candidate");
+ auto invalid=multiple;invalid.inputs["second"].revision=std::string(64,'0');Rejected([&]{EiemStaticSources::FindConsumers(invalid,{target});});
  auto resource=std::make_shared<Resource>();resource->type=f.types[5].hash;p.resources["mesh"]=resource;p.meshes["M"]={"mesh",3,3,{},{}};p.materials["A"].source=mat;p.parts["P"].mesh=p.parts["Q"].mesh="M";p.parts["P"].material=p.parts["Q"].material="A";
  AssetIndex assets;assets[target].cab=assets[mat].cab=f.cab;assets[target].pathId=100;assets[target].classId=43;assets[target].type=resource->type;assets[mat].pathId=200;assets[mat].classId=21;
  std::vector<BuiltMeshPart> parts{{target,"R","P",f.cab,100,100,3,3},{target,"R","Q",f.cab,100,101,3,3}};

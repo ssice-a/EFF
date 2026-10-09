@@ -88,6 +88,56 @@ def fixture():
 
 
 class DirectoryTests(unittest.TestCase):
+    def variant_fixture(self, same_label=False):
+        data = fixture()
+        first = dict(data['textures'][0], id='variant-a', section='TextureVariantA',
+                     pixelLabel='shared' if same_label else 'bar')
+        second = dict(first, id='variant-b', section='TextureVariantB',
+                      pixels=b'\xff\x00\x00\xff', pixelLabel='shared' if same_label else 'cloth')
+        material = data['materials'][0]
+        data['textures'] = [first, second]
+        data['materials'] = [dict(material, textureEdits=[]),
+            dict(material, id='MaterialVariantA', textureEdits=[dict(property='_BaseMap', texture=first['id'])]),
+            dict(material, id='MaterialVariantB', textureEdits=[dict(property='_BaseMap', texture=second['id'])])]
+        part = data['parts'][0]
+        data['parts'] = [dict(part, partId='part-' + name, object='Mesh' + name,
+                             material=mid, shapeControls=[]) for name, mid in
+                        [('Original', 'MaterialBody'), ('VariantA', 'MaterialVariantA'), ('VariantB', 'MaterialVariantB')]]
+        data['rules'][0]['parts'] = [part['partId'] for part in data['parts']]
+        return data
+
+    def test_material_variants_keep_native_and_independent_texture_bindings(self):
+        data = self.variant_fixture()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            package = export_directory(root, **data)
+            materials = {m['id']: m for m in package['materials']}
+            self.assertEqual(materials['MaterialBody']['textureEdits'], [])
+            self.assertEqual(materials['MaterialVariantA']['textureEdits'][0]['texture'], 'TextureVariantA')
+            self.assertEqual(materials['MaterialVariantB']['textureEdits'][0]['texture'], 'TextureVariantB')
+            self.assertEqual({t['id'] for t in package['textures']}, {'TextureVariantA', 'TextureVariantB'})
+            second_before = (root / 'textures/cloth.tex').read_bytes()
+            material = data['materials'][1]
+            texture = dict(data['textures'][0], pixels=b'\x00\xff\x00\xff')
+            updated = update_directory(root, materials=[material], textures=[texture], texture_only=True)
+            self.assertEqual((root / 'textures/cloth.tex').read_bytes(), second_before)
+            self.assertEqual(len(updated['textures']), 2)
+            self.assertEqual(ini_document(root)['MaterialVariantB']['texture._BaseMap'], 'TextureVariantB')
+
+    def test_variant_images_with_same_filename_do_not_overwrite(self):
+        data = self.variant_fixture(same_label=True)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            package = export_directory(root, **data)
+            textures = {t['id']: t for t in package['textures']}
+            first, second = textures['TextureVariantA']['file'], textures['TextureVariantB']['file']
+            self.assertNotEqual(first, second)
+            second_before = (root / second).read_bytes()
+            updated = update_directory(root, materials=[data['materials'][1]],
+                textures=[dict(data['textures'][0], pixels=b'\x00\xff\x00\xff')], texture_only=True)
+            self.assertEqual((root / second).read_bytes(), second_before)
+            self.assertEqual({t['id'] for t in updated['textures']}, set(textures))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

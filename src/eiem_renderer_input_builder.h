@@ -208,33 +208,37 @@ struct RendererInputBuild {
   std::vector<RendererPartWrite> parts;
 };
 using MaterialPreloadIndex = std::map<NativeReference, std::set<NativeReference>>;
-inline void AddMaterialPreloads(MaterialPreloadIndex& index, const Bytes& input, const Package& package) {
-  auto bundle=EndfieldInput::Decode(input);
-  for(const auto& member:bundle.members) {
-    if(!SerializedHeader(member.bytes))continue;
-    auto layout=ParseSerialized(member.bytes);std::set<int64_t> selected,found;
-    for(const auto& asset:SerializedAssets(member.bytes,member.name,layout))
+inline void AddMaterialPreloads(MaterialPreloadIndex& index,const Bytes& bytes,const std::string& cab,
+    const SerializedLayout& layout,const std::vector<Asset>& assets,const Package& package) {
+    std::set<int64_t> selected,found;
+    for(const auto& asset:assets)
       if(asset.classId==21)for(const auto& material:package.materials)
         if(material.second.source.path==asset.path&&material.second.source.asset==asset.asset)selected.insert(asset.pathId);
-    if(selected.empty())continue;
+    if(selected.empty())return;
     for(const auto& row:layout.objects) {
       const auto& type=layout.types.at(row.second.type);if(type.classId!=142)continue;
-      auto value=ObjectValue(member.bytes,layout,row.first);
+      auto value=ObjectValue(bytes,layout,row.first);
       const auto& preloads=ConstArray(type,Child(type,value,"m_PreloadTable"));
       for(const auto& entry:ConstArray(type,Child(type,value,"m_Container")).children) {
         const auto& info=Child(type,entry,"second");
-        auto asset=NullableReference(type,Child(type,info,"asset"),layout,member.name);
-        if(asset.first!=member.name||!selected.count(asset.second))continue;
+        auto asset=NullableReference(type,Child(type,info,"asset"),layout,cab);
+        if(asset.first!=cab||!selected.count(asset.second))continue;
         auto first=Integer(Child(type,info,"preloadIndex")),count=Integer(Child(type,info,"preloadSize"));
         Require(first<=preloads.children.size()&&count<=preloads.children.size()-first,"Material source preload interval");
         auto& dependencies=index[asset];found.insert(asset.second);
         for(size_t i=size_t(first);i<size_t(first+count);++i) {
-          auto ref=NullableReference(type,preloads.children[i],layout,member.name);
+          auto ref=NullableReference(type,preloads.children[i],layout,cab);
           if(ref.second)dependencies.insert(std::move(ref));
         }
       }
     }
     Require(found==selected,"Material source preload closure absent");
+}
+inline void AddMaterialPreloads(MaterialPreloadIndex& index, const Bytes& input, const Package& package) {
+  auto bundle=EndfieldInput::Decode(input);
+  for(const auto& member:bundle.members)if(SerializedHeader(member.bytes)) {
+    auto layout=ParseSerialized(member.bytes);
+    AddMaterialPreloads(index,member.bytes,member.name,layout,SerializedAssets(member.bytes,member.name,layout),package);
   }
 }
 // Scoped to one immutable author Package/build. Skeleton pointers and palettes
@@ -271,11 +275,19 @@ class RendererMemberBuilder {
   RendererInputBuild result;
   RendererBoundsCache localBounds;
   RendererBoundsCache* boundsCache = &localBounds;
+  std::function<void(const char*,double)> cost;
+  void Cost(const char* name,std::chrono::steady_clock::time_point start) const {
+    if(cost)cost(name,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());
+  }
   const Type& Schema(int64_t id) const { return layout.types.at(layout.objects.at(id).type); }
   Value& Tree(int64_t id, int expected = 0) {
     Require(layout.objects.count(id) && (!expected || Schema(id).classId == expected), "Renderer local object absent/class mismatch");
     auto found = values.find(id);
-    if (found == values.end()) found = values.emplace(id, ObjectValue(source, layout, id)).first;
+    if (found == values.end()) {
+      auto start=std::chrono::steady_clock::now();
+      found = values.emplace(id, ObjectValue(source, layout, id)).first;
+      Cost("renderer-object-decode",start);
+    }
     return found->second;
   }
   int64_t Local(const Type& type, const Value& pointer, int expected) {
@@ -428,6 +440,7 @@ public:
                           const AssetIndex& graph, const std::vector<BuiltMeshPart>& meshParts)
       : source(bytes), cab(name), package(mod), assets(graph), meshes(meshParts), layout(ParseSerialized(bytes)) {}
   RendererInputBuild Build() {
+    auto start=std::chrono::steady_clock::now();
     std::map<NativeReference, Identity> selected;
     for (const auto& target : package.targetIndex) {
       auto found = assets.find(target.first);
@@ -438,8 +451,11 @@ public:
     }
     std::set<NativeReference> references;for(const auto& row:selected)references.insert(row.first);
     auto matches=MeshConsumers(source,layout,cab,references);
+    Cost("renderer-consumers",start);
     if (matches.empty()) { result.bytes = source; return result; }
+    start=std::chrono::steady_clock::now();
     Hierarchy();
+    Cost("renderer-hierarchy",start);start=std::chrono::steady_clock::now();
     for(const auto& matched:matches) {
       if(matched.filter)continue;
       const auto& target=selected.at(matched.mesh);
@@ -456,6 +472,7 @@ public:
         if(!found.second&&found.first->second!=bone)found.first->second=0;
       }
     }
+    Cost("renderer-native-palettes",start);start=std::chrono::steady_clock::now();
     for (const auto& matched : matches) {
       auto rid = matched.renderer;
       const auto& target = selected.at(matched.mesh);
@@ -603,6 +620,7 @@ public:
       }
       preloadExpansion[rid] = {dependencies.begin(), dependencies.end()};
     }
+    Cost("renderer-parts",start);start=std::chrono::steady_clock::now();
     for (auto id : layout.order) {
       // These typed authored lists enumerate Renderers just like LOD arrays.
       // Scalar references keep the native anchor; list entries expand 0/1/N.
@@ -637,6 +655,7 @@ public:
       }
       if (modified) { changed.insert(id); ++result.lodGroups; }
     }
+    Cost("renderer-lists",start);start=std::chrono::steady_clock::now();
     if (!preloadExpansion.empty()) {
       size_t bundles = 0;
       for (auto id : layout.order) if (Schema(id).classId == 142) {
@@ -645,10 +664,12 @@ public:
       }
       Require(bundles == 1, "Renderer expansion requires one current AssetBundle");
     }
+    Cost("renderer-preloads",start);start=std::chrono::steady_clock::now();
     std::map<int64_t, Bytes> replacements;
     for (auto id : changed) replacements.emplace(id, EncodeValue(Schema(id), Tree(id)));
     result.changedObjects = replacements.size(); result.addedObjects = added.size();
     result.bytes = BuildSerialized(source, layout, replacements, added);
+    Cost("renderer-serialize",start);
     return result;
   }
 private:
@@ -670,6 +691,7 @@ private:
     boundsCache->computeMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();return bounds;
   }
 public:
+  void SetCost(const std::function<void(const char*,double)>& callback) {cost=callback;}
   void SetMaterialPreloads(const MaterialPreloadIndex& preloads) { materialPreloads = &preloads; }
   void SetMeshSchemas(const MeshSchemaIndex& schemas) { meshSchemas = &schemas; }
   void SetBoundsCache(RendererBoundsCache& cache) {
@@ -678,19 +700,36 @@ public:
     cache.package=&package;boundsCache=&cache;
   }
 };
-inline void AddMeshSchemas(MeshSchemaIndex& schemas, const Bytes& input,
-                          MeshBoneHashIndex* palettes=nullptr,const Package* package=nullptr) {
-  auto bundle = EndfieldInput::Decode(input);
-  for (const auto& member : bundle.members) {
-    if (!SerializedHeader(member.bytes)) continue;
-    auto layout = ParseSerialized(member.bytes);
+inline void AddMeshSchemas(MeshSchemaIndex& schemas,const Bytes& bytes,const std::string& cab,
+    const SerializedLayout& layout,const std::vector<Asset>& assets,
+    MeshBoneHashIndex* palettes,const Package* package) {
     for (const auto& type : layout.types) if (type.classId == 43) schemas.emplace(type.hash, type);
-    if(palettes&&package)for(const auto& asset:SerializedAssets(member.bytes,member.name,layout)){
+    if(palettes&&package)for(const auto& asset:assets){
       if(asset.classId!=43||!package->targetIndex.count({asset.path,asset.asset}))continue;
-      const auto& type=layout.types.at(layout.objects.at(asset.pathId).type);auto value=ObjectValue(member.bytes,layout,asset.pathId);
-      Require(palettes->emplace(NativeReference{member.name,asset.pathId},BoneHashes(type,Child(type,value,"m_BoneNameHashes"))).second,
+      const auto& type=layout.types.at(layout.objects.at(asset.pathId).type);auto value=ObjectValue(bytes,layout,asset.pathId);
+      Require(palettes->emplace(NativeReference{cab,asset.pathId},BoneHashes(type,Child(type,value,"m_BoneNameHashes"))).second,
           "duplicate source Mesh bone palette");
     }
+}
+inline void AddMeshSchemas(MeshSchemaIndex& schemas, const Bytes& input,
+                          MeshBoneHashIndex* palettes=nullptr,const Package* package=nullptr) {
+  auto bundle=EndfieldInput::Decode(input);
+  for(const auto& member:bundle.members)if(SerializedHeader(member.bytes)) {
+    auto layout=ParseSerialized(member.bytes);
+    auto assets=palettes&&package?SerializedAssets(member.bytes,member.name,layout):std::vector<Asset>{};
+    AddMeshSchemas(schemas,member.bytes,member.name,layout,assets,palettes,package);
+  }
+}
+// All source indexes describe the same immutable input. Decode its bundle,
+// TypeTrees and asset table once; retain each index's own validation rules.
+inline void AddSourceInventory(AssetIndex& assets,MeshSchemaIndex& schemas,MeshBoneHashIndex& palettes,
+    MaterialPreloadIndex& preloads,const Bytes& input,const Package& package) {
+  auto bundle=EndfieldInput::Decode(input);
+  for(const auto& member:bundle.members)if(SerializedHeader(member.bytes)) {
+    auto layout=ParseSerialized(member.bytes);auto catalog=SerializedAssets(member.bytes,member.name,layout);
+    AddMeshSchemas(schemas,member.bytes,member.name,layout,catalog,&palettes,&package);
+    AddMaterialPreloads(preloads,member.bytes,member.name,layout,catalog,package);
+    AddAssets(assets,std::move(catalog));
   }
 }
 inline RendererInputBuild BuildRendererInput(const Bytes& source, const Package& package,
@@ -698,13 +737,15 @@ inline RendererInputBuild BuildRendererInput(const Bytes& source, const Package&
                                                const std::vector<BuiltMeshPart>& meshParts,
                                                const MeshSchemaIndex& schemas,
                                                RendererBoundsCache* sharedBounds = nullptr,
-                                               const MaterialPreloadIndex* materialPreloads = nullptr) {
+                                               const MaterialPreloadIndex* materialPreloads = nullptr,
+                                               const std::function<void(const char*,double)>& cost = {}) {
   auto bundle = EndfieldInput::Decode(source);
   RendererBoundsCache localBounds;auto& bounds=sharedBounds?*sharedBounds:localBounds;
   RendererInputBuild result;
   for (auto& member : bundle.members) {
     if (!SerializedHeader(member.bytes)) continue;
     RendererMemberBuilder builder(member.bytes, member.name, package, assets, meshParts);
+    builder.SetCost(cost);
     builder.SetMeshSchemas(schemas);
     builder.SetBoundsCache(bounds);
     if(materialPreloads)builder.SetMaterialPreloads(*materialPreloads);

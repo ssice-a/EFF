@@ -20,7 +20,7 @@ if /i "%~1"=="v35" (
  goto entry_failed
 )
 if /i "%~2"=="capture" (
- set "entry_capture=/DEIEM_SHAPE_CAPTURE_GFXTRACE"
+ set "entry_capture=/DEIEM_DIAGNOSTICS /DEIEM_SHAPE_CAPTURE_GFXTRACE"
 ) else if not "%~2"=="" (
  echo [ERROR] The optional second argument must be capture.
  goto entry_failed

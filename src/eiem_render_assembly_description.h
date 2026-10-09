@@ -24,6 +24,8 @@ inline const Value* Optional(const Type& t,const Value& v,const char* name){for(
 class Graph {
  const Bytes& bytes;std::string cab;SerializedLayout layout;std::map<int64_t,Value> values;
  std::map<int64_t,int64_t> transforms;std::map<int64_t,std::string> paths;std::map<std::pair<int64_t,int>,std::vector<int64_t>> components;
+ std::vector<int64_t> renderers;
+ std::map<int64_t,std::vector<int64_t>> rendererChildren;
  std::set<int64_t> visiting;int64_t root=0;
  public:
  Graph(const Bytes& b,const std::string& c,int64_t go):bytes(b),cab(c),layout(ParseSerialized(b)){
@@ -44,6 +46,10 @@ class Graph {
   }
   // Preserve existing SMR ordinals when a native node also has a MeshRenderer.
   for(auto& row:components)if(row.first.second==0)std::stable_partition(row.second.begin(),row.second.end(),[&](int64_t id){return Kind(id)==137;});
+  // Preserve SMR-then-static order once; parent lookups must not rescan the
+  // entire prefab for each native renderer during assembly validation.
+  renderers=Objects(137);auto statics=Objects(23);renderers.insert(renderers.end(),statics.begin(),statics.end());
+  for(auto id:renderers){auto tid=transforms.at(Pointer(id,"m_GameObject"));rendererChildren[Pointer(tid,"m_Father")].push_back(id);}
  }
  int Kind(int64_t id)const{return layout.types.at(layout.objects.at(id).type).classId;}
  bool HasSchemaField(int64_t id,const char* name)const{const auto& t=Schema(id);for(auto i:t.nodes.at(0).children)if(t.nodes.at(i).name==name)return true;return false;}
@@ -57,11 +63,10 @@ class Graph {
  Address At(int64_t component)const{auto go=Pointer(component,"m_GameObject");auto kind=Kind(component);const auto& list=components.at({go,(kind==23||kind==137)?0:kind});auto it=std::find(list.begin(),list.end(),component);Require(it!=list.end(),"assembly component absent from owner");return {Path(transforms.at(go)),unsigned(it-list.begin())};}
  Address HelperAt(int64_t component)const{auto a=At(component);a.component=0;auto go=Pointer(component,"m_GameObject");for(auto id:components.at({go,114})){if(id==component)return a;if(HasSchemaField(id,"useCustomRenderers"))++a.component;}throw std::runtime_error("assembly helper component absent");}
  std::vector<int64_t> Objects(int kind)const{std::vector<int64_t> result;for(const auto& row:values)if(Kind(row.first)==kind&&Contains(row.first))result.push_back(row.first);return result;}
- std::vector<int64_t> Renderers()const{auto list=Objects(137);auto other=Objects(23);list.insert(list.end(),other.begin(),other.end());return list;}
- std::vector<int64_t> RendererChildren(int64_t anchor)const{
-  std::vector<int64_t> result;auto tid=transforms.at(Pointer(anchor,"m_GameObject"));
-  for(auto id:Renderers())if(Pointer(transforms.at(Pointer(id,"m_GameObject")),"m_Father")==tid)result.push_back(id);
-  return result;
+ const std::vector<int64_t>& Renderers()const{return renderers;}
+ const std::vector<int64_t>& RendererChildren(int64_t anchor)const{
+  auto tid=transforms.at(Pointer(anchor,"m_GameObject"));auto found=rendererChildren.find(tid);
+  static const std::vector<int64_t> empty;return found==rendererChildren.end()?empty:found->second;
  }
  Target ReadTarget(int64_t renderer,bool extension)const{
   Target t;t.renderer=At(renderer);t.extension=extension;const auto& schema=Schema(renderer);const auto& tree=Tree(renderer);
@@ -82,16 +87,15 @@ class Graph {
   visiting.erase(tid);
  }
 };
-inline Description Build(const Bytes& pristine,const Bytes& candidate,const std::string& cab,int64_t root,
+inline Description Build(const Graph& before,const Graph& after,const std::string& cab,
                          const Package& package,const AssetIndex& assets,const std::map<NativeReference,std::string>& markers){
- Graph before(pristine,cab,root),after(candidate,cab,root);Description d;std::set<int64_t> native,claimed;
+ Description d;std::set<int64_t> native,claimed;
  for(auto id:before.Renderers())native.insert(id);
  for(auto id:native){Source source{cab,id,before.At(id),{}};Require(source.renderer==after.At(id),"assembly native anchor address changed");
  auto ref=before.Mesh(id);bool skip=false;const Rule* rule=nullptr;
   for(const auto& selected:package.targetIndex){auto a=assets.find(selected.first);if(a!=assets.end()&&ref==NativeReference{a->second.cab,a->second.pathId}){rule=&package.rules.at(selected.second);skip=rule->skip;break;}}
   if(!skip){auto target=after.ReadTarget(id,false);auto marker=markers.find(after.Mesh(id));if(marker!=markers.end())target.marker=marker->second;source.targets.push_back(std::move(target));}
-  auto children=after.RendererChildren(id);
-  if(rule&&!skip)for(size_t i=1;i<rule->parts.size();++i){auto extra=RendererObjectId(cab,package,"renderer",id,rule->parts[i]);
+  if(rule&&!skip)for(size_t i=1;i<rule->parts.size();++i){const auto& children=after.RendererChildren(id);auto extra=RendererObjectId(cab,package,"renderer",id,rule->parts[i]);
    Require(std::find(children.begin(),children.end(),extra)!=children.end()&&!native.count(extra)&&claimed.insert(extra).second,"assembly extension source ownership differs");
    after.RequirePure(extra);
    auto target=after.ReadTarget(extra,true);auto marker=markers.find(after.Mesh(extra));Require(marker!=markers.end(),"assembly unowned extra Renderer");target.marker=marker->second;
@@ -109,5 +113,11 @@ inline Description Build(const Bytes& pristine,const Bytes& candidate,const std:
  for(auto id:after.Objects(114))if(after.HasSchemaField(id,"useCustomRenderers")){Helper h;h.component=after.HelperAt(id);const auto& t=after.Schema(id);h.custom=Integer(Child(t,after.Tree(id),"useCustomRenderers"))!=0;
   for(const auto& ptr:ConstArray(t,Child(t,after.Tree(id),"customRenderers")).children){auto rid=after.Local(t,ptr);if(rid)h.renderers.push_back(after.At(rid));}d.helpers.push_back(std::move(h));
  }return d;
+}
+inline Description Build(const Bytes& pristine,const Bytes& candidate,const std::string& cab,int64_t root,
+                         const Package& package,const AssetIndex& assets,const std::map<NativeReference,std::string>& markers){
+ Graph before(pristine,cab,root);
+ if(&pristine==&candidate)return Build(before,before,cab,package,assets,markers);
+ Graph after(candidate,cab,root);return Build(before,after,cab,package,assets,markers);
 }
 } // namespace EiemRenderAssemblyDescription

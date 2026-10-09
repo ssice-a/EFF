@@ -41,7 +41,7 @@ void* Invoke(void* method,void* self,void** args,void** exception) {
   if (method==(void*)0x211) return &poseArray;
   if (method==(void*)0x212) return (void*)0xA0;
   if (method==(void*)0x213) return (void*)0xA0;
-  if (method==(void*)0x214) return &worlds.at(self);
+  if (method==(void*)0x214) {Require(worlds.count(self)!=0,"fixture missing Transform matrix");return &worlds.at(self);}
   if (method==(void*)0x215) return self==(void*)0xB0?&captureInverse:
     self==(void*)0xA0?&transformInverse:&rendererInverse;
   if (method==(void*)0x216) return skinningRoot;
@@ -63,7 +63,7 @@ int32_t ValueSize(void* klass,uint32_t* alignment) {
   *alignment=4;return klass==(void*)0x204?64:72; // Transform references are NOT value-sized 8 bytes.
 }
 uint32_t NewHandle(void* object,bool) {handles[++nextHandle]=object;return nextHandle;}
-void* HandleTarget(uint32_t handle) {return handles.at(handle);}
+void* HandleTarget(uint32_t handle) {Require(handles.count(handle)!=0,"fixture queried an expired managed handle");return handles.at(handle);}
 void FreeHandle(uint32_t handle) {handles.erase(handle);}
 void* Unbox(void* object) { return object; }
 void* Capture(void* self,void* root,int mask,void* info) {
@@ -90,6 +90,7 @@ void FilterSetter(void* self,void* mesh) { ++filterSets;lastSelf=self;lastRoot=m
 bool Matrices(void* self,void* pointer,int size) {
   ++matrixRequests;lastSelf=self;lastRoot=pointer;matrixSize=size;return matrixResult;
 }
+#if defined(EIEM_DIAGNOSTICS)
 unsigned gpuTriggers=0,gpuFiles=0;
 void RENDERDOC_CC TriggerGpu() { ++gpuTriggers; }
 uint32_t RENDERDOC_CC GpuCount() { return gpuFiles; }
@@ -103,9 +104,11 @@ uint32_t RENDERDOC_CC GpuSaved(uint32_t index,char* path,uint32_t* length,uint64
   if (timestamp) *timestamp=1234;
   return 1;
 }
+#endif
 }
 int main(int argc,char** argv) {
   using namespace Entry;
+  const char* stage="capture callbacks";
   try {
     RuntimeShapes::originalCapture=Test::Capture;RuntimeShapes::originalRelease=Test::Release;
     RuntimeShapes::originalReset=Test::Reset;RuntimeShapes::originalTick=Test::Tick;
@@ -113,15 +116,18 @@ int main(int argc,char** argv) {
     RuntimeShapes::originalInit=Test::Init;RuntimeShapes::originalMeshGetter=Test::Getter;
     RuntimeShapes::originalShapeCount=Test::ShapeCount;RuntimeShapes::originalFilterSetter=Test::FilterSetter;
     RuntimeShapes::originalMatrixRequest=Test::Matrices;
+    RuntimeControls::keySwitchEnabled["fixture"]=true;
     void *self=(void*)0xA1,*root=(void*)0xB2,*info=(void*)0xC3;
     RuntimeShapes::enabled=false;
     Require(RuntimeShapes::Capture(self,root,0x11223344,info)==(void*)0x1040 && Test::captures==1 &&
             Test::lastSelf==self && Test::lastRoot==root && Test::lastInfo==info && Test::lastMask==0x11223344,
             "disabled capture changes native call/ABI/result");
     Require(RuntimeShapes::GetMesh(self)==(void*)0xCC00 && Test::getters==1,"disabled Mesh getter changes result");
+#if defined(EIEM_DIAGNOSTICS)
     Require(RuntimeShapes::ShapeCount(root)==2 && Test::shapeCounts==1,"disabled gate probe changes count");
     RuntimeShapes::SetFilterMesh(self,root);
     Require(Test::filterSets==1 && Test::lastSelf==self && Test::lastRoot==root,"disabled assignment probe changes arguments");
+#endif
     Require(!RuntimeShapes::RequestMatrices(self,root,144) && Test::matrixRequests==1 && Test::matrixSize==144,
             "disabled matrix probe changes false result/ABI");
     RuntimeShapes::enabled=true; RuntimeShapes::api.main=nullptr;
@@ -147,6 +153,7 @@ int main(int argc,char** argv) {
     RuntimeShapes::Init(self,nullptr,nullptr,nullptr,false,info);
     Require(Test::releases==1 && Test::resets==1 && Test::ticks==1 && Test::frameTicks==1 && Test::inits==1 && Test::lastSelf==self && Test::lastInfo==info,
             "native lifecycle callbacks dropped/repeated");
+#if defined(EIEM_DIAGNOSTICS)
     RuntimeShapes::traceBoundaries=true;RuntimeShapes::api.name=nullptr;RuntimeShapes::api.filterMesh=(void*)2;
     { RuntimeShapes::CaptureScope observed;
       observed.supplied[self]=root;
@@ -170,6 +177,8 @@ int main(int argc,char** argv) {
     Require(Test::shapeCounts==4 && Test::filterSets==3 && Test::matrixRequests==4 && RuntimeShapes::boundarySamples==samples,
             "outside-Capture boundary probes modify/count unrelated native calls");
     RuntimeShapes::traceBoundaries=false;
+#endif
+    stage="public matrix reader";
     // Exercise the actual public API reader as well as the request adapter.
     // Two Mesh-local slots use distinct transforms and bind poses; reference
     // array layout must not be confused with Transform's object value size.
@@ -254,6 +263,7 @@ int main(int argc,char** argv) {
       const auto rows=EiemCaptureSkin::RowMatrix(rotated);
       Require(rows==EiemCaptureSkin::Rows{0,-1,0,5,1,0,0,6,0,0,1,7},"capture matrix row/column conversion");
     }
+    stage="frame input sampling";
     // Input sampling continues on regular frames without any Capture call.
     // Check time-based holds, release/focus behavior and cycle edges through
     // the actual polling function used by Update.
@@ -321,6 +331,7 @@ int main(int argc,char** argv) {
     // Integration against the actual format-2 package: model completion,
     // provenance registration, every switch declaration, per-instance writes,
     // native enable arbitration, physical edges and preference round-trip.
+    stage="real Mod fixture";
     if (argc==2) {
       auto package=EiemDirectory::Load(std::filesystem::u8path(argv[1]));
       auto temp=std::filesystem::absolute("diagnostics/resource-directory-entry-20261003/v25-part-key-controls/state-fixture-"+std::to_string(GetCurrentProcessId()));
@@ -488,6 +499,7 @@ int main(int argc,char** argv) {
       std::filesystem::remove(temp);
       std::cout<<"PASS actual package key integration: material Init/frame/controls reload preserve native baseline until model completion; native-disable/repeated-init preserved; 9 garments, 18 initial instances, all NUMPAD cycles including 3 states, no held repeat, modifier/press, public visibility readback, native enabled intent, late-instance state, unrelated Renderer, persistent restart round-trip/domain rejection\n";
     }
+#if defined(EIEM_DIAGNOSTICS)
     RENDERDOC_API_1_6_0 gpu{};
     gpu.TriggerCapture=Test::TriggerGpu;gpu.GetNumCaptures=Test::GpuCount;gpu.GetCapture=Test::GpuSaved;
     gpu.SetCaptureFilePathTemplate=Test::GpuPrefix;gpu.IsFrameCapturing=Test::GpuActive;
@@ -500,7 +512,8 @@ int main(int argc,char** argv) {
     Test::gpuFiles=1;RuntimeShapes::PollGpuCapture();RuntimeShapes::PollGpuCapture();
     Require(RuntimeShapes::gpuCaptureReported && Test::gpuTriggers==1,"GPU save completion/one-shot state lost");
     RuntimeShapes::gpuCaptureEnabled=false;RuntimeShapes::gpuCaptureApi=nullptr;
-    std::cout<<"PASS runtime shape bridge: native Capture ABI, readiness/TLS/lifecycle preserved; refused shaped matrix request receives complete synchronous palette; native skinningRoot frame correct despite rotated source Renderer; rootBone fallback; per-Mesh slots/row layout/extent; regular frame applies/readbacks shape without Capture; per-frame deduplication; hold/focus/cycle sampling; native pending jobs untouched; GPU one-shot completion\n";
+#endif
+    std::cout<<"PASS runtime shape bridge: native Capture ABI, readiness/TLS/lifecycle preserved; refused shaped matrix request receives complete synchronous palette; native skinningRoot frame correct despite rotated source Renderer; rootBone fallback; per-Mesh slots/row layout/extent; regular frame applies/readbacks shape without Capture; per-frame deduplication; hold/focus/cycle sampling; native pending jobs untouched\n";
     return 0;
-  } catch(const std::exception& e) { std::cerr<<"FAIL "<<e.what()<<'\n';return 1; }
+  } catch(const std::exception& e) { std::cerr<<"FAIL "<<stage<<": "<<e.what()<<'\n';return 1; }
 }

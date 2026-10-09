@@ -2,6 +2,7 @@
 #include "static_mesh_assembly_smoke.cpp"
 #undef main
 #include "../../src/eiem_compiled_mod_set.h"
+#include "../../src/eiem_compiled_mod_writer.h"
 #include <regex>
 
 void PreloadIntervalRegression(){
@@ -82,7 +83,55 @@ void SharedInputRegression(){
  set.contributors[0].resize(1);auto one=EndfieldInput::Decode(EiemCompiledModSet::Materialize(set,0,false));Require(!ParseSerialized(one.members[0].bytes).objects.count(102),"removed Mod's compiled objects survived");
  Rejected([&]{MergeSequence(std::vector<int>{1,2},std::vector<std::vector<int>>{{3,2},{4,2}},[](int a,int b){return a==b;});});
 }
+void NativeResidencyRegression(){
+ using namespace EiemCompiledModSet;Set set;auto& plan=set.manifest.plan;plan.key=std::string(64,'F');
+ for(size_t i=0;i<4;++i){Catalog catalog;auto cab="CAB-"+std::string(32,char('a'+i));catalog.source.hash=std::string(64,'0');catalog.input.bundle="bundle-"+std::to_string(i);catalog.members.emplace(cab,MemberProof{});set.catalog.push_back(catalog);
+  plan.inputs.push_back(catalog.input);plan.names.members.emplace(cab,"CAB-"+std::string(32,'f'));plan.names.members.emplace(cab+".resS","CAB-"+std::string(32,'f')+".resS");plan.names.bundles.emplace(catalog.input.bundle,"isolated-"+std::to_string(i));plan.startupHashes.push_back(catalog.source.hash);}
+ Root root;root.input=0;plan.roots.push_back(root);plan.startupHashes[1]=std::string(64,'1');SelectIsolatedInputs(set);
+ Require(plan.closure==std::vector<size_t>({0,1}),"unchanged dependencies were opened as isolated native bundles");
+ for(size_t i=0;i<4;++i){auto cab=set.catalog[i].members.begin()->first;bool own=i<2;Require((plan.names.members.at(cab)!=cab)==own,"changed/root and shared CAB identities differ");Require(plan.names.members.at(cab+".resS")==plan.names.members.at(cab)+".resS","stream identity differs from its owning CAB");Require((plan.names.bundles.at(set.catalog[i].input.bundle)!=set.catalog[i].input.bundle)==own,"shared Bundle identity differs");}
+ auto names=plan.names.members;SelectIsolatedInputs(set);Require(names==plan.names.members&&plan.closure==std::vector<size_t>({0,1}),"control-only snapshot refresh changed native identity/residency");
+ // Removing a Mod still creates an independent pristine Prefab; its old
+ // modified resources do not force copies of untouched game dependencies.
+ plan.startupHashes[1]=set.catalog[1].source.hash;SelectIsolatedInputs(set);Require(plan.closure==std::vector<size_t>({0}),"retired Mod lost its pristine root or retained unmodified resource copies");
+ auto sharedCab=set.catalog[1].members.begin()->first;Require(plan.names.members.at(sharedCab)==sharedCab,"retired author dependency did not return to game identity");
+ plan.roots.clear();SelectIsolatedInputs(set);Require(plan.closure.empty(),"unused empty set retained native candidates");
+}
 int main(int argc,char** argv){try{
+ if(argc==4&&std::string(argv[1])=="--profile-root-proof"){
+  using namespace EiemCompiledMod;
+  using Clock=std::chrono::steady_clock;
+  auto elapsed=[](Clock::time_point t){return std::chrono::duration<double,std::milli>(Clock::now()-t).count();};
+  auto started=Clock::now();auto artifact=Read(std::filesystem::u8path(argv[3]),std::filesystem::u8path(argv[2]));auto& plan=artifact.manifest.plan;
+  std::map<size_t,size_t> counts;for(const auto& root:plan.roots)++counts[root.input];Require(!counts.empty(),"profile has no Prefab roots");
+  std::cout<<"PROFILE inputs="<<plan.originals.size()<<" roots="<<plan.roots.size()<<" rootInputs="<<counts.size()<<" artifactReadMs="<<elapsed(started)<<std::endl;
+  EiemPrefabRules::Context replay(std::make_shared<const Plan>(plan),artifact.manifest.package);double totalSource=0,totalReplay=0,totalWithout=0,totalWith=0;
+  for(const auto& input:counts){size_t i=input.first;
+  started=Clock::now();auto original=EndfieldInput::Decode(ReadSource({},plan.originals.at(i)));auto sourceMs=elapsed(started);
+  started=Clock::now();auto edited=EndfieldInput::Decode(replay.Materialize(i,false));auto replayMs=elapsed(started);
+  size_t objects=0;for(const auto& member:original.members)if(Serialized(member.bytes))objects+=ParseSerialized(member.bytes).objects.size();
+  started=Clock::now();auto without=EiemCompiledModWriter::DescribeInput(i,plan,false,original,edited);auto withoutMs=elapsed(started);
+  started=Clock::now();auto with=EiemCompiledModWriter::DescribeInput(i,plan,true,original,edited);auto withMs=elapsed(started);
+  Require(with.pristine.size()==without.pristine.size()&&with.members.size()==without.members.size(),"profile proof coverage changed");
+  std::cout<<"PROFILE input="<<i<<" objects="<<objects<<" roots="<<with.pristine.size()<<" sourceMs="<<sourceMs<<" replayMs="<<replayMs<<" withoutAssemblyMs="<<withoutMs<<" withAssemblyMs="<<withMs<<std::endl;
+  totalSource+=sourceMs;totalReplay+=replayMs;totalWithout+=withoutMs;totalWith+=withMs;
+  }
+  std::cout<<"PROFILE-TOTAL sourceMs="<<totalSource<<" replayMs="<<totalReplay<<" withoutAssemblyMs="<<totalWithout<<" withAssemblyMs="<<totalWith<<" rootAssemblyExtraMs="<<totalWith-totalWithout<<" readOnly=1"<<std::endl;return 0;
+ }
+ if(argc==4&&std::string(argv[1])=="--residency-audit"){
+  auto set=EiemCompiledModSet::Read(std::filesystem::u8path(argv[2]),{},std::filesystem::u8path(argv[3]));Require(bool(set),"residency audit has no Mods");
+  const auto& plan=set->manifest.plan;std::set<size_t> roots;for(const auto& root:plan.roots)roots.insert(root.input);
+  size_t unnecessary=0,bytes=0,shared=0;for(size_t i=0;i<plan.inputs.size();++i)if(plan.startupHashes.at(i)==set->catalog.at(i).source.hash&&!roots.count(i)){++shared;bytes+=set->catalog.at(i).source.size;if(std::find(plan.closure.begin(),plan.closure.end(),i)!=plan.closure.end())++unnecessary;}
+  std::cout<<"inputs="<<plan.inputs.size()<<" nativeInputs="<<plan.closure.size()<<" rootInputs="<<roots.size()<<" unchangedDependencyCopies="<<unnecessary<<" sharedDependencies="<<shared<<" sharedSourceMiB="<<double(bytes)/1048576<<std::endl;
+  Require(!unnecessary,"background candidate duplicates unchanged game dependency bundles");
+  for(size_t i=0;i<plan.inputs.size();++i)if(std::find(plan.closure.begin(),plan.closure.end(),i)==plan.closure.end()){
+   Require(!set->isolated.count(i),"unmodified shared dependency retained an isolated payload");
+   for(const auto& member:set->catalog.at(i).members)Require(plan.names.members.at(member.first)==member.first,"shared dependency CAB was renamed");
+  }
+  auto refreshed=EiemCompiledModSet::Read(std::filesystem::u8path(argv[2]),set,std::filesystem::u8path(argv[3]));
+  Require(refreshed&&refreshed->manifest.plan.closure==plan.closure&&refreshed->manifest.plan.names.members==plan.names.members&&refreshed->isolated.size()==set->isolated.size(),"unchanged snapshot refresh restored duplicate native inputs");
+  std::cout<<"PASS native candidates retain only edited/root inputs; unchanged game dependencies keep their CAB identities through snapshot refresh"<<std::endl;return 0;
+ }
  if(argc==4&&std::string(argv[1])=="--refresh-controls"){
   auto game=std::filesystem::u8path(argv[2]),source=std::filesystem::u8path(argv[3]),parent=std::filesystem::temp_directory_path();auto folder=parent/("eff-compiled-refresh-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));Require(std::filesystem::create_directory(folder),"refresh fixture exists");struct Cleanup{std::filesystem::path parent,folder;~Cleanup(){if(folder.parent_path()==parent)std::filesystem::remove_all(folder);}}cleanup{parent,folder};auto mods=folder/"mods",mod=mods/source.filename();std::filesystem::create_directories(mod);std::filesystem::copy(source,mod,std::filesystem::copy_options::recursive);
   auto before=EiemCompiledModSet::Read(game,{},mods);Require(before&&!before->mods.empty()&&!before->startup.empty(),"refresh fixture has no compiled inputs");auto enabled=before->manifest.packages.front().keySwitchEnabled;auto ini=EiemNativeInput::Read(mod/"mod.ini");std::string text(ini.begin(),ini.end());auto changed=std::regex_replace(text,std::regex("key_switch_enabled[ \\t]*=[^\\r\\n]*"),enabled?"key_switch_enabled=0":"key_switch_enabled=1");Require(text!=changed,"refresh fixture lacks key switch setting");EiemOfflineCompile::AtomicSave(mod/"mod.ini",Bytes(changed.begin(),changed.end()));
@@ -178,6 +227,7 @@ int main(int argc,char** argv){try{
   Require(preserved==artifact->manifest.package.materials.size(),"not all authored materials verified");std::cout<<"PASS preserved Shader/keywords/pass fields: materials="<<preserved<<" shaders="<<shaders.size()<<" exactRootAssemblies="<<assembly<<'\n';return 0;
  }
  PreloadIntervalRegression();
+ NativeResidencyRegression();
  SharedInputRegression();
  ExternalDependencyRegression();
  auto binding=OriginalBoneBinding({11,22,33},{101,202,303},{33,44,11});

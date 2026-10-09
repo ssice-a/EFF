@@ -1,4 +1,6 @@
-﻿#define DllMain ResourceEntryFixtureDllMain
+// This fixture exercises explicit developer observation, not the released DLL.
+#define EIEM_DIAGNOSTICS 1
+#define DllMain ResourceEntryFixtureDllMain
 #include "../../src/eiem_resource_entry.cpp"
 #undef DllMain
 #include <cassert>
@@ -808,13 +810,13 @@ int main(int argc, char **argv) {
                                        48 + i);
     for (unsigned i = 0; i < 20; ++i)
       Entry::QueueFileSnapshot("fixture", absoluteString.data(), i);
-    Require(Entry::fileSnapshotRequests == 4 && Entry::jobs.size() == 4,
-            "generic snapshots consume reserved target budget");
+    Require(Entry::fileSnapshotRequests == 0 && Entry::jobs.empty(),
+            "unselected diagnostic inputs were captured");
     for (unsigned i = 0; i < 8; ++i) {
       Entry::QueueFileSnapshot("fixture", absoluteString.data(), 100 + i);
       Entry::QueueFileSnapshot("fixture", absoluteString.data(), 100 + i);
     }
-    Require(Entry::fileSnapshotRequests == 12 && Entry::jobs.size() == 12 &&
+    Require(Entry::fileSnapshotRequests == 8 && Entry::jobs.size() == 8 &&
                 Entry::jobs.back().expectedBytes == 55 &&
                 Entry::queuedBytes == 0,
             "selected copies lost to generic events, duplicated, or read in "

@@ -447,6 +447,22 @@ void PerformPreloadRegression(){
  Reset();{auto a=MakeAttempt();CaptureConsumers(a.owners.front());Rebuild(a);Require(!performIdlePreloads&&!performDashPreloads,"non-character animation called CharacterAnimationComponent preload functions");}
  Reset();
 }
+void ProductionCaptureCompletionRegression(){
+#if !defined(EIEM_DIAGNOSTICS)
+ static unsigned originals=0,callbacks=0;static bool nativeResult=false;
+ auto previous=std::make_tuple(CaptureObservation::originalFinished,CaptureObservation::afterFinished,il2cpp_runtime_invoke);
+ auto restore=[&]{std::tie(CaptureObservation::originalFinished,CaptureObservation::afterFinished,il2cpp_runtime_invoke)=previous;};
+ try{
+  CaptureObservation::originalFinished=[](void* self,void* info){Require(self==oldRenderer&&info==model,"capture completion changed native arguments");++originals;return nativeResult;};
+  CaptureObservation::afterFinished=[](void* self,bool result){Require(self==oldRenderer&&result==nativeResult,"capture bridge lost completion state");++callbacks;};
+  il2cpp_runtime_invoke=[](void*,void*,void**,void**)->void*{throw std::runtime_error("production capture performed diagnostic material/mesh readback");};
+  originals=callbacks=0;nativeResult=false;Require(!CaptureObservation::Finished(oldRenderer,model),"capture completion changed false result");
+  nativeResult=true;Require(CaptureObservation::Finished(oldRenderer,model),"capture completion changed true result");
+  Require(originals==2&&callbacks==2,"capture completion did not forward original and functional callback exactly once");restore();
+ }catch(...){restore();throw;}
+#endif
+}
+#if defined(EIEM_DIAGNOSTICS)
 void AnimationAttachmentProbeRegression(){
  using namespace FullResourceReload;Reset();
  static bool failRead=false;static unsigned parentReads=0;
@@ -586,6 +602,7 @@ void PerformanceReleaseProbeRegression(){
   restore();
  }catch(...){restore();throw;}
 }
+#endif
 void TextureIdentityRegression(){
  using namespace FullResourceReload;Reset();auto p=Prepare();auto plan=std::make_shared<EiemResourceReloadPlan::Plan>(*p->plan);
  plan->materials.at("material").slots.push_back({"_BaseMap",true,true,{"body",1024,1024,11}});
@@ -1586,7 +1603,12 @@ int main(){
   check("UI controls without page transfer API",UIControlWithoutPageApiRegression);
   check("background candidate readiness",BackgroundReadyRegression);check("compiled same-content snapshot",CompiledSnapshotRegression);
   check("enum",EnumRegression);check("bones",BonePathRegression);check("root paths",RootPathRegression);check("managers",ManagerContractRegression);
-  check("Material property bindings",MaterialBindingRegression);check("standby prop lifecycle",PerformLifecycleRegression);check("native performance preloads",PerformPreloadRegression);check("animation attachment probe contract",AnimationAttachmentProbeRegression);check("unmodified skin probe contract",UnmodifiedSkinProbeRegression);check("actual performance attachment probe",PerformanceProbeRegression);check("native resource release probe",PerformanceReleaseProbeRegression);check("native lifecycle",NativeLifecycleRegression);check("typed character audio",[]{typedAudioOnly=true;NativeLifecycleRegression();typedAudioOnly=false;});check("texture identity",TextureIdentityRegression);check("load scheduling",PrewarmScheduleRegression);check("committed retry",CommittedRetryRegression);check("released pool",ReleasedPoolRegression);check("display virtual override",DisplayOverrideRegression);check("rule memory loads",RuleMemoryRegression);
+  check("production capture completion",ProductionCaptureCompletionRegression);
+  check("Material property bindings",MaterialBindingRegression);check("standby prop lifecycle",PerformLifecycleRegression);check("native performance preloads",PerformPreloadRegression);
+#if defined(EIEM_DIAGNOSTICS)
+  check("animation attachment probe contract",AnimationAttachmentProbeRegression);check("unmodified skin probe contract",UnmodifiedSkinProbeRegression);check("actual performance attachment probe",PerformanceProbeRegression);check("native resource release probe",PerformanceReleaseProbeRegression);
+#endif
+  check("native lifecycle",NativeLifecycleRegression);check("typed character audio",[]{typedAudioOnly=true;NativeLifecycleRegression();typedAudioOnly=false;});check("texture identity",TextureIdentityRegression);check("load scheduling",PrewarmScheduleRegression);check("committed retry",CommittedRetryRegression);check("released pool",ReleasedPoolRegression);check("display virtual override",DisplayOverrideRegression);check("rule memory loads",RuleMemoryRegression);
   check("latest publication",LatestPublicationRegression);check("offline failure cancellation",OfflineRejectionRegression);check("prepared shortcut",PreparedShortcutRegression);check("startup",StartupNoWorldRegression);check("Mesh gate",ChangedMeshGateRegression);check("retirement",RetirementRegression);
   check("world Frame",[]{FullFrameRegression(false);});check("display Frame",[]{FullFrameRegression(true);});
   check("consecutive world F10",SequentialWorldRegression);

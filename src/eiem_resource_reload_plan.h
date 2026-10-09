@@ -199,13 +199,25 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
  bool geometryHit=!geometryCache.empty()&&std::filesystem::exists(geometryDirectory/"stage.tsv");GeometryStage geometry;
  if(geometryHit){geometry=ReadGeometry(geometryDirectory,geometryKey,sources);assets=geometry.assets;if(stage)stage("geometry-reused",sources.size(),sources.size());}
  if(stage)stage("source",0,sources.size());
- for(size_t i=0;i<sources.size();++i){const auto& s=sources[i];
-  identity+="\n"+s.file+"\n"+s.hash;if(geometryHit)continue;
-  auto bytes=ReadSource(baseline,s);Require(Hash(bytes)==s.hash,"reload pristine source SHA differs: "+s.file);
-  AddAssets(assets,bytes);AddMeshSchemas(schemas,bytes,&sourcePalettes,&package);
-  AddMaterialPreloads(materialPreloads,bytes,package);
-   pristineInputs[i]=std::move(bytes);if(stage)stage("source",i+1,sources.size());
+ auto phaseStart=std::chrono::steady_clock::now();
+ for(const auto& s:sources)identity+="\n"+s.file+"\n"+s.hash;
+ if(!geometryHit){
+  struct SourceInventory {AssetIndex assets;MeshSchemaIndex schemas;MeshBoneHashIndex palettes;MaterialPreloadIndex preloads;};
+  std::vector<SourceInventory> inventories(sources.size());
+  EiemOfflineCompile::ParallelInputs(sources.size(),[&](size_t i){const auto& s=sources[i];auto& inventory=inventories[i];
+   auto bytes=ReadSource(baseline,s);Require(Hash(bytes)==s.hash,"reload pristine source SHA differs: "+s.file);
+   AddSourceInventory(inventory.assets,inventory.schemas,inventory.palettes,inventory.preloads,bytes,package);
+   pristineInputs[i]=std::move(bytes);
+  });
+  for(size_t i=0;i<inventories.size();++i){auto& inventory=inventories[i];
+   for(auto& asset:inventory.assets)AddAsset(assets,std::move(asset.second));
+   schemas.merge(inventory.schemas);
+   for(auto& palette:inventory.palettes)Require(sourcePalettes.emplace(palette.first,std::move(palette.second)).second,"duplicate source Mesh bone palette");
+   for(const auto& preload:inventory.preloads)materialPreloads[preload.first].insert(preload.second.begin(),preload.second.end());
+   if(stage)stage("source",i+1,sources.size());
+  }
  }
+ if(cost)cost("source-inventory-wall",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-phaseStart).count());
  if(std::any_of(package.textures.begin(),package.textures.end(),[](const auto& t){return t.second.source.path.empty();})){
   // Geometry only edits Mesh/Renderer topology and their preload lists;
   // Material slot PPtrs and original Texture objects remain pristine. Both
@@ -238,6 +250,7 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
   std::vector<Bytes> rebuilt;size_t marked=0;RendererBoundsCache boundsCache;
   if(stage)stage("resource",0,sources.size());
   std::vector<Bytes> rendererInputs(sources.size());
+  phaseStart=std::chrono::steady_clock::now();
   if(geometryHit){
    for(size_t i=0;i<sources.size();++i){rendererInputs[i]=std::move(geometry.inputs[i]);plan.meshParts+=geometry.counts[i].first;plan.rendererParts+=geometry.counts[i].second;}
   }else{
@@ -249,7 +262,7 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
     auto key=GeometryInputDigest(pristineInputs[i],package,assets,&materialPreloads);auto& output=inputs[i];
     if(EiemOfflineCompile::ReadStage(inputCache,key,output)){hits[i]=1;return;}
     auto mesh=Measure(geometryCost,"mesh-source",[&]{return BuildMeshInput(pristineInputs[i],package);});
-    auto renderer=Measure(geometryCost,"renderer",[&]{return BuildRendererInput(mesh.bytes,package,assets,meshParts,schemas,&boundsCache,&materialPreloads);});
+    auto renderer=Measure(geometryCost,"renderer",[&]{return BuildRendererInput(mesh.bytes,package,assets,meshParts,schemas,&boundsCache,&materialPreloads,geometryCost);});
     size_t localMarked=0;auto bytes=Measure(geometryCost,"markers",[&]{return Mark(renderer.bytes,markers,localMarked);});
     output={std::move(bytes),mesh.parts.size(),renderer.parts.size(),localMarked};EiemOfflineCompile::WriteStage(inputCache,key,output);
    });
@@ -260,6 +273,7 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
     rendererInputs[i]=std::move(inputs[i].bytes);
    }
   }
+  if(cost)cost("geometry-wall",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-phaseStart).count());
   auto appearanceCache=geometryCache.empty()?std::filesystem::path{}:geometryCache.parent_path()/"appearance";
   if(!appearanceCache.empty())std::filesystem::create_directories(appearanceCache);
   std::vector<EiemOfflineCompile::Stage> appearances(sources.size());std::vector<unsigned char> appearanceHits(sources.size());std::mutex appearanceCostMutex;
@@ -267,6 +281,7 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
   struct Inventory {Input input;EiemLoadingGeneration::Names names;std::vector<std::string> members;};
   std::vector<Inventory> inventories(sources.size());
   std::function<void(const char*,double)> appearanceCost;if(cost)appearanceCost=[&](const char* name,double elapsed){std::lock_guard<std::mutex> lock(appearanceCostMutex);cost(name,elapsed);};
+  phaseStart=std::chrono::steady_clock::now();
   EiemOfflineCompile::ParallelInputs(sources.size(),[&](size_t i){
    auto key=Measure(appearanceCost,"appearance-key",[&]{return AppearanceInputDigest(rendererInputs[i],package,assets);});auto& output=appearances[i];
    if(!appearanceCache.empty())appearanceFiles[i]=appearanceCache/(key+".vfs");
@@ -294,6 +309,7 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
    return 0;
    });
   });
+  if(cost)cost("appearance-wall",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-phaseStart).count());
   for(size_t i=0;i<sources.size();++i){
    if(appearanceHits[i])++plan.appearanceHits;else ++plan.appearanceMisses;
    plan.textures+=appearances[i].first;plan.materialMatches+=appearances[i].second;
@@ -322,6 +338,7 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
   std::vector<std::tuple<std::string,std::vector<std::pair<std::string,NativeReference>>>> refs;
  };
  std::vector<Metadata> metadata(rebuilt.size());
+ phaseStart=std::chrono::steady_clock::now();
  // Discover descriptors independently. Merge in baseline order below so
  // output identities and manifests remain deterministic across worker counts.
  EiemOfflineCompile::ParallelInputs(rebuilt.size(),[&](size_t i){
@@ -356,6 +373,7 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
    }
   }
  });
+ if(cost)cost("metadata-wall",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-phaseStart).count());
  for(auto& local:metadata){
   for(auto& root:local.roots)plan.roots.push_back(std::move(root));
   memberInput.merge(local.members);textures.merge(local.textures);materials.merge(local.materials);
@@ -364,15 +382,11 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
  if(stage)stage("metadata",rebuilt.size(),rebuilt.size());
  Require(plan.roots.size()==rootPaths.size(),"reload prefab roots absent or ambiguous");
  for(auto& root:plan.roots){
-  auto bundle=EndfieldInput::Decode(rebuilt.at(root.input));
-   for(const auto& member:bundle.members)if(member.name==root.cab&&Serialized(member.bytes)){
-    auto l=ParseSerialized(member.bytes);
-    EiemRenderAssemblyDescription::Graph graph(member.bytes,member.name,root.source);
-    for(auto id:graph.Renderers()){
-    auto ref=graph.Mesh(id);auto marker=markers.find(ref);
-    if(marker!=markers.end())++root.markers[marker->second];
-   }
-  }
+  // Assembly validation has already covered every native/injected renderer
+  // exactly once. Count its proven targets instead of decoding the same root
+  // and reconstructing a third hierarchy graph solely to count markers.
+  for(const auto& source:root.assembly.sources)for(const auto& target:source.targets)
+   if(!target.marker.empty())++root.markers[target.marker];
    Require(package.composed||!root.assembly.sources.empty(),"reload root has no source Renderer assembly");
  }
  for(const auto& refs:textureRefs){auto& mat=materials.at(std::get<0>(refs));for(const auto& p:std::get<1>(refs)){
@@ -390,9 +404,9 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
   if(rulesOnly){plan.rendererRules.resize(sources.size());plan.startupHashes.resize(sources.size());plan.namespaceRecipes.resize(sources.size());std::map<NativeReference,Identity> targets;
    for(const auto& target:package.targetIndex){const auto& asset=assets.at(target.first);targets.emplace(NativeReference{asset.cab,asset.pathId},target.first);}
    std::set<NativeReference> references;for(const auto& row:targets)references.insert(row.first);
-   for(size_t i=0;i<sources.size();++i){auto original=EndfieldInput::Decode(ReadSource(baseline,sources[i]));for(const auto& member:original.members)if(Serialized(member.bytes)){auto l=ParseSerialized(member.bytes);
+   EiemOfflineCompile::ParallelInputs(sources.size(),[&](size_t i){auto original=EndfieldInput::Decode(ReadSource(baseline,sources[i]));for(const auto& member:original.members)if(Serialized(member.bytes)){auto l=ParseSerialized(member.bytes);
     for(const auto& consumer:MeshConsumers(member.bytes,l,member.name,references))plan.rendererRules[i].push_back({member.name,consumer.renderer,targets.at(consumer.mesh)});
-   }}
+   }});
   }
   if(stage)stage("publish",0,rebuilt.size());
   // Every input is independent after metadata discovery. Run the expensive

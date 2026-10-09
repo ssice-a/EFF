@@ -31,6 +31,21 @@ int main() {
             "signed reference identity changed");
     Require(refs.streams[0].path == path && refs.streams[0].offset == 16 && refs.streams[0].size == 32,
             "stream range changed");
+    Require(refs.pointers[0].field=="Base.m_Mesh","pointer field address changed");
+    // The direct path must agree with the generic reader on signed/null
+    // records, aligned records, and the fallback for reordered schemas.
+    auto pointerType=type;pointerType.nodes[0].children={1};
+    auto pointerLayout=layout;pointerLayout.types={pointerType};pointerLayout.objects.at(-101).size=12;
+    auto pointerBytes=Bytes(bytes.begin(),bytes.begin()+12);
+    auto direct=ReadReferences(pointerBytes,pointerLayout);
+    Require(direct.unparsed.empty()&&direct.pointers.size()==1&&direct.pointers[0].pathId==-17,"direct pointer read differs");
+    pointerLayout.types[0].nodes[1].children={3,2};Bytes reordered;AppendInteger(reordered,uint64_t(int64_t(-17)),8);AppendInteger(reordered,2,4);
+    auto fallback=ReadReferences(reordered,pointerLayout);
+    Require(fallback.unparsed.empty()&&fallback.pointers.size()==1&&fallback.pointers[0].fileId==direct.pointers[0].fileId&&fallback.pointers[0].pathId==direct.pointers[0].pathId&&fallback.pointers[0].field==direct.pointers[0].field,"reordered pointer fallback differs");
+    pointerLayout.types[0]=pointerType;pointerLayout.types[0].nodes[1].align=true;
+    auto aligned=ReadReferences(pointerBytes,pointerLayout);Require(aligned.unparsed.empty()&&aligned.pointers.size()==1,"aligned pointer differs");
+    std::fill(pointerBytes.begin()+4,pointerBytes.end(),0);auto nullPointer=ReadReferences(pointerBytes,pointerLayout);Require(nullPointer.unparsed.empty()&&nullPointer.pointers.empty(),"null pointer became a dependency");
+    pointerBytes.pop_back();pointerLayout.objects.at(-101).size=pointerBytes.size();auto shortPointer=ReadReferences(pointerBytes,pointerLayout);Require(shortPointer.unparsed.size()==1&&shortPointer.pointers.empty(),"truncated direct pointer escaped validation");
     auto corrupt = bytes; corrupt.pop_back();
     layout.objects.at(-101).size = corrupt.size();
     auto rejected = ReadReferences(corrupt, layout);

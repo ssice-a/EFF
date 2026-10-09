@@ -4,9 +4,9 @@
 
 EFF 在《明日方舟：终末地》创建资源和实例前应用 Mod。AnimeStudio 导出来源，Blender 制作并编译独立 Mod，EFF DLL 读取结果并完成游戏内加载与热重载。
 
-配套发布：**EFF v1.3.3、EFF Blender v0.40.2、AnimeStudio v1.3.1**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
+配套发布：**EFF v1.3.4、EFF Blender v0.40.3、AnimeStudio v1.3.1**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
 
-首次制作 Mod 可先阅读带截图的[简易教程：安装、解包、Blender 制作与导出](Mod%20Tutorial.md)。
+首次制作 Mod 可先阅读带截图的简易教程：[中文](Mod%20Tutorial.md) · [English](Mod%20Tutorial_EN.md)。
 
 ## 功能
 
@@ -18,7 +18,7 @@ EFF 在《明日方舟：终末地》创建资源和实例前应用 Mod。AnimeS
 
 ## 安装
 
-从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v1.3.3_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和各 Mod 的 `state.ini`。
+从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v1.3.4_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和各 Mod 的 `state.ini`。
 
 ```text
 d3dcompiler_47.dll

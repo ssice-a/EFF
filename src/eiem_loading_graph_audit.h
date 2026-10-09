@@ -70,6 +70,23 @@ inline void Walk(const Type& type, size_t index, Reader& reader, size_t base,
   if (!interesting.at(index)) { SkipValue(type, index, reader, base, depth); return; }
   if (ReferenceNode(node)) {
     auto start = reader.p;
+    // PPtr records overwhelmingly dominate model reference audits. Read a
+    // schema-verified pair directly instead of allocating a Value tree and
+    // two byte vectors for each pointer. Unusual layouts retain the generic
+    // reader, including reordered/aligned fields and its validation rules.
+    if (!reader.big && node.type.rfind("PPtr<", 0) == 0 && node.children.size() == 2 &&
+        depth + 1 < type.nodes.size()) {
+      const auto& file = type.nodes.at(node.children[0]);
+      const auto& id = type.nodes.at(node.children[1]);
+      if (file.name == "m_FileID" && id.name == "m_PathID" &&
+          Primitive(file.type) == 4 && Primitive(id.type) == 8 &&
+          !file.align && !id.align) {
+        auto fileId = int32_t(reader.Get(4));auto pathId = int64_t(reader.Get(8));
+        if (node.align) reader.Skip((size_t(0) - (reader.p - base)) & 3);
+        if (pathId) result.pointers.push_back({objectId,pathId,classId,fileId,field});
+        return;
+      }
+    }
     auto value = ReadValue(type, index, reader, base, depth);
     if (node.type.rfind("PPtr<", 0) == 0) {
       auto file = Find(type, value, "m_FileID"), id = Find(type, value, "m_PathID");
@@ -106,9 +123,11 @@ inline void Walk(const Type& type, size_t index, Reader& reader, size_t base,
            field + "[" + std::to_string(i) + "]", depth + 1);
   } else {
     Require(!node.children.empty(), "audit interesting leaf lacks schema");
-    for (auto child : node.children)
-      Walk(type, child, reader, base, interesting, result, objectId, classId,
-           field + "." + type.nodes[child].name, depth + 1);
+    for (auto child : node.children) {
+      if (!interesting.at(child)) SkipValue(type, child, reader, base, depth + 1);
+      else Walk(type, child, reader, base, interesting, result, objectId, classId,
+                field + "." + type.nodes[child].name, depth + 1);
+    }
   }
   if (node.align || node.type == "string")
     reader.Skip((size_t(0) - (reader.p - base)) & 3);
@@ -133,8 +152,8 @@ inline References ReadReferences(const Bytes& bytes, const SerializedLayout& lay
       Walk(type, 0, reader, object.offset, masks.at(object.type), objectReferences, object.id,
            type.classId, type.nodes.at(0).name);
       Require(reader.p == reader.limit, "audit object payload suffix");
-      result.pointers.insert(result.pointers.end(), objectReferences.pointers.begin(), objectReferences.pointers.end());
-      result.streams.insert(result.streams.end(), objectReferences.streams.begin(), objectReferences.streams.end());
+      result.pointers.insert(result.pointers.end(), std::make_move_iterator(objectReferences.pointers.begin()), std::make_move_iterator(objectReferences.pointers.end()));
+      result.streams.insert(result.streams.end(), std::make_move_iterator(objectReferences.streams.begin()), std::make_move_iterator(objectReferences.streams.end()));
     } catch (const std::exception& error) {
       result.unparsed.push_back({object.id, type.classId, error.what()});
     }

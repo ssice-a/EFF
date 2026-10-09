@@ -99,6 +99,7 @@ std::map<std::string,Ref> observedPrefabs;
 uint64_t ownerRevision=0;
 using ResourceGetFn=void*(*)(void*,void*);
 ResourceGetFn originalResourceGet=nullptr;
+#if defined(EIEM_DIAGNOSTICS)
 struct AnimationLinkProbe {
  void *monoField=nullptr,*objectField=nullptr,*ownerField=nullptr,*animationField=nullptr;
  void *parentMethod=nullptr;Ref objectType;
@@ -117,6 +118,7 @@ struct PerformProbe {
  std::map<void*,Watch> watches;
 } performProbe;
 void BindPerformanceProbe(void** assemblies,size_t count);
+#endif
 thread_local bool readingSource=false;
 void* ResourceGet(void* self,void* info);
 thread_local bool proxyContext=false;thread_local uint64_t proxyPathHash=0;
@@ -278,7 +280,9 @@ void PartConfigured(void* self,void* data,void* info){
  // LoadModel's callback. Record this real game entry before completion.
  RecordPartLoad(self,nullptr);originalPartConfigured(self,data,info);
 }
+#if defined(EIEM_DIAGNOSTICS)
 void ProbeModelMaterials(void* root,const char* phase);
+#endif
 void RecordPartFinished(void* self){
  try{if(!RuntimeShapes::Main())return;auto root=ReadObject(self,"m_model","UnityEngine.GameObject");if(!RuntimeShapes::Alive(root)){liveParts.erase(self);return;}
   auto cfg=PartConfig(self);auto path=String(ReadObject(cfg.Get(),"modelPath","System.String"));
@@ -286,7 +290,9 @@ void RecordPartFinished(void* self){
   auto& live=liveParts[self];live.part=Ref::Make(self,true);live.root=Ref::Make(root,true);live.path=path;live.persistent=persistent!=0;
   ++ownerRevision;
   RuntimeShapes::RegisterModel(root);
+#if defined(EIEM_DIAGNOSTICS)
   ProbeModelMaterials(root,"world-complete");
+#endif
  }catch(const std::exception& e){Log("[FULL-RELOAD-PART-GAP] reason=%s",e.what());}
 }
 void PartFinished(void* self,void* info){originalPartFinished(self,info);RecordPartFinished(self);}
@@ -356,11 +362,17 @@ ShaderState MaterialShader(void* material,const char* phase=nullptr){
   if(api.materialPassCount)result.passes=RuntimeShapes::Scalar<int>(api.materialPassCount,material);
   result.valid=result.name!="Hidden/InternalErrorShader"&&result.supported!=0&&result.passes!=0;
  }
+#if defined(EIEM_DIAGNOSTICS)
  if(phase){std::string keywords;
   if(api.materialKeywords){auto array=Ref::Make(Call(api.materialKeywords,material),false);for(auto keyword:ReferenceArray(array.Get())){if(!keywords.empty())keywords+=',';keywords+=String(keyword);}}
   Log("[DEBUG-material-shader] phase=%s material=%s materialId=%d shader=%s shaderId=%d supported=%d passes=%d keywords=%s",phase,String(Call(RuntimeShapes::api.name,material)).c_str(),Id(material),result.name.c_str(),shader.Get()?Id(shader.Get()):0,result.supported,result.passes,keywords.c_str());
- }return result;
+ }
+#else
+ (void)phase;
+#endif
+ return result;
 }
+#if defined(EIEM_DIAGNOSTICS)
 void ProbeModelMaterials(void* root,const char* phase){
  if(!api.shaderSupported||!api.materials||RuntimeControls::specs.empty())return;
  std::set<int> seen;std::set<std::string> missing;
@@ -371,6 +383,7 @@ void ProbeModelMaterials(void* root,const char* phase){
   if(absent){auto marker=String(Call(RuntimeShapes::api.name,mesh));if(missing.insert(marker).second)Log("[DEBUG-material-shader] phase=%s marker=%s materialNull=1 slots=%zu",phase,marker.c_str(),materials.size());}
  }
 }
+#endif
 std::map<std::string,std::pair<unsigned,int>> MeshProfile(void* root) {
  std::map<std::string,std::pair<unsigned,int>> profile,authored;
  size_t ordinal=0;
@@ -754,7 +767,10 @@ void Install(void** assemblies,size_t count){
   auto material=FindClass("UnityEngine","Material",assemblies,count);
   api.materials=Method(renderer,"get_sharedMaterials",{},"UnityEngine.Material[]",false);api.texture=Method(material,"GetTexture",{"System.String"},"UnityEngine.Texture",false);api.shader=Method(material,"get_shader",{},"UnityEngine.Shader",false);
   api.shaderSupported=Exact(FindClass("UnityEngine","Shader",assemblies,count),"get_isSupported",{},"System.Boolean",false);
-  api.materialPassCount=Exact(material,"get_passCount",{},"System.Int32",false);api.materialKeywords=Exact(material,"get_shaderKeywords",{},"System.String[]",false);
+  api.materialPassCount=Exact(material,"get_passCount",{},"System.Int32",false);
+#if defined(EIEM_DIAGNOSTICS)
+  api.materialKeywords=Exact(material,"get_shaderKeywords",{},"System.String[]",false);
+#endif
   BindMaterialTextureProperties(material);
   auto texture=FindClass("UnityEngine","Texture",assemblies,count);
   api.width=Method(texture,"get_width",{},"System.Int32",false);api.height=Method(texture,"get_height",{},"System.Int32",false);api.mips=Method(texture,"get_mipmapCount",{},"System.Int32",false);
@@ -772,6 +788,7 @@ void Install(void** assemblies,size_t count){
   auto characterAnimation=FindClass("Beyond.Gameplay.View","CharacterAnimationComponent",assemblies,count);
   api.animationIdlePreload=Method(characterAnimation,"_PreloadSpIdlePerform",{},"System.Void",false);
   api.animationDashPreload=Method(characterAnimation,"_PreloadSpDashPerform",{},"System.Void",false);
+#if defined(EIEM_DIAGNOSTICS)
   // Read cached and actual parent ownership at the transaction boundary;
   // animation event detours may not observe the game's patched handlers.
   try{
@@ -783,11 +800,14 @@ void Install(void** assemblies,size_t count){
    animationLinkProbe.parentMethod=Method(component,"GetComponentInParent",{"System.Type"},"UnityEngine.Component",false);animationLinkProbe.objectType=Type(object);
    animationLinkProbe.ready=true;Log("[DEBUG-model-links-API] ready=1 cachedAndParentOwners=1 eventHooks=0");
   }catch(const std::exception& e){Log("[DEBUG-model-links-GAP] phase=bind reason=%s reloadUnaffected=1",e.what());}
+#endif
   auto weapon=FindClass("Beyond.Gameplay.View","WeaponComponent",assemblies,count);
   api.weaponCom=Method(entity,"get_weaponCom",{},"Beyond.Gameplay.View.WeaponComponent",false);
   api.weaponUnload=Method(weapon,"UnloadWeapons",{"System.Boolean"},"System.Void",false);
   api.weaponReload=Method(weapon,"ReloadWeapon",{"System.Boolean"},"System.Void",false);api.weaponMounts=Method(weapon,"UpdateAllWeaponMountPoint",{},"System.Void",false);
+#if defined(EIEM_DIAGNOSTICS)
   api.weaponValid=Exact(weapon,"get_isValid",{},"System.Boolean",false);
+#endif
   auto audio=FindClass("Beyond.Gameplay.Core","CharacterAudioComponent",assemblies,count);
   api.componentLookup=Method(entity,"TryGetComponent",{"System.Type","Beyond.Gameplay.Core.BaseComponent&","System.Boolean"},"System.Boolean",false);
   characterAudioType=Type(audio);api.audioInvalidate=Method(audio,"InvalidateTransformReference",{},"System.Void",false);
@@ -815,6 +835,7 @@ void Install(void** assemblies,size_t count){
   auto effect=FindClass("Beyond.Gameplay","EffectManager",assemblies,count);api.follow=Method(effect,"ChangeEntityFollowEffect",{"Beyond.Gameplay.Core.Entity"},"System.Void",false);
   auto object=FindClass("UnityEngine","Object",assemblies,count);api.instanceId=Method(object,"GetInstanceID",{},"System.Int32",false);
   auto transform=FindClass("UnityEngine","Transform",assemblies,count);api.isChild=Method(transform,"IsChildOf",{"UnityEngine.Transform"},"System.Boolean",false);api.parent=Method(transform,"get_parent",{},"UnityEngine.Transform",false);
+#if defined(EIEM_DIAGNOSTICS)
   try{
    skinStateProbe.active=Method(go,"get_activeInHierarchy",{},"System.Boolean",false);
    skinStateProbe.forceOff=Method(renderer,"get_forceRenderingOff",{},"System.Boolean",false);
@@ -823,6 +844,7 @@ void Install(void** assemblies,size_t count){
    skinStateProbe.ready=true;Log("[DEBUG-skin-state-API] ready=1 currentModelOnly=1 fieldsWritten=0");
   }catch(const std::exception& e){Log("[DEBUG-skin-state-GAP] phase=bind reason=%s reloadUnaffected=1",e.what());}
   BindPerformanceProbe(assemblies,count);
+#endif
   api.childCount=Method(transform,"get_childCount",{},"System.Int32",false);api.getChild=Method(transform,"GetChild",{"System.Int32"},"UnityEngine.Transform",false);
   api.directComponents=Method(go,"GetComponents",{"System.Type"},"UnityEngine.Component[]",false);
   for(auto m:{api.toPath,api.load,api.done,api.error,api.get,api.dispose,api.components,api.goTransform,api.materials,api.texture,api.shader,api.width,api.height,api.mips,api.modelCom,api.released,api.getModel,api.getPath,api.remove,api.loadModel,api.instance,api.discard,api.follow,api.instanceId,api.isChild,api.parent,api.childCount,api.getChild,api.componentGo,api.directComponents})Require(m,"reload exact managed signature missing");
@@ -890,6 +912,7 @@ void VerifyAnimation(const Owner& owner,void* root){
  auto transform=Ref::Make(Call(RuntimeShapes::api.transform,animator.Get()),false),rootTransform=Ref::Make(Call(api.goTransform,root),false);void* args[]={rootTransform.Get()};
  Require(transform.Get()==rootTransform.Get()||RuntimeShapes::Scalar<unsigned char>(api.isChild,transform.Get(),args),"reload Animator still bound outside the current model root");
 }
+#if defined(EIEM_DIAGNOSTICS)
 struct AnimationLinks {Ref mono,object,entity,animation,parentObject,parentEntity;};
 AnimationLinks ReadAnimationLinks(void* animation){
  auto read=[](void* object,void* field){void* value=nullptr;if(object)il2cpp_field_get_value(object,field,&value);return Ref::Make(value,false);};
@@ -940,6 +963,7 @@ void TraceSkinStates(void* root,const std::string& path,const std::vector<Ref>& 
  }catch(const std::exception& e){Log("[DEBUG-skin-state-GAP] phase=%s reason=%s reloadUnaffected=1",phase,e.what());}
 }
 #include "eiem_entry_perform_probe.h"
+#endif
 void CaptureConsumers(Owner& owner){
  if(owner.viewPart)return;
  auto world=Ref::Make(ReadManager(api.world),false);
@@ -949,8 +973,10 @@ void CaptureConsumers(Owner& owner){
  if(owner.animation.Get()){owner.animationData=Ref::Make(Call(api.animationData,owner.animation.Get()),false);Require(owner.animationData.Get(),"reload animation data unavailable");VerifyAnimation(owner,owner.root.Get());}
  if(Inherits(owner.animation.Get(),"Beyond.Gameplay.View","CharacterAnimationComponent"))
   Require(api.animationIdlePreload&&api.animationDashPreload,"reload native character performance preloads unavailable");
+#if defined(EIEM_DIAGNOSTICS)
  TraceAnimationLinks(owner,owner.root.Get(),"before-release");
  TracePerformance(owner,"before-release",true);
+#endif
  owner.weapons=Ref::Make(Call(api.weaponCom,owner.entity.Get()),false);
  // Entity.audioCom is the separate generic AudioComponent. The game's mode
  // change queries CharacterAudioComponent through its component registry.
@@ -967,9 +993,12 @@ void ReleaseConsumers(const Owner& owner){
  // display-only model parts are unaffected. A null squad-switch reason forces
  // ordinary cleanup rather than inheriting a handle across a squad operation.
  if(owner.performManager.Get()){void* args[]={owner.entity.Get(),nullptr};Call(api.performExit,owner.performManager.Get(),args);Log("[FULL-RELOAD-PERFORM] path=%s gameEntityCleanup=1 beforeModelRelease=1",owner.path.c_str());}
+#if defined(EIEM_DIAGNOSTICS)
  TracePerformance(owner,"after-perform-exit");
+#endif
  if(owner.weapons.Get()){unsigned char all=1;void* args[]={&all};Call(api.weaponUnload,owner.weapons.Get(),args);}
 }
+#if defined(EIEM_DIAGNOSTICS)
 void ProbeWeaponState(const Owner& owner,const char* phase){
  if(!api.weaponValid||!owner.weapons.Get())return;
  try{
@@ -979,6 +1008,7 @@ void ProbeWeaponState(const Owner& owner,const char* phase){
   Log("[DEBUG-weapon-reload] phase=%s path=%s valid=%d nativeLoaded=%d noWeapons=%d",phase,owner.path.c_str(),int(RuntimeShapes::Scalar<unsigned char>(api.weaponValid,weapon)),int(loaded),int(none));
  }catch(const std::exception& e){Log("[DEBUG-weapon-reload] phase=%s stateReadFailed=%s",phase,e.what());}
 }
+#endif
 void ReloadConsumers(const Owner& owner,void* root){
  // Rebind animation through ChangeAnimationConfig with resume enabled, then
  // follow AbilitySystem::_ApplyModeChange's audio and weapon ordering.
@@ -998,12 +1028,22 @@ void ReloadConsumers(const Owner& owner,void* root){
   Call(api.animationIdlePreload,owner.animation.Get());Call(api.animationDashPreload,owner.animation.Get());
   Log("[FULL-RELOAD-PERFORM-PRELOAD] path=%s nativeConfiguredLists=1 elapsedMs=%.3f",owner.path.c_str(),std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count());
  }
+#if defined(EIEM_DIAGNOSTICS)
  TraceAnimationLinks(owner,root,"after-rebind");
  TracePerformance(owner,"after-rebind");
+#endif
  if(owner.audio.Get())Call(api.audioInvalidate,owner.audio.Get());
  // The game refreshes mount nodes before ReloadWeapon starts asynchronous
  // model requests. Reversing them lets those requests retain retired nodes.
- if(owner.weapons.Get()){ProbeWeaponState(owner,"before-remount");Call(api.weaponMounts,owner.weapons.Get());unsigned char all=1;void* args[]={&all};Call(api.weaponReload,owner.weapons.Get(),args);ProbeWeaponState(owner,"after-reload-request");}
+ if(owner.weapons.Get()){
+#if defined(EIEM_DIAGNOSTICS)
+  ProbeWeaponState(owner,"before-remount");
+#endif
+  Call(api.weaponMounts,owner.weapons.Get());unsigned char all=1;void* args[]={&all};Call(api.weaponReload,owner.weapons.Get(),args);
+#if defined(EIEM_DIAGNOSTICS)
+  ProbeWeaponState(owner,"after-reload-request");
+#endif
+ }
  if(!owner.viewPart)Log("[FULL-RELOAD-CONSUMERS] path=%s animation=%d nativeConfigRebind=%d weapons=%d audio=%d",owner.path.c_str(),int(bool(owner.animation.Get())),int(bool(owner.animation.Get())),int(bool(owner.weapons.Get())),int(bool(owner.audio.Get())));
 }
 using AssetIdentity=std::map<std::string,std::pair<int,std::map<std::string,int>>>;
@@ -1236,7 +1276,9 @@ void Begin(std::shared_ptr<Prepared> p){
 }
 void CheckBundle(Attempt& a,size_t index,Bundle& b){
  Require(RuntimeShapes::Alive(b.object.Get()),"reload candidate Bundle load failed");b.id=Id(b.object.Get());
+#if defined(EIEM_DIAGNOSTICS)
  {std::lock_guard<std::mutex> lock(LoadingObservation::mutex);for(const auto& original:LoadingObservation::bundles)if(original.second.weak.Get()==original.first&&RuntimeShapes::Alive(original.first))Require(Id(original.first)!=b.id,"reload candidate Bundle aliases observed original");}
+#endif
  for(const auto& previous:a.bundles)if(previous.first!=index&&previous.second.done)Require(previous.second.id!=b.id,"reload two candidate inputs alias native Bundle");
  for(const auto& r:retained)for(const auto& old:r->bundles)if(old.second.done)Require(old.second.id!=b.id,"reload generation native Bundle cache collision");
  b.done=true;b.owned=true;Log("[FULL-RELOAD-BUNDLE] file=%s nativeId=%d namespaceIsolated=1",a.prepared->plan->inputs[index].file.c_str(),b.id);
@@ -1305,8 +1347,10 @@ void Step(Attempt& a){
 }
 void Frame(){
  if(!enabled||!RuntimeShapes::Main())return;
+#if defined(EIEM_DIAGNOSTICS)
  TracePerformanceFrame();
  TracePerformanceReleases();
+#endif
  NativeBundle::CollectMemory();
  RetireSuperseded();
  std::shared_ptr<Prepared> next;{std::lock_guard<std::mutex> lock(mutex);next=pending;}

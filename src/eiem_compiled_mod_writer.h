@@ -19,20 +19,20 @@ inline void StreamSites(const Type& type,size_t node,EiemNativeInput::Reader& re
  else for(auto child:schema.children)StreamSites(type,child,reader,base,id,out,containsStream);
  if(schema.align)reader.Skip((size_t(0)-(reader.p-base))&3);
 }
-inline Artifact DescribeInput(size_t i,const Plan& plan,bool rootAssembly,const EndfieldInput::Bundle& source,const EndfieldInput::Bundle& edited){
+inline Artifact DescribeInput(size_t i,const Plan& plan,bool rootAssembly,const EndfieldInput::Bundle& source,const EndfieldInput::Bundle& edited,std::function<void(const char*,double)> cost={}){
  Artifact artifact;
   for(const auto& member:edited.members)if(Serialized(member.bytes)){
-   auto old=std::find_if(source.members.begin(),source.members.end(),[&](const auto& x){return x.name==member.name;});Require(old!=source.members.end(),"compiled serialized member lacks original");MemberProof proof;proof.before=ParseSerialized(old->bytes);proof.after=ParseSerialized(member.bytes);
-   EiemLoadingGeneration::Recipe names;EiemLoadingGeneration::PrepareSerialized(old->bytes,plan.names,&names);proof.pristineNamespace=std::move(names.patches);
+   auto old=std::find_if(source.members.begin(),source.members.end(),[&](const auto& x){return x.name==member.name;});Require(old!=source.members.end(),"compiled serialized member lacks original");MemberProof proof;Measure(cost,"proof-layout",[&]{proof.before=ParseSerialized(old->bytes);proof.after=ParseSerialized(member.bytes);return 0;});
+   EiemLoadingGeneration::Recipe names;Measure(cost,"proof-namespace",[&]{return EiemLoadingGeneration::PrepareSerialized(old->bytes,plan.names,&names);});proof.pristineNamespace=std::move(names.patches);
    std::vector<std::vector<bool>> streamNodes;for(const auto& type:proof.after.types){std::vector<bool> nodes(type.nodes.size());for(size_t n=nodes.size();n-->0;){nodes[n]=type.nodes[n].type=="StreamingInfo"||type.nodes[n].type=="StreamedResource";for(auto child:type.nodes[n].children)nodes[n]=nodes[n]||nodes[child];}streamNodes.push_back(std::move(nodes));}
-   for(auto id:proof.after.order){const auto& object=proof.after.objects.at(id);auto before=proof.before.objects.find(id);bool changed=before==proof.before.objects.end()||before->second.size!=object.size||!std::equal(member.bytes.begin()+object.offset,member.bytes.begin()+object.offset+object.size,old->bytes.begin()+before->second.offset);
+   Measure(cost,"proof-streams",[&]{for(auto id:proof.after.order){const auto& object=proof.after.objects.at(id);auto before=proof.before.objects.find(id);bool changed=before==proof.before.objects.end()||before->second.size!=object.size||!std::equal(member.bytes.begin()+object.offset,member.bytes.begin()+object.offset+object.size,old->bytes.begin()+before->second.offset);
     if(changed){EiemNativeInput::Reader reader(member.bytes,object.offset,false,object.offset+object.size);StreamSites(proof.after.types.at(object.type),0,reader,object.offset,id,proof.streams,streamNodes.at(object.type));Require(reader.p==object.offset+object.size,"compiled stream proof object extent differs");}
-   }
+   }return 0;});
    Require(artifact.members.emplace(member.name,std::move(proof)).second,"compiled duplicate serialized member");
    for(auto root:plan.roots)if(root.input==i){
-    auto assets=SerializedAssets(old->bytes,member.name,artifact.members.at(member.name).before);auto asset=std::find_if(assets.begin(),assets.end(),[&](const auto& x){return x.classId==1&&x.path==root.path;});if(asset==assets.end())continue;
+    auto assets=Measure(cost,"proof-assets",[&]{return SerializedAssets(old->bytes,member.name,artifact.members.at(member.name).before);});auto asset=std::find_if(assets.begin(),assets.end(),[&](const auto& x){return x.classId==1&&x.path==root.path;});if(asset==assets.end())continue;
     root.cab=member.name;root.source=asset->pathId;Root pristine=root;pristine.markers.clear();
-    if(rootAssembly)pristine.assembly=EiemRenderAssemblyDescription::Build(old->bytes,old->bytes,member.name,root.source,Package{},AssetIndex{},{});artifact.pristine.push_back(std::move(pristine));
+    if(rootAssembly)pristine.assembly=Measure(cost,"proof-root-assembly",[&]{return EiemRenderAssemblyDescription::Build(old->bytes,old->bytes,member.name,root.source,Package{},AssetIndex{},{});});artifact.pristine.push_back(std::move(pristine));
    }
   }
  return artifact;
@@ -61,7 +61,7 @@ inline void Export(const std::filesystem::path& mod,const std::filesystem::path&
  struct Cleanup{std::filesystem::path root,work;~Cleanup(){std::error_code error;if(work.parent_path()==root)std::filesystem::remove_all(work,error);}}cleanup{tempRoot,work};
  auto baseline=work/"baseline";Measure(cost,"source-prepare",[&]{EiemStaticSources::Ensure(selected,baseline,work/"sources",author,game);return 0;});
  std::vector<std::string> rootPaths;auto sourceCount=ReadBaseline(baseline,rootPaths,game).size();std::vector<Artifact> proofs(sourceCount);
- auto plan=Measure(cost,"resource-build",[&]{return Build(author,baseline,work/"candidate",std::string(structure),{},{},cost,{},true,game,[&](size_t i,const Plan& current,const EndfieldInput::Bundle& original,const EndfieldInput::Bundle& edited){proofs.at(i)=DescribeInput(i,current,true,original,edited);});});Manifest manifest{std::move(plan),author,Hash(EiemNativeInput::Read(baseline/"baseline.tsv"))};
+ auto plan=Measure(cost,"resource-build",[&]{return Build(author,baseline,work/"candidate",std::string(structure),{},{},cost,{},true,game,[&](size_t i,const Plan& current,const EndfieldInput::Bundle& original,const EndfieldInput::Bundle& edited){proofs.at(i)=DescribeInput(i,current,true,original,edited,cost);});});Manifest manifest{std::move(plan),author,Hash(EiemNativeInput::Read(baseline/"baseline.tsv"))};
  Artifact artifact;artifact.manifest=std::move(manifest);for(auto& proof:proofs)MergeProof(artifact,std::move(proof));Require(artifact.pristine.size()==artifact.manifest.plan.roots.size(),"compiled pristine roots missing");
  for(auto& root:artifact.manifest.plan.roots){auto pristine=std::find_if(artifact.pristine.begin(),artifact.pristine.end(),[&](const auto& row){return row.path==root.path;});Require(pristine!=artifact.pristine.end(),"compiled root proof absent");root.cab=pristine->cab;root.source=pristine->source;}
  auto bytes=Measure(cost,"compiled-encode",[&]{return EiemCompiledMod::Encode(artifact,std::filesystem::weakly_canonical(game));});auto decoded=Measure(cost,"compiled-roundtrip",[&]{return EiemCompiledMod::Decode(bytes,mod,game);});Require(decoded.manifest.plan.author==PackageDigest(author),"compiled author roundtrip differs");

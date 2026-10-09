@@ -5,9 +5,8 @@ namespace EiemNativeInput {
 // Pixel conversion is an export-time task. This writer consumes RGBA32/mips
 // described by TEX metadata and preserves existing stream prefixes.
 using AssetIndex = std::map<Identity, Asset>;
-inline void AddAssets(AssetIndex& index, const Bytes& input) {
-  for (auto& asset : Inspect(input)) {
-    if (asset.asset.empty()) continue;
+inline void AddAsset(AssetIndex& index, Asset asset) {
+    if (asset.asset.empty()) return;
     Identity identity{asset.path, asset.asset};
     auto found = index.find(identity);
     Require(found == index.end() ||
@@ -15,8 +14,11 @@ inline void AddAssets(AssetIndex& index, const Bytes& input) {
                  found->second.classId == asset.classId && found->second.type == asset.type),
             "ambiguous current loading-input identity: " + identity.path + " / " + identity.asset);
     index.emplace(std::move(identity), std::move(asset));
-  }
 }
+inline void AddAssets(AssetIndex& index, std::vector<Asset> assets) {
+  for(auto& asset:assets)AddAsset(index,std::move(asset));
+}
+inline void AddAssets(AssetIndex& index, const Bytes& input) {AddAssets(index,Inspect(input));}
 inline void SetFloat(const Type& type, Value& value, double number) {
   Require(type.nodes.at(value.node).type == "float" && std::isfinite(number) &&
               std::abs(number) <= 3.402823466e38, "unsupported/nonfinite serialized float");
