@@ -28,7 +28,7 @@ class BlenderRegistrationTests(unittest.TestCase):
                 "--", str(package),
             ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("EIEM_REGISTRATION_OK", result.stdout)
+            self.assertIn("EFF_REGISTRATION_OK", result.stdout)
 
 
 if __name__ == "__main__":

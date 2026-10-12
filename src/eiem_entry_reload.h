@@ -89,7 +89,9 @@ void Prepare() {
   try {
     Require(RuntimeShapes::enabled,"Unity frame/control module is not armed");
     auto config=EiemEntrySettings::Read(gameDirectory);
-    auto next=Validate(ReadPackages(),config);
+    auto compiled=EiemCompiledModSet::Read(gameDirectory);
+    auto graph=std::make_shared<const std::vector<Package>>(compiled?compiled->manifest.packages:std::vector<Package>{});
+    auto next=Validate(graph,config);
     {std::lock_guard<std::mutex> lock(mutex);pending=std::move(next);}
     Log("[ENTRY-RELOAD] validated publication=pending-Unity-frame resourcesUnchanged=1");
     Observe([&]{ReloadObservation::Prepared(true,probeStart,nullptr);});

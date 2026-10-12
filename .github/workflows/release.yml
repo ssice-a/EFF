@@ -76,6 +76,14 @@ jobs:
         cmd /c tools\diagnostics\build_ui_page_bind_smoke.cmd
         if ($LASTEXITCODE -ne 0) { throw 'UI page binding test failed' }
 
+    - name: Verify control panel and persisted key routing
+      shell: pwsh
+      run: |
+        cmd /c tools\diagnostics\build_control_panel_smoke.cmd
+        if ($LASTEXITCODE -ne 0) { throw 'Control panel test build failed' }
+        & bin/resource-directory-entry/control_panel_smoke.exe
+        if ($LASTEXITCODE -ne 0) { throw 'Control panel test failed' }
+
     - name: Verify static Mesh consumers and assembly
       shell: pwsh
       run: |

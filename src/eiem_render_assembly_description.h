@@ -14,6 +14,8 @@ struct Target {
  Address renderer;std::string marker;std::vector<std::string> bones;
  std::string root,skin,probe,lighting;bool hasRoot=false,hasSkin=false,hasProbe=false,hasLighting=false;
  bool extension=false;
+ std::shared_ptr<const std::vector<std::string>> preparedBones;
+ const std::vector<std::string>& Bones()const{return preparedBones?*preparedBones:bones;}
 };
 struct Source {std::string cab;int64_t id=0;Address renderer;std::vector<Target> targets;};
 struct LodLevel {float height=0,fade=0;std::vector<Address> renderers;};

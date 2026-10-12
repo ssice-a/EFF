@@ -21,6 +21,7 @@
 #include "eiem_loading_input_substitution.h"
 #include "eiem_resource_directory.h"
 #include "il2cpp_api.h"
+#include "eiem_load_performance.h"
 #include "eiem_capture_skin_palette.h"
 #include "eiem_entry_settings.h"
 #include "eiem_camera_fade_core.h"
@@ -106,7 +107,6 @@ void Frame(int);
 }
 std::shared_ptr<const std::vector<Package>> published;
 std::shared_ptr<const EiemNativeInput::InputSubstitutions> substitutions;
-std::filesystem::path initialInputTable;
 std::shared_ptr<EiemPrefabRules::Context> resourceRules;
 std::shared_ptr<const EiemCompiledModSet::Set> preparedCompiledSet;
 void* LoadRuleInput(void* path,uint32_t crc,uint64_t offset,bool asynchronous,bool& matched);
@@ -422,59 +422,24 @@ std::vector<std::filesystem::path> DiscoverModRoots() {
 bool InstalledAuthorsMatch(const std::vector<Package>& graph) {
  return EiemComposedPackage::Matches(gameDirectory/"plugin/mods",graph);
 }
-std::shared_ptr<const std::vector<Package>> ReadPackages() {
-  auto next = std::make_shared<std::vector<Package>>();
-  std::set<Identity> targets;
-  std::set<std::string> ids;
-  const auto roots = DiscoverModRoots();
-  for (const auto &root : roots) {
-    auto p = Load(root);
-    Require(ids.insert(p.id).second, "duplicate Mod id: " + p.id);
-    for (const auto &row : p.targetIndex)
-      Require(targets.insert(row.first).second,
-              "conflicting Mesh path+asset: " + row.first.path + " / " +
-                  row.first.asset);
-    size_t bytes = 0;
-    for (const auto &r : p.resources)
-      bytes += r.second->bytes.size();
-    Log("[ENTRY-PACKAGE] validated id=%s meshes=%zu parts=%zu materials=%zu "
-        "textures=%zu "
-        "rules=%zu targets=%zu resources=%zu bytes=%zu",
-        p.id.c_str(), p.meshes.size(), p.parts.size(), p.materials.size(),
-        p.textures.size(), p.rules.size(), p.targetIndex.size(),
-        p.resources.size(), bytes);
-    next->push_back(std::move(p));
-  }
-  EiemComposedPackage::Compose(*next,true);return next;
-}
 bool initialComposed=false;
 void LoadInitialPackages() {
   auto config=EiemEntrySettings::Read(gameDirectory);
   std::shared_ptr<const std::vector<Package>> next;
-  auto cache=gameDirectory/"plugin/resource-reload-cache";
   auto roots=DiscoverModRoots();
-  if(!roots.empty()&&std::all_of(roots.begin(),roots.end(),[](const auto& root){return std::filesystem::is_regular_file(root/"compiled.bin");})){
-   try{preparedCompiledSet=EiemCompiledModSet::Read(gameDirectory);resourceRules=EiemCompiledModSet::Context(preparedCompiledSet);next=std::make_shared<const std::vector<Package>>(preparedCompiledSet->manifest.packages);initialComposed=true;Log("[ENTRY-PACKAGE] compiledStartup=1 authorCompilation=0 perModArtifacts=%zu key=%s",next->size(),preparedCompiledSet->pointer.key.c_str());}
+  if(!roots.empty()){
+   try{
+    auto begin=std::chrono::steady_clock::now();preparedCompiledSet=EiemCompiledModSet::Read(gameDirectory);
+    auto readMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();begin=std::chrono::steady_clock::now();
+    resourceRules=EiemCompiledModSet::Context(preparedCompiledSet);
+    auto routingMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
+    next=std::make_shared<const std::vector<Package>>(preparedCompiledSet->manifest.packages);initialComposed=true;
+    Log("[ENTRY-STARTUP-COST] compiledSetMs=%.3f routingMs=%.3f gameReadinessWaitExcluded=1 unityLoads=0",readMs,routingMs);
+    Log("[ENTRY-PACKAGE] compiledStartup=1 authorCompilation=0 perModArtifacts=%zu key=%s",next->size(),preparedCompiledSet->pointer.key.c_str());
+   }
    catch(const std::exception& e){Log("[ENTRY-STARTUP-PENDING] reason=%s compiledModPreparationFailed=1",e.what());}
   }
-  if(!next&&std::filesystem::exists(cache/"current.tsv")){
-   try{
-    auto pointer=EiemOfflinePackage::ReadCurrent(cache);
-    auto manifest=EiemOfflinePackage::ReadManifest(cache,pointer,gameDirectory/"plugin/mods");
-    auto authors=EiemOfflinePackage::Authors(manifest);
-    Require(InstalledAuthorsMatch(authors),"offline generation author set differs from installed Mods");
-    initialInputTable=cache/"generations"/pointer.key/"loading-inputs.tsv";
-    if(manifest.plan.rulesOnly){auto plan=std::make_shared<const EiemResourceReloadPlan::Plan>(std::move(manifest.plan));resourceRules=std::make_shared<EiemPrefabRules::Context>(plan,std::move(manifest.package));initialInputTable.clear();}
-    else Require(std::filesystem::exists(initialInputTable),"latest offline generation lacks startup loading inputs");
-    initialComposed=manifest.composed;
-    next=std::make_shared<const std::vector<Package>>(std::move(authors));
-    Log("[ENTRY-PACKAGE] compiledStartup=1 authorINIParsed=0 latestCompleteGeneration=1 key=%s",pointer.key.c_str());
-   }catch(const std::exception& e){
-    initialInputTable.clear();initialComposed=false;
-    Log("[ENTRY-STARTUP-PENDING] reason=%s authorINIParsed=1 staticSourcePreparationFailed=1",e.what());
-   }
-  }
-  if(!next)next=ReadPackages();
+  if(!next)next=std::make_shared<const std::vector<Package>>();
   for(const auto& p:*next) for(const auto& key:p.bindings)
     Require(key.key.vk!=config.reload.vk && key.key.vk!=config.gui.vk,"Mod key overlaps reserved global shortcut: "+p.id+"/"+key.id);
   settings.Publish(config);
@@ -483,39 +448,7 @@ void LoadInitialPackages() {
   Log("[ENTRY-GENERATION] initial=%u mods=%zu",generation.load(),next->size());
 }
 void PrepareInputSubstitutions() {
-  if(std::atomic_load(&resourceRules)){Log("[ENTRY-PREFAB-RULES] startup=1 fullPrefabFiles=0 originalDependenciesCopied=0");return;}
-  auto path = initialInputTable.empty()?gameDirectory / "plugin" / "resource-input-substitutions.tsv":initialInputTable;
-  if (!std::filesystem::exists(path)) {
-    Log("[ENTRY-SUBSTITUTIONS] absent mode=diagnostic-only nativeSubmission=0");
-    return;
-  }
-  auto packages = std::atomic_load(&published);
-  Require(bool(packages), "prepared loading input requires a validated Mod graph");
-  Require(il2cpp_string_new && il2cpp_gchandle_new && il2cpp_gchandle_get_target,
-          "prepared loading path lifetime exports unavailable");
-  auto next = std::make_shared<EiemNativeInput::InputSubstitutions>(
-      EiemNativeInput::ReadInputSubstitutions(path, gameDirectory, EiemComposedPackage::Compose(*packages,initialComposed||packages->size()!=1)));
-  next->generation = generation.load();
-  // Root paths for the process lifetime. Async native jobs may keep opening
-  // these files after the managed wrapper has returned; neither is removed.
-  for (auto& row : next->entries) {
-    row.second.file=std::make_shared<EiemNativeInput::FileHold>(row.second.output);
-    auto bytes=row.second.file->BytesLocked();
-    auto hash=EiemDirectory::Sha(bytes.data(),bytes.size());
-    Require(bytes.size()==row.second.outputBytes && EiemDirectory::Hex(hash.data(),hash.size())==row.second.outputHash,
-            "startup input changed before lifetime lock");
-    auto string = il2cpp_string_new(row.second.output.u8string().c_str());
-    Require(string, "prepared loading path string allocation failed");
-    row.second.pathHandle = il2cpp_gchandle_new(string, false);
-    Require(row.second.pathHandle, "prepared loading path root failed");
-  }
-  pendingSubstitutions = std::move(next);
-  Log("[ENTRY-SUBSTITUTIONS] validated=%zu generation=%u packageDigest=%s "
-      "publication=pending-hooks source=current-input-sha256 output=verified-cache "
-      "ownership=process-lifetime-files-and-rooted-paths nativeSubmission=0 mode=%s",
-      pendingSubstitutions->entries.size(), pendingSubstitutions->generation,
-      pendingSubstitutions->packageDigest.c_str(),
-      pendingSubstitutions->control.empty() ? "replacement" : pendingSubstitutions->control.c_str());
+  Log("[ENTRY-PREFAB-RULES] startup=1 compiledNativeViews=%d authorCompilation=0",int(bool(std::atomic_load(&resourceRules))));
 }
 #if defined(EIEM_DIAGNOSTICS)
 void Sample(const char *kind, void *identity, const void *data, size_t length,
@@ -1095,26 +1028,36 @@ void *__fastcall StreamAsync(void *input, uint32_t crc, uint32_t bufferSize,
 #include "eiem_native_bundle_loader.h"
 #include "eiem_entry_bundle_dependencies.h"
 void CompleteRuleInput(void* request,void* bundle){NativeBundle::CompleteMemory(request,bundle);}
-struct StartupArray {std::weak_ptr<const EiemDirectory::Bytes> packet;RuntimeShapes::Ref array;};
+struct StartupArray {std::weak_ptr<const EiemDirectory::Bytes> packet;RuntimeShapes::Ref array;std::weak_ptr<const EiemDirectory::Bytes> bytes;};
 std::mutex startupArrayMutex;std::map<const EiemDirectory::Bytes*,StartupArray> startupArrays;
 void* LoadRuleInput(void* path,uint32_t callerCrc,uint64_t offset,bool asynchronous,bool& matched){
+ EiemLoadPerformance::Scope performance(EiemLoadPerformance::File);
  auto rules=std::atomic_load(&resourceRules);if(!rules)return nullptr;auto label=EiemNativeInput::InputPath(String(path));
- for(size_t i=0;i<rules->plan->originals.size();++i){const auto& source=rules->plan->originals[i];if(source.offset!=offset||EiemNativeInput::InputPath(source.physical.u8string())!=label)continue;
+ auto selected=rules->sourceInputs.find({label,offset});if(selected==rules->sourceInputs.end())return nullptr;
+ {size_t i=selected->second;const auto& source=rules->plan->originals.at(i);
   if(rules->plan->startupHashes.at(i)==source.hash)return nullptr;
+  performance.hit=true;
   auto begin=std::chrono::steady_clock::now();Require(callerCrc==0,"runtime rules require caller CRC zero");Require(NativeBundle::enabled,"runtime rule memory bindings not ready");
-  auto ready=rules->startupInputs.find(i);RuntimeShapes::Ref array;bool reused=false;size_t nativeBytes=0;
-  if(ready!=rules->startupInputs.end()){std::lock_guard<std::mutex> lock(startupArrayMutex);auto found=startupArrays.find(ready->second.get());if(found!=startupArrays.end()&&found->second.packet.lock()==ready->second){auto object=found->second.array.Get();if(object){array=RuntimeShapes::Ref::Make(object,false);reused=true;ArrayLength(object,&nativeBytes);}}}
-  std::shared_ptr<const Bytes> bytes;if(!reused){bytes=ready==rules->startupInputs.end()?std::make_shared<const Bytes>(rules->Materialize(i,false)):rules->startupInputsPacked?std::make_shared<const Bytes>(EiemCompiledMod::Unpack(*ready->second)):ready->second;nativeBytes=bytes->size();}auto prepared=std::chrono::steady_clock::now();
-  if(!reused)array=NativeBundle::Array(*bytes);auto uploaded=std::chrono::steady_clock::now();auto result=NativeBundle::LoadMemory(array.Get(),0,asynchronous);auto submitted=std::chrono::steady_clock::now();
+  auto frozenView=rules->startupViews.find(i);
+  if(frozenView!=rules->startupViews.end()){
+   auto result=NativeBundle::LoadView(frozenView->second,0,asynchronous);Require(result,"runtime compiled view Bundle load returned null");
+   Observe([&]{{std::lock_guard<std::mutex> lock(submissionMutex);if(asynchronous)submittedRequests[result]=source.file;else{submittedBundles[result]=source.file;++completedInputs;}}++submittedInputs;});
+   Log("[ENTRY-RULE-SUBMIT] input=%s sourceBytes=%llu nativeBytes=%zu compiledInputView=1 replayMs=0 uploadMs=0 nativeSubmitMs=%.3f async=%d",source.file.c_str(),source.size,frozenView->second->Size(),std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count(),int(asynchronous));matched=true;return result;
+  }
+  auto ready=rules->startupInputs.find(i);RuntimeShapes::Ref array;bool reused=false;size_t nativeBytes=0;std::shared_ptr<const Bytes> bytes;
+  bool nativeStream=NativeBundle::api.nativeStreamCtor!=nullptr;
+  if(ready!=rules->startupInputs.end()){std::lock_guard<std::mutex> lock(startupArrayMutex);auto found=startupArrays.find(ready->second.get());if(found!=startupArrays.end()&&found->second.packet.lock()==ready->second){if(nativeStream){bytes=found->second.bytes.lock();if(bytes){reused=true;nativeBytes=bytes->size();}}else{auto object=found->second.array.Get();if(object){array=RuntimeShapes::Ref::Make(object,false);reused=true;ArrayLength(object,&nativeBytes);}}}}
+  if(!reused){bytes=ready==rules->startupInputs.end()?std::make_shared<const Bytes>(rules->Materialize(i,false)):rules->startupMaterializer?std::make_shared<const Bytes>(rules->startupMaterializer(i)):rules->startupInputsPacked?std::make_shared<const Bytes>(EiemCompiledMod::Unpack(*ready->second)):ready->second;nativeBytes=bytes->size();}auto prepared=std::chrono::steady_clock::now();
+  if(!nativeStream&&!reused)array=NativeBundle::Array(*bytes);auto uploaded=std::chrono::steady_clock::now();auto result=nativeStream?NativeBundle::LoadBytes(bytes,0,asynchronous):NativeBundle::LoadMemory(array.Get(),0,asynchronous);auto submitted=std::chrono::steady_clock::now();
   Require(result,"runtime rule Bundle load returned null");
-  if(!reused&&ready!=rules->startupInputs.end()){std::lock_guard<std::mutex> lock(startupArrayMutex);for(auto it=startupArrays.begin();it!=startupArrays.end();)if(it->second.packet.expired())it=startupArrays.erase(it);else ++it;startupArrays[ready->second.get()]={ready->second,RuntimeShapes::Ref::Make(array.Get(),true)};}
+  if(!reused&&ready!=rules->startupInputs.end()){std::lock_guard<std::mutex> lock(startupArrayMutex);for(auto it=startupArrays.begin();it!=startupArrays.end();)if(it->second.packet.expired())it=startupArrays.erase(it);else ++it;startupArrays[ready->second.get()]={ready->second,RuntimeShapes::Ref::Make(array.Get(),true),nativeStream?bytes:std::shared_ptr<const Bytes>{}};}
   Observe([&]{{std::lock_guard<std::mutex> lock(submissionMutex);if(asynchronous)submittedRequests[result]=source.file;else{submittedBundles[result]=source.file;++completedInputs;}}++submittedInputs;
 #if defined(EIEM_DIAGNOSTICS)
    LoadingObservation::Submitted(result,source.file,generation.load(),asynchronous,rules->plan->startupHashes.at(i));
 #endif
   });
   auto ms=[](auto a,auto b){return std::chrono::duration<double,std::milli>(b-a).count();};
-  Log("[ENTRY-RULE-SUBMIT] input=%s rendererRules=%zu sourceBytes=%llu nativeBytes=%zu startupCached=%d arrayReused=%d replayMs=%.3f uploadMs=%.3f nativeSubmitMs=%.3f fullPrefabFile=0 archiveMemoryStream=1 async=%d",source.file.c_str(),rules->plan->rendererRules[i].size(),source.size,nativeBytes,int(ready!=rules->startupInputs.end()),int(reused),ms(begin,prepared),ms(prepared,uploaded),ms(uploaded,submitted),int(asynchronous));matched=true;return result;
+  Log("[ENTRY-RULE-SUBMIT] input=%s rendererRules=%zu sourceBytes=%llu nativeBytes=%zu startupCached=%d bufferReused=%d nativeByteStream=%d replayMs=%.3f uploadMs=%.3f nativeSubmitMs=%.3f fullPrefabFile=0 archiveMemoryStream=1 async=%d",source.file.c_str(),rules->plan->rendererRules[i].size(),source.size,nativeBytes,int(ready!=rules->startupInputs.end()),int(reused),int(nativeStream),ms(begin,prepared),ms(prepared,uploaded),ms(uploaded,submitted),int(asynchronous));matched=true;return result;
  }return nullptr;
 }
 #include "eiem_entry_full_resource_reload.h"
@@ -1299,7 +1242,7 @@ DWORD WINAPI ProcessJobs(void *) {
       if(FullResourceReload::configured) {
         if(FullResourceReload::enabled) FullResourceReload::Prepare();
         else Log("[FULL-RELOAD-REJECT] phase=trigger reason=requiredNativeBindingsUnavailable configurationFallbackRefused=1");
-      } else {EntryReload::Prepare();}
+      } else {Log("[FULL-RELOAD-REJECT] phase=trigger reason=nativeReloadNotConfigured");}
     }
     if(FullResourceReload::configured) FullResourceReload::PollOffline();
 #if defined(EIEM_DIAGNOSTICS)
@@ -1532,6 +1475,7 @@ DWORD StartImpl() {
     }
 #endif
     RuntimeControls::preferences.Flush(Log);
+    EiemLoadPerformance::Flush();
     RuntimeControls::keySettings.Flush(Log);
     Sleep(25);
   }

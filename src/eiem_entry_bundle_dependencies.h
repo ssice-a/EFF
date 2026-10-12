@@ -177,12 +177,14 @@ std::shared_ptr<Index> GetIndex(void* manifest,const std::shared_ptr<const Names
 }
 bool Augment(void* manifest,uint64_t hash,void* list,bool direct,bool originalResult){
  if(!enabled)return originalResult;
+ EiemLoadPerformance::Scope performance(direct?EiemLoadPerformance::DependencyDirect:EiemLoadPerformance::DependencyAll);
  if(!listVerified){VerifyListApi(list);listVerified=true;Log("[STARTUP-DEPENDENCY-LIST-READY] pooled=%d inheritedAppend=1 keyRoundTrip=1",int(api.poolAllocate!=nullptr));}
  auto graph=GraphFor(manifest,hash);if(!graph||graph->empty())return originalResult;
  auto index=GetIndex(manifest,graph);if(!index||(direct&&!index->keys.count(hash)))return originalResult;auto before=ReadList(list);
  auto edges=[&](uint64_t key){auto own=GraphFor(manifest,key);auto resolved=own==graph?index:GetIndex(manifest,own);if(!resolved)return std::vector<uint64_t>{};auto found=resolved->keys.find(key);return found==resolved->keys.end()?std::vector<uint64_t>{}:found->second;};
  auto native=[&](uint64_t key){auto scratch=NewList(list);originalAll(manifest,key,scratch.Get(),api.allInfo);return ReadList(scratch.Get());};
  auto added=EiemBundleDependencies::Added(hash,before,direct,edges,native);
+ performance.hit=!added.empty();
  for(auto value:added)Append(list,value);
  bool report=false;if(!added.empty()){std::lock_guard<std::mutex> lock(mutex);report=index->logged.insert({hash,direct}).second;}
  if(report)Log("[STARTUP-DEPENDENCY-APPEND] bundleHash=%016llX direct=%d added=%zu nativeCount=%zu gameQueued=1",(unsigned long long)hash,int(direct),added.size(),before.size());

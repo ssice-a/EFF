@@ -21,7 +21,7 @@ inline std::vector<std::filesystem::path> Roots(const std::filesystem::path& dir
   return result;
 }
 inline std::string ResourceDigest(const Resource& resource) {
-  auto hash=Sha(resource.bytes.data(),resource.bytes.size());return Hex(hash.data(),hash.size());
+  return ResourceContentHash(resource);
 }
 inline std::string TextureDigest(const Package& p,const std::string& section,const Texture& t) {
   std::ostringstream out;out.imbue(std::locale::classic());out<<std::setprecision(17);

@@ -2,6 +2,9 @@
 #include "../../src/eiem_resource_entry.cpp"
 #include <iostream>
 #include <thread>
+#include <future>
+#include <wct.h>
+#pragma comment(lib,"advapi32.lib")
 
 namespace TestPanel {
 using namespace Entry;
@@ -111,6 +114,34 @@ void Checks() {
   std::cout<<"PASS per-Mod INI/UI keyboard enable, simultaneous identical keys, independent checkbox queues, default/reload/removal, held edges, immutable snapshots, stale graph/scope rejection, GUI pause/buttons/sliders/hold, focus/close, persistence, overlapping user keys, concurrent publication\n";
 }
 LRESULT CALLBACK GameProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {return DefWindowProcW(hwnd,msg,wp,lp);}
+void CrossThreadWindowChecks(){
+  EiemControlPanel::Store bridge;auto snapshot=std::make_shared<EiemControlPanel::Snapshot>();snapshot->graph=Graph({});bridge.Publish(snapshot);
+  auto resume=CreateEventW(nullptr,TRUE,FALSE,nullptr);Require(resume!=nullptr,"owner resume event");
+  std::atomic_bool stall=false,paused=false,stop=false;std::promise<HWND> ready;
+  std::thread ownerThread([&]{
+    WNDCLASSW wc{};wc.lpfnWndProc=GameProc;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"EFF_PanelCrossThreadOwner";RegisterClassW(&wc);
+    auto owner=CreateWindowW(wc.lpszClassName,L"EFF panel cross-thread test",WS_OVERLAPPEDWINDOW,CW_USEDEFAULT,CW_USEDEFAULT,400,300,nullptr,nullptr,wc.hInstance,nullptr);
+    ShowWindow(owner,SW_SHOW);SetForegroundWindow(owner);ready.set_value(owner);
+    MSG message{};while(!stop){if(stall){paused=true;WaitForSingleObject(resume,INFINITE);stall=false;}while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){TranslateMessage(&message);DispatchMessageW(&message);}Sleep(1);}DestroyWindow(owner);
+  });
+  struct Cleanup{HANDLE resume;std::atomic_bool& stop;std::thread& thread;~Cleanup(){SetEvent(resume);stop=true;thread.join();CloseHandle(resume);}}cleanup{resume,stop,ownerThread};
+  auto owner=ready.get_future().get();Require(owner!=nullptr,"cross-thread owner creation");bridge.gameWindow=owner;bridge.open=true;
+  double closeMs=0;
+  {EiemControlPanel::Window window(bridge);Require(window.Create(),"cross-thread panel creation");window.Tick(owner);SetForegroundWindow(window.Handle());
+    Require(IsWindowVisible(window.Handle()),"cross-thread panel not visible");
+    stall=true;while(!paused)Sleep(1);auto panelTid=GetCurrentThreadId();
+    std::thread watchdog([&]{if(WaitForSingleObject(resume,500)==WAIT_TIMEOUT){
+      auto session=OpenThreadWaitChainSession(0,nullptr);if(session){WAITCHAIN_NODE_INFO nodes[WCT_MAX_NODE_COUNT]{};DWORD count=WCT_MAX_NODE_COUNT;BOOL cycle=FALSE;
+        if(GetThreadWaitChain(session,0,WCTP_GETINFO_ALL_FLAGS,panelTid,&count,nodes,&cycle)){std::cout<<"CLOSE-WAIT cycle="<<int(cycle);for(DWORD i=0;i<count;++i){std::cout<<" type="<<int(nodes[i].ObjectType);if(nodes[i].ObjectType==WctThreadType)std::cout<<" tid="<<nodes[i].ThreadObject.ThreadId;}std::cout<<std::endl;}CloseThreadWaitChainSession(session);}
+      SetEvent(resume);
+    }});
+    auto start=std::chrono::steady_clock::now();SendMessageW(window.Handle(),WM_CLOSE,0,0);closeMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();SetEvent(resume);watchdog.join();
+    Require(!bridge.open&&!IsWindowVisible(window.Handle()),"cross-thread close left panel open");
+  }
+  std::cout<<"CROSS-THREAD closeMs="<<closeMs<<" ownerPumpPaused=1"<<std::endl;
+  Require(closeMs<250,"panel close waited for the game window thread");
+  std::cout<<"PASS cross-thread close remains responsive while game window does not pump messages\n";
+}
 void SavedPreferencesChecks() {
   auto folder=std::filesystem::path("E:/")/("eff-preference-smoke-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));
   Require(std::filesystem::create_directory(folder),"preference fixture already exists");
@@ -204,6 +235,6 @@ void WindowChecks(bool demo) {
 }
 int main(int argc,char** argv) {
   std::cout.setf(std::ios::unitbuf);
-  try {TestPanel::Checks();TestPanel::SavedPreferencesChecks();TestPanel::KeySettingsChecks();if(argc>1) TestPanel::WindowChecks(std::string(argv[1])=="--demo");return 0;}
+  try {if(argc>1&&std::string(argv[1])=="--cross-thread-window"){TestPanel::CrossThreadWindowChecks();return 0;}TestPanel::Checks();TestPanel::SavedPreferencesChecks();TestPanel::KeySettingsChecks();if(argc>1) TestPanel::WindowChecks(std::string(argv[1])=="--demo");return 0;}
   catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
 }

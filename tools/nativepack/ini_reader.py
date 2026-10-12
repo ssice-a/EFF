@@ -35,11 +35,11 @@ def read_package(root, resource_cache=None):
 
     def load(relative, kind):
         require(relative.split("/", 1)[0] == {MESH: "meshes", MATERIAL: "materials",
-                PIXELS: "textures"}[kind], "resource folder/kind mismatch")
+                PIXELS: "textures"}.get(kind, "resources"), "resource folder/kind mismatch")
         path = resource_path(root, relative)
         if relative not in resources:
             resources[relative] = read_resource(path, kind, resource_cache)
-        require(resources[relative]["kind"] == kind, "resource kind alias mismatch")
+        require(not kind or resources[relative]["kind"] == kind, "resource kind alias mismatch")
         allowed.add(relative)
         return resources[relative]
 
@@ -65,7 +65,10 @@ def read_package(root, resource_cache=None):
             continue
         identifier(name)
         known.add(name)
-        if name.startswith("Mesh"):
+        if name.startswith("Resource"):
+            values = keys(name, ("path",))
+            load(values['path'], 0)
+        elif name.startswith("Mesh"):
             values = keys(name, ("path",))
             resource = load(values["path"], MESH)
             blocks = resource["blocks"]

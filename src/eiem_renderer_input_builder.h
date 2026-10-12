@@ -102,6 +102,19 @@ inline double FloatValue(const Type& type, const Value& value) {
   return number;
 }
 using Vector3 = std::array<double, 3>;
+using AffineMatrix = std::array<double,16>;
+inline AffineMatrix AffineIdentity(){return {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};}
+inline AffineMatrix AffineMultiply(const AffineMatrix& a,const AffineMatrix& b){
+  AffineMatrix result{};for(size_t r=0;r<4;++r)for(size_t c=0;c<4;++c)for(size_t k=0;k<4;++k)result[r*4+c]+=a[r*4+k]*b[k*4+c];return result;
+}
+inline AffineMatrix AffineInverse(const AffineMatrix& a){
+  double det=a[0]*(a[5]*a[10]-a[6]*a[9])-a[1]*(a[4]*a[10]-a[6]*a[8])+a[2]*(a[4]*a[9]-a[5]*a[8]);
+  Require(std::isfinite(det)&&det!=0,"Renderer root bindpose has singular Transform");auto b=AffineIdentity();
+  b[0]=(a[5]*a[10]-a[6]*a[9])/det;b[1]=(a[2]*a[9]-a[1]*a[10])/det;b[2]=(a[1]*a[6]-a[2]*a[5])/det;
+  b[4]=(a[6]*a[8]-a[4]*a[10])/det;b[5]=(a[0]*a[10]-a[2]*a[8])/det;b[6]=(a[2]*a[4]-a[0]*a[6])/det;
+  b[8]=(a[4]*a[9]-a[5]*a[8])/det;b[9]=(a[1]*a[8]-a[0]*a[9])/det;b[10]=(a[0]*a[5]-a[1]*a[4])/det;
+  for(size_t r=0;r<3;++r)b[r*4+3]=-(b[r*4]*a[3]+b[r*4+1]*a[7]+b[r*4+2]*a[11]);return b;
+}
 inline Vector3 ReadVector(const Type& type, const Value& value) {
   return {FloatValue(type, Child(type, value, "x")), FloatValue(type, Child(type, value, "y")),
           FloatValue(type, Child(type, value, "z"))};
@@ -117,7 +130,7 @@ inline Value AuthorField(const Type& type, const Value& source,
 }
 inline std::pair<Vector3, Vector3> PartBounds(const Type& type, const Value& source,
                                               const Resource& resource, const Mesh& mesh,
-                                              size_t rootSlot) {
+                                              size_t rootSlot,const AffineMatrix& boneToRoot=AffineIdentity()) {
   auto vertex = AuthorField(type, source, resource, "m_VertexData");
   const auto& channels = ConstArray(type, Child(type, vertex, "m_Channels"));
   Require(channels.children.size() == 14 && mesh.vertices && rootSlot < mesh.bones.size(),
@@ -182,6 +195,8 @@ inline std::pair<Vector3, Vector3> PartBounds(const Type& type, const Value& sou
           "e" + std::to_string(row) + std::to_string(column)));
   Require(matrix[3][0] == 0 && matrix[3][1] == 0 && matrix[3][2] == 0 && matrix[3][3] == 1,
           "Renderer bounds requires affine root bindpose");
+  AffineMatrix bind{};for(size_t r=0;r<4;++r)for(size_t c=0;c<4;++c)bind[r*4+c]=matrix[r][c];
+  bind=AffineMultiply(boneToRoot,bind);for(size_t r=0;r<4;++r)for(size_t c=0;c<4;++c)matrix[r][c]=bind[r*4+c];
   Vector3 minimum{DBL_MAX, DBL_MAX, DBL_MAX}, maximum{-DBL_MAX, -DBL_MAX, -DBL_MAX};
   for (size_t i = 0; i < mesh.vertices; ++i)
     for (size_t axis = 0; axis < 3; ++axis) {
@@ -246,7 +261,7 @@ inline void AddMaterialPreloads(MaterialPreloadIndex& index, const Bytes& input,
 struct RendererBoundsCache {
   std::mutex mutex;
   const Package* package = nullptr;
-  std::map<std::pair<std::string,size_t>, std::pair<Vector3,Vector3>> values;
+  std::map<std::tuple<std::string,size_t,AffineMatrix>, std::pair<Vector3,Vector3>> values;
   size_t hits = 0, misses = 0;
   double computeMs = 0;
 };
@@ -341,7 +356,7 @@ class RendererMemberBuilder {
         bones.push_back(found->second);
       }
       if(bones.size()>bestMatches){bestMatches=bones.size();firstMissing=missing;}
-      if (missing.empty() && !bones.empty() && std::count(bones.begin(), bones.end(), rootBone) == 1 &&
+      if (missing.empty() && !bones.empty() &&
           std::find(candidates.begin(),candidates.end(),bones)==candidates.end())
         candidates.push_back(std::move(bones));
     }
@@ -600,8 +615,12 @@ public:
         SetInteger(type, Child(type, renderer, "m_DirtyAABB"), 0);
         // Mesh schema is part of the validated author input; no original PFB is published in the Mod.
         const auto& resource = *package.resources.at(mesh.resource);
-        auto bounds = Bounds(resource, mesh,
-            size_t(std::find(bones.begin(), bones.end(), rootBone) - bones.begin()));
+        auto rootSlot=size_t(std::find(bones.begin(),bones.end(),rootBone)-bones.begin());
+        auto boneToRoot=AffineIdentity();
+        // Unity permits an unweighted rootBone outside the Mesh palette.
+        // Convert one authored bindpose through this exact prefab hierarchy.
+        if(rootSlot==bones.size()){rootSlot=0;boneToRoot=AffineMultiply(AffineInverse(WorldMatrix(rootBone)),WorldMatrix(bones.front()));}
+        auto bounds = Bounds(resource, mesh,rootSlot,boneToRoot);
         auto& aabb = Child(type, renderer, "m_AABB");
         SetVector(type, Child(type, aabb, "m_Center"), bounds.first);
         SetVector(type, Child(type, aabb, "m_Extent"), bounds.second);
@@ -680,13 +699,23 @@ private:
     const auto& type = meshSchemas->at(resource.type);
     return {type, EmptyValue(type, 0)};
   }
-  std::pair<Vector3,Vector3> Bounds(const Resource& resource, const Mesh& mesh, size_t rootSlot) {
+  AffineMatrix WorldMatrix(int64_t id){
+    auto result=AffineIdentity();for(auto node=id;node;node=parents.at(node)){
+      const auto& type=Schema(node);const auto& tree=Tree(node);auto p=ReadVector(type,Child(type,tree,"m_LocalPosition")),s=ReadVector(type,Child(type,tree,"m_LocalScale"));
+      const auto& rotation=Child(type,tree,"m_LocalRotation");double x=FloatValue(type,Child(type,rotation,"x")),y=FloatValue(type,Child(type,rotation,"y")),z=FloatValue(type,Child(type,rotation,"z")),w=FloatValue(type,Child(type,rotation,"w"));
+      auto norm=x*x+y*y+z*z+w*w;Require(norm>0&&std::isfinite(norm),"Renderer bounds invalid Transform rotation");auto k=2/norm;
+      AffineMatrix local{(1-k*(y*y+z*z))*s[0],k*(x*y-z*w)*s[1],k*(x*z+y*w)*s[2],p[0],
+        k*(x*y+z*w)*s[0],(1-k*(x*x+z*z))*s[1],k*(y*z-x*w)*s[2],p[1],
+        k*(x*z-y*w)*s[0],k*(y*z+x*w)*s[1],(1-k*(x*x+y*y))*s[2],p[2],0,0,0,1};result=AffineMultiply(local,result);
+    }return result;
+  }
+  std::pair<Vector3,Vector3> Bounds(const Resource& resource, const Mesh& mesh, size_t rootSlot,const AffineMatrix& boneToRoot) {
     Require(boundsCache,"Renderer bounds cache absent");std::lock_guard<std::mutex> lock(boundsCache->mutex);
     Require(boundsCache && (!boundsCache->package || boundsCache->package == &package), "Renderer bounds cache author scope differs");boundsCache->package=&package;
-    auto key=std::make_pair(mesh.resource,rootSlot);auto found=boundsCache->values.find(key);
+    auto key=std::make_tuple(mesh.resource,rootSlot,boneToRoot);auto found=boundsCache->values.find(key);
     if(found!=boundsCache->values.end()){++boundsCache->hits;return found->second;}
     auto start=std::chrono::steady_clock::now();auto boundsTemplate=EmptyValueForMesh(resource);
-    auto bounds=PartBounds(boundsTemplate.first,boundsTemplate.second,resource,mesh,rootSlot);
+    auto bounds=PartBounds(boundsTemplate.first,boundsTemplate.second,resource,mesh,rootSlot,boneToRoot);
     boundsCache->values.emplace(std::move(key),bounds);++boundsCache->misses;
     boundsCache->computeMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();return bounds;
   }
@@ -723,8 +752,7 @@ inline void AddMeshSchemas(MeshSchemaIndex& schemas, const Bytes& input,
 // All source indexes describe the same immutable input. Decode its bundle,
 // TypeTrees and asset table once; retain each index's own validation rules.
 inline void AddSourceInventory(AssetIndex& assets,MeshSchemaIndex& schemas,MeshBoneHashIndex& palettes,
-    MaterialPreloadIndex& preloads,const Bytes& input,const Package& package) {
-  auto bundle=EndfieldInput::Decode(input);
+    MaterialPreloadIndex& preloads,const EndfieldInput::Bundle& bundle,const Package& package) {
   for(const auto& member:bundle.members)if(SerializedHeader(member.bytes)) {
     auto layout=ParseSerialized(member.bytes);auto catalog=SerializedAssets(member.bytes,member.name,layout);
     AddMeshSchemas(schemas,member.bytes,member.name,layout,catalog,&palettes,&package);
@@ -732,14 +760,17 @@ inline void AddSourceInventory(AssetIndex& assets,MeshSchemaIndex& schemas,MeshB
     AddAssets(assets,std::move(catalog));
   }
 }
-inline RendererInputBuild BuildRendererInput(const Bytes& source, const Package& package,
+inline void AddSourceInventory(AssetIndex& assets,MeshSchemaIndex& schemas,MeshBoneHashIndex& palettes,
+    MaterialPreloadIndex& preloads,const Bytes& input,const Package& package) {
+  AddSourceInventory(assets,schemas,palettes,preloads,EndfieldInput::Decode(input),package);
+}
+inline RendererInputBuild BuildRendererInput(EndfieldInput::Bundle& bundle, const Package& package,
                                                const AssetIndex& assets,
                                                const std::vector<BuiltMeshPart>& meshParts,
                                                const MeshSchemaIndex& schemas,
                                                RendererBoundsCache* sharedBounds = nullptr,
                                                const MaterialPreloadIndex* materialPreloads = nullptr,
                                                const std::function<void(const char*,double)>& cost = {}) {
-  auto bundle = EndfieldInput::Decode(source);
   RendererBoundsCache localBounds;auto& bounds=sharedBounds?*sharedBounds:localBounds;
   RendererInputBuild result;
   for (auto& member : bundle.members) {
@@ -756,6 +787,17 @@ inline RendererInputBuild BuildRendererInput(const Bytes& source, const Package&
     result.parts.insert(result.parts.end(), rebuilt.parts.begin(), rebuilt.parts.end());
     member.bytes = std::move(rebuilt.bytes);
   }
+  return result;
+}
+inline RendererInputBuild BuildRendererInput(const Bytes& source, const Package& package,
+                                               const AssetIndex& assets,
+                                               const std::vector<BuiltMeshPart>& meshParts,
+                                               const MeshSchemaIndex& schemas,
+                                               RendererBoundsCache* sharedBounds = nullptr,
+                                               const MaterialPreloadIndex* materialPreloads = nullptr,
+                                               const std::function<void(const char*,double)>& cost = {}) {
+  auto bundle = EndfieldInput::Decode(source);
+  auto result = BuildRendererInput(bundle, package, assets, meshParts, schemas, sharedBounds, materialPreloads, cost);
   result.bytes = result.changedObjects ? EndfieldInput::Encode(source, bundle.members) : source;
   auto checked = EndfieldInput::Decode(result.bytes);
   Require(checked.members.size() == bundle.members.size(), "Renderer rebuilt member count");

@@ -12,8 +12,7 @@ inline std::string InputPath(std::string value) {
 inline std::string PackageDigest(const Package& package) {
   std::string graph = package.id + ":" + Hex(package.iniHash.data(), package.iniHash.size()) + "\n";
   for (const auto& row : package.resources) {
-    auto hash = Sha(row.second->bytes.data(), row.second->bytes.size());
-    graph += row.first + ":" + Hex(hash.data(), hash.size()) + "\n";
+    graph += row.first + ":" + ResourceContentHash(*row.second) + "\n";
   }
   auto hash = Sha((const unsigned char*)graph.data(), graph.size());
   return Hex(hash.data(), hash.size());
@@ -27,7 +26,7 @@ inline std::string InputContractDigest(const Package& p) {
   auto text=[&](const std::string& value) {out<<value.size()<<':'<<value<<'\n';};
   text("EFF_NATIVE_INPUT_CONTRACT_1");text(p.id);
   text("resources");out<<p.resources.size()<<'\n';
-  for(const auto& r:p.resources) {text(r.first);auto h=Sha(r.second->bytes.data(),r.second->bytes.size());text(Hex(h.data(),h.size()));}
+  for(const auto& r:p.resources) {text(r.first);text(ResourceContentHash(*r.second));}
   text("meshes");out<<p.meshes.size()<<'\n';
   for(const auto& m:p.meshes) {text(m.first);text(m.second.resource);}
   text("materials");out<<p.materials.size()<<'\n';

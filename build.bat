@@ -2,7 +2,7 @@
 setlocal
 pushd "%~dp0"
 rem Production entry: serialized native inputs and generation reload only.
-rem Usage: build.bat [v36|v35] [capture]. No deployment is performed.
+rem Usage: build.bat [v36|v35] [capture|load-perf]. No deployment is performed.
 set "entry_abi=v35"
 set "entry_folder=bin\resource-directory-entry-v35"
 set "entry_define=/DEFF_OFFLINE_PACKAGE_V35=1"
@@ -21,8 +21,10 @@ if /i "%~1"=="v35" (
 )
 if /i "%~2"=="capture" (
  set "entry_capture=/DEIEM_DIAGNOSTICS /DEIEM_SHAPE_CAPTURE_GFXTRACE"
+) else if /i "%~2"=="load-perf" (
+ set "entry_capture=/DEIEM_LOAD_PERF"
 ) else if not "%~2"=="" (
- echo [ERROR] The optional second argument must be capture.
+ echo [ERROR] The optional second argument must be capture or load-perf.
  goto entry_failed
 )
 where cl >nul 2>nul
@@ -81,4 +83,3 @@ exit /b 0
 :entry_failed
 popd
 exit /b 1
-

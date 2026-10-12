@@ -62,6 +62,9 @@ int main(){try{
  auto resource=std::make_shared<Resource>();resource->type=f.types[5].hash;p.resources["mesh"]=resource;p.meshes["M"]={"mesh",3,3,{},{}};p.materials["A"].source=mat;p.parts["P"].mesh=p.parts["Q"].mesh="M";p.parts["P"].material=p.parts["Q"].material="A";
  AssetIndex assets;assets[target].cab=assets[mat].cab=f.cab;assets[target].pathId=100;assets[target].classId=43;assets[target].type=resource->type;assets[mat].pathId=200;assets[mat].classId=21;
  std::vector<BuiltMeshPart> parts{{target,"R","P",f.cab,100,100,3,3},{target,"R","Q",f.cab,100,101,3,3}};
+ auto direct=EndfieldInput::Decode(bundle);auto directResult=BuildRendererInput(direct,p,assets,parts,{});
+ auto encodedResult=BuildRendererInput(bundle,p,assets,parts,{});
+ Require(EndfieldInput::Encode(bundle,direct.members)==encodedResult.bytes&&directResult.parts.size()==encodedResult.parts.size()&&directResult.changedObjects==encodedResult.changedObjects,"in-memory Renderer stage differs from encoded stage");
  auto built=RendererMemberBuilder(before,f.cab,p,assets,parts).Build();Require(built.matches==2&&built.parts.size()==4&&built.addedObjects==8,"static Mesh consumers/one-to-many assembly missing");
  auto crossAssets=assets;const std::string materialCab="CAB-"+std::string(32,'c');crossAssets.at(mat).cab=materialCab;
  auto cross=RendererMemberBuilder(before,f.cab,p,crossAssets,parts).Build();auto crossLayout=ParseSerialized(cross.bytes);

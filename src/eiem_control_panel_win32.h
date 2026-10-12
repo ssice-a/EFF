@@ -158,7 +158,9 @@ public:
     if(!RegisterClassW(&wc)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)return false;
     RECT r{0,0,LONG(width),LONG(height)};DWORD style=WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME;
     AdjustWindowRectEx(&r,style,FALSE,WS_EX_TOOLWINDOW|WS_EX_TOPMOST);
-    hwnd=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_TOPMOST,wc.lpszClassName,L"EFF Mod 按键控制",style,CW_USEDEFAULT,CW_USEDEFAULT,r.right-r.left,r.bottom-r.top,store.gameWindow.load(),nullptr,wc.hInstance,this);
+    // Cross-thread owned windows share activation/hide work with their owner.
+    // Keep the panel independent so closing it never waits for Unity's HWND.
+    hwnd=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_TOPMOST,wc.lpszClassName,L"EFF Mod 按键控制",style,CW_USEDEFAULT,CW_USEDEFAULT,r.right-r.left,r.bottom-r.top,nullptr,nullptr,wc.hInstance,this);
     if(!hwnd)return false;Backdrop();if(!Graphics())return false;
     IMGUI_CHECKVERSION();gui=ImGui::CreateContext();auto& io=ImGui::GetIO();io.IniFilename=nullptr;io.LogFilename=nullptr;io.ConfigFlags|=ImGuiConfigFlags_NavEnableKeyboard;
     char windows[MAX_PATH]{};GetWindowsDirectoryA(windows,MAX_PATH);auto font=std::string(windows)+"/Fonts/msyh.ttc";
@@ -170,7 +172,7 @@ public:
     if(!rendererReady)return false;store.window=hwnd;return true;
   }
   void Tick(HWND foreground=GetForegroundWindow()) {
-    HWND game=store.gameWindow.load();if(IsWindow(game)&&GetWindow(hwnd,GW_OWNER)!=game)SetWindowLongPtrW(hwnd,GWLP_HWNDPARENT,reinterpret_cast<LONG_PTR>(game));
+    HWND game=store.gameWindow.load();
     bool wanted=store.open&&IsWindow(game)&&!IsIconic(game)&&(foreground==hwnd||foreground==game);
     auto next=store.Read();if(view&&next&&(view->scope!=next->scope||view->revision!=next->revision))StopHold();view=std::move(next);
     Visible(wanted&&bool(view));if(!shown)return;

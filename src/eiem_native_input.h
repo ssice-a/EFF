@@ -53,11 +53,18 @@ struct Node {
   std::string type, name;
   bool align = false;
   std::vector<size_t> children;
+  size_t fixedWidth = 0; // Derived from the schema; never serialized.
+  bool uniqueFields = false;
 };
 struct Type {
   int classId = 0;
   std::array<unsigned char, 16> hash{};
   std::vector<Node> nodes;
+  // Exact native metadata is retained for merging new compiled component types.
+  // Portable proofs still describe the schema; runtime reads these bytes from
+  // the proven member rather than inventing script IDs or TypeTree records.
+  Bytes nativeRecord;
+  size_t dependencyOffset = 0;
 };
 struct Object {
   int64_t id = 0;
@@ -70,6 +77,7 @@ struct SerializedLayout {
   std::map<int64_t, Object> objects;
   std::vector<int64_t> order;
   std::vector<std::string> externals;
+  size_t typeCountOffset = 0;
 };
 struct Field {
   size_t node = 0, offset = 0, size = 0;
@@ -85,9 +93,29 @@ inline size_t Primitive(const std::string& t) {
     return 8;
   return 0;
 }
+inline void PrepareFixedWidths(Type& type) {
+  for (size_t i = type.nodes.size(); i-- > 0;) {
+    auto& node = type.nodes[i];node.fixedWidth = 0;
+    std::set<std::string> names;node.uniqueFields = true;
+    for (auto child : node.children) {
+      Require(child > i && child < type.nodes.size(), "native fixed schema cycle");
+      if (!names.insert(type.nodes[child].name).second) node.uniqueFields = false;
+    }
+    if (node.align || node.type == "string" || node.type == "TypelessData" || node.type == "Array") continue;
+    if (auto primitive = Primitive(node.type)) {node.fixedWidth = primitive;continue;}
+    size_t width = 0;bool fixed = !node.children.empty();
+    for (auto child : node.children) {
+      Require(child > i && child < type.nodes.size(), "native fixed schema cycle");
+      auto step = type.nodes[child].fixedWidth;
+      if (!step || step > SIZE_MAX - width) {fixed = false;break;}width += step;
+    }
+    if (fixed) node.fixedWidth = width;
+  }
+}
 inline void SkipValue(const Type& t, size_t index, Reader& r, size_t base, unsigned depth = 0) {
   Require(index < t.nodes.size() && depth < t.nodes.size(), "native schema cycle");
   const auto& node = t.nodes[index];
+  if (node.fixedWidth) {r.Skip(node.fixedWidth);return;}
   auto primitive = Primitive(node.type);
   if (primitive)
     r.Skip(primitive);
@@ -99,14 +127,14 @@ inline void SkipValue(const Type& t, size_t index, Reader& r, size_t base, unsig
             "native array schema");
     size_t n = r.Count(r.limit - r.p), element = node.children[1];
     const auto& e = t.nodes[element];
-    size_t step = Primitive(e.type);
+    size_t step = e.fixedWidth ? e.fixedWidth : Primitive(e.type);
     if (step && !e.align) {
       Require(n <= (r.limit - r.p) / step, "native array size");
       r.Skip(n * step);
     } else
       for (size_t i = 0; i < n; ++i) SkipValue(t, element, r, base, depth + 1);
   } else {
-    Require(!node.children.empty(), "unsupported native leaf: " + node.type);
+    if (node.children.empty()) Require(false, "unsupported native leaf: " + node.type);
     for (size_t child : node.children) SkipValue(t, child, r, base, depth + 1);
   }
   if (node.align || node.type == "string") {
@@ -291,12 +319,14 @@ inline SerializedLayout ParseSerialized(const Bytes& b) {
   r.Z();
   r.Skip(4);
   Require(r.Get(1) == 1, "source TypeTree disabled");
+  layout.typeCountOffset = r.p;
   size_t typeCount = r.Count();
   auto& types = layout.types;
   Require(typeCount <= (r.limit-r.p)/35,"native type table truncated");
   types.reserve(typeCount);
   for (size_t i = 0; i < typeCount; ++i) {
     Type t;
+    auto recordStart = r.p;
     t.classId = (int32_t)r.Get(4);
     r.Skip(3);
     if (t.classId == 114) r.Skip(16);
@@ -327,8 +357,10 @@ inline SerializedLayout ParseSerialized(const Bytes& b) {
       stack.push_back(j);
     }
     r.Skip(count * 32 + strings);
-    size_t deps = r.Count();
+    size_t deps = r.Count();t.dependencyOffset=r.p-recordStart;
     r.Skip(deps * 4);
+    t.nativeRecord.assign(b.begin()+recordStart,b.begin()+r.p);
+    PrepareFixedWidths(t);
     types.push_back(std::move(t));
   }
   layout.countOffset = r.p;

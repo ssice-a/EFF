@@ -220,9 +220,7 @@ inline MeshInputBuild BuildMeshMember(const Bytes& source, const std::string& ca
   result.bytes = BuildSerialized(source, layout, changes, added);
   return result;
 }
-inline MeshInputBuild BuildMeshInput(const Bytes& source, const Package& package) {
-  Require(EndfieldInput::Recognized(source), "Mesh input writer requires current Endfield format");
-  auto bundle = EndfieldInput::Decode(source);
+inline MeshInputBuild BuildMeshInput(EndfieldInput::Bundle& bundle, const Package& package) {
   MeshInputBuild result;
   for (auto& member : bundle.members) {
     if (!SerializedHeader(member.bytes)) continue;
@@ -234,6 +232,12 @@ inline MeshInputBuild BuildMeshInput(const Bytes& source, const Package& package
     result.parts.insert(result.parts.end(), rebuilt.parts.begin(), rebuilt.parts.end());
     member.bytes = std::move(rebuilt.bytes);
   }
+  return result;
+}
+inline MeshInputBuild BuildMeshInput(const Bytes& source, const Package& package) {
+  Require(EndfieldInput::Recognized(source), "Mesh input writer requires current Endfield format");
+  auto bundle = EndfieldInput::Decode(source);
+  auto result = BuildMeshInput(bundle, package);
   result.bytes = result.changedObjects ? EndfieldInput::Encode(source, bundle.members) : source;
   auto checked = EndfieldInput::Decode(result.bytes);
   Require(checked.members.size() == bundle.members.size(), "rebuilt Mesh input member count");

@@ -16,9 +16,9 @@ AssetMap.
 
 ## Static Mod sources
 
-Blender invokes the paired source tool before publishing a Mod. It reuses the existing index to write selected ranges in `source-inputs.bin`; the compiler verifies all exact Mesh/Prefab consumers and publishes compressed rules with author payload references. It does not persist complete Prefabs or original dependency copies. The DLL applies these known rules to pristine bytes before Unity resource creation. The global author index stays on the preparation machine. See [the flow](../docs/runtime-resource-discovery.md).
+Blender invokes its own `eff_resource_pack.exe` once for source discovery and Mod compilation. The program reuses the existing index to write selected ranges in `source-inputs.bin`, verifies exact Mesh/Prefab consumers, and publishes compressed rules with author payload references. It does not persist complete Prefabs or original dependency copies. The DLL applies these known rules to pristine bytes before Unity resource creation. The global author index stays on the preparation machine. See [the flow](../docs/runtime-resource-discovery.md).
 
-Build the deployable source tool with `tools/build_static_sources.ps1`; the output in `bin/static-sources` includes its .NET runtime, so a game installation does not need a separate SDK.
+Build the author compiler with `tools/build_resource_pack.cmd v35`. Source discovery runs in that native compiler process; the Blender package needs no separate source executable or .NET runtime.
 
 ## Run
 

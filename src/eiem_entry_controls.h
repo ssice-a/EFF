@@ -24,6 +24,7 @@ EiemControlPanel::Store panel;
 std::string selected, uiHold;
 std::map<std::string,bool> keySwitchEnabled;
 uint64_t revision=0, scopeRevision=0;
+uint64_t valueRevision=0;
 struct State {
   std::map<std::string,Spec> specs;
   std::map<std::string,EiemVariables> variables;
@@ -87,7 +88,7 @@ void Swap(State& state) noexcept {
   specs.swap(state.specs);variables.swap(state.variables);keys.swap(state.keys);
   held.swap(state.held);controlGraph.swap(state.graph);
   selected.swap(state.selected);keySwitchEnabled.swap(state.keySwitchEnabled);uiHold.clear();
-  ++revision;++scopeRevision;
+  ++revision;++scopeRevision;++valueRevision;
   if(state.panelSnapshot) {
     state.panelSnapshot->revision=revision;state.panelSnapshot->scope=scopeRevision;
     panel.Publish(std::move(state.panelSnapshot));
@@ -126,6 +127,7 @@ double Advance(const Binding& key,double value,double elapsed) {
   return it==key.values.end() || ++it==key.values.end()?key.values.front():*it;
 }
 void Capture(const std::set<std::string>& changed) {
+  if(!changed.empty())++valueRevision;
   if(controlGraph) for(const auto& p:*controlGraph) if(changed.count(p.id)) preferences.Capture(p,variables.at(p.id));
 }
 void PanelCommands(bool focused,bool (*sample)(const EiemKeyChord&)=Down) {

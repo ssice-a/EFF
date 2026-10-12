@@ -20,7 +20,7 @@ class BlenderPhysicsTests(unittest.TestCase):
                 str(ROOT/"tools/Blender/eiem_blender_addon.py"),directory],
                 capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=120)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-            self.assertIn("EIEM_PHYSICS_AUTHORING_OK",result.stdout)
+            self.assertIn("EFF_PHYSICS_AUTHORING_OK",result.stdout)
             exe = compile_reader(folder)
             for file in folder.glob("*.physics"):
                 run = subprocess.run([str(exe),str(file),"ok","any-v4-count"],capture_output=True,text=True)

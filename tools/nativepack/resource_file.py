@@ -69,7 +69,7 @@ def decode_strings(data):
 
 
 def encode_resource(kind, native_type_hash, blocks):
-    require(kind in (MESH, MATERIAL, PIXELS), "unknown resource kind")
+    require(isinstance(kind, int) and 0 < kind <= 0xffffffff, "invalid resource kind")
     type_hash = bytes.fromhex(native_type_hash)
     require(len(type_hash) == 16, "native type hash must contain 16 bytes")
     entries = list(blocks.items())
@@ -101,8 +101,8 @@ def decode_resource(data, expected_kind):
     require(len(data) >= HEADER.size, "resource header truncated")
     magic, version, kind, count, directory_size, type_hash, total, checksum = HEADER.unpack_from(data)
     require(magic[:6] == MAGIC[:6] and magic[7:] == b"\0", "unsupported resource format/version")
-    require(kind in (MESH, MATERIAL, PIXELS), "unsupported resource kind")
-    require(kind == expected_kind, "resource kind mismatch")
+    require(kind > 0, "invalid resource kind")
+    require(not expected_kind or kind == expected_kind, "resource kind mismatch")
     require(total == len(data), "resource size mismatch")
     require(sha256_bytes(data[HEADER.size:]) == checksum, "resource checksum mismatch")
     stop = HEADER.size + directory_size
@@ -132,6 +132,10 @@ def decode_resource(data, expected_kind):
 
 def read_resource(path, expected_kind, cache=None):
     path = Path(path)
+    if cache is not None and '__frozen_files__' in cache:
+        frozen = _read_frozen_resource(path, expected_kind, cache)
+        if frozen is not None:
+            return frozen
     if cache is not None:
         # A package is read several times during one export (destination,
         # staging, publication gate). Keep the verified bytes identity for the
@@ -160,6 +164,57 @@ def read_resource(path, expected_kind, cache=None):
     result = cache[key]
     return dict(kind=result['kind'], nativeTypeHash=result['nativeTypeHash'],
                 blocks=dict(result['blocks']), descriptors=[dict(row) for row in result['descriptors']])
+
+
+def _read_frozen_resource(path, expected_kind, cache):
+    """Verify one immutable file once, including its staging hardlink aliases.
+
+    An open Windows read handle denies in-place writes but permits atomic
+    publication. File identity, rather than just size/mtime, detects replaced
+    paths. Other platforms and files already open for writing use full reads.
+    """
+    import os
+    if os.name != 'nt':
+        return None
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    files = cache['__frozen_files__']
+    stamp = path.stat()
+    identity = (stamp.st_dev, stamp.st_ino, expected_kind)
+    previous = files.get(identity)
+    if previous is not None:
+        stream, signature, result = previous
+        current = (stamp.st_size, stamp.st_mtime_ns, stamp.st_ctime_ns)
+        if current == signature and not stream.closed:
+            return dict(kind=result['kind'], nativeTypeHash=result['nativeTypeHash'],
+                        blocks=dict(result['blocks']), descriptors=[dict(row) for row in result['descriptors']])
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    handle = kernel.CreateFileW(str(path.resolve()), 0x80000000, 1 | 4, None, 3, 0x80, None)
+    if handle == ctypes.c_void_p(-1).value:
+        return None
+    try:
+        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    except OSError:
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel.CloseHandle(handle)
+        raise
+    stream = os.fdopen(fd, 'rb')
+    try:
+        stamp = os.fstat(stream.fileno())
+        result = decode_resource(stream.read(), expected_kind)
+        identity = (stamp.st_dev, stamp.st_ino, expected_kind)
+        if identity in files:
+            files[identity][0].close()
+        files[identity] = (stream, (stamp.st_size,stamp.st_mtime_ns,stamp.st_ctime_ns), result)
+        return dict(kind=result['kind'], nativeTypeHash=result['nativeTypeHash'],
+                    blocks=dict(result['blocks']), descriptors=[dict(row) for row in result['descriptors']])
+    except BaseException:
+        stream.close()
+        raise
 
 
 def write_resource(root, relative, kind, native_type_hash, blocks):

@@ -31,10 +31,10 @@ inline Value ReadValue(const Type& type, size_t index, Reader& reader,
   const auto& node = type.nodes[index];
   Value value;
   value.node = index;
-  size_t size = Primitive(node.type);
+  size_t primitive = Primitive(node.type), size = primitive;
   if (node.type == "string" || node.type == "TypelessData")
     size = reader.Count(reader.limit - reader.p);
-  if (Primitive(node.type) || node.type == "string" || node.type == "TypelessData") {
+  if (primitive || node.type == "string" || node.type == "TypelessData") {
     size_t start = reader.p;
     reader.Skip(size);
     value.raw.assign(reader.b.begin() + start, reader.b.begin() + reader.p);
@@ -57,10 +57,10 @@ inline Value ReadValue(const Type& type, size_t index, Reader& reader,
         value.children.push_back(ReadValue(type, element, reader, base, depth + 1));
     }
   } else {
-    Require(!node.children.empty(), "unsupported serialized leaf: " + node.type);
+    if (node.children.empty()) Require(false, "unsupported serialized leaf: " + node.type);
     std::set<std::string> names;
     for (size_t child : node.children) {
-      Require(names.insert(type.nodes[child].name).second, "duplicate serialized struct field");
+      if (!node.uniqueFields) Require(names.insert(type.nodes[child].name).second, "duplicate serialized struct field");
       value.children.push_back(ReadValue(type, child, reader, base, depth + 1));
     }
   }
@@ -204,29 +204,44 @@ struct AddedObject {
 };
 inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout,
                               const std::map<int64_t, Bytes>& replacements,
-                              const std::vector<AddedObject>& added = {}) {
+                              const std::vector<AddedObject>& added = {},
+                              const std::set<int64_t>& removed = {},
+                              const std::vector<Bytes>& addedTypes = {},
+                              const std::vector<Bytes>& addedScripts = {}) {
   Reader externalReader(source,layout.tableEnd,false,48+layout.metadataSize);
   auto scripts=externalReader.Count();externalReader.Skip(MultiplySize(scripts,12));
   auto externalCountOffset=externalReader.p;auto externalCount=externalReader.Count();
   std::vector<std::string> originalExternals;
   for(size_t i=0;i<externalCount;++i){externalReader.Z();externalReader.Skip(20);auto path=externalReader.Z();auto slash=path.find_last_of("/\\");originalExternals.push_back(slash==path.npos?path:path.substr(slash+1));}
   Require(ExternalPrefix(originalExternals,layout.externals),"serialized original external order changed");
-  if (replacements.empty() && added.empty() && originalExternals==layout.externals) return source;
+  if (replacements.empty() && added.empty() && removed.empty() && addedTypes.empty() && addedScripts.empty() && originalExternals==layout.externals) return source;
   Require(layout.countOffset >= 48 && layout.tableEnd <= 48 + layout.metadataSize &&
               layout.tableStart >= layout.countOffset + 4, "serialized writer metadata range");
   for (const auto& change : replacements)
-    Require(layout.objects.count(change.first), "serialized replacement PathID absent");
-  size_t count = AddSize(layout.order.size(),added.size());
+    Require(layout.objects.count(change.first)&&!removed.count(change.first), "serialized replacement PathID absent/deleted");
+  for(auto id:removed)Require(layout.objects.count(id),"serialized deleted PathID absent");
+  size_t count = AddSize(layout.order.size()-removed.size(),added.size());
   Require(count <= UINT32_MAX, "serialized object count field overflow");
-  Bytes metadata(source.begin() + 48, source.begin() + layout.tableStart);
-  WriteInteger(metadata, layout.countOffset - 48, count, 4);
-  metadata.resize((metadata.size() + 3) & ~size_t(3));
+  Bytes metadata(source.begin() + 48, source.begin() + layout.countOffset);
+  size_t typeShift=0;for(const auto& record:addedTypes){typeShift=AddSize(typeShift,record.size());metadata.insert(metadata.end(),record.begin(),record.end());}
+  if(!addedTypes.empty()){
+    Require(layout.typeCountOffset>=48&&layout.typeCountOffset+4<=layout.countOffset&&layout.types.size()<=INT_MAX,"serialized appended type extent differs");
+    WriteInteger(metadata,layout.typeCountOffset-48,layout.types.size(),4);
+  }
+  metadata.insert(metadata.end(),source.begin()+layout.countOffset,source.begin()+layout.countOffset+4);
+  WriteInteger(metadata, layout.countOffset - 48 + typeShift, count, 4);
+  if(count)metadata.resize((metadata.size() + 3) & ~size_t(3));
   size_t table = metadata.size();
   metadata.resize(AddSize(table,MultiplySize(count,24)));
   auto tail=metadata.size();
-  metadata.insert(metadata.end(),source.begin()+layout.tableEnd,source.begin()+externalReader.p);
+  auto scriptEnd=layout.tableEnd+4+MultiplySize(scripts,12);
+  metadata.insert(metadata.end(),source.begin()+layout.tableEnd,source.begin()+scriptEnd);
+  Require(AddSize(scripts,addedScripts.size())<=INT_MAX,"serialized script count overflow");
+  WriteInteger(metadata,tail,scripts+addedScripts.size(),4);
+  size_t scriptShift=0;for(const auto& record:addedScripts){Require(record.size()==12,"serialized script record width differs");metadata.insert(metadata.end(),record.begin(),record.end());scriptShift=AddSize(scriptShift,record.size());}
+  metadata.insert(metadata.end(),source.begin()+scriptEnd,source.begin()+externalReader.p);
   Require(layout.externals.size()<=INT_MAX,"serialized external count field overflow");
-  WriteInteger(metadata,tail+externalCountOffset-layout.tableEnd,layout.externals.size(),4);
+  WriteInteger(metadata,tail+externalCountOffset-layout.tableEnd+scriptShift,layout.externals.size(),4);
   for(size_t i=externalCount;i<layout.externals.size();++i){
     // Preserve all existing GUID/type/path records. New bundle members use
     // Unity's archive reference grammar and the native zero GUID/type form.
@@ -257,6 +272,7 @@ inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout
   };
   size_t index = 0;
   for (auto id : layout.order) {
+    if(removed.count(id))continue;
     const auto& object = layout.objects.at(id);
     auto change = replacements.find(id);
     if (change == replacements.end())

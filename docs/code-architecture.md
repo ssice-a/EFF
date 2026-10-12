@@ -33,6 +33,11 @@ AnimeStudio source exchange + existing author index
 | Author bridge | `eiem_author_core.cpp` | Source-schema interface for author tools |
 
 Author builders are used only by `eiem_compiled_mod_writer.h` through the Blender compiler. The DLL uses `eiem_compiled_mod_set.h` to combine already compiled records and `eiem_prefab_resource_rules.h` to apply byte recipes. It neither runs author executables nor generates Mesh/Material/Texture records. Shared headers provide codecs; author builders are not called by the runtime. Complete original Prefabs and duplicate author payloads are not persisted in Mod outputs.
+The compiled path also accepts opaque `Resource` payloads without author Mesh
+parts. `eiem_compiled_object_merge.h` merges proven native type/script
+registrations and object additions/deletions for shared members; existing
+Renderer controls remain optional validation. See the current scope and tests
+in [compiled resource graphs](compiled-resource-graph.md).
 Public Renderer visibility and blend-shape controls, and the
 capture consumer's shape snapshots, have their own bounded responsibilities;
 they do not restore the retired base-resource replacement path. `eiem_lua_ui.h`
@@ -70,8 +75,32 @@ failure uses the existing owner rollback and reports restoration gaps.
 Controls register inactive SkinnedMeshRenderer children of the exact completed
 game model, alongside the native material-controller Init callback. F10 restores
 bindings after model/control publication or rollback; native Init does not enter
-another frame transaction. There is no periodic global Renderer scan or arbitrary
+another frame transaction. Material Init registers provisionally; the helper's
+`InitAll` completion activates its cached Renderer list, covering NPC instances
+without a view-part completion. During Base/Complex post-processing, a nested
+thread-local enabled getter scope preserves the game's native initial snapshot
+separately from authored hiding. Normal reads return actual enabled flags.
+There is no periodic global Renderer scan or arbitrary
 Renderer-list capacity limit.
+
+Compiled member extents and proven namespace sites also locate fields within the
+uncompressed native input envelope. `eiem_native_input_offsets.h` applies those
+sites without another decode/replay/encode pass; shared immutable pristine roots
+and layouts avoid repeated deep copies. Startup and isolated cache entries share
+one immutable backing. Optional public `UnmanagedMemoryStream` bindings let Unity
+read that backing without a second large managed byte array. Stream ownership
+lasts through async completion and native Bundle retirement; the MemoryStream
+fallback remains available. No Mod layout or resource size ceiling is added.
+
+The startup rules already publish their exact resource identity through game
+loads. The same initial snapshot does not prewarm a second namespace. Once
+published by startup or a resource commit, an identical F10 snapshot refreshes
+controls/settings without native loads or model reconstruction; author-file and
+directory membership preflight remains mandatory. Visibility-only
+bindings use control-value revisions and native setter observations; idle weak
+reference checks are spread over 64 frames. Shape weights still follow each frame
+because native animation may change them. Material texture identities are shared
+only within a verification call, never cached across resource generations.
 
 UIModelLoader is a separate game owner. Native completion registers the exact
 loaded root, and the loader dictionary confirms handle ownership. UI key control
@@ -174,3 +203,20 @@ restoring world/display roots, stale membership rejection and rollback. The real
 input fixture splits LZY targets to validate one composed shared CAB/PFB graph,
 pristine startup bytes and zero substitutions; it is not a second character's
 game acceptance. The installed DLL and production baseline have not been changed.
+
+
+## Compact runtime index (2026-10-12)
+
+The production path reads only the current per-Mod compiled runtime index. Blender owns the compiler and generates native span views, startup digests, expanded frames, source file stamps, input dependency edges, and shared Prefab/bone-palette dictionaries. Legacy compiled packets and current.tsv/loading-inputs.tsv are not startup or F10 fallbacks.
+
+`eiem_compiled_runtime_index.h` decodes the small runtime section and defers independent compressed object proofs. `eiem_compiled_assembly_index.h` shares immutable descriptions/palettes. `eiem_readonly_file_range.h` holds source ranges read-only and pages original encoded blocks in on demand. `eiem_compiled_mod_set.h` skips shared read-only/single-writer merges and retains general record composition for simultaneous writers. `eiem_entry_full_resource_reload.h` submits only dependencies of observed roots, and routes later native loads through the same generation.
+
+Resource provenance/checksums, bounds, reference relocation, independent key settings, owner animation/physics lifecycle, and rollback remain required. Measurements of these disk-only routines exclude game readiness and all Unity loading; they do not establish an FPS improvement or millisecond latency after a changed Mesh.
+
+## Author edits and input reuse (2026-10-12)
+
+The Blender author compiler treats an export as an immutable author snapshot. Its reader verifies each file once per export and reuses its staging hardlink aliases while Windows read handles deny in-place writes. Manifest decoding can borrow resources from that verified snapshot only for an exact author ID, resource path, kind, native type and content digest; changed resources still read their previous published bytes. This opt-in path is used by the author compiler, not the game reader.
+
+`eiem_incremental_material_compile.h` accepts parameter-only edits after comparing all resource identities, texture bindings, Mesh/physics declarations and the normalized input contract. It replays and rebuilds only inputs owning changed materials, uses their recorded author dependencies as its working set, and keeps unaffected geometry, Prefab descriptions and native views. Previously borrowed bytes from changed material resources become literal spans before the author snapshot changes. The runtime candidate key still follows the current author contract; the reused offline namespace does not conceal edits.
+
+Changes to geometry, texture data/references, source identities or structure take the existing complete compiler path. Complete compilation shares one author span dictionary between member recipes and native views. No compiled protocol change or additional compiler deployment to the game is required. The real material-edit regression compares every native view with a full compile, checks portable roundtrips and excludes Mesh/binding edits from the selective path.

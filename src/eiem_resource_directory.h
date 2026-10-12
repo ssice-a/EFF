@@ -122,14 +122,20 @@ struct Resource {
   std::array<unsigned char, 16> type{};
   Bytes bytes;
   std::map<std::string, Block> blocks;
+  // Set only when bytes have been verified. Packages share immutable Resources.
+  std::string contentHash;
 };
+inline std::string ResourceContentHash(const Resource& resource) {
+  if (!resource.contentHash.empty()) return resource.contentHash;
+  auto hash=Sha(resource.bytes.data(),resource.bytes.size());return Hex(hash.data(),hash.size());
+}
 inline Resource Decode(Bytes bytes, unsigned expected) {
   Require(bytes.size() >= 80, "resource header truncated");
   Require(memcmp(bytes.data(), "EFFRES", 6) == 0 && bytes[7] == 0,
           "unsupported resource container");
   Resource r;
   r.kind = (uint32_t)Le(bytes, 12, 4);
-  Require((r.kind == 1 || r.kind == 2 || r.kind == 4) && r.kind == expected,
+  Require(r.kind && (!expected || r.kind == expected),
           "resource kind mismatch");
   Require(Le(bytes, 40, 8) == bytes.size(), "resource total size mismatch");
   Require(EqualDigest(Sha(bytes.data() + 80, bytes.size() - 80), bytes, 48),
@@ -162,6 +168,7 @@ inline Resource Decode(Bytes bytes, unsigned expected) {
     end = block.offset + block.size;
   }
   Require(p == stop && end == bytes.size(), "unreferenced directory/suffix");
+  auto content=Sha(bytes.data(),bytes.size());r.contentHash=Hex(content.data(),content.size());
   r.bytes = std::move(bytes);
   return r;
 }
@@ -354,8 +361,8 @@ struct Package {
 };
 inline std::filesystem::path DiskPath(const std::filesystem::path& root,
                                       const std::string& relative, unsigned kind) {
-  const char* folder = kind == 1 ? "meshes/" : kind == 2 ? "materials/" : "textures/";
-  Require(Begins(relative, folder) && relative.find('\\') == relative.npos &&
+  const char* folder = kind == 1 ? "meshes/" : kind == 2 ? "materials/" : kind == 4 ? "textures/" : "resources/";
+  Require((Begins(relative, folder) || Begins(relative, "resources/")) && relative.find('\\') == relative.npos &&
               relative.find(':') == relative.npos,
           "resource folder/kind mismatch");
   auto r = std::filesystem::u8path(relative);
@@ -365,7 +372,7 @@ inline std::filesystem::path DiskPath(const std::filesystem::path& root,
           "resource escaped Mod folder");
   return path;
 }
-inline Package Load(const std::filesystem::path& directory) {
+inline Package Load(const std::filesystem::path& directory,const Package* verified=nullptr) {
   Package p;
   p.root = std::filesystem::canonical(directory);
   auto ini = Read(p.root / "mod.ini");
@@ -397,11 +404,14 @@ inline Package Load(const std::filesystem::path& directory) {
   auto load = [&](const std::string& relative, unsigned kind) -> const Resource& {
     auto found = p.resources.find(relative);
     if (found != p.resources.end()) {
-      Require(found->second->kind == kind, "resource alias kind");
+      Require(!kind || found->second->kind == kind, "resource alias kind");
       return *found->second;
     }
-    auto resource =
-        std::make_shared<Resource>(Decode(Read(DiskPath(p.root, relative, kind)), kind));
+    std::shared_ptr<const Resource> resource;
+    if(verified){auto cached=verified->resources.find(relative);if(cached!=verified->resources.end()){
+      Require(!kind||cached->second->kind==kind,"verified resource alias kind");resource=cached->second;
+    }}
+    if(!resource)resource=std::make_shared<Resource>(Decode(Read(DiskPath(p.root,relative,kind)),kind));
     allowed.insert(relative);
     p.resources.emplace(relative, resource);
     return *resource;
@@ -423,10 +433,16 @@ inline Package Load(const std::filesystem::path& directory) {
                                                  "@geometry",
                                                  "@bones",
                                                  "@shapes"};
+  bool genericResources=false;
   for (const auto& s : sections) {
     const auto& v = s.values;
     if (s.id == "Mod" || s.id == "Constants") continue;
-    if (Begins(s.id, "Mesh")) {
+    if (Begins(s.id, "Resource")) {
+      Keys(s, {"path"});
+      Require(Begins(v.at("path"), "resources/"), "generic resource folder mismatch");
+      load(v.at("path"), 0);
+      genericResources=true;
+    } else if (Begins(s.id, "Mesh")) {
       Keys(s, {"path"});
       const auto& r = load(v.at("path"), 1);
       std::set<std::string> fields;
@@ -585,7 +601,7 @@ inline Package Load(const std::filesystem::path& directory) {
     } else
       throw std::runtime_error("unknown INI section: " + s.id);
   }
-  Require(!p.parts.empty() && !p.rules.empty(), "Mod requires parts and replacement rules");
+  Require(genericResources || (!p.parts.empty() && !p.rules.empty()), "Mod requires compiled resources or parts and replacement rules");
   std::set<std::string> usedMesh, usedMaterial, usedTexture, usedControl, usedPart;
   for (const auto& row : p.parts) {
     const auto& part = row.second;

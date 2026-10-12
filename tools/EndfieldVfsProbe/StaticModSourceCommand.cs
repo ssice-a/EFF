@@ -71,7 +71,9 @@ internal static class StaticModSourceCommand
         var streaming = EndfieldVfsArchive.Open(Path.Combine(game, "Endfield_Data", "StreamingAssets", "VFS"));
         var persistentRoot = Path.Combine(game, "Endfield_Data", "Persistent", "VFS");
         var persistent = Directory.Exists(persistentRoot) ? EndfieldVfsArchive.Open(persistentRoot) : null;
-        var index = EndfieldIndexStore.Load(indexPath);
+        var requestedContainers = sources.Select(s => Logical(s.GetProperty("path").GetString()!))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var index = EndfieldIndexStore.Load(indexPath, requestedContainers);
         if (index.VfsFingerprint != streaming.Fingerprint)
             throw new InvalidDataException("The existing source index no longer describes the installed streaming archive; regenerate it with AnimeStudio.");
         var assets = new SortedDictionary<string, string>(StringComparer.Ordinal);
@@ -82,8 +84,15 @@ internal static class StaticModSourceCommand
             var path = Logical(source.GetProperty("path").GetString()!);
             var name = source.GetProperty("asset").GetString()!;
             var kind = source.GetProperty("kind").GetString()!;
-            var matches = index.Assets.Records.Where(r => Logical(r.Container) == path && r.Name == name && r.Type == kind)
-                .DistinctBy(r => (Logical(r.Source), r.PathId)).ToArray();
+            // A Prefab container may be indexed through Animator/script rows,
+            // without a separate GameObject asset row. Resolve its one native
+            // bundle by exact container; the compiler verifies the root and
+            // retained component schemas against the actual serialized bytes.
+            var matches = kind == "Prefab"
+                ? index.Assets.Records.Where(r => Logical(r.Container) == path)
+                    .DistinctBy(r => Logical(r.Source)).ToArray()
+                : index.Assets.Records.Where(r => Logical(r.Container) == path && r.Name == name && r.Type == kind)
+                    .DistinctBy(r => (Logical(r.Source), r.PathId)).ToArray();
             if (matches.Length != 1) throw new InvalidDataException($"Expected one exact {kind} source for {path}/{name}; found {matches.Length}.");
             var bundle = Logical(matches[0].Source);
             if (assets.TryGetValue(path, out var old) && old != bundle) throw new InvalidDataException("Conflicting source bundles for " + path);

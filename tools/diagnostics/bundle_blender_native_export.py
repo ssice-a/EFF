@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MODULES = (
     'author_source', 'serialized_file', 'type_tree', 'mesh', 'delta_apply',
     'resource_file', 'ini_package', 'ini_reader', 'texture_fields',
-    'state_rules', 'payload', 'hashing',
+    'state_rules', 'payload', 'hashing', 'physics',
 )
 
 
@@ -67,10 +67,13 @@ def bundle(destination, compiler=None, abi=35):
     if destination.exists():
         raise FileExistsError('Blender bundle exists: ' + str(destination))
     compiler, protocol = _choose_compiler(compiler, abi)
+    if protocol.get('sourcePreparation') != _protocol_module.SOURCE_PREPARATION:
+        raise ValueError('Build the compiler with in-process author source discovery')
     destination.mkdir(parents=True)
     for path in (ROOT / 'tools/Blender').glob('*.py'):
         if path.name == '__init__.py' or path.name.startswith('eiem_'):
             shutil.copy2(path, destination / path.name)
+    shutil.copytree(ROOT / 'tools/Blender/docs', destination / 'docs')
     core = destination / 'nativepack'
     core.mkdir()
     (core / '__init__.py').write_text('', encoding='utf-8')
@@ -85,10 +88,6 @@ def bundle(destination, compiler=None, abi=35):
     shutil.copy2(author_core, core / 'eff_author_core.dll')
     shutil.copy2(compiler, core / 'eff_resource_pack.exe')
     (core / 'package-protocol.json').write_text(json.dumps(protocol, indent=2) + '\n', 'utf-8')
-    source_tool = ROOT / 'bin/source-preparer/eff_source_prepare.exe'
-    if not source_tool.is_file():
-        raise FileNotFoundError('Build author source preparer with tools/build_static_sources.ps1')
-    shutil.copy2(source_tool, core / 'eff_source_prepare.exe')
     vendor = ROOT / 'bin/author-core/vendor'
     if not (vendor / 'PIL').is_dir():
         raise FileNotFoundError(

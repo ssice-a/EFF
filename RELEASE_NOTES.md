@@ -1,25 +1,22 @@
-# EFF v1.3.4
+# EFF v1.4.0
 
-配套：[EFF Blender v0.40.3](https://github.com/ssice-a/EFF-blender/releases/tag/v0.40.3)、[AnimeStudio v1.3.1](https://github.com/ssice-a/AnimeStudio/releases/tag/v1.3.1)。简易教程：[中文](https://github.com/ssice-a/EFF/blob/v1.3.4/Mod%20Tutorial.md) · [English](https://github.com/ssice-a/EFF/blob/v1.3.4/Mod%20Tutorial_EN.md)。
+配套：[EFF Blender v0.41.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.41.0)、[AnimeStudio v1.4.0](https://github.com/ssice-a/AnimeStudio/releases/tag/v1.4.0)。教程：[中文](https://github.com/ssice-a/EFF/blob/v1.4.0/Mod%20Tutorial.md) · [English](https://github.com/ssice-a/EFF/blob/v1.4.0/Mod%20Tutorial_EN.md)。
 
-- 正式 DLL 排除临时动画、骨骼、材质和资源卸载探针，不抓取原包，不进行持续采样或创建会话诊断目录；保留单份 `plugin/eff_log.txt` 的加载及 F10 结果。
-- 保留世界/UI 模型重载、动画恢复、武器及音频绑定，以及游戏配置的待机附件资源预加载与失败回滚。
-- 未修改的共享依赖复用游戏原资源身份，减少重复资源准备。多 Mod、按键与形态控制继续使用现有规则。
-- 新增配图英文简易教程，并同步 Blender 导出性能优化。
+- Blender 离线生成原生输入视图、依赖、装配与控制索引；DLL 读取预编译结果，组合共享修改并在游戏加载前应用。游戏端不运行作者编译器。
+- F10 统一提交 mods 目录的增删改，保留世界/UI 重载、动画恢复、武器/音频及待机附件绑定和失败回滚。
+- Ins 独立启用多个 Mod 的按键，默认状态、NPC 完成登记及玩家控制值持久化使用同一规则。
+- 通用编译资源支持对象增改删、类型/脚本注册和引用重定位；新增 BoneCloth 链和球/胶囊碰撞体由作者端编译。
 
-仅一个安装包 `EFF_v1.3.4_dll.zip`：根目录为 `d3dcompiler_47.dll`、`vulkan-1.dll`；`plugin/` 内为 `eff.dll`、默认配置、数据结构协议、许可和空 `mods/`。不包含作者编译器、AnimeStudio 运行库、日志、PDB 或游戏资产。
+仅一个 `EFF_v1.4.0_dll.zip`：两个根目录代理 DLL 与 plugin 下的运行 DLL、默认配置、结构协议、许可及空 mods 目录。没有编译器、解包器运行库、PDB、日志或游戏资产。
 
-退出游戏后解压到 `Endfield.exe` 所在目录，保留自己的配置和 Mods。F10 更新 Mod 数据；DLL 更新需要重启。现有完整 Mod 无需因诊断清理重新导出。
+更新：退出游戏后安装，保留配置、Mods 和 state.ini。**旧 compiled.bin 必须用配套 Blender 插件重新导出。** 数据兼容性按结构判断，不按产品版本号限制。当前代理支持 Windows 系统目录为 `C:\Windows` 的安装；其他目录尚未支持。
 
-验证：正式二进制诊断隔离检查、完整世界/UI 事务模拟、待机资源预加载与回滚、游戏 UI 页面绑定回归通过。此轮未新增实机画面验收。
+验证：生产二进制诊断隔离、连续八次世界重载、异步 UI、动画/武器/音频与回滚、多 Mod 组合、静态网格及控制持久化通过自动回归。四 Mod 编译集合独立读取实测约 0.99 秒，不含游戏加载；不是 F10 总耗时或磁盘冷读。**本轮新二进制尚未完成实机验收**；20–30 Mod 压力和完整新增物理生命周期仍待验证。
 
 ## English
 
-- The production DLL excludes temporary animation, skinning, material and resource-unload probes. It performs no bundle capture or continuous sampling and creates no per-session diagnostic folders. Essential loading and F10 results remain in `plugin/eff_log.txt`.
-- World/UI reload, animation resume, weapon/audio rebinding, game-owned idle attachment preloads and rollback remain intact.
-- Unmodified shared dependencies reuse original game resource identities, reducing duplicate preparation.
-- An illustrated English quick tutorial is now available. The paired Blender release improves export compilation and supports independent material/texture variants.
+The author tool now emits native input views, dependency, assembly and control indices offline. The runtime reads compiled outputs and combines shared edits without an author compiler. F10 commits the complete current Mods directory, preserving world/UI reload, animation, weapon/audio and idle attachment binding, and rollback. Independent key routing and persistent controls also cover registered NPC instances.
 
-There is one DLL archive containing the two proxy DLLs and the `plugin/` installation files. Quit the game before updating; preserve your configuration and Mods. Existing complete Mods do not need re-exporting for this diagnostic cleanup.
+One DLL archive contains the two game-root proxy DLLs and plugin installation files. Quit the game before updating; preserve configuration and player state. **Re-export old compiled Mods using the paired Blender release.** The current proxy forwarders support Windows at `C:\Windows`.
 
-Validation includes production-binary isolation, mocked world/UI transactions, idle preload/rollback and game UI page binding. No new in-game visual acceptance is claimed for this cleanup.
+Automated production, reload, UI, composition, static Mesh and control regressions passed. Reading the four-Mod set took about 0.99 seconds outside Unity; this is not total game loading or F10 latency. New in-game acceptance, large Mod-set stress and complete physics lifecycle validation remain outstanding.

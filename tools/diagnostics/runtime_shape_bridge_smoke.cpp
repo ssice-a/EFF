@@ -25,8 +25,17 @@ struct MeshFacts {int vertices=0,shapes=0;std::vector<unsigned char> name;};
 std::map<void*,MeshFacts> meshes;
 std::map<void*,void*> renderMeshes;
 std::map<void*,unsigned char> renderEnabled;
-unsigned enabledWrites=0;
+unsigned enabledWrites=0,meshReads=0,enabledReads=0,modelReads=0;
+unsigned char enabledReadResult=0;
+unsigned cachedAliveReads=0;
 struct RendererArray {ArrayHeader header;void* values[128]{};} modelRenderers[2];
+unsigned controllerModel=0,helperCompletions=0,helperListReads=0;
+bool helperHasList=true;
+void HelperInit(void* self,void* info) {
+  Require(self==(void*)0x321 && info==(void*)0x326,"helper completion changed original arguments");
+  ++helperCompletions;
+}
+bool EnabledGetter(void* renderer){return renderEnabled.at(renderer)!=0;}
 void Enabled(void* renderer,bool value) {renderEnabled[renderer]=value;++enabledWrites;}
 void MakeMesh(void* mesh,const RuntimeShapes::Spec& spec) {
   MeshFacts facts;facts.vertices=int(spec.vertices);facts.shapes=int(spec.channels.size());
@@ -37,6 +46,7 @@ void MakeMesh(void* mesh,const RuntimeShapes::Spec& spec) {
 }
 void* Invoke(void* method,void* self,void** args,void** exception) {
   *exception=nullptr;
+  if(method==(void*)1&&args&&RuntimeShapes::cached.count(args[0]))++cachedAliveReads;
   if (method==(void*)0x210) return &boneArray;
   if (method==(void*)0x211) return &poseArray;
   if (method==(void*)0x212) return (void*)0xA0;
@@ -47,12 +57,12 @@ void* Invoke(void* method,void* self,void** args,void** exception) {
   if (method==(void*)0x216) return skinningRoot;
   if (method==(void*)0x301) return &frame;
   if (method==(void*)0x302) return &elapsed;
-  if (method==(void*)0x303) return renderMeshes.count(self)?renderMeshes.at(self):controlledMesh;
+  if (method==(void*)0x303) {++meshReads;return renderMeshes.count(self)?renderMeshes.at(self):controlledMesh;}
   if (method==(void*)0x306) return meshes.at(self).name.data();
   if (method==(void*)0x307) return &meshes.at(self).vertices;
-  if (method==(void*)0x308) return &renderEnabled.at(self);
+  if (method==(void*)0x308) {++enabledReads;enabledReadResult=RuntimeShapes::originalEnabledGetter?RuntimeShapes::GetEnabled(self):renderEnabled.at(self);return &enabledReadResult;}
   if (method==(void*)0x309) return &meshes.at(self).shapes;
-  if (method==(void*)0x310) {Require((self==(void*)0x312||self==(void*)0x313)&&args&&args[0]==(void*)0x311&&*(unsigned char*)args[1]==1,"controls queried outside the completed model or omitted inactive children");return &modelRenderers[self==(void*)0x313?1:0];}
+  if (method==(void*)0x310) {++modelReads;Require((self==(void*)0x312||self==(void*)0x313)&&args&&args[0]==(void*)0x311&&*(unsigned char*)args[1]==1,"controls queried outside the completed model or omitted inactive children");return &modelRenderers[self==(void*)0x313?1:0];}
   if (method==(void*)0x304) return &weight;
   if (method==(void*)0x305) {weight=*(float*)args[1];++weightWrites;return nullptr;}
   return method==(void*)2?lastRoot:&mainThread;
@@ -328,6 +338,25 @@ int main(int argc,char** argv) {
       RuntimeShapes::boundCount.store(boundCount);
       Require(Test::handles.empty(),"regular frame test leaks managed handles");
     }
+    stage="idle visibility query budget";
+    {
+      const auto api=RuntimeShapes::api;const auto bound=RuntimeShapes::bound;const auto specs=RuntimeShapes::specs;
+      const auto keys=RuntimeShapes::keys;const auto variables=RuntimeShapes::variables;const auto cached=RuntimeShapes::cached;auto lastFrame=RuntimeShapes::lastFrame;auto packageGeneration=RuntimeShapes::packageGeneration;
+      RuntimeShapes::bound.clear();RuntimeShapes::specs.clear();RuntimeShapes::keys.clear();
+      RuntimeShapes::variables={{"fixture",{{"idle",1}}}};
+      RuntimeShapes::Spec spec;spec.marker="idle";spec.package="fixture";spec.visible=std::make_shared<EiemExpression>();spec.visible->op=EiemExpression::Number;spec.visible->number=1;RuntimeShapes::specs.emplace(spec.marker,spec);
+      RuntimeShapes::api.frame=(void*)0x301;RuntimeShapes::api.elapsed=(void*)0x302;RuntimeShapes::api.mesh=(void*)0x303;RuntimeShapes::api.getEnabled=(void*)0x308;RuntimeShapes::api.alive=(void*)1;
+      RuntimeShapes::packageGeneration=generation.load();RuntimeShapes::lastFrame=-1;
+      for(uintptr_t i=0;i<128;++i){auto renderer=(void*)(0x10000+i*16),mesh=(void*)(0x30000+i*16);Test::renderMeshes[renderer]=mesh;Test::renderEnabled[renderer]=1;
+        RuntimeShapes::Bound binding;binding.renderer=RuntimeShapes::Ref::Make(renderer,false);binding.mesh=RuntimeShapes::Ref::Make(mesh,false);binding.marker="idle";binding.modelReady=true;binding.nativeEnabled=true;binding.visibilityRevision=RuntimeControls::valueRevision;RuntimeShapes::bound.emplace(renderer,std::move(binding));}
+      for(uintptr_t i=0;i<128;++i){auto mesh=(void*)(0x50000+i*16);RuntimeShapes::Cached value;value.mesh=RuntimeShapes::Ref::Make(mesh,true);RuntimeShapes::cached.emplace(mesh,std::move(value));}
+      Test::cachedAliveReads=0;Test::getters=Test::enabledReads=0;for(int i=0;i<64;++i){++Test::frame;RuntimeShapes::Update();}
+      Require(Test::cachedAliveReads==0,"idle frames inspect every captured source Mesh cache");
+      Require(Test::getters==128&&Test::enabledReads==0,"idle visibility query budget differs: meshes="+std::to_string(Test::getters)+" enabled="+std::to_string(Test::enabledReads));
+      ++RuntimeControls::valueRevision;++Test::frame;RuntimeShapes::Update();Require(Test::enabledReads==128,"new author state did not reach every Renderer on the next frame");
+      RuntimeShapes::bound=bound;RuntimeShapes::cached=cached;RuntimeShapes::specs=specs;RuntimeShapes::keys=keys;RuntimeShapes::variables=variables;RuntimeShapes::api=api;RuntimeShapes::lastFrame=lastFrame;RuntimeShapes::packageGeneration=packageGeneration;RuntimeShapes::boundCount=unsigned(bound.size());Test::renderMeshes.clear();Test::renderEnabled.clear();
+      Require(Test::handles.empty(),"idle visibility test leaks managed handles");
+    }
     // Integration against the actual format-2 package: model completion,
     // provenance registration, every switch declaration, per-instance writes,
     // native enable arbitration, physical edges and preference round-trip.
@@ -342,6 +371,9 @@ int main(int argc,char** argv) {
         std::filesystem::copy_file(authorRoot/std::filesystem::u8path(resource.first),path,std::filesystem::copy_options::overwrite_existing);
       }
       package.root=temp;
+      // Exercise the physical bindings independently of the user's persisted
+      // permission to enable them. Never change the installed Mod's INI.
+      package.keySwitchEnabled=true;
       package.defaults["$press_test"]=0;
       package.bindings.push_back({"pressFixture","$press_test","press",{'K',MOD_CONTROL},{7},1});
       auto graph=std::make_shared<const std::vector<Package>>(std::vector<Package>{package});
@@ -372,7 +404,8 @@ int main(int argc,char** argv) {
       // its Renderer enabled baseline. Authored defaults must not contaminate
       // that native snapshot or later SetRendererVisible will replay them as
       // native disable requests and permanently suppress hidden parts.
-      auto initializeController=[&] {
+      auto initializeController=[&](unsigned instance=0) {
+      Test::controllerModel=instance;
       const auto savedClass=il2cpp_object_get_class;
       const auto savedFields=il2cpp_class_get_fields;
       const auto savedParent=il2cpp_class_get_parent;
@@ -381,7 +414,7 @@ int main(int argc,char** argv) {
       il2cpp_object_get_class=[](void* object)->void*{return Test::renderMeshes.count(object)?(void*)0x314:(void*)0x315;};
       il2cpp_class_get_fields=[](void*,void** iterator)->void*{auto index=uintptr_t(*iterator);if(index>=2)return nullptr;*iterator=(void*)(index+1);return(void*)(index+1);};
       il2cpp_field_get_name=[](void* field)->const char*{return field==(void*)1?"_items":"_size";};
-      il2cpp_field_get_value=[](void*,void* field,void* output){if(field==(void*)1)*(void**)output=&Test::modelRenderers[0];else *(int*)output=int(Test::modelRenderers[0].header.count);};
+      il2cpp_field_get_value=[](void*,void* field,void* output){if(field==(void*)1)*(void**)output=&Test::modelRenderers[Test::controllerModel];else *(int*)output=int(Test::modelRenderers[Test::controllerModel].header.count);};
       il2cpp_class_get_parent=[](void*)->void*{return nullptr;};
       il2cpp_class_get_name=[](void* klass)->const char*{return klass==(void*)0x314?"SkinnedMeshRenderer":"fixture";};
       il2cpp_class_get_namespace=[](void* klass)->const char*{return klass==(void*)0x314?"UnityEngine":"fixture";};
@@ -429,7 +462,81 @@ int main(int argc,char** argv) {
       for(const auto& binding:RuntimeShapes::bound)
         Require(binding.second.modelReady && binding.second.nativeEnabled==completedIntent.at(binding.first),
                 "repeated initialization treated authored visibility as native disabled");
-      RuntimeShapes::RegisterModel((void*)0x313);
+      // NPCs have helper/material initialization, without any view-part or
+      // dynamic-scene model completion. Use the shared helper's own list.
+      initializeController(1);
+      for(size_t i=0;i<Test::modelRenderers[1].header.count;++i)
+        Require(!RuntimeShapes::bound.at(Test::modelRenderers[1].values[i]).modelReady,"NPC material Init prematurely completed the model");
+      const auto helperOriginal=RuntimeShapes::originalHelperInit;
+      const auto helperField=RuntimeShapes::helperRenderersField;
+      const auto getterOriginal=RuntimeShapes::originalEnabledGetter;
+      RuntimeShapes::originalHelperInit=Test::HelperInit;RuntimeShapes::helperRenderersField=(void*)3;
+      RuntimeShapes::originalEnabledGetter=Test::EnabledGetter;
+      const auto helperClass=il2cpp_object_get_class;
+      const auto helperFields=il2cpp_class_get_fields;
+      const auto helperFieldName=il2cpp_field_get_name;
+      const auto helperFieldValue=il2cpp_field_get_value;
+      const auto helperClassName=il2cpp_class_get_name,helperNamespace=il2cpp_class_get_namespace;
+      const auto helperParent=il2cpp_class_get_parent;
+      il2cpp_object_get_class=[](void* object)->void*{return Test::renderMeshes.count(object)?(void*)0x314:(void*)0x315;};
+      il2cpp_class_get_name=[](void* klass)->const char*{return klass==(void*)0x314?"SkinnedMeshRenderer":"fixture";};
+      il2cpp_class_get_namespace=[](void* klass)->const char*{return klass==(void*)0x314?"UnityEngine":"fixture";};
+      il2cpp_class_get_parent=[](void*)->void*{return nullptr;};
+      il2cpp_class_get_fields=[](void*,void** iterator)->void*{auto index=uintptr_t(*iterator);if(index>=2)return nullptr;*iterator=(void*)(index+1);return(void*)(index+1);};
+      il2cpp_field_get_name=[](void* field)->const char*{return field==(void*)1?"_items":"_size";};
+      il2cpp_field_get_value=[](void* receiver,void* field,void* output){
+        if(field==(void*)3){++Test::helperListReads;Require(receiver==(void*)0x321,"NPC Renderer list read from a different helper");*(void**)output=Test::helperHasList?&Test::modelRenderers[1]:nullptr;}
+        else if(field==(void*)1)*(void**)output=&Test::modelRenderers[1];
+        else *(int*)output=int(Test::modelRenderers[1].header.count);
+      };
+      const auto modelReads=Test::modelReads;
+      auto completeHelper=[&]{RuntimeShapes::HelperInitialized((void*)0x321,(void*)0x326);};
+      Test::helperHasList=false;completeHelper();
+      for(size_t i=0;i<Test::modelRenderers[1].header.count;++i)
+        Require(!RuntimeShapes::bound.at(Test::modelRenderers[1].values[i]).modelReady,"helper without a Renderer list activated provisional controls");
+      Test::helperHasList=true;
+      auto helperDisabled=Test::modelRenderers[1].values[0];Test::Enabled(helperDisabled,false);
+      const auto helperSnapshot=Test::renderEnabled;
+      // Helper InitAll can run inside view-part post-processing. Internal
+      // author writes/readback must inspect the actual enabled flag even
+      // while the game is capturing its separate native-intent snapshot.
+      {RuntimeShapes::NativeVisibilityReadScope snapshot;completeHelper();}
+      Require(Test::helperCompletions==2,"helper original was skipped or called more than once");
+      void* authoredHidden=nullptr;
+      for(size_t i=0;i<Test::modelRenderers[1].header.count;++i){auto renderer=Test::modelRenderers[1].values[i];
+        const auto& binding=RuntimeShapes::bound.at(renderer);
+        Require(binding.modelReady,"NPC controls remain pending after the game's helper initialization");
+        Require(binding.nativeEnabled==bool(helperSnapshot.at(renderer)),"helper completion lost native enabled intent");
+        const auto& spec=RuntimeShapes::specs.at(binding.marker);
+        Require(bool(Test::renderEnabled.at(renderer))==(binding.nativeEnabled&&spec.visible->Evaluate(RuntimeShapes::variables.at(spec.package))!=0),"NPC defaults not applied at helper completion");
+        if(binding.nativeEnabled&&!Test::renderEnabled.at(renderer))authoredHidden=renderer;
+      }
+      Require(authoredHidden,"fixture must include an authored hidden part for native snapshot regression");
+      Require(!RuntimeShapes::GetEnabled(authoredHidden),"normal enabled getter must return the actual rendered state");
+      {RuntimeShapes::NativeVisibilityReadScope snapshot;
+        Require(RuntimeShapes::GetEnabled(authoredHidden),"view-part baseline captured authored hiding instead of native intent after helper completion");
+        Require(!RuntimeShapes::GetEnabled(helperDisabled),"snapshot bypassed real native hiding");
+        {RuntimeShapes::NativeVisibilityReadScope nested;Require(RuntimeShapes::GetEnabled(authoredHidden),"nested snapshot lost native intent");}
+        Require(RuntimeShapes::GetEnabled(authoredHidden),"nested scope reset outer snapshot");
+      }
+      Require(!RuntimeShapes::GetEnabled(authoredHidden)&&RuntimeShapes::nativeVisibilityReadDepth==0,"snapshot scope leaked into normal game reads");
+      RuntimeShapes::SetEnabled(helperDisabled,true);
+      const auto helperFlags=Test::renderEnabled;
+      std::map<void*,bool> helperIntent;for(const auto& row:RuntimeShapes::bound)helperIntent[row.first]=row.second.nativeEnabled;
+      completeHelper();
+      Require(Test::renderEnabled==helperFlags,"reused helper completion changed authored visibility");
+      for(const auto& row:RuntimeShapes::bound)Require(row.second.nativeEnabled==helperIntent.at(row.first),"reused helper captured authored hiding as native intent");
+      Require(Test::modelReads==modelReads,"helper registration scanned model children instead of using the game's cached list");
+      auto listReads=Test::helperListReads;RuntimeShapes::registrationPaused=true;completeHelper();RuntimeShapes::registrationPaused=false;
+      Require(Test::helperListReads==listReads,"paused helper registration still queried renderers");
+      Test::mainThread=0;completeHelper();Test::mainThread=1;
+      Require(Test::helperListReads==listReads,"helper registration queried Unity objects outside the main thread");
+      RuntimeShapes::enabled=false;completeHelper();RuntimeShapes::enabled=true;
+      Require(Test::helperListReads==listReads&&Test::helperCompletions==6,"disabled helper registration skipped the original or queried a model");
+      il2cpp_object_get_class=helperClass;il2cpp_class_get_fields=helperFields;
+      il2cpp_field_get_name=helperFieldName;il2cpp_field_get_value=helperFieldValue;
+      il2cpp_class_get_name=helperClassName;il2cpp_class_get_namespace=helperNamespace;il2cpp_class_get_parent=helperParent;
+      RuntimeShapes::originalHelperInit=helperOriginal;RuntimeShapes::helperRenderersField=helperField;RuntimeShapes::originalEnabledGetter=getterOriginal;
       Require(RuntimeShapes::bound.size()==parts.size()*2,"later model control registration incomplete");
       auto apply=[&] {
         for(auto& binding:RuntimeShapes::bound) RuntimeShapes::ApplyVisibility(binding.first,binding.second,RuntimeShapes::specs.at(binding.second.marker));
@@ -458,13 +565,29 @@ int main(int argc,char** argv) {
       }
       press('K');Require(RuntimeShapes::variables.at(package.id).at("$press_test")==0,"modifier-free chord fires");
       press('K',MOD_CONTROL);Require(RuntimeShapes::variables.at(package.id).at("$press_test")==7,"press chord target omitted");
-      press(VK_NUMPAD5);auto renderer=firstRenderer.at("PartS_actor_lizhiyan_cloth_03_lod0_3.lian");
-      Require(!Test::renderEnabled.at(renderer),"NUMPAD5 does not hide lian");
+      // Use the actual author's expressions and key domains. The fixture
+      // must not assume this user's lian still belongs to NUMPAD5.
+      void* renderer=nullptr;const Binding* visibilityKey=nullptr;const RuntimeControls::Spec* visibilitySpec=nullptr;
+      for(const auto& part:firstRenderer)for(const auto& binding:RuntimeShapes::bound)if(binding.first==part.second){
+        const auto& spec=RuntimeControls::specs.at(binding.second.marker);
+        for(const auto& key:package.bindings)if(key.type=="cycle"){
+          auto values=RuntimeControls::variables.at(package.id);bool on=false,off=false;
+          for(auto value:key.values){values[key.variable]=value;bool visible=spec.visible->Evaluate(values)!=0;on|=visible;off|=!visible;}
+          if(on&&off&&!renderer){renderer=part.second;visibilityKey=&key;visibilitySpec=&spec;}
+        }
+      }
+      Require(renderer&&visibilityKey&&visibilitySpec,"author fixture has no switchable visible part");
+      auto switchVisible=[&](bool target){for(size_t step=0;step<=visibilityKey->values.size();++step){
+        if((visibilitySpec->visible->Evaluate(RuntimeControls::variables.at(package.id))!=0)==target)return;
+        press(visibilityKey->key.vk,visibilityKey->key.modifiers);
+      }throw std::runtime_error("author visibility target absent from cycle");};
+      switchVisible(false);
+      Require(!Test::renderEnabled.at(renderer),"author key does not hide its declared part");
       RuntimeShapes::SetEnabled(renderer,true);Require(!Test::renderEnabled.at(renderer),"native enable bypasses hidden author state");
-      RuntimeShapes::SetEnabled(renderer,false);press(VK_NUMPAD5);
+      RuntimeShapes::SetEnabled(renderer,false);switchVisible(true);
       Require(!Test::renderEnabled.at(renderer),"author switch re-enables native-disabled Renderer");
       RuntimeShapes::SetEnabled(renderer,true);Require(Test::renderEnabled.at(renderer),"native enable not restored for visible author part");
-      press(VK_NUMPAD5);
+      switchVisible(false);
       auto newRenderer=(void*)identity++;Test::renderMeshes[newRenderer]=Test::renderMeshes.at(renderer);Test::renderEnabled[newRenderer]=1;
       RuntimeShapes::RegisterRenderer(newRenderer,Test::renderMeshes.at(newRenderer));
       Require(!Test::renderEnabled.at(newRenderer),"new instance does not inherit current switch state");
@@ -480,7 +603,8 @@ int main(int argc,char** argv) {
       auto oldPackageGeneration=RuntimeShapes::packageGeneration,oldChecked=RuntimeShapes::checkedGeneration;
       std::atomic_store(&published,graph);generation=oldGeneration+1;
       RuntimeShapes::packageGeneration=oldGeneration;RuntimeShapes::checkedGeneration=oldGeneration;
-      Require(RuntimeShapes::CurrentGeneration() && RuntimeShapes::variables.at(package.id).at("$switch_a2670be72e524621")==1,"unchanged refresh disables/resets switch state");
+      auto currentValues=RuntimeShapes::variables.at(package.id);
+      Require(RuntimeShapes::CurrentGeneration() && RuntimeShapes::variables.at(package.id)==currentValues,"unchanged refresh disables/resets switch state");
       std::atomic_store(&published,oldPublished);generation=oldGeneration;
       RuntimeShapes::packageGeneration=oldPackageGeneration;RuntimeShapes::checkedGeneration=oldChecked;
       for(const auto& key:package.persistent)

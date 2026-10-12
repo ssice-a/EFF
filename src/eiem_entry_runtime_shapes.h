@@ -38,6 +38,7 @@ struct Bound {
   bool nativeEnabled = true;
   bool modelReady = false;
   Ref filter;
+  uint64_t visibilityRevision=~uint64_t(0);
 };
 struct Snapshot { Ref mesh; };
 struct CaptureScope {
@@ -92,6 +93,15 @@ CaptureFn originalCapture = nullptr;
 ReleaseFn originalRelease = nullptr;
 TickFn originalTick = nullptr, originalReset = nullptr, originalFrameTick = nullptr;
 InitFn originalInit = nullptr;
+TickFn originalHelperInit = nullptr;
+void* helperRenderersField=nullptr;
+using EnabledGetterFn = bool (*)(void*);
+EnabledGetterFn originalEnabledGetter=nullptr;
+thread_local unsigned nativeVisibilityReadDepth=0;
+struct NativeVisibilityReadScope {
+  NativeVisibilityReadScope(){++nativeVisibilityReadDepth;}
+  ~NativeVisibilityReadScope(){--nativeVisibilityReadDepth;}
+};
 MeshGetterFn originalMeshGetter = nullptr;
 using ShapeCountFn = int (*)(void*);
 using FilterSetterFn = void (*)(void*,void*);
@@ -169,6 +179,11 @@ bool Alive(void* object) {
   if (!object) return false;
   void* arguments[] = {object};
   return Scalar<unsigned char>(api.alive,nullptr,arguments) != 0;
+}
+void PruneCached(){
+  // Cached source geometry is consulted only by capture/model events. Its
+  // weak ownership is checked at those boundaries, not on every game frame.
+  for(auto it=cached.begin();it!=cached.end();)if(!Alive(it->second.mesh.Get()))it=cached.erase(it);else ++it;
 }
 template <class V> std::vector<V> Array(void* object, size_t expected) {
   size_t length = 0;
@@ -542,6 +557,7 @@ void Release(void* self, void* entity, void* info) {
       Log("[SHAPE-CAPTURE-RELEASE] controller=%p entity=%p live=%zu",self,entity,liveSnapshots);
     } else ++it;
   }
+  PruneCached();
   } catch(const std::exception& e) { Log("[SHAPE-CAPTURE-GAP] release=%s",e.what()); }
 }
 void Reset(void* self, void* info) {
@@ -574,14 +590,18 @@ void SetEnabled(void* renderer,bool nativeRequest) {
   } catch(const std::exception& e) {Log("[CONTROL-RUNTIME-GAP] nativeEnabled=%s",e.what());}
   originalEnabledSetter(renderer,output);
 }
-void ApplyVisibility(void* renderer,Bound& binding,const Spec& spec) {
+void ApplyVisibility(void* renderer,Bound& binding,const Spec& spec,bool onlyIfChanged=false) {
   if (!spec.visible || !binding.modelReady) return;
+  if(onlyIfChanged&&binding.visibilityRevision==RuntimeControls::valueRevision)return;
   bool authorVisible=spec.visible->Evaluate(variables.at(spec.package))!=0;
   bool target=binding.nativeEnabled && authorVisible;
-  if ((Scalar<unsigned char>(api.getEnabled,renderer)!=0)==target) return;
+  // Our comparisons and write readback need the actual flag, including when
+  // helper completion is nested inside the game's native snapshot scope.
   struct Guard {Guard(){visibilityWriting=true;}~Guard(){visibilityWriting=false;}} guard;
+  if ((Scalar<unsigned char>(api.getEnabled,renderer)!=0)==target) {binding.visibilityRevision=RuntimeControls::valueRevision;return;}
   originalEnabledSetter(renderer,target);
   Require((Scalar<unsigned char>(api.getEnabled,renderer)!=0)==target,"runtime visibility readback mismatch");
+  binding.visibilityRevision=RuntimeControls::valueRevision;
   Log("[CONTROL-RUNTIME-VISIBILITY] package=%s part=%s renderer=%p authorVisible=%d nativeEnabled=%d enabled=%d",
       spec.package.c_str(),spec.part.c_str(),renderer,int(authorVisible),int(binding.nativeEnabled),int(target));
 }
@@ -591,8 +611,8 @@ void RegisterRenderer(void* renderer,void* mesh,bool modelReady=true) {
     Bind(renderer,mesh,*spec);
     auto& binding=bound.at(renderer);
     if(modelReady && !binding.modelReady) {
-      // Until the game has finished its model initialization, native reads
-      // and writes remain unfiltered so its initial enable snapshot is clean.
+      // Before helper/model completion there is no author filtering. Later
+      // view-part snapshot reads have their own native-intent scope.
       if(spec->visible) binding.nativeEnabled=Scalar<unsigned char>(api.getEnabled,renderer)!=0;
       binding.modelReady=true;
     }
@@ -618,6 +638,7 @@ bool CurrentGeneration() {
 // Include inactive children so later visibility/LOD changes need no scene scan.
 size_t RegisterModel(void* root) {
   if (!enabled || registrationPaused || !Main() || !Alive(root) || !CurrentGeneration()) return 0;
+  PruneCached();
   Require(api.modelRenderers && api.rendererType,"runtime model registration unavailable");
   unsigned char inactive=1;void* args[]={api.rendererType,&inactive};
   auto objects=Ref::Make(Call(api.modelRenderers,root,args),false);size_t count=0;
@@ -634,11 +655,55 @@ size_t RegisterModel(void* root) {
   }
   return ready;
 }
+size_t RegisterRendererList(void* renderers,bool modelReady) {
+  auto klass=il2cpp_object_get_class(renderers);void *iterator=nullptr,*itemsField=nullptr,*sizeField=nullptr;
+  while(auto field=il2cpp_class_get_fields(klass,&iterator)) {
+    auto name=il2cpp_field_get_name(field);
+    if(name&&!strcmp(name,"_items"))itemsField=field;
+    if(name&&!strcmp(name,"_size"))sizeField=field;
+  }
+  Require(itemsField&&sizeField,"runtime shape renderer list metadata");
+  void* items=nullptr;int size=0;size_t capacity=0;
+  il2cpp_field_get_value(renderers,itemsField,&items);il2cpp_field_get_value(renderers,sizeField,&size);
+  Require(size>=0&&ArrayLength(items,&capacity)&&size_t(size)<=capacity,"runtime shape renderer list range");
+  size_t ready=0;
+  for(int i=0;i<size;++i) {
+    void* renderer=nullptr;
+    Require(CopyRaw((char*)items+32+i*sizeof(void*),&renderer,sizeof(renderer)),"runtime shape renderer list element");
+    if(!Alive(renderer)||!RendererKind(renderer))continue;
+    auto mesh=SourceMesh(renderer);RegisterRenderer(renderer,mesh,modelReady);
+    auto binding=bound.find(renderer);
+    if(binding!=bound.end()&&binding->second.renderer.Get()==renderer&&binding->second.mesh.Get()==mesh&&binding->second.modelReady)++ready;
+  }
+  return ready;
+}
+bool GetEnabled(void* renderer) {
+  // View parts save their initial enabled state after helper initialization.
+  // In that exact call scope return native intent, so authored hiding cannot
+  // become a permanent native disable. Normal reads retain the real flag.
+  if(enabled&&nativeVisibilityReadDepth&&!visibilityWriting) {
+    auto binding=bound.find(renderer);
+    if(binding!=bound.end()&&binding->second.renderer.Get()==renderer&&binding->second.modelReady)
+      return binding->second.nativeEnabled;
+  }
+  return originalEnabledGetter(renderer);
+}
+void HelperInitialized(void* self,void* info) {
+  originalHelperInit(self,info);
+  try {
+    if(!enabled||registrationPaused||!helperRenderersField||!Main()||!CurrentGeneration())return;
+    void* list=nullptr;il2cpp_field_get_value(self,helperRenderersField,&list);
+    if(!list)return;
+    auto renderers=Ref::Make(list,false);auto ready=RegisterRendererList(renderers.Get(),true);
+    if(ready)Log("[CONTROL-RUNTIME-HELPER] helper=%p ready=%zu cachedRendererList=1 sceneDiscovery=0",self,ready);
+  }catch(const std::exception& e){Log("[CONTROL-RUNTIME-GAP] helperCompletion=%s",e.what());}
+}
 void Update() {
   if (!enabled || !Main()) return;
   int frame = Scalar<int>(api.frame);
   if (frame == lastFrame) return;
   lastFrame = frame;
+  EiemLoadPerformance::Scope performance(EiemLoadPerformance::Controls);
 #if defined(EIEM_DIAGNOSTICS)
   ReloadObservation::Frame(frame);
   LoadingObservation::Frame(frame);
@@ -649,6 +714,7 @@ void Update() {
   // Poll once per Unity frame, independent of the number of model instances.
   double elapsed = Scalar<float>(api.elapsed);
   Require(std::isfinite(elapsed) && elapsed >= 0, "runtime shape frame delta");
+  EiemLoadPerformance::Frame(elapsed);
   auto window = GetForegroundWindow(); DWORD pid=0; GetWindowThreadProcessId(window,&pid);
   bool focused = active.load() && pid == GetCurrentProcessId();
   PanelCommands(focused);
@@ -659,13 +725,19 @@ void Update() {
         frame,pid,int(focused),keys.size(),bound.size(),elapsed);
 #endif
   for (auto it=bound.begin();it!=bound.end();) {
+    const auto& spec=specs.at(it->second.marker);
+    bool visibilityDirty=spec.visible&&it->second.modelReady&&it->second.visibilityRevision!=RuntimeControls::valueRevision;
+    // Shape channels can be rewritten by animation each frame. Visibility
+    // already follows native setters and only needs work on author changes.
+    // Spread idle weak-reference cleanup instead of polling every Renderer.
+    bool cleanup=(uintptr_t(it->first)>>4)%64==unsigned(frame)%64;
+    if(spec.controls.empty()&&!visibilityDirty&&!cleanup){++it;continue;}
     auto renderer=it->second.renderer.Get(), mesh=it->second.mesh.Get();
     if (!Alive(renderer) || !Alive(mesh)) { it=bound.erase(it); continue; }
     auto filter=it->second.filter.Get();
     auto current=it->second.filter.handle?(Alive(filter)?Call(api.filterMesh,filter):nullptr):SourceMesh(renderer);
     if (current!=mesh) { it=bound.erase(it); continue; }
-    const auto& spec=specs.at(it->second.marker);
-    ApplyVisibility(renderer,it->second,spec);
+    ApplyVisibility(renderer,it->second,spec,true);
     for (const auto& control : spec.controls) {
       int index=it->second.indices.at(control.first);
       float target=float(variables.at(spec.package).at(control.second)*100.0);
@@ -680,9 +752,6 @@ void Update() {
       }
     }
     ++it;
-  }
-  for (auto it=cached.begin();it!=cached.end();) {
-    if (!Alive(it->second.mesh.Get())) it=cached.erase(it); else ++it;
   }
   boundCount.store(unsigned(bound.size()));
   // Losing a managed weak reference does not prove native/GPU consumers have
@@ -706,25 +775,9 @@ void Init(void* self, void* renderers, void* configs, void* custom, bool skip, v
     originalInit(self,renderers,configs,custom,skip,info);
   try {
     if (!enabled || registrationPaused || !renderers || !Main()) return;
-    auto klass=il2cpp_object_get_class(renderers); void *iterator=nullptr,*itemsField=nullptr,*sizeField=nullptr;
-    while (auto f=il2cpp_class_get_fields(klass,&iterator)) {
-      auto name=il2cpp_field_get_name(f);
-      if (name && !strcmp(name,"_items")) itemsField=f;
-      if (name && !strcmp(name,"_size")) sizeField=f;
-    }
-    Require(itemsField && sizeField,"runtime shape renderer list metadata");
-    void* items=nullptr; int size=0; size_t capacity=0;
-    il2cpp_field_get_value(renderers,itemsField,&items); il2cpp_field_get_value(renderers,sizeField,&size);
-    Require(size>=0 && ArrayLength(items,&capacity) && size_t(size)<=capacity,"runtime shape renderer list range");
-    for (int i=0;i<size;++i) {
-      void* renderer=nullptr; Require(CopyRaw((char*)items+32+i*sizeof(void*),&renderer,sizeof(renderer)),"runtime shape renderer list element");
-      if (!Alive(renderer)) continue;
-      if (!RendererKind(renderer)) continue;
-      auto mesh=SourceMesh(renderer);
-      // Material controllers can initialize before BaseModelViewPart saves
-      // Renderer enabled state. Complete-model callbacks activate filtering.
-      RegisterRenderer(renderer,mesh,false);
-    }
+    // Material controllers can initialize before BaseModelViewPart saves
+    // Renderer enabled state. Complete-model callbacks activate filtering.
+    RegisterRendererList(renderers,false);
   } catch(const std::exception& e) { Log("[SHAPE-RUNTIME-GAP] registration=%s",e.what()); }
 }
 void InstallOptional(void** assemblies,size_t count) {
@@ -840,6 +893,21 @@ void InstallOptional(void** assemblies,size_t count) {
     };
     // Public enabled binding: self, bool; writes retain native intent.
     installIcall("UnityEngine.Renderer::set_enabled(System.Boolean)",(void*)SetEnabled,(void**)&originalEnabledSetter);
+    installIcall("UnityEngine.Renderer::get_enabled()",(void*)GetEnabled,(void**)&originalEnabledGetter);
+    auto renderHelper=FindClass("Beyond.Gameplay.View","EntityRenderHelper",assemblies,count);
+    Require(renderHelper,"runtime Renderer helper class absent");
+    void* helperFields=nullptr;
+    while(auto f=il2cpp_class_get_fields(renderHelper,&helperFields)) {
+      auto name=il2cpp_field_get_name(f);
+      if(!name||strcmp(name,"m_allChildrenRenderers"))continue;
+      Require(!(il2cpp_field_get_flags(f)&0x10),"runtime helper Renderer list unexpectedly static");
+      auto type=il2cpp_type_get_name(il2cpp_field_get_type(f));
+      bool matches=type&&!strcmp(type,"System.Collections.Generic.List<UnityEngine.Renderer>");
+      if(type)il2cpp_free((void*)type);
+      Require(matches,"runtime helper Renderer list type differs");helperRenderersField=f;break;
+    }
+    Require(helperRenderersField&&Install(renderHelper,"InitAll",{},"System.Void",false,(void*)HelperInitialized,(void**)&originalHelperInit),"runtime helper completion hook absent");
+    Log("[CONTROL-RUNTIME-HELPER-API] completion=EntityRenderHelper.InitAll cachedRendererList=1 nativeSnapshotGetter=1 sceneDiscovery=0");
     // Registered binding: self, void* destination, int bytes; no MethodInfo.
     installIcall("UnityEngine.SkinnedMeshRenderer::RequestCurrentFrameSkinMatrices",(void*)RequestMatrices,(void**)&originalMatrixRequest);
     Log("[SHAPE-CAPTURE-MATRIX-API] installed=1 perRendererSlots=1 publicTransforms=1 synchronousRefusalFallback=1");
@@ -871,7 +939,7 @@ void InstallOptional(void** assemblies,size_t count) {
   }
 }
 void Arm() {
-  enabled=CaptureObservation::afterFinished && CaptureObservation::originalFinished && originalCapture && originalRelease && originalReset && originalTick && originalFrameTick && originalInit && originalMeshGetter && originalMatrixRequest && originalEnabledSetter;
+  enabled=CaptureObservation::afterFinished && CaptureObservation::originalFinished && originalCapture && originalRelease && originalReset && originalTick && originalFrameTick && originalInit && originalMeshGetter && originalMatrixRequest && originalEnabledSetter && originalEnabledGetter && originalHelperInit;
   if (CaptureObservation::afterFinished) Log("[SHAPE-RUNTIME-READY] enabled=%d controlsBound=%u sourceShapesRetained=1 captureSnapshotReadyGuard=1",int(enabled.load()),boundCount.load());
 }
 } // namespace RuntimeShapes

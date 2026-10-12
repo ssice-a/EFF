@@ -22,7 +22,12 @@ transactions are described in [the architecture](code-architecture.md).
   own validated binding. New instances receive current visibility during
   registration. The game's model completion callback registers only that model's
   children, including inactive renderers; native material-controller Init also
-  registers its explicit list. F10 registers rebuilt models immediately after
+  registers its explicit list provisionally. The helper's `InitAll` completion
+  activates bindings from its own cached Renderer list, covering NPCs that do
+  not use a view part. Base/Complex view-part initialization reads native
+  enabled intent in an exact nested scope so its initial snapshot cannot capture
+  author hiding; other reads return actual enabled flags. Reused instances retain
+  native intent and current author values. F10 registers rebuilt models immediately after
   the new control graph is published and restores bindings during rollback.
   No periodic scene-wide Renderer discovery is used.
 - Declared `persist` values are numeric `[Values]` entries in `state.ini`.
@@ -82,6 +87,9 @@ graphics backend. On Windows 11 it uses the system Desktop Acrylic backdrop,
 with a translucent dark surface; unsupported systems keep a dark surface.
 The graphics device and fonts are created on the first panel opening, and hidden
 panels do not render. No game graphics hook is added.
+The panel is an independent top-level tool window, without a cross-thread HWND
+owner. Visibility still follows game focus/minimization. This avoids a synchronous
+hide/activation wait on the game's window thread when closing the panel.
 
 The panel lists independent keyboard checkboxes for Mods with
 bindings. Each applies immediately and atomically saves the same INI flag on

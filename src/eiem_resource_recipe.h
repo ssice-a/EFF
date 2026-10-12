@@ -56,11 +56,23 @@ struct Dictionary {
   if(length<32)return 0;location=found->second;return length;
  }
 };
-inline Member Describe(const EndfieldInput::Member& output,const Dictionary& original,const Dictionary& author){
+// Transient provenance, never part of the compiled file. Callers can identify
+// untouched object bodies and original stream prefixes without byte searching.
+struct OriginalSpan {size_t output=0,buffer=0,offset=0,size=0;};
+inline Member Describe(const EndfieldInput::Member& output,const Dictionary& original,const Dictionary& author,
+                       const std::vector<OriginalSpan>& known={}){
+ size_t end=0;
+ for(const auto& span:known){
+  Require(span.buffer<original.buffers.size(),"recipe original provenance buffer absent");const auto& bytes=*original.buffers[span.buffer].bytes;
+  Require(span.size&&span.output>=end&&span.output<=output.bytes.size()&&span.size<=output.bytes.size()-span.output&&span.offset<=bytes.size()&&span.size<=bytes.size()-span.offset,"recipe original provenance range differs");
+  Require(std::equal(output.bytes.begin()+span.output,output.bytes.begin()+span.output+span.size,bytes.begin()+span.offset),"recipe original provenance content differs");end=span.output+span.size;
+ }
  Member member;member.name=output.name;member.flags=output.flags;member.size=output.bytes.size();member.hash=Digest(output.bytes);
  auto literal=[&](unsigned char byte){if(member.spans.empty()||member.spans.back().kind!=Literal)member.spans.push_back({});auto& span=member.spans.back();span.literal.push_back(byte);++span.size;};
+ size_t provenance=0;
  for(size_t p=0;p<output.bytes.size();){size_t length=0;Location old,edit;const Dictionary* dictionary=nullptr;Location location;
-  if(output.bytes.size()-p>=32){auto hash=Anchor(output.bytes.data()+p);auto a=original.Match(output.bytes,p,hash,old),b=author.Match(output.bytes,p,hash,edit);if(a||b){dictionary=a>=b?&original:&author;location=a>=b?old:edit;length=std::max(a,b);}}
+  if(provenance<known.size()&&known[provenance].output==p){const auto& span=known[provenance++];dictionary=&original;location={span.buffer,span.offset};length=span.size;}
+  else if(output.bytes.size()-p>=32){auto hash=Anchor(output.bytes.data()+p);auto a=original.Match(output.bytes,p,hash,old),b=author.Match(output.bytes,p,hash,edit);if(a||b){dictionary=a>=b?&original:&author;location=a>=b?old:edit;length=std::max(a,b);if(provenance<known.size())length=std::min(length,known[provenance].output-p);}}
   if(!length){literal(output.bytes[p++]);continue;}const auto& source=dictionary->buffers[location.buffer];
   if(!member.spans.empty()&&member.spans.back().kind==source.kind&&member.spans.back().source==source.name&&AddSize(member.spans.back().offset,member.spans.back().size)==location.offset)member.spans.back().size=AddSize(member.spans.back().size,length);
   else member.spans.push_back({source.kind,source.name,location.offset,length,{}});p+=length;

@@ -22,6 +22,7 @@ inline bool Covers(const Selection& s,const Package& p) {
  for(const auto& t:p.targetIndex)if(!s.assets.count(Logical(t.first.path)))return false;
  for(const auto& m:p.materials)if(!m.second.source.path.empty()&&!s.assets.count(Logical(m.second.source.path)))return false;
  for(const auto& t:p.textures)if(!t.second.source.path.empty()&&!s.assets.count(Logical(t.second.source.path)))return false;
+ for(const auto& r:p.resources)if(r.second->blocks.count("@source-prefabs")){auto rows=Strings(*r.second,"@source-prefabs");Require(rows.size()%2==0,"Physics source Prefab identity truncated");for(size_t i=0;i<rows.size();i+=2)if(!s.assets.count(Logical(rows[i])))return false;}
  return true;
 }
 inline std::string Signature(const Entry& e) {
@@ -43,7 +44,7 @@ inline void Validate(const Selection& s) {
 inline Bytes Encode(const Selection& s) {
  Validate(s);EiemOfflinePackage::Writer w;w.S("EFF_STATIC_RESOURCE_SELECTION/paths+ranges+dependencies/le64");w.S(s.manifest);
  w.N(s.assets.size());for(const auto& a:s.assets){w.S(a.first);w.S(a.second);}
- w.N(s.inputs.size());for(const auto& row:s.inputs){const auto& e=row.second;w.S(row.first);w.S(e.revision);w.S(e.physical.u8string());w.N(e.offset);w.N(e.size);}
+ w.N(s.inputs.size());for(const auto& row:s.inputs){const auto& e=row.second;w.S(row.first);w.S(e.revision);w.S(e.physical.generic_u8string());w.N(e.offset);w.N(e.size);}
  w.N(s.dependencies.size());for(const auto& d:s.dependencies){w.S(d.first);w.Set(d.second);}w.Set(s.candidates);
  auto hash=Sha(w.b.data(),w.b.size());w.Raw(hash.data(),hash.size());return w.b;
 }
@@ -124,6 +125,7 @@ inline void Ensure(const Selection& s,const std::filesystem::path& baseline,cons
   while(std::getline(rows,row)){auto fields=TabFields(EiemOfflineCompile::Trim(row));Require(fields.size()==5,"prior static source range differs");if(!previous.count(fields[0]))continue;Require(fields[4]==previous.at(fields[0]).hash,"prior static source digest differs");Require(previousRanges.emplace(fields[0],EiemOfflineCompile::Trim(row)+"\n").second,"duplicate prior source range");}
  }
  for(const auto& m:package.materials)add(m.second.source.path);for(const auto& t:package.textures)add(t.second.source.path);
+ for(const auto& r:package.resources)if(r.second->blocks.count("@source-prefabs")){auto rows=Strings(*r.second,"@source-prefabs");Require(rows.size()%2==0,"Physics source Prefab identity truncated");for(size_t i=0;i<rows.size();i+=2){add(rows[i]);auto closure=Closure(s,{s.assets.at(Logical(rows[i]))});d.sources.insert(closure.begin(),closure.end());}}
  // Keep inherited textures and Shader dependencies of borrowed Materials.
  // This selects game file ranges, never copies original pixels into the Mod.
  std::set<std::string> materialSources;

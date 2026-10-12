@@ -69,10 +69,14 @@ std::map<void*,bool> scheduleDone;
 std::map<void*,void*> scheduleBundles;
 unsigned opened=0,leaseRequests=0,sceneQueries=0;
 unsigned aliveCalls=0;
+unsigned profiledInvokes=0,profiledFields=0,profiledBoxes=0;
+unsigned textureEnumerations=0,texturePropertyReads=0,identityRendererCopies=1;
 void* byteClass=(void*)0xAA10;unsigned memoryCalls=0,fileFallbackCalls=0;
 std::set<void*> unloadedStreamBundles;
+std::function<void(void*)> nativeAliveCallback;
 std::map<uint32_t,void*> handles;uint32_t sequence=0;
 unsigned cloneCalls=0,removeCalls=0,discardCalls=0,loadCalls=0,followCalls=0,disposeCalls=0,unloadCalls=0;
+std::map<void*,std::pair<const unsigned char*,int64_t>> nativeStreams;
 bool managersStatic=true;
 bool hasInstance=true;unsigned instanceCalls=0;
 unsigned char yes=1,no=0,done=0;int two=2,zero=0,badVertex=7,id=0;
@@ -94,7 +98,7 @@ void* Fields(void*,void** it){auto n=uintptr_t(*it);if(n==17)return nullptr;*it=
 const char* FieldName(void* f){const char* names[]={"","modelManager","effectManager","m_entity","m_mainPart","m_cfg","usePersistentPool","modelPath","m_model","m_loadFinishCb","hash","m_untrackedHandle","m_instance2AssetHandle","<>4__this","parent","callback","requestId","m_disposed"};return names[uintptr_t(f)];}
 const char* TypeName(void* t){const char* names[]={"","Beyond.Gameplay.View.ModelManager","Beyond.Gameplay.EffectManager","Beyond.Gameplay.Core.Entity","Beyond.Gameplay.View.ComplexModelViewPart","Beyond.Gameplay.View.BaseModelViewPartData","System.Boolean","System.String","UnityEngine.GameObject","System.Action<System.Boolean,Beyond.Gameplay.View.BaseModelViewPart>","System.UInt64","Beyond.Resource.FAssetProxyUntrackedHandle","Dictionary","Beyond.UI.UIModelLoader","UnityEngine.Transform","System.Action<UnityEngine.GameObject>","System.Int32","System.Boolean"};return names[uintptr_t(t)];}
 int FieldFlags(void* f){return (f==(void*)1||f==(void*)2)&&managersStatic?0x16:0x6;}
-void FieldValue(void* self,void* f,void* out){Require(!(FieldFlags(f)&0x10)&&self,"instance getter used for a static field");
+void FieldValue(void* self,void* f,void* out){++profiledFields;Require(!(FieldFlags(f)&0x10)&&self,"instance getter used for a static field");
  if(f==(void*)160){Require(self==instance,"world field read on another receiver");*(void**)out=world;return;}
  if(f==(void*)161){Require(self==world,"perform manager field read on another world");*(void**)out=performManager;return;}
  if(f==(void*)150){*(void**)out=dependencyManifest;return;}
@@ -124,6 +128,7 @@ void* NativeCreate(void* p){
 }
 void* Mesh(void* renderer){return renderer==newRenderer||identitySameMesh?newMesh:oldMesh;}
 void* Invoke(void* method,void* self,void** args,void** exception){
+ ++profiledInvokes;
  *exception=nullptr;auto m=uintptr_t(method);
  if(m==140){dependencyLists[self].clear();return nullptr;}
  if(m==141){dependencyLists.at(self).push_back(*(uint64_t*)args[0]);return nullptr;}
@@ -131,10 +136,10 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==143){++dependencyNameChecks;for(const auto& row:dependencyNames)if(row.second==*(uint64_t*)args[0])return StringValue(row.first);return nullptr;}
  if(m==144)return dependencyManifest;
  if(m==1)return &yes;
- if(m==2){++aliveCalls;auto p=args[0];return !p||(p==source&&!sourceAlive)||unloadedStreamBundles.count(p)?&no:&yes;}
+ if(m==2){++aliveCalls;auto p=args[0];if(nativeAliveCallback){auto callback=std::move(nativeAliveCallback);callback(p);}return !p||(p==source&&!sourceAlive)||unloadedStreamBundles.count(p)?&no:&yes;}
  if(m==3){id=int(uintptr_t(self));return &id;}
  if(m==4)return StringValue(self==shader?shaderLabel:self==material?"body":self==skeletonRoot?"Root":self==bip?"Bip001":self==left?"Left":self==right?"Right":(self==bone||self==leftBone||self==rightBone)?"Bone":"marker");
- if(m==5)return Array(self==unrelatedRoot?unrelatedRenderer:self==newRoot||self==uiResultRoot||self==candidate||self==lazyCandidate?newRenderer:oldRenderer);
+ if(m==5){auto renderer=self==unrelatedRoot?unrelatedRenderer:self==newRoot||self==uiResultRoot||self==candidate||self==lazyCandidate?newRenderer:oldRenderer;return Array(std::vector<void*>(identityRendererCopies,renderer));}
  if(m==6)return self==newMesh&&rejectVertex?&badVertex:&two;
  if(m==7)return &zero;
  if(m==8){Require(!staticRenderers,"static Renderer called get_bones");++staticSkinCalls;return Array(bone);}
@@ -180,11 +185,14 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==31){Require(self,"polled a null native request");auto it=scheduleDone.find(self);return it==scheduleDone.end()?&done:it->second?&yes:&no;}
  if(m==32){auto it=scheduleBundles.find(self);return it==scheduleBundles.end()?bundle:it->second;}
  if(m==33){Require(args&&*(unsigned char*)args[0]==0,"unloaded candidate objects still in use");++unloadCalls;return nullptr;}
- if(m==40){Require(self==oldRenderer||self==newRenderer||self==animator,"Component getter invoked on a GameObject");return renderTransform;}
+ if(m==40){if(self==unrelatedRenderer)return foreignRoot;Require(self==oldRenderer||self==newRenderer||self==animator,"Component getter invoked on a GameObject");return renderTransform;}
  if(m==41){Require(uiOwned.count(self)||self==uiProxyRoot||self==currentRoot||self==oldRoot||self==newRoot||self==restoredRoot||self==candidate||self==lazyCandidate,"GameObject getter invoked on a Component");return prefabTransform;}
  if(m==42)return transformParents.at(self);
  if(m==50){auto request=(void*)(uintptr_t(0x8000)+ ++opened);scheduleDone[request]=false;scheduleBundles[request]=(void*)(uintptr_t(0x9000)+opened);return request;}
- if(m==87){Require(!self&&args&&args[0]&&*(uint32_t*)args[1]==0&&*(uint32_t*)args[2]==0,"archive stream Bundle load argument ABI differs");auto array=*(void**)args[0];size_t length=0;Require(Entry::ArrayLength(array,&length)&&length==4&&memcmp((char*)array+32,"\1\2\3\4",4)==0,"archive stream Bundle payload differs");++memoryCalls;return Invoke((void*)50,nullptr,nullptr,exception);}
+ if(m==87){Require(!self&&args&&args[0]&&*(uint32_t*)args[1]==0&&*(uint32_t*)args[2]==0,"archive stream Bundle load argument ABI differs");auto view=NativeBundle::StreamView(args[0]);auto native=nativeStreams.find(args[0]);if(view){unsigned char bytes[4]{};Require(view->Length()==4&&view->Read(bytes,4)==4&&memcmp(bytes,"\1\2\3\4",4)==0,"registered native view payload differs");}else if(native!=nativeStreams.end()){Require(native->second.second==4&&memcmp(native->second.first,"\1\2\3\4",4)==0,"native archive stream byte lifetime differs");}else{auto array=*(void**)args[0];size_t length=0;Require(Entry::ArrayLength(array,&length)&&length==4&&memcmp((char*)array+32,"\1\2\3\4",4)==0,"archive stream Bundle payload differs");}++memoryCalls;return Invoke((void*)50,nullptr,nullptr,exception);}
+ // Match the actual IL2CPP invoker: Byte* uses args[0] itself, whereas
+ // Int64 dereferences args[1]. Double-indirection hid a real startup failure.
+ if(m==170){Require(self&&args&&*(int64_t*)args[1]==4,"native archive constructor length ABI differs");nativeStreams[self]={(const unsigned char*)args[0],*(int64_t*)args[1]};return nullptr;}
  if(m==88){Require(self&&args[0]&&!*(bool*)args[1],"read-only MemoryStream constructor ABI differs");*(void**)self=args[0];return nullptr;}
  if(m==51){++leaseRequests;return leaseHandle;}
  if(m==52){pathHashValue=std::hash<std::string>{}(FullResourceReload::NormalizeAssetPath(String(args[0])));return pathValue;}
@@ -192,7 +200,7 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==54)return self==unrelatedEntity?unrelatedModel:hasModel?model:nullptr;
  if(m==55)return StringValue(self==unrelatedModel?"assets/unmodified-character.prefab":modelPath);
  if(m==56)return helperMatches?helper:nullptr;
- if(m==57)return rendererInside?&yes:&no;
+ if(m==57)return self!=foreignRoot&&rendererInside?&yes:&no;
  if(m==58)return assetRequest;
  if(m==59)return candidate;
  if(m==60)return FullResourceReload::ResourceGet(self,nullptr);
@@ -229,8 +237,8 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==78)return self; // Local transform/GameObject identity in this fixture.
  if(m==79){Require(self==renderTransform,"direct Renderer lookup used the wrong hierarchy address");return Array(newRenderer);}
  if(m==80){++sceneQueries;return Array(sceneRenderers);}
- if(m==82)return PropertyIds();
- if(m==83){Require(self==material&&args&&args[0],"public Texture ID getter arguments absent");auto property=*(int32_t*)args[0];Require(std::find(propertyIds.begin(),propertyIds.end(),property)!=propertyIds.end(),"public Texture ID getter received wrong ABI value");auto found=propertyTextures.find(property);return found==propertyTextures.end()?textureValue:found->second;}
+ if(m==82){++textureEnumerations;return PropertyIds();}
+ if(m==83){++texturePropertyReads;Require(self==material&&args&&args[0],"public Texture ID getter arguments absent");auto property=*(int32_t*)args[0];Require(std::find(propertyIds.begin(),propertyIds.end(),property)!=propertyIds.end(),"public Texture ID getter received wrong ABI value");auto found=propertyTextures.find(property);return found==propertyTextures.end()?textureValue:found->second;}
  if(m==84){if(!self){++nullDelegateTargetCalls;throw std::runtime_error("Delegate.get_Target invoked with a null receiver");}return self==uiCompletionDelegate?uiClosure:callbackTarget;}
  if(m==85)return self==model||self==animation?entity:unrelatedEntity;
  if(m==86){Require(self&&args&&args[0]==(void*)81&&*(unsigned char*)args[1]==1,"controls queried scene objects instead of inactive model children");
@@ -246,7 +254,7 @@ void Setup(){
  il2cpp_object_unbox=[](void* p){return p;};il2cpp_class_get_fields=Fields;il2cpp_class_get_parent=[](void*)->void*{return nullptr;};
  il2cpp_field_get_name=FieldName;il2cpp_field_get_flags=FieldFlags;il2cpp_field_static_get_value=StaticFieldValue;il2cpp_field_get_type=[](void* p){return p;};
  il2cpp_type_get_name=TypeName;il2cpp_free=[](void*){};il2cpp_field_get_value=FieldValue;il2cpp_runtime_invoke=Invoke;
- il2cpp_class_from_type=[](void*)->void*{return configClass;};il2cpp_class_value_size=[](void* klass,uint32_t* alignment)->int32_t{*alignment=8;return klass==propertyElementClass?propertyElementWidth:64;};il2cpp_value_box=[](void* klass,void* data)->void*{return klass==uiUntrackedClass?uiProxy:klass==handleClass?leaseHandle:*(void**)data==unrelatedPart?unrelatedConfig:configBox;};
+ il2cpp_class_from_type=[](void*)->void*{return configClass;};il2cpp_class_value_size=[](void* klass,uint32_t* alignment)->int32_t{*alignment=8;return klass==propertyElementClass?propertyElementWidth:64;};il2cpp_value_box=[](void* klass,void* data)->void*{++profiledBoxes;return klass==uiUntrackedClass?uiProxy:klass==handleClass?leaseHandle:*(void**)data==unrelatedPart?unrelatedConfig:configBox;};
  il2cpp_class_get_element_class=[](void* klass)->void*{return klass==propertyArrayClass?propertyElementClass:nullptr;};
  il2cpp_string_new=[](const char* value)->void*{return StringValue(value);};
  il2cpp_array_new=[](void* klass,size_t size)->void*{Require(klass==byteClass||klass==uiObjectClass,"managed array element type differs");auto b=std::make_unique<Bytes>(32+size*(klass==uiObjectClass?8:1));uint64_t count=size;memcpy(b->data()+24,&count,8);auto p=b->data();storage.push_back(std::move(b));return p;};
@@ -276,8 +284,8 @@ void Setup(){
  a.get=(void*)60;a.error=(void*)61;a.partRelease=(void*)22;a.partLoad=(void*)62;a.partSetup=(void*)63;NativeBundle::api.assetLoad=(void*)58;NativeBundle::api.result=(void*)59;
  NativeBundle::api.done=(void*)31;NativeBundle::api.bundle=(void*)32;NativeBundle::api.unload=(void*)33;
  FullResourceReload::originalClone=NativeClone;
- FullResourceReload::originalPartFinished=[](void*,void*){};
- FullResourceReload::originalBasePartFinished=[](void*,void*){};
+ FullResourceReload::originalPartFinished=[](void*,void*){Require(RuntimeShapes::nativeVisibilityReadDepth!=0,"complex model completion did not protect the game's initial Renderer snapshot");};
+ FullResourceReload::originalBasePartFinished=[](void*,void*){Require(RuntimeShapes::nativeVisibilityReadDepth!=0,"base model completion did not protect the game's initial Renderer snapshot");};
  FullResourceReload::originalPartReleased=[](void*,void*){currentRoot=nullptr;};
  FullResourceReload::originalPartLoading=[](void*,void*,void*,void*){if(completePartLoading){currentRoot=NativeCreate(source);FullResourceReload::PartFinished(mainPart,nullptr);}};
  FullResourceReload::originalPartConfigured=[](void*,void*,void*){};
@@ -624,6 +632,13 @@ void TextureIdentityRegression(){
  propertyIds={314,314};bool rejected=false;try{PrefabAssetIdentity(candidate,*plan);}catch(const std::exception&){rejected=true;}Require(rejected,"duplicate public Texture ID accepted");
  propertyIds={314};propertyElementWidth=8;rejected=false;try{PrefabAssetIdentity(candidate,*plan);}catch(const std::exception&){rejected=true;}Require(rejected,"wrong public property array element layout accepted");Reset();
 }
+void SharedMaterialIdentityRegression(){
+ using namespace FullResourceReload;Reset();auto plan=Prepare()->plan;auto plain=*plan;plain.parts.clear();plain.materials.clear();
+ struct Cleanup{~Cleanup(){identityRendererCopies=1;Reset();}}cleanup;
+ identityRendererCopies=32;textureEnumerations=texturePropertyReads=0;propertyIds={314,0,-7};
+ auto actual=PrefabAssetIdentity(candidate,plain);Require(actual.size()==32&&textureEnumerations==1&&texturePropertyReads==3,"shared Material identity repeated public Texture calls for every Renderer");
+ auto expected=actual.begin()->second;for(const auto& row:actual)Require(row.second==expected,"shared Material memo lost a Renderer slot identity");
+}
 void MaterialBindingRegression(){
  // The game's stripped metadata retains the IDs array and GetTexture(int),
  // plus GetTexturePropertyNames(List<string>); the no-argument names overload
@@ -734,7 +749,8 @@ void BonePathRegression(){
  auto refused=[&](const std::vector<void*>& palette,void* root){bool rejected=false;try{FullResourceReload::BoneHierarchy test(newRoot);test.Verify(newRenderer,palette,root,part);}catch(const std::exception&){rejected=true;}Require(rejected,"invalid full bone path/pointer mapping accepted");};
  refused({bip,rightBone,leftBone},bip); // Same leaf names, wrong per-Mesh slot order.
  refused({bip,leftBone,leftBone},bip); // Duplicate native pointer.
- refused(ordered,bone); // RootBone outside palette.
+ hierarchy.Verify(newRenderer,ordered,bone,part); // Unity allows an unweighted root outside the palette.
+ refused(ordered,foreignRoot); // The root must still belong to this exact prefab.
  transformParents[right]=foreignRoot;refused(ordered,bip); // Foreign instance/hierarchy.
  transformParents[right]=leftBone;transformParents[left]=right;refused(ordered,bip); // Cycle.
  Reset();
@@ -748,6 +764,48 @@ void RecordPart(bool world=true){
  auto previous=completePartLoading;completePartLoading=false;callbackTarget=world?model:instance;
  FullResourceReload::PartLoading(mainPart,configBox,loadCallback,nullptr);FullResourceReload::PartFinished(mainPart,nullptr);
  completePartLoading=previous;
+}
+void OwnershipRejectionDetailsRegression(){
+ using namespace FullResourceReload;Reset();BindWorld();RecordPart(false);rendererInside=false;
+ auto a=MakeAttempt();a.owners.clear();std::string reason;
+ try{DiscoverOwners(a);}catch(const std::exception& e){reason=e.what();}
+ Require(reason.find("live Renderer has no recorded game model-part lifecycle")!=std::string::npos&&
+         reason.find("rendererId=")!=std::string::npos&&reason.find("marker=marker")!=std::string::npos&&
+         reason.find("modelReady=1")!=std::string::npos&&reason.find("ancestor=")!=std::string::npos&&
+         reason.find("ownershipDescriptionUnavailable=")==std::string::npos,
+         "unowned Renderer rejection omitted instance, part or hierarchy identity: "+reason);
+ Require(!removeCalls&&!loadCalls&&!sceneQueries&&generation==2&&currentRoot==oldRoot,
+         "ownership diagnostics mutated the live model or scanned scene Renderers");
+ Reset();
+}
+void ProvisionalRendererOwnershipRegression(){
+ using namespace FullResourceReload;Reset();
+ RuntimeShapes::enabled=true;RuntimeShapes::packageGeneration=RuntimeShapes::checkedGeneration=generation.load();
+ RuntimeShapes::specs.at("marker").vertices=2;
+ struct Cleanup {~Cleanup(){RuntimeShapes::enabled=false;Reset();}}cleanup;
+ BindWorld();RecordPart();
+ // Material-controller initialization also sees preloaded proxy/pool roots.
+ // It registers a provisional binding; only a model completion activates it.
+ RuntimeShapes::RegisterRenderer(unrelatedRenderer,oldMesh,false);
+ Require(RuntimeShapes::bound.count(unrelatedRenderer)&&!RuntimeShapes::bound.at(unrelatedRenderer).modelReady,
+         "material preload did not produce a provisional Renderer binding");
+ auto a=MakeAttempt();a.owners.clear();DiscoverOwners(a);
+ Require(a.owners.size()==1&&!removeCalls&&!sceneQueries,
+         "provisional proxy binding blocked the actual model owner or became an owner");
+ // A completed instance outside every captured lifecycle still must reject.
+ RuntimeShapes::RegisterRenderer(unrelatedRenderer,oldMesh,true);
+ auto completed=MakeAttempt();completed.owners.clear();std::string reason;
+ try{DiscoverOwners(completed);}catch(const std::exception& e){reason=e.what();}
+ Require(reason.find("live Renderer has no recorded game model-part lifecycle")!=std::string::npos&&
+         reason.find("modelReady=1")!=std::string::npos&&!removeCalls&&generation==2,
+         "completed unowned Renderer was silently excluded from F10 coverage");
+ // Recreate the real preloaded state and commit the captured world normally.
+ RuntimeShapes::bound.erase(unrelatedRenderer);RuntimeShapes::RegisterRenderer(unrelatedRenderer,oldMesh,false);
+ a.prepared->controls.specs=RuntimeShapes::specs;recordPartFinished=true;Rebuild(a);
+ Require(a.phase==Phase::Passed&&generation==3&&animationRoot==currentRoot&&
+         !RuntimeShapes::bound.count(unrelatedRenderer)&&RuntimeShapes::bound.count(newRenderer)&&!sceneQueries,
+         "F10 retained preloaded proxy bindings or skipped the model/animation rebuild");
+ Reset();
 }
 void SequentialWorldRegression(){
  using namespace FullResourceReload;Reset();characterAnimation=true;BindWorld();RecordPart();recordPartFinished=true;sceneRenderers={oldRenderer};
@@ -1140,6 +1198,19 @@ void PrewarmScheduleRegression(){
  // A ready graph is inert until F10 targets that exact publication.
   auto a=MakeAttempt();a.phase=Phase::Ready;Step(a);Require(a.phase==Phase::Ready&&!removeCalls&&!loadCalls&&!cloneCalls,"prewarm mutated the current owner before F10");
 }
+void SelectedBundleClosureRegression(){
+ using namespace FullResourceReload;Reset();
+ auto path=std::filesystem::temp_directory_path()/("eff-root-closure-"+std::to_string(GetCurrentProcessId()));EiemResourceReloadPlan::Save(path,{1,2,3,4});
+ struct Cleanup{std::filesystem::path path;~Cleanup(){std::filesystem::remove(path);Reset();}}cleanup{path};
+ auto hold=std::make_shared<NativeBundle::FileHold>(path);auto prepared=Prepare();auto plan=std::make_shared<EiemResourceReloadPlan::Plan>(*prepared->plan);plan->inputs.resize(6);plan->closure={0,1,2,3,4};
+ plan->inputDependencies={{2,5},{4},{3},{0},{},{}};plan->roots.push_back(plan->roots.front());plan->roots.back().path="assets/later.prefab";plan->roots.back().input=1;
+ for(size_t i=0;i<plan->inputs.size();++i){plan->inputs[i].file="input-"+std::to_string(i)+".vfs";plan->inputs[i].path=path;prepared->files.emplace(i,hold);}prepared->plan=plan;
+ Attempt a;a.prepared=prepared;a.phase=Phase::Bundles;a.selectedRoots.insert(0);NativeBundle::api.load=(void*)50;
+ Step(a);Require(opened==3&&a.bundles.count(0)&&a.bundles.count(2)&&a.bundles.count(3)&&!a.bundles.count(1)&&!a.bundles.count(4)&&!a.bundles.count(5),"native reload opened unrelated roots or duplicated a shared original dependency");
+ for(auto& request:scheduleDone)request.second=true;Step(a);Require(a.phase==Phase::Assets,"selected dependency closure did not become ready");
+ a.selectedRoots.insert(1);a.phase=Phase::Bundles;Step(a);Require(opened==5&&a.bundles.count(1)&&a.bundles.count(4),"later loaded root did not extend the native closure or reopened existing inputs");
+ for(auto& request:scheduleDone)request.second=true;Step(a);Require(a.phase==Phase::Assets,"extended dependency closure stalled");
+}
 void CommittedRetryRegression(){
  using namespace FullResourceReload;Reset();enabled=true;RuntimeShapes::enabled=true;RecordPart();recordPartFinished=true;
  auto priorNewRoot=newRoot;
@@ -1155,8 +1226,8 @@ void CommittedRetryRegression(){
          "a rejected second F10 invalidated/drained the committed candidate, forcing duplicate Bundle loads");
  Frame();Require(!unloadCalls&&!opened,"rejected committed candidate retired its live Bundle containers");
  RecordPart();newRoot=(void*)0x1005;request();for(unsigned i=0;i<8&&generation==firstGeneration;++i)Frame();
- Require(generation==firstGeneration+1&&attempt==committed&&attempt->phase==Phase::Passed&&!opened&&animationRoot==currentRoot,
-         "retry after the UI preflight repeated native preparation instead of reusing the committed graph: "+attempt->error+" generation="+std::to_string(generation.load()));
+ Require(generation==firstGeneration&&attempt==committed&&attempt->phase==Phase::Passed&&!opened&&animationRoot==currentRoot,
+         "unchanged F10 rebuilt owners instead of refreshing controls on the committed graph: "+attempt->error+" generation="+std::to_string(generation.load()));
 }
 void ReleasedPoolRegression(){
  using namespace FullResourceReload;Reset();RecordPart();BindWorld();
@@ -1181,12 +1252,13 @@ void RuleMemoryRegression(){
  auto emptyPlan=std::make_shared<EiemResourceReloadPlan::Plan>();emptyPlan->rulesOnly=true;
  auto context=std::make_shared<EiemPrefabRules::Context>(emptyPlan,Package{});
  auto prepared=Prepare();auto plan=std::make_shared<EiemResourceReloadPlan::Plan>(*prepared->plan);plan->inputs.resize(1);plan->closure={0};prepared->plan=plan;prepared->rules=context;prepared->ruleInputs.emplace(0,std::make_shared<const Bytes>(Bytes{1,2,3,4}));
- {Attempt a;a.prepared=prepared;a.phase=Phase::Bundles;Step(a);Require(memoryCalls==1&&opened==1&&a.bundles.at(0).bytes.Get()&&a.bundles.at(0).request.Get()&&prepared->ruleInputs.empty(),"F10 rules lost Byte[] roots or retained duplicate worker payloads");scheduleDone.begin()->second=true;Step(a);Require(a.phase==Phase::Assets&&a.bundles.at(0).done&&!a.bundles.at(0).bytes.Get(),"memory Bundle completion did not retire its array/advance to Prefabs");}
+ {Attempt a;a.prepared=prepared;a.phase=Phase::Bundles;Step(a);Require(memoryCalls==1&&opened==1&&a.bundles.at(0).request.Get()&&prepared->ruleInputs.empty(),"F10 rules lost stream ownership or retained duplicate worker payloads");scheduleDone.begin()->second=true;Step(a);Require(a.phase==Phase::Assets&&a.bundles.at(0).done,"memory Bundle completion did not advance to Prefabs");}
  {auto bytes=NativeBundle::Array(Bytes{1,2,3,4});auto request=NativeBundle::LoadMemory(bytes.Get(),0,true);bytes={};NativeBundle::CollectMemory();Require(NativeBundle::memoryRequests.size()==1,"async archive stream retired before completion");scheduleDone[request]=true;NativeBundle::CollectMemory();Require(NativeBundle::memoryRequests.empty()&&!NativeBundle::memoryBundles.empty(),"completed Bundle lost its lazy seek/read stream");}
  auto resolver=il2cpp_resolve_icall;il2cpp_resolve_icall=[](const char* name)->void*{Require(std::string(name)=="UnityEngine.AssetBundle::LoadFromStreamInternal"||std::string(name)=="UnityEngine.AssetBundle::LoadFromStreamAsyncInternal","archive stream icall name differs");return (void*)+[](void* stream,uint32_t crc,uint32_t bufferSize)->void*{auto array=*(void**)stream;Require(crc==0&&bufferSize==0&&memcmp((char*)array+32,"\1\2\3\4",4)==0,"sync stream icall signature/payload differs");return bundle;};};
  NativeBundle::api.stream=nullptr;NativeBundle::api.streamIcall=(NativeBundle::Api::StreamFn)il2cpp_resolve_icall("UnityEngine.AssetBundle::LoadFromStreamInternal");NativeBundle::api.streamAsyncIcall=(NativeBundle::Api::StreamFn)il2cpp_resolve_icall("UnityEngine.AssetBundle::LoadFromStreamAsyncInternal");
  {auto bytes=NativeBundle::Array(Bytes{1,2,3,4});Require(NativeBundle::LoadMemory(bytes.Get(),0,false)==bundle,"sync stream icall returned wrong native object");}il2cpp_resolve_icall=resolver;NativeBundle::api.streamIcall=NativeBundle::api.streamAsyncIcall=nullptr;
  emptyPlan->originals.push_back({"test.vfs",std::string(64,'A'),std::filesystem::path("E:/rule-source.chk"),12,4});
+ context->IndexSources();
  std::atomic_store(&resourceRules,context);bool wasActive=active.exchange(true);auto fallback=[](void*,uint32_t,uint64_t,void*)->void*{++fileFallbackCalls;return bundle;};
  auto absent=StringValue("E:/unmatched.chk"),matched=StringValue("E:/rule-source.chk");auto calls=memoryCalls;
  Require(ObservePublicFile("rule-unmatched",0,fallback,absent,77,12,nullptr)==bundle&&fileFallbackCalls==1&&memoryCalls==calls,"unmatched file/nonzero CRC intercepted by rules");
@@ -1202,9 +1274,104 @@ void RuleMemoryRegression(){
  auto submittedCount=memoryCalls;cachedPlan->startupHashes[0]=cachedPlan->originals[0].hash;hit=false;
  Require(!LoadRuleInput(matched,77,12,true,hit)&&!hit&&!replayed&&memoryCalls==submittedCount,"unchanged dependency intercepted the native file/CRC path");
  for(const auto& request:NativeBundle::memoryRequests)scheduleDone[request.first]=true;NativeBundle::CollectMemory();
- for(const auto& b:NativeBundle::memoryBundles)unloadedStreamBundles.insert(b.first);NativeBundle::CollectMemory();Require(NativeBundle::memoryBundles.empty(),"unloaded rule Bundles retained archive streams");
+ while(!NativeBundle::memoryBundles.empty()){auto b=NativeBundle::memoryBundles.begin();NativeBundle::ReleasedMemory(b->first,b->second.bundle.handle);}Require(NativeBundle::memoryBundles.empty(),"unloaded rule Bundles retained archive streams");
  startupArrays.clear();
  NativeBundle::enabled=false;active=wasActive;std::atomic_store(&resourceRules,std::shared_ptr<EiemPrefabRules::Context>{});Reset();
+}
+void UnrelatedPrefabAllocationRegression(){
+ using namespace FullResourceReload;Reset();auto oldRules=std::atomic_load(&Entry::resourceRules);auto wasEnabled=enabled.load();
+ struct Cleanup {std::shared_ptr<EiemPrefabRules::Context> rules;bool previous;~Cleanup(){enabled=previous;std::atomic_store(&Entry::resourceRules,rules);Reset();}}cleanup{oldRules,wasEnabled};
+ enabled=true;resourceSource=source;resourceLabel="assets/vanilla-unrelated.prefab";
+ std::atomic_store(&Entry::resourceRules,std::make_shared<EiemPrefabRules::Context>(Prepare()->plan,Package{},[](size_t,bool){return Bytes{};}));
+ profiledBoxes=profiledFields=0;
+ Require(ResourceGet(leaseHandle,nullptr)==source,"unrelated native GameObject changed its resource identity");
+ Require(!profiledBoxes&&!profiledFields,"unrelated native prefab allocated a boxed handle/read private fields before target matching");
+}
+void NativeByteStreamRegression(){
+ using namespace FullResourceReload;Reset();auto saved=NativeBundle::api;auto allocate=il2cpp_object_new;
+ struct Cleanup {NativeBundle::Api api;decltype(il2cpp_object_new) allocate;~Cleanup(){NativeBundle::memoryRequests.clear();NativeBundle::memoryBundles.clear();nativeStreams.clear();NativeBundle::api=api;il2cpp_object_new=allocate;Reset();}}cleanup{saved,allocate};
+ NativeBundle::api.nativeStreamClass=(void*)0xAB01;NativeBundle::api.nativeStreamCtor=(void*)170;
+ NativeBundle::api.streamAsync=(void*)87;NativeBundle::api.streamAsyncIcall=nullptr;
+ il2cpp_object_new=[](void* klass)->void*{Require(klass==NativeBundle::api.nativeStreamClass,"native archive stream class differs");auto bytes=std::make_unique<Bytes>(8);auto result=bytes->data();storage.push_back(std::move(bytes));return result;};
+ auto bytes=std::make_shared<const Bytes>(Bytes{1,2,3,4});std::weak_ptr<const Bytes> weak=bytes;
+ auto request=NativeBundle::LoadBytes(bytes,0,true);bytes.reset();Require(!weak.expired()&&NativeBundle::memoryRequests.at(request).bytes==weak.lock(),"async native input lost immutable byte ownership");
+ auto object=(void*)0xAB02;NativeBundle::CompleteMemory(request,object);
+ Require(NativeBundle::memoryRequests.empty()&&!weak.expired()&&NativeBundle::memoryBundles.at(object).bytes==weak.lock(),"native completion released lazy archive read backing");
+ NativeBundle::ReleasedMemory(object,NativeBundle::MemoryIdentity(object));Require(weak.expired()&&NativeBundle::memoryBundles.empty(),"retired native stream retained backing bytes");
+ bytes=std::make_shared<const Bytes>(Bytes{1,2,3,4});weak=bytes;request=NativeBundle::LoadBytes(bytes,0,true);bytes.reset();NativeBundle::CompleteMemory(request,nullptr);
+ Require(weak.expired()&&NativeBundle::memoryRequests.empty(),"failed native Bundle retained worker bytes");
+ bytes=std::make_shared<const Bytes>(Bytes{1,2,3,4});weak=bytes;
+ NativeBundle::api.streamAsyncIcall=[](void*,uint32_t,uint32_t)->void*{return nullptr;};
+ Require(!NativeBundle::LoadBytes(bytes,0,true),"null native request accepted");bytes.reset();Require(weak.expired(),"null request retained byte backing");
+}
+void StreamLifetimeReentryRegression(){
+ Reset();auto object=(void*)0xB020;NativeBundle::memoryBundles.emplace(object,NativeBundle::MemoryBundle{RuntimeShapes::Ref::Make(object,false),RuntimeShapes::Ref::Make(source,false)});
+ auto original=NativeBundle::memoryBundles.at(object).bundle.handle;std::shared_ptr<uint32_t> replacement;
+ NativeBundle::originalUnload=[](void* value,bool destroy){Require(value==(void*)0xB020&&!destroy,"stream release changed native receiver/flag");
+  NativeBundle::CollectMemory();NativeBundle::memoryBundles.at(value).bundle=RuntimeShapes::Ref::Make(value,false);
+ };
+ NativeBundle::Unload(object,false);replacement=NativeBundle::memoryBundles.at(object).bundle.handle;
+ NativeBundle::CollectMemory();
+ Require(NativeBundle::memoryBundles.count(object)&&NativeBundle::memoryBundles.at(object).bundle.handle==replacement&&original!=replacement,
+         "reentrant completion retired a newer stream record at the same native pointer");
+ NativeBundle::ReleasedMemory(object,replacement);Require(NativeBundle::memoryBundles.empty(),"release event did not retire its current stream");Reset();
+}
+void IdleStreamLifetimeRegression(){
+ Reset();auto object=(void*)0xB030;
+ NativeBundle::memoryBundles.emplace(object,NativeBundle::MemoryBundle{RuntimeShapes::Ref::Make(object,false),RuntimeShapes::Ref::Make(source,false)});
+ auto before=aliveCalls;
+ for(unsigned i=0;i<1000;++i)NativeBundle::CollectMemory();
+ Require(aliveCalls==before,"idle frames repeatedly inspect completed native Bundles");
+ NativeBundle::originalUnloadAsync=[](void* value,bool destroy)->void*{Require(value==(void*)0xB030&&destroy,"async release changed native receiver/flag");return createRequest;};
+ scheduleDone[createRequest]=false;auto request=NativeBundle::UnloadAsync(object,true);
+ Require(request==createRequest&&NativeBundle::memoryBundles.count(object),"async unload prematurely retired backing bytes");
+ NativeBundle::CollectMemory();Require(NativeBundle::memoryBundles.count(object),"unfinished async unload retired its stream");
+ scheduleDone[createRequest]=true;NativeBundle::CollectMemory();
+ Require(NativeBundle::memoryBundles.empty()&&NativeBundle::memoryUnloads.empty()&&!NativeBundle::memoryWork,"completed async unload did not retire backing work");
+ auto calls=profiledInvokes;for(unsigned i=0;i<1000;++i)NativeBundle::CollectMemory();Require(profiledInvokes==calls,"idle stream collector invokes managed APIs");
+ Reset();
+}
+void NativeStreamViewRegression(){
+ Reset();using namespace EiemInputSpanView;using namespace FullResourceReload;auto stream=(void*)0xB040;
+ auto byteClassBefore=NativeBundle::api.byteClass;NativeBundle::api.byteClass=byteClass;
+ auto bytes=std::make_shared<const Bytes>(Bytes{1,2,3,4,5});auto view=std::make_shared<const View>(std::vector<Span>{{literalSource,0,5,bytes}},std::vector<size_t>{},ReadRange{});
+ auto cursor=std::make_shared<Cursor>(view);std::weak_ptr<Cursor> weak=cursor;
+ NativeBundle::viewStreams.clear();NativeBundle::viewStreams.emplace(stream,cursor);NativeBundle::viewStreamsPresent=true;
+ auto old=std::make_tuple(NativeBundle::originalStreamRead,NativeBundle::originalStreamSeek,NativeBundle::originalStreamLength);
+ NativeBundle::originalStreamRead=[](void*,int32_t offset,int32_t count,void* value,void* result,void* info){Require(value==(void*)0xB041&&offset==0&&count==1&&info==(void*)0xB042,"unregistered stream Read arguments changed");*(int32_t*)result=17;};
+ NativeBundle::originalStreamSeek=[](int64_t offset,uint32_t origin,void* value,void* result,void* info){Require(value==(void*)0xB041&&offset==-3&&origin==2&&info==(void*)0xB042,"unregistered stream Seek arguments changed");*(int64_t*)result=19;};
+ NativeBundle::originalStreamLength=[](void* value,void* result,void* info){Require(value==(void*)0xB041&&info==(void*)0xB042,"unregistered stream Length arguments changed");*(int64_t*)result=23;};
+ auto array=NativeBundle::Array(Bytes(9,0xAA));int32_t count=0;int64_t value=0;
+ NativeBundle::StreamLength(stream,&value,nullptr);Require(value==5,"registered native view length differs");
+ NativeBundle::StreamRead(array.Get(),2,3,stream,&count,nullptr);Require(count==3&&std::memcmp((char*)array.Get()+34,"\1\2\3",3)==0&&*((unsigned char*)array.Get()+33)==0xAA&&*((unsigned char*)array.Get()+37)==0xAA,"native view Read wrote beyond its array slice");
+ NativeBundle::StreamSeek(-2,2,stream,&value,nullptr);Require(value==3,"native view end-relative seek differs");
+ NativeBundle::StreamRead(array.Get(),1,5,stream,&count,nullptr);Require(count==2&&std::memcmp((char*)array.Get()+33,"\4\5",2)==0,"native view EOF read differs");
+ NativeBundle::StreamSeek(0,0,stream,&value,nullptr);NativeBundle::StreamRead(array.Get(),8,2,stream,&count,nullptr);Require(count==0&&cursor->Seek(0,1)==0,"invalid native view read advanced its position");
+ NativeBundle::StreamRead(array.Get(),0,1,(void*)0xB041,&count,(void*)0xB042);Require(count==17,"unregistered native stream bypassed its original reader");
+ NativeBundle::StreamSeek(-3,2,(void*)0xB041,&value,(void*)0xB042);Require(value==19,"unregistered native stream bypassed its original seek");
+ NativeBundle::StreamLength((void*)0xB041,&value,(void*)0xB042);Require(value==23,"unregistered native stream bypassed its original length");
+ NativeBundle::RetainMemory(createRequest,RuntimeShapes::Ref::Make(stream,false),{},cursor);cursor.reset();NativeBundle::CompleteMemory(createRequest,bundle);Require(!weak.expired()&&NativeBundle::StreamView(stream),"native completion retired a lazy view cursor");
+ NativeBundle::ReleasedMemory(bundle,NativeBundle::MemoryIdentity(bundle));Require(weak.expired()&&!NativeBundle::StreamView(stream)&&!NativeBundle::viewStreamsPresent,"native unload retained a retired view cursor");
+ auto api=NativeBundle::api;auto allocate=il2cpp_object_new;auto ready=NativeBundle::viewCallbacksReady;
+ NativeBundle::api.streamClass=(void*)0xB050;NativeBundle::api.streamCtor=(void*)88;NativeBundle::api.streamAsync=(void*)87;NativeBundle::api.streamAsyncIcall=nullptr;NativeBundle::viewCallbacksReady=true;
+ il2cpp_object_new=[](void* klass)->void*{Require(klass==(void*)0xB050,"compiled view facade class differs");auto memory=std::make_unique<Bytes>(8);auto pointer=memory->data();storage.push_back(std::move(memory));return pointer;};
+ auto four=std::make_shared<const View>(std::vector<Span>{{literalSource,0,4,bytes}},std::vector<size_t>{},ReadRange{});
+ auto prepared=Prepare();auto plan=std::make_shared<EiemResourceReloadPlan::Plan>(*prepared->plan);plan->inputs.resize(1);plan->closure={0};prepared->plan=plan;prepared->rules=std::make_shared<EiemPrefabRules::Context>(plan,Package{},[](size_t,bool)->Bytes{throw std::runtime_error("compiled view unexpectedly materialized on the game thread");});prepared->ruleInputs.clear();prepared->ruleViews.emplace(0,four);
+ {Attempt attempt;attempt.prepared=prepared;attempt.phase=Phase::Bundles;Step(attempt);Require(attempt.bundles.at(0).request.Get()&&prepared->ruleInputs.empty()&&prepared->ruleViews.empty(),"F10 did not submit its prepared native view");auto request=attempt.bundles.at(0).request.Get();NativeBundle::CompleteMemory(request,bundle);NativeBundle::ReleasedMemory(bundle,NativeBundle::MemoryIdentity(bundle));}
+ auto sourceRules=std::atomic_load(&resourceRules);prepared->rules->startupViews.emplace(0,four);auto mutablePlan=std::make_shared<EiemResourceReloadPlan::Plan>(*plan);mutablePlan->originals={{"fixture.vfs",std::string(64,'A'),std::filesystem::u8path("E:/view-source"),0,4}};mutablePlan->startupHashes={std::string(64,'B')};mutablePlan->rendererRules.resize(1);prepared->rules->plan=mutablePlan;prepared->rules->IndexSources();std::atomic_store(&resourceRules,prepared->rules);auto enabled=NativeBundle::enabled.exchange(true);bool hit=false;
+ auto submitted=LoadRuleInput(StringValue("E:/view-source"),0,0,true,hit);Require(hit&&submitted,"startup did not submit its compiled native view");NativeBundle::CompleteMemory(submitted,bundle);NativeBundle::ReleasedMemory(bundle,NativeBundle::MemoryIdentity(bundle));NativeBundle::enabled=enabled;std::atomic_store(&resourceRules,sourceRules);
+ NativeBundle::api=api;NativeBundle::api.byteClass=byteClassBefore;NativeBundle::viewCallbacksReady=ready;il2cpp_object_new=allocate;NativeBundle::viewStreams.clear();NativeBundle::viewStreamsPresent=false;std::tie(NativeBundle::originalStreamRead,NativeBundle::originalStreamSeek,NativeBundle::originalStreamLength)=old;array={};Reset();
+}
+void FileSourceIndexRegression(){
+ auto plan=std::make_shared<EiemResourceReloadPlan::Plan>();
+ plan->originals={{"first",std::string(64,'A'),std::filesystem::u8path("D:/Game/Archive.vfs"),7,4},
+                  {"second",std::string(64,'B'),std::filesystem::u8path("D:/Game/Archive.vfs"),19,4}};
+ auto context=std::make_shared<EiemPrefabRules::Context>(plan,Package{},[](size_t,bool){return Bytes{};});
+ Require(context->sourceInputs.at({"d:/game/archive.vfs",7})==0&&context->sourceInputs.at({"d:/game/archive.vfs",19})==1,
+         "same-file source ranges did not retain their exact offsets");
+ auto old=std::atomic_load(&Entry::resourceRules);std::atomic_store(&Entry::resourceRules,context);
+ bool matched=false;auto requests=memoryCalls;Require(!LoadRuleInput(StringValue("D:\\GAME\\archive.vfs"),77,8,true,matched)&&!matched&&memoryCalls==requests,
+         "unmatched source offset was intercepted or loaded a candidate");std::atomic_store(&Entry::resourceRules,old);
 }
 void LatestPublicationRegression(){
  using namespace FullResourceReload;
@@ -1243,13 +1410,18 @@ void BackgroundReadyRegression(){
  Reset();enabled=true;RuntimeShapes::enabled=true;RecordPart();done=1;
  auto file=std::filesystem::temp_directory_path()/("eff-background-"+std::to_string(GetCurrentProcessId()));EiemResourceReloadPlan::Save(file,{1,2,3,4});
  struct FileCleanup {std::filesystem::path file;~FileCleanup(){FullResourceReload::attempt.reset();FullResourceReload::pending.reset();std::atomic_store(&FullResourceReload::activeNative,std::shared_ptr<Attempt>{});std::filesystem::remove(file);}}files{file};
+ auto previousApi=NativeBundle::api;auto previousNew=il2cpp_object_new;
+ struct ApiCleanup{NativeBundle::Api api;decltype(il2cpp_object_new) allocate;~ApiCleanup(){NativeBundle::api=api;il2cpp_object_new=allocate;}}apiCleanup{previousApi,previousNew};
  auto prepared=Prepare();auto plan=std::make_shared<EiemResourceReloadPlan::Plan>(*prepared->plan);
- plan->inputs.push_back({"input.vfs",{},"bundle",file,{}});plan->closure={0};plan->roots.push_back(plan->roots.front());plan->roots.back().path="assets/other.prefab";
- prepared->plan=plan;prepared->files.emplace(0,std::make_shared<NativeBundle::FileHold>(file));NativeBundle::api.load=(void*)50;
+ plan->inputs.push_back({"input.vfs",{},"bundle",file,{}});plan->inputs.push_back({"later.vfs",{},"later-bundle",file,{}});plan->closure={0,1};plan->inputDependencies={{},{}};plan->roots.push_back(plan->roots.front());plan->roots.back().path="assets/other.prefab";plan->roots.back().input=1;
+ prepared->plan=plan;prepared->files.emplace(0,std::make_shared<NativeBundle::FileHold>(file));prepared->files.emplace(1,prepared->files.at(0));NativeBundle::api.load=(void*)50;
+ NativeBundle::api.byteClass=byteClass;NativeBundle::api.streamClass=(void*)0xBA11;NativeBundle::api.streamCtor=(void*)88;NativeBundle::api.nativeStreamCtor=nullptr;
+ NativeBundle::api.streamIcall=[](void*,uint32_t,uint32_t)->void*{return (void*)(uintptr_t(0x9000)+ ++opened);};
+ il2cpp_object_new=[](void* klass)->void*{Require(klass==(void*)0xBA11,"late-root stream class differs");auto b=std::make_unique<Bytes>(8);auto p=b->data();storage.push_back(std::move(b));return p;};
  prepared->pointer={std::string(64,'A'),std::string(64,'B')};pending=prepared;
  std::atomic_store(&requested,std::shared_ptr<const Ticket>{});std::atomic_store(&latest,std::make_shared<const EiemOfflinePackage::Pointer>(prepared->pointer));
  for(unsigned frame=0;frame<256;++frame){for(auto& r:scheduleDone)r.second=true;Frame();}
- Require(attempt&&attempt->phase==Phase::Ready&&opened==prepared->plan->closure.size(),
+ Require(attempt&&attempt->phase==Phase::Ready&&opened==1&&!attempt->bundles.count(1),
          "candidate stayed idle until F10, putting all native loads on the refresh path");
  Require(!removeCalls&&!loadCalls&&generation==2&&std::atomic_load(&routes)->empty(),
          "background preparation exposed resources or rebuilt a live model before F10");
@@ -1262,6 +1434,7 @@ void BackgroundReadyRegression(){
          "F10 repeated resource requests instead of committing the prepared native graph: "+attempt->error);
  resourceLabel="assets/other.prefab";resourceSource=unrelatedRoot;fixtureProxyHash=std::hash<std::string>{}(resourceLabel);
  ProxyPreload(instance,false,nullptr);
+ Require(opened==loaded+1&&attempt->bundles.at(1).done,"later character did not open only its missing native Bundle");
  Require(proxyCloneResult==lazyRoot&&attempt->assets.at(1).prefab.Get()==lazyCandidate&&leaseRequests==leased+1&&!proxyContext,
          "game's inlined AssetProxy prefab creation bypassed the offline candidate for a later character");
  Require(ResourceGet(leaseHandle,nullptr)==lazyCandidate&&leaseRequests==leased+1,"ordinary resource handle did not reuse the prepared later-character route");
@@ -1270,37 +1443,13 @@ void BackgroundReadyRegression(){
  Require(Clone(unrelatedRoot)==lazyRoot,"later source prefab did not register its exact clone route");
 }
 void OfflineRejectionRegression(){
- using namespace FullResourceReload;Reset();
- auto previous=gameDirectory;auto folder=std::filesystem::absolute("bin")/("eff-offline-reject-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));
- Require(std::filesystem::create_directory(folder),"offline reject fixture already exists");
- struct Cleanup {std::filesystem::path game,folder;~Cleanup(){attempt.reset();pending.reset();std::atomic_store(&requested,std::shared_ptr<const Ticket>{});std::atomic_store(&latest,std::shared_ptr<const EiemOfflinePackage::Pointer>{});enabled=false;gameDirectory=game;std::filesystem::remove_all(folder);Reset();}}cleanup{previous,folder};
- gameDirectory=folder;enabled=true;RuntimeShapes::enabled=true;auto cache=folder/"plugin/resource-reload-cache";std::filesystem::create_directories(cache);
- auto prepared=Prepare();prepared->pointer={std::string(64,'A'),std::string(64,'B')};
- attempt=std::make_unique<Attempt>();attempt->prepared=prepared;attempt->phase=Phase::Ready;
- for(bool trigger:{false,true}){
-  EiemResourceReloadPlan::Save(cache/"current.tsv",{'b','a','d'});
-  auto ticket=std::make_shared<Ticket>();ticket->pointer=prepared->pointer;ticket->clock=NativeBundle::Clock();ticket->controls=prepared->controls;ticket->config=prepared->config;
-  std::atomic_store(&requested,std::shared_ptr<const Ticket>(ticket));std::atomic_store(&latest,std::make_shared<const EiemOfflinePackage::Pointer>(prepared->pointer));
-  PollOffline(trigger);Require(!std::atomic_load(&requested)&&!std::atomic_load(&latest),"offline failure left a valid ticket/latest pointer to an old ready candidate");
-  Frame();Require(attempt->phase==Phase::Ready&&!removeCalls&&!loadCalls,"malformed disk publication committed old candidate");
-  std::atomic_store(&latest,std::make_shared<const EiemOfflinePackage::Pointer>(prepared->pointer));Frame();
-  Require(attempt->phase==Phase::Ready&&!removeCalls&&!loadCalls,"repairing disk after failure committed without a new F10");
- }
-}
-void PreparedShortcutRegression(){
- using namespace FullResourceReload;Reset();auto previousGame=gameDirectory;auto previousDisk=diskPrepared;auto previousPointer=lastPrepared;bool previousActive=active;
- auto folder=std::filesystem::absolute("bin")/("reload-shortcut-fixture-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));Require(std::filesystem::create_directory(folder),"shortcut fixture already exists");
- struct Cleanup {std::filesystem::path game,folder;std::shared_ptr<Prepared> disk;EiemOfflinePackage::Pointer pointer;bool activeBefore;~Cleanup(){diskPrepared=disk;lastPrepared=pointer;gameDirectory=game;active=activeBefore;enabled=false;std::atomic_store(&requested,std::shared_ptr<const Ticket>{});std::atomic_store(&latest,std::shared_ptr<const EiemOfflinePackage::Pointer>{});std::filesystem::remove_all(folder);Reset();}}cleanup{previousGame,folder,previousDisk,previousPointer,previousActive};
- gameDirectory=folder;active=true;enabled=true;auto cache=folder/"plugin/resource-reload-cache";std::filesystem::create_directories(cache);std::filesystem::create_directories(folder/"plugin/tools");
- // If the production F10 seam unnecessarily invokes a compiler, this file
- // fails process creation. Already-proven unchanged inputs need no process.
- EiemResourceReloadPlan::Save(folder/"plugin/tools/eff_resource_pack.exe",{1,2,3,4});
- auto prepared=Test::Prepare();prepared->graph=prepared->controls.graph;auto plan=std::make_shared<Plan>(*prepared->plan);plan->parts.clear();plan->materials.clear();prepared->plan=plan;
- prepared->pointer={std::string(64,'A'),std::string(64,'B')};diskPrepared=prepared;lastPrepared=prepared->pointer;EiemOfflinePackage::Publish(cache,prepared->pointer);
- FullResourceReload::Prepare();auto ticket=std::atomic_load(&requested);Require(ticket&&ticket->config&&ticket->pointer==prepared->pointer,"unchanged prepared F10 invoked offline compilation instead of creating its commit ticket");
- Require(!opened&&!leaseRequests&&!removeCalls&&!loadCalls,"shortcut preflight performed native model/resource work");
- auto added=folder/"plugin/mods/Added";std::filesystem::create_directories(added);EiemResourceReloadPlan::Save(added/"mod.ini",{'[','M','o','d',']'});
- FullResourceReload::Prepare();Require(!std::atomic_load(&requested)&&!std::atomic_load(&latest),"new Mod bypassed the required compiler and used the previous set");
+ using namespace FullResourceReload;Reset();auto previousGame=gameDirectory;auto previousSet=preparedCompiledSet;auto previousDisk=diskPrepared;bool previousActive=active;
+ auto folder=std::filesystem::absolute("bin")/("compiled-reject-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));Require(std::filesystem::create_directory(folder),"compiled reject fixture exists");
+ struct Cleanup{std::filesystem::path game,folder;std::shared_ptr<const EiemCompiledModSet::Set> set;std::shared_ptr<Prepared> disk;bool wasActive;~Cleanup(){attempt.reset();pending.reset();preparedCompiledSet=set;diskPrepared=disk;gameDirectory=game;active=wasActive;enabled=false;std::atomic_store(&requested,std::shared_ptr<const Ticket>{});std::atomic_store(&latest,std::shared_ptr<const EiemOfflinePackage::Pointer>{});std::filesystem::remove_all(folder);Reset();}}cleanup{previousGame,folder,previousSet,previousDisk,previousActive};
+ gameDirectory=folder;active=true;enabled=true;preparedCompiledSet.reset();diskPrepared.reset();auto mod=folder/"plugin/mods/New";std::filesystem::create_directories(mod);EiemResourceReloadPlan::Save(mod/"mod.ini",{'b','a','d'});
+ auto prepared=Test::Prepare();prepared->pointer={std::string(64,'A'),std::string(64,'B')};attempt=std::make_unique<Attempt>();attempt->prepared=prepared;attempt->phase=Phase::Ready;
+ for(bool trigger:{false,true}){auto ticket=std::make_shared<Ticket>();ticket->pointer=prepared->pointer;std::atomic_store(&requested,std::shared_ptr<const Ticket>(ticket));std::atomic_store(&latest,std::make_shared<const EiemOfflinePackage::Pointer>(prepared->pointer));
+  PollOffline(trigger);Require(!std::atomic_load(&requested)&&!std::atomic_load(&latest),"uncompiled Mod retained a commit ticket");Frame();Require(attempt->phase==Phase::Ready&&!removeCalls&&!loadCalls,"failed compiled graph committed old candidate");}
 }
 void CompiledSnapshotRegression(){
  using namespace FullResourceReload;Reset();auto previousGame=gameDirectory;auto previousDisk=diskPrepared;auto previousSet=preparedCompiledSet;auto previousPointer=lastPrepared;bool previousActive=active;
@@ -1328,13 +1477,20 @@ void RetirementRegression(){
 
 }
 namespace Test {
-void FullFrameRegression(bool display,bool vanilla=false,bool pristine=false){
+void FullFrameRegression(bool display,bool vanilla=false,bool pristine=false,bool generic=false){
  using namespace FullResourceReload;Reset();enabled=true;RuntimeShapes::enabled=true;BindWorld();done=1;
  auto file=std::filesystem::temp_directory_path()/("eff-frame-"+std::to_string(GetCurrentProcessId()));EiemResourceReloadPlan::Save(file,{1,2,3,4});
+ auto previousGame=gameDirectory,fixtureGame=file.parent_path()/(file.filename().u8string()+"-game");
+ struct RestoreGame{std::filesystem::path previous,folder,parent;bool used;~RestoreGame(){gameDirectory=previous;if(used&&folder.parent_path()==parent)std::filesystem::remove_all(folder);}}restoreGame{previousGame,fixtureGame,file.parent_path(),generic};
+ if(generic){Require(std::filesystem::create_directory(fixtureGame),"generic game fixture exists");std::filesystem::create_directories(fixtureGame/"plugin/mods/Generic");EiemResourceReloadPlan::Save(fixtureGame/"plugin/mods/Generic/mod.ini",{1});gameDirectory=fixtureGame;}
  {
   auto prepared=Prepare();auto plan=std::make_shared<EiemResourceReloadPlan::Plan>(*prepared->plan);
   if(pristine){plan->composed=true;plan->parts.clear();plan->materials.clear();plan->roots.front().markers.clear();
    plan->roots.front().assembly.sources.front().targets.front().marker.clear();
+  }
+  if(generic){plan->composed=true;plan->parts.clear();plan->materials.clear();plan->roots.front().markers.clear();plan->roots.front().assembly={};
+   Package package;package.id="Generic";package.root=std::filesystem::canonical(fixtureGame/"plugin/mods/Generic");auto resource=std::make_shared<EiemDirectory::Resource>();resource->kind=37;package.resources.emplace("resources/component.bin",resource);
+   prepared->controls.graph=std::make_shared<const std::vector<Package>>(std::vector<Package>{package});prepared->graph=prepared->controls.graph;
   }
   plan->inputs.push_back({"input-001.vfs",{},"bundle",file,{}});plan->closure={0};prepared->plan=plan;
   prepared->files.emplace(0,std::make_shared<NativeBundle::FileHold>(file));prepared->pointer={std::string(64,'A'),std::string(64,'B')};pending=prepared;
@@ -1344,21 +1500,56 @@ void FullFrameRegression(bool display,bool vanilla=false,bool pristine=false){
    // rather than only testing the path comparison helper in isolation.
    const char* paths[]={"assets/model.prefab","Assets/Model.prefab","ASSETS\\MODEL.prefab"};
    modelPath=paths[repeat%3];
-   generation=2;currentRoot=oldRoot;animationRoot=oldRoot;RuntimeControls::Spec spec;spec.marker="marker";RuntimeControls::specs.emplace("marker",spec);BindWorld();
+   if(!repeat){generation=2;currentRoot=oldRoot;animationRoot=oldRoot;RuntimeControls::Spec spec;spec.marker="marker";RuntimeControls::specs.emplace("marker",spec);BindWorld();}
    sceneRenderers={oldRenderer,unrelatedRenderer};
-   if(vanilla){RuntimeShapes::bound.clear();RuntimeControls::specs.clear();}
+   if(vanilla||generic){RuntimeShapes::bound.clear();RuntimeControls::specs.clear();}
    RecordPart(!display);
    auto fresh=Prepare();auto ticket=std::make_shared<Ticket>();ticket->pointer=prepared->pointer;ticket->clock=NativeBundle::Clock();ticket->config=fresh->config;ticket->controls=fresh->controls;
+   if(generic)ticket->controls=RuntimeControls::Prepare(prepared->graph,EiemGlobalConfig{});
    std::atomic_store(&requested,std::shared_ptr<const Ticket>(ticket));
+   if(repeat)Frame();
    for(unsigned frame=0;frame<100&&generation==2;++frame){for(auto& request:scheduleDone)request.second=true;Frame();}
    Require(attempt&&attempt->phase==Phase::Passed&&generation==3&&currentRoot==newRoot,"F10 Frame did not complete native load -> prefab verify -> discover -> game-owned rebuild -> commit: display="+std::to_string(display)+" repeat="+std::to_string(repeat)+" phase="+std::to_string(attempt?int(attempt->phase):-1)+" reason="+(attempt?attempt->error:"no attempt"));
-   Require(leaseRequests==1&&opened==1&&removeCalls==repeat+1&&discardCalls==repeat+1&&loadCalls==repeat+1,"full Frame did not execute exactly one reload transaction");
-   Require(followCalls==(display?0u:repeat+1),"display/world follow lifecycle differs");
-   Require(animationRebinds==(display?0u:repeat+1)&&(!display?animationRoot==newRoot:true),"full Frame reported success without animation rebind");
+   Require(leaseRequests==1&&opened==1&&removeCalls==1&&discardCalls==1&&loadCalls==1&&!std::atomic_load(&requested),"unchanged Frame restarted native load or model lifecycle");
+   Require(followCalls==(display?0u:1u),"display/world follow lifecycle differs");
+   Require(animationRebinds==(display?0u:1u)&&(!display?animationRoot==newRoot:true),"full Frame reported success without animation rebind");
   }
   attempt.reset();pending.reset();sourceLeases.clear();liveParts.clear();std::atomic_store(&requested,std::shared_ptr<const Ticket>{});enabled=false;Reset();
  }
  std::filesystem::remove(file);
+}
+void StartupAlreadyPublishedRegression(){
+ using namespace FullResourceReload;Reset();
+ auto previousRules=std::atomic_load(&Entry::resourceRules);auto previousEnabled=enabled.load();
+ struct Cleanup{std::shared_ptr<EiemPrefabRules::Context> rules;bool wasEnabled;~Cleanup(){
+  attempt.reset();pending.reset();std::atomic_store(&requested,std::shared_ptr<const Ticket>{});
+  std::atomic_store(&Entry::resourceRules,std::move(rules));enabled=wasEnabled;Reset();
+ }}cleanup{previousRules,previousEnabled};
+ enabled=true;BindWorld();RecordPart();
+ auto prepared=Prepare();auto plan=std::make_shared<EiemResourceReloadPlan::Plan>(*prepared->plan);
+ plan->key=std::string(64,'C');prepared->plan=plan;prepared->pointer={plan->key,std::string(64,'D')};
+ std::atomic_store(&Entry::resourceRules,std::make_shared<EiemPrefabRules::Context>(plan,Package{},[](size_t,bool){throw std::runtime_error("startup snapshot replayed published input");return Bytes{};}));
+ std::atomic_store(&latest,std::make_shared<const EiemOfflinePackage::Pointer>(prepared->pointer));pending=prepared;
+ Frame();
+ Require(attempt&&attempt->phase==Phase::Passed&&!opened&&!leaseRequests&&!loadCalls&&!removeCalls,
+         "startup snapshot prewarmed a duplicate set of already published resources");
+ for(unsigned repeat=0;repeat<3;++repeat){
+  auto ticket=std::make_shared<Ticket>();ticket->pointer=prepared->pointer;ticket->clock=NativeBundle::Clock();ticket->config=prepared->config;ticket->controls=prepared->controls;
+  std::atomic_store(&requested,std::shared_ptr<const Ticket>(ticket));Frame();
+  Require(!std::atomic_load(&requested)&&generation==2&&currentRoot==oldRoot&&animationRoot==oldRoot&&
+          !opened&&!leaseRequests&&!loadCalls&&!removeCalls&&!std::atomic_load(&activeNative),
+          "first or repeated unchanged F10 recreated startup resources/models");
+ }
+ prepared->authorFiles.emplace(std::filesystem::temp_directory_path()/"eff-nonexistent-startup-author",InputFileStamp{});
+ auto ticket=std::make_shared<Ticket>();ticket->pointer=prepared->pointer;ticket->config=prepared->config;
+ std::atomic_store(&requested,std::shared_ptr<const Ticket>(ticket));Frame();
+ Require(!std::atomic_load(&requested)&&generation==2&&!opened&&!removeCalls,
+         "unchanged startup F10 bypassed its author-file preflight");
+ auto changed=Prepare();auto changedPlan=std::make_shared<EiemResourceReloadPlan::Plan>(*changed->plan);
+ changedPlan->key=std::string(64,'E');changed->plan=changedPlan;changed->pointer={changedPlan->key,std::string(64,'F')};
+ std::atomic_store(&latest,std::make_shared<const EiemOfflinePackage::Pointer>(changed->pointer));pending=changed;done=0;Frame();
+ Require(attempt&&attempt->phase==Phase::Leases&&leaseRequests==1&&generation==2,
+         "a new resource identity was mistaken for the published startup set");
 }
 void MembershipPreflightRegression(){
  using namespace FullResourceReload;Reset();
@@ -1523,7 +1714,7 @@ void StartupDependencyListBindingRegression(){
  }catch(...){rows[3].parameter="System.Object";restore();throw;}
  restore();
 }
-void StartupDependencyHookRegression(){
+void StartupDependencyHookRegression(bool profile=false){
  using namespace Test;namespace D=StartupDependencies;
  Reset();propertyElementWidth=8;auto oldApi=D::api;auto oldNew=il2cpp_object_new;auto oldRules=std::atomic_load(&Entry::resourceRules);
  D::api.bundleName=(void*)143;D::api.managerManifest=(void*)144;D::api.listCtor=(void*)140;D::api.listAdd=(void*)141;D::api.listClass=(void*)700;D::api.listItems=(void*)18;D::api.listSize=(void*)19;
@@ -1561,11 +1752,44 @@ void StartupDependencyHookRegression(){
  dependencyNames["missing"]=0xFE369E5452DF7026ULL;BuildDependencyManifest();dependencyLists[list].clear();D::Direct(dependencyManifest,1,list,nullptr);
  Require(dependencyLists.at(list)==std::vector<uint64_t>({2,0xFE369E5452DF7026ULL}),"changed manifest did not retry a cached gap / truncated stored high-bit key");
  auto parsed=dependencyManifestReads;for(int i=0;i<1000;++i)Require(D::GetIndex(dependencyManifest,graph)!=nullptr,"ready manifest cache lost index");Require(dependencyManifestReads==parsed,"ready index rescanned manifest per query");
+ // A vanilla root may have a native dependency that receives a Mod's new
+ // edges. A fast no-op query must still inspect that indirect coverage.
+ nativeDependencyLists[501]={1};dependencyLists[list].clear();D::All(dependencyManifest,501,list,nullptr);
+ Require(dependencyLists.at(list)==std::vector<uint64_t>({1,0xFE369E5452DF7026ULL}),"vanilla root lost a modified native dependency's new edges");
+ if(profile){
+  for(unsigned size:{0u,64u,512u}){
+   auto& original=nativeDependencyLists[502];original.clear();for(unsigned i=0;i<size;++i)original.push_back(10000+i);
+   profiledInvokes=profiledFields=0;auto clock=NativeBundle::Clock();
+   for(unsigned repeat=0;repeat<1000;++repeat){dependencyLists[list].clear();D::All(dependencyManifest,502,list,nullptr);Require(dependencyLists.at(list)==original,"unrelated native query changed its dependency list");}
+   std::cout<<"LOAD-MISS-PROFILE stage=dependency-all calls=1000 originalDependencies="<<size<<" ms="<<NativeBundle::Ms(clock)<<" invokes="<<profiledInvokes<<" fields="<<profiledFields<<'\n';
+  }
+ }
  D::Clear(proxy,nullptr);D::snapshots.clear();D::snapshotKeys.clear();D::indexes.clear();D::enabled=false;D::api=oldApi;il2cpp_object_new=oldNew;std::atomic_store(&Entry::resourceRules,oldRules);dependencyLists.clear();Reset();
 }
-int main(){
+void ProfileLoadMisses(){
+ using namespace Test;Setup();Reset();
+ auto plan=std::make_shared<EiemResourceReloadPlan::Plan>();
+ for(unsigned i=0;i<85;++i){plan->originals.push_back({"input-"+std::to_string(i),std::string(64,'A'),std::filesystem::u8path("D:/game/bundles/input-"+std::to_string(i)+".vfs"),0,4});plan->startupHashes.push_back(std::string(64,'B'));}
+ plan->roots.push_back({"assets/model.prefab",0,{}});
+ auto rules=std::make_shared<EiemPrefabRules::Context>(plan,Package{},[](size_t,bool){throw std::runtime_error("unmatched load replayed an input");return Bytes{};});
+ std::atomic_store(&Entry::resourceRules,rules);auto absent=StringValue("D:/game/bundles/vanilla-unrelated.vfs");
+ auto clock=NativeBundle::Clock();for(unsigned repeat=0;repeat<10000;++repeat){bool matched=false;Require(!LoadRuleInput(absent,77,0,true,matched)&&!matched,"vanilla file did not pass through");}
+ std::cout<<"LOAD-MISS-PROFILE stage=file calls=10000 candidateInputs=85 ms="<<NativeBundle::Ms(clock)<<'\n';
+ FullResourceReload::enabled=true;resourceSource=source;resourceLabel="assets/vanilla-unrelated.prefab";
+ profiledInvokes=profiledFields=profiledBoxes=0;clock=NativeBundle::Clock();
+ for(unsigned repeat=0;repeat<10000;++repeat)Require(FullResourceReload::ResourceGet(leaseHandle,nullptr)==source,"vanilla prefab did not pass through");
+ std::cout<<"LOAD-MISS-PROFILE stage=prefab calls=10000 ms="<<NativeBundle::Ms(clock)<<" invokes="<<profiledInvokes<<" fields="<<profiledFields<<" boxes="<<profiledBoxes<<'\n';
+ for(unsigned count:{0u,64u,256u}){
+  for(unsigned i=0;i<count;++i){auto object=(void*)(uintptr_t(0xA000)+i);NativeBundle::memoryBundles.emplace(object,NativeBundle::MemoryBundle{RuntimeShapes::Ref::Make(object,false),RuntimeShapes::Ref::Make(source,false)});}
+  clock=NativeBundle::Clock();for(unsigned repeat=0;repeat<10000;++repeat)NativeBundle::CollectMemory();
+  std::cout<<"LOAD-MISS-PROFILE stage=stream-lifetime calls=10000 liveBundles="<<count<<" ms="<<NativeBundle::Ms(clock)<<'\n';NativeBundle::memoryBundles.clear();
+ }
+ FullResourceReload::enabled=false;std::atomic_store(&Entry::resourceRules,std::shared_ptr<EiemPrefabRules::Context>{});Reset();StartupDependencyHookRegression(true);
+}
+int main(int argc,char** argv){
  using namespace Test;using namespace FullResourceReload;
  try{
+  if(argc==2&&std::string(argv[1])=="--profile-load-misses"){ProfileLoadMisses();return 0;}
   Setup();Reset();
   AssemblyAddressRegression();
   SerializedBoneAddressRegression();
@@ -1575,6 +1799,8 @@ int main(){
   StartupDependencyListBindingRegression();
   StartupDependencyHookRegression();
   auto check=[](const char* name,auto action){try{action();}catch(const std::exception& e){throw std::runtime_error(std::string(name)+": "+e.what());}};
+  check("idle stream lifetime",IdleStreamLifetimeRegression);
+  check("native stream read views",NativeStreamViewRegression);
   check("static Renderer verification and visibility",[]{
     Reset();staticRenderers=true;staticSkinCalls=0;staticEnabled=1;
     RuntimeShapes::api.getComponent=(void*)107;RuntimeShapes::api.filterMesh=(void*)108;RuntimeShapes::api.filterType=(void*)109;RuntimeShapes::api.getEnabled=(void*)110;
@@ -1595,6 +1821,11 @@ int main(){
   check("UI delayed completion through Frame",UIDelayedFrameRegression);
   check("UI model lifecycle reload",UIModelReloadRegression);
   check("synchronous world owner",SynchronousOwnerRegression);
+  check("unrelated prefab allocation",UnrelatedPrefabAllocationRegression);
+  check("indexed file source ranges",FileSourceIndexRegression);
+  check("stream lifetime reentrant identity",StreamLifetimeReentryRegression);
+  check("unowned Renderer rejection details",OwnershipRejectionDetailsRegression);
+  check("provisional material-controller Renderer coverage",ProvisionalRendererOwnershipRegression);
   check("LoadModel release ownership",LoadReleaseOwnershipRegression);
   check("bone verification cost",BoneVerificationCostRegression);
   check("UI page API binding",UIPageApiBindingRegression);
@@ -1608,9 +1839,12 @@ int main(){
 #if defined(EIEM_DIAGNOSTICS)
   check("animation attachment probe contract",AnimationAttachmentProbeRegression);check("unmodified skin probe contract",UnmodifiedSkinProbeRegression);check("actual performance attachment probe",PerformanceProbeRegression);check("native resource release probe",PerformanceReleaseProbeRegression);
 #endif
-  check("native lifecycle",NativeLifecycleRegression);check("typed character audio",[]{typedAudioOnly=true;NativeLifecycleRegression();typedAudioOnly=false;});check("texture identity",TextureIdentityRegression);check("load scheduling",PrewarmScheduleRegression);check("committed retry",CommittedRetryRegression);check("released pool",ReleasedPoolRegression);check("display virtual override",DisplayOverrideRegression);check("rule memory loads",RuleMemoryRegression);
-  check("latest publication",LatestPublicationRegression);check("offline failure cancellation",OfflineRejectionRegression);check("prepared shortcut",PreparedShortcutRegression);check("startup",StartupNoWorldRegression);check("Mesh gate",ChangedMeshGateRegression);check("retirement",RetirementRegression);
+  check("native lifecycle",NativeLifecycleRegression);check("typed character audio",[]{typedAudioOnly=true;NativeLifecycleRegression();typedAudioOnly=false;});check("texture identity",TextureIdentityRegression);check("shared material identity",SharedMaterialIdentityRegression);check("load scheduling",PrewarmScheduleRegression);check("committed retry",CommittedRetryRegression);check("released pool",ReleasedPoolRegression);check("display virtual override",DisplayOverrideRegression);check("rule memory loads",RuleMemoryRegression);check("native byte stream ownership",NativeByteStreamRegression);
+  check("selected Bundle closure",SelectedBundleClosureRegression);
+  check("latest publication",LatestPublicationRegression);check("offline failure cancellation",OfflineRejectionRegression);check("startup",StartupNoWorldRegression);check("Mesh gate",ChangedMeshGateRegression);check("retirement",RetirementRegression);
+  check("published startup Frame",StartupAlreadyPublishedRegression);
   check("world Frame",[]{FullFrameRegression(false);});check("display Frame",[]{FullFrameRegression(true);});
+  check("generic world Frame",[]{FullFrameRegression(false,false,false,true);});check("generic display Frame",[]{FullFrameRegression(true,false,false,true);});
   check("consecutive world F10",SequentialWorldRegression);
   check("part callback owners",PartOwnerRegression);
   check("same entity auxiliary helpers",AuxiliaryHelperRegression);

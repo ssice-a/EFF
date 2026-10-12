@@ -47,6 +47,7 @@ struct TextureInputBuild {
   Bytes bytes;
   size_t materialMatches = 0, textureBindings = 0, changedMaterials = 0;
   std::vector<TextureWrite> textures;
+  bool changedPreloads = false;
 };
 inline int64_t AllocateTextureId(const std::string& cab, const Package& package,
                                  const std::string& section, const Texture& texture) {
@@ -132,13 +133,15 @@ inline Value ApplyMaterial(const Type& type, Value value, const Resource& resour
       matched = &Child(type, Child(type, pair, "second"), "m_Texture");
     }
     Require(matched, "Material texture property absent: " + edit.first);
-    auto current = PointerIdentity(type, *matched, layout, cab);
+    auto current = Integer(Child(type,*matched,"m_PathID")) ? PointerIdentity(type, *matched, layout, cab) : TextureReference{cab,0};
     // The compiler resolves the serialization template from the material slot.
     // The clone lives in the same CAB, so its FileID is already registered.
-    Require(current.first == target->second.cab && current.second == target->second.pathId,
+    Require(!current.second || (current.first == target->second.cab && current.second == target->second.pathId),
             "new Material texture dependency requires preload registration");
-    SetInteger(type, Child(type, *matched, "m_PathID"),
-        (uint64_t)AllocateTextureId(target->second.cab, package, edit.second, texture));
+    auto external=std::find(layout.externals.begin(),layout.externals.end(),target->second.cab);
+    Require(target->second.cab==cab||external!=layout.externals.end(),"null Material texture schema dependency is not registered");
+    SetInteger(type,Child(type,*matched,"m_FileID"),target->second.cab==cab?0:uint64_t(external-layout.externals.begin()+1));
+    SetInteger(type,Child(type,*matched,"m_PathID"),uint64_t(AllocateTextureId(target->second.cab,package,edit.second,texture)));
     ++bindings;
   }
   return value;
@@ -207,7 +210,8 @@ inline Value ApplyTexture(const Type& type, Value value, const Texture& texture,
   return value;
 }
 inline void ResolveTextureTemplates(Package& package, const std::vector<Bytes>& inputs,
-                                    const AssetIndex& index) {
+                                    const AssetIndex& index,
+                                    const std::vector<EndfieldInput::Bundle>* decoded = nullptr) {
   std::set<std::string> authored;
   for (const auto& texture : package.textures)
     if (texture.second.source.path.empty()) authored.insert(texture.first);
@@ -222,8 +226,10 @@ inline void ResolveTextureTemplates(Package& package, const std::vector<Bytes>& 
   for (const auto& asset : index)
     if (asset.second.classId == 28) identities.emplace(TextureReference{asset.second.cab, asset.second.pathId}, asset.first);
   std::map<std::string, Identity> templates;
-  for (const auto& input : inputs) {
-    auto bundle = EndfieldInput::Decode(input);
+  Require(!decoded || decoded->size() == inputs.size(), "decoded template source coverage differs");
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    auto local = decoded ? EndfieldInput::Bundle{} : EndfieldInput::Decode(inputs[i]);
+    const auto& bundle = decoded ? decoded->at(i) : local;
     for (const auto& member : bundle.members) {
       if (!materialCabs.count(member.name)) continue;
       auto layout = ParseSerialized(member.bytes);
@@ -232,13 +238,21 @@ inline void ResolveTextureTemplates(Package& package, const std::vector<Bytes>& 
         if (copies == materialCopies.end()) continue;
         const auto& type = layout.types.at(layout.objects.at(asset.pathId).type);
         auto value = ObjectValue(member.bytes, layout, asset.pathId);
+        TextureReference fallback;
+        for (const auto& pair : ArrayValue(type, Child(type, Child(type, value, "m_SavedProperties"), "m_TexEnvs")).children) {
+          const auto& slot=Child(type,Child(type,pair,"second"),"m_Texture");if(!Integer(Child(type,slot,"m_PathID")))continue;
+          auto pointer=PointerIdentity(type,slot,layout,member.name);
+          if(pointer.second&&identities.count(pointer)){fallback=pointer;break;}
+        }
         for (const auto& pair : ArrayValue(type, Child(type, Child(type, value, "m_SavedProperties"), "m_TexEnvs")).children) {
           const auto& name = Child(type, pair, "first");
           auto property = Text(name.raw.data(), name.raw.size());
           for (const auto* material : copies->second) {
           auto edit = material->textures.find(property);
           if (edit == material->textures.end() || !authored.count(edit->second)) continue;
-          auto pointer = PointerIdentity(type, Child(type, Child(type, pair, "second"), "m_Texture"), layout, member.name);
+          const auto& slot=Child(type,Child(type,pair,"second"),"m_Texture");
+          auto pointer = Integer(Child(type,slot,"m_PathID")) ? PointerIdentity(type,slot,layout,member.name) : TextureReference{member.name,0};
+          if(!pointer.second)pointer=fallback;
           auto target = identities.find(pointer);
           Require(target != identities.end(), "Texture2D schema template absent from material slot");
           auto found = templates.find(edit->second);
@@ -256,9 +270,8 @@ inline void ResolveTextureTemplates(Package& package, const std::vector<Bytes>& 
     package.textures.at(section).source = templates.at(section);
   }
 }
-inline TextureInputBuild BuildTextureInput(const Bytes& source, const Package& package,
+inline TextureInputBuild BuildTextureInput(EndfieldInput::Bundle& bundle, const Package& package,
                                             const AssetIndex& index) {
-  auto bundle = EndfieldInput::Decode(source);
   TextureInputBuild result;
   std::map<std::string, size_t> sourceStreams;
   for (const auto& member : bundle.members)
@@ -278,7 +291,6 @@ inline TextureInputBuild BuildTextureInput(const Bytes& source, const Package& p
         AllocateTextureId(asset->second.cab, package, texture.first, texture.second));
   }
   for(const auto& material:package.materials){const auto& asset=index.at(material.second.source);expansion[{asset.cab,asset.pathId}].push_back(AllocateMaterialId(asset.cab,package,material.first));}
-  bool changedPreloads = false;
   for (auto& member : bundle.members) {
     if (!SerializedHeader(member.bytes)) continue;
     auto layout = ParseSerialized(member.bytes);
@@ -340,14 +352,20 @@ inline TextureInputBuild BuildTextureInput(const Bytes& source, const Package& p
       const auto& type = layout.types.at(row.second.type);
       auto value = ObjectValue(member.bytes, layout, row.first);
       if (ExpandTexturePreloads(type, value, layout, member.name, expansion, referencedPreloads)) {
-        changes.emplace(row.first, EncodeValue(type, value)); changedPreloads = true;
+        changes.emplace(row.first, EncodeValue(type, value)); result.changedPreloads = true;
       }
     }
     for (const auto& required : requiredPreloads)
       Require(referencedPreloads.count(required), "authored Texture absent from AssetBundle preload closure");
     member.bytes = BuildSerialized(member.bytes, layout, changes, added);
   }
-  result.bytes = result.textures.empty() && !result.changedMaterials && !changedPreloads
+  return result;
+}
+inline TextureInputBuild BuildTextureInput(const Bytes& source, const Package& package,
+                                            const AssetIndex& index) {
+  auto bundle = EndfieldInput::Decode(source);
+  auto result = BuildTextureInput(bundle, package, index);
+  result.bytes = result.textures.empty() && !result.changedMaterials && !result.changedPreloads
       ? source : EndfieldInput::Encode(source, bundle.members);
   auto checked = EndfieldInput::Decode(result.bytes);
   Require(checked.members.size() == bundle.members.size(), "rebuilt Texture input member count");

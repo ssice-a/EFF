@@ -63,6 +63,13 @@ internal static class PackageContractTests
             WriteIndex(index, new[] { "Bundles/a.ab" });
             var loaded = EndfieldIndexStore.Load(index);
             Check(loaded.StoredAssetCount == 1 && loaded.StoredCabCount == 1, "Current index round trip");
+            var requested = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "assets/test.prefab" };
+            var selectedIndex = EndfieldIndexStore.Load(index, requested);
+            Check(selectedIndex.Assets.AssetCount == loaded.Assets.AssetCount && selectedIndex.StoredCabCount == loaded.StoredCabCount,
+                "Selected index preserves requested assets and complete dependencies");
+            var emptyIndex = EndfieldIndexStore.Load(index, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+            Check(emptyIndex.Assets.AssetCount == 0 && emptyIndex.StoredAssetCount == 1 && emptyIndex.StoredCabCount == 1,
+                "Skipping unrelated asset strings preserves full record validation");
             Check(EndfieldIndexStore.LoadPrefabExportIndex(index, "assets/test.prefab").Assets.Count == 1, "Compact index round trip");
             using (var stream = new FileStream(index, FileMode.Open, FileAccess.ReadWrite))
             {
@@ -76,6 +83,7 @@ internal static class PackageContractTests
                 "Index compatibility follows complete fields, not the release label");
             using (var stream = new FileStream(index, FileMode.Append)) stream.WriteByte(1);
             Reject(() => EndfieldIndexStore.Load(index), "Index trailing bytes");
+            Reject(() => EndfieldIndexStore.Load(index, requested), "Selected index trailing bytes");
             WriteIndex(index, new[] { "Bundles/a.ab", "Bundles/b.ab" });
             Reject(() => EndfieldIndexStore.LoadPrefabExportIndex(index, "assets/test.prefab"), "Ambiguous Prefab source");
             using (var writer = new BinaryWriter(File.Create(index), Encoding.UTF8))

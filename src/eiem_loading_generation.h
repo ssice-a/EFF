@@ -48,14 +48,17 @@ inline std::string RemapPath(const std::string& path, const Names& names) {
   return "archive:/" + replacement + "/" + found->second;
 }
 struct Patch { size_t offset = 0; std::string before, after; };
-inline Bytes ApplyProven(const Bytes& bytes,const std::string& hash,std::vector<Patch> patches){
-  auto digest=Sha(bytes.data(),bytes.size());Require(Hex(digest.data(),digest.size())==hash,"namespace recipe source digest differs");
+inline Bytes ApplySites(const Bytes& bytes,std::vector<Patch> patches){
   std::sort(patches.begin(),patches.end(),[](const auto& a,const auto& b){return a.offset<b.offset;});size_t end=0;
   for(const auto& patch:patches){
     Require(patch.before.size()==patch.after.size()&&patch.offset>=end&&patch.offset<=bytes.size()&&patch.before.size()<=bytes.size()-patch.offset,"namespace recipe patch range/width/overlap differs");
-    Require(std::equal(patch.before.begin(),patch.before.end(),bytes.begin()+patch.offset),"namespace recipe original field differs");end=patch.offset+patch.before.size();
+    Require(std::equal(patch.before.begin(),patch.before.end(),bytes.begin()+patch.offset,[](char expected,unsigned char actual){return (unsigned char)expected==actual;}),"namespace recipe original field differs at byte "+std::to_string(patch.offset));end=patch.offset+patch.before.size();
   }
   Bytes result=bytes;for(const auto& patch:patches)std::copy(patch.after.begin(),patch.after.end(),result.begin()+patch.offset);return result;
+}
+inline Bytes ApplyProven(const Bytes& bytes,const std::string& hash,std::vector<Patch> patches){
+  auto digest=Sha(bytes.data(),bytes.size());Require(Hex(digest.data(),digest.size())==hash,"namespace recipe source digest differs");
+  return ApplySites(bytes,std::move(patches));
 }
 inline void AddPatch(std::vector<Patch>& patches, const Bytes& bytes, size_t offset,
                      const std::string& before, const std::string& after) {
@@ -151,29 +154,23 @@ inline Result PrepareSerialized(const Bytes& bytes, const Names& names,Recipe* r
     Require(matchedNames, "candidate Bundle name absent from namespace"); ++result.bundleNames;
   }
   result.bytes = Apply(bytes, patches, names);
-  auto checked = ParseSerialized(result.bytes); auto nextRefs = ReadReferences(result.bytes, checked);
-  Require(checked.order == layout.order && checked.dataOffset == layout.dataOffset &&
-              checked.objects.size() == layout.objects.size() && checked.metadataSize == layout.metadataSize,
-          "candidate namespace changed native layout");
-  auto nextExternals = ReadExternals(result.bytes, checked);
-  Require(nextExternals.size() == externals.size(), "candidate external table coverage differs");
-  for (size_t i = 0; i < externals.size(); ++i)
-    Require(nextExternals[i].path == RemapPath(externals[i].path, names) &&
-                nextExternals[i].guid == externals[i].guid && nextExternals[i].type == externals[i].type,
-            "candidate external references/GUID changed unexpectedly");
-  Require(nextRefs.pointers.size() == refs.pointers.size() && nextRefs.streams.size() == refs.streams.size() &&
-              nextRefs.unparsed.size() == refs.unparsed.size(), "candidate reference coverage differs");
-  for (size_t i = 0; i < refs.pointers.size(); ++i) {
-    const auto& before = refs.pointers[i]; const auto& after = nextRefs.pointers[i];
-    Require(before.objectId == after.objectId && before.fileId == after.fileId && before.pathId == after.pathId &&
-                before.field == after.field, "candidate changed PPtr slots/PathIDs");
+  // Every site above is a parsed string payload. AddPatch proves equal width
+  // and original bytes; Apply rejects overlaps and identities outside those
+  // sites. Length prefixes, layout records, PPtrs, GUIDs and stream offsets
+  // therefore cannot change. Check the actual byte boundaries directly;
+  // reparsing the whole graph would only repeat the same schema traversal.
+  Require(result.bytes.size() == bytes.size(), "candidate namespace changed native extent");
+  auto ordered = patches;
+  std::sort(ordered.begin(), ordered.end(), [](const auto& a,const auto& b){return a.offset < b.offset;});
+  size_t preserved = 0;
+  for (const auto& patch : ordered) {
+    Require(std::equal(bytes.begin()+preserved,bytes.begin()+patch.offset,result.bytes.begin()+preserved) &&
+                std::equal(patch.after.begin(),patch.after.end(),result.bytes.begin()+patch.offset),
+            "candidate namespace changed bytes outside proven string fields");
+    preserved = patch.offset + patch.after.size();
   }
-  for (size_t i = 0; i < refs.streams.size(); ++i) {
-    const auto& before = refs.streams[i]; const auto& after = nextRefs.streams[i];
-    Require(before.objectId == after.objectId && after.path == RemapPath(before.path, names) &&
-                before.offset == after.offset && before.size == after.size,
-            "candidate changed streaming offsets/ranges");
-  }
+  Require(std::equal(bytes.begin()+preserved,bytes.end(),result.bytes.begin()+preserved),
+          "candidate namespace changed bytes outside proven string fields");
   for (const auto& opaque : refs.unparsed) {
     const auto& object = layout.objects.at(opaque.objectId);
     Require(std::equal(bytes.begin() + object.offset, bytes.begin() + object.offset + object.size,

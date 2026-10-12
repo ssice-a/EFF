@@ -102,7 +102,9 @@ def texture_sections(root, ini, textures, paths=None):
         relative = paths[texture['id']]
         path = resource_path(root, relative)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
+        texture['_written'] = not (texture.get('retained') and path.is_file() and path.read_bytes() == data)
+        if texture['_written']:
+            path.write_bytes(data)
         values = {'path': relative}
         settings = {'linear': ('true' if texture['colorSpace'] == 0 else 'false', 'false'),
                     'filter': (str(texture['filter']), '1'), 'wrap': (str(texture['wrap']), '0'),
