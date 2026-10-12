@@ -62,6 +62,15 @@ jobs:
         & "bin/resource-directory-entry-v35/full_resource_reload_smoke.exe"
         if ($LASTEXITCODE -ne 0) { throw 'Reload test failed' }
 
+    - name: Load the actual production DLL in an isolated host
+      shell: pwsh
+      run: |
+        cmd /c tools\diagnostics\build_production_dll_load_smoke.cmd
+        if ($LASTEXITCODE -ne 0) { throw 'Production DLL host test build failed' }
+        $binary = (Resolve-Path bin/resource-directory-entry-v35/eff.dll).Path
+        & bin/production-dll-load/production_dll_load_smoke.exe $binary "$env:WINDIR/System32"
+        if ($LASTEXITCODE -ne 0) { throw 'Production DLL attach/logging/control locks failed' }
+
     - name: Verify independent Mod rule composition
       shell: pwsh
       run: |

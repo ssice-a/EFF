@@ -1550,7 +1550,9 @@ APPLEPIE_PLUGIN_EXPORT void AP_SetLanguage(const char *) {}
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_DETACH) {Entry::RuntimeShapes::managedAlive=false;Entry::RuntimeControls::panel.stopping=true;}
   if (reason == DLL_PROCESS_ATTACH) {
+#if defined(_DLL)
     DisableThreadLibraryCalls(module);
+#endif
     HANDLE thread = CreateThread(nullptr, 0, Entry::Start, nullptr, 0, nullptr);
     if (thread)
       CloseHandle(thread);

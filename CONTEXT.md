@@ -62,3 +62,5 @@
 - 自动测试、构建、部署和游戏验收分别记录。缺少生命周期证据只阻塞依赖它的操作，不阻塞独立的源码实现、编译和离线验证。
 
 完整资源事务目标见[渲染装配契约](docs/full-render-assembly-reload.md)，当前单项实机证据与下一轮步骤见[热重载测试](docs/hot-reload-testing.md)。后续 Skeleton/Physics 的三端目标见[物理设计契约](docs/physics-authoring-design.md)。
+
+生产 DLL/代理/ImGui 使用静态 C/C++ 运行库，避免宿主预加载旧 MSVCP 的 mutex ABI 变化；发布必须核验 PE 导入表并在隔离宿主加载真实 DLL。见 [宿主运行库兼容](docs/production-runtime-compatibility.md)。

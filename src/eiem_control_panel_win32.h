@@ -9,7 +9,11 @@
 #include <dwmapi.h>
 #include <wrl/client.h>
 #include <sstream>
+#if defined(EIEM_STATIC_RUNTIME)
+#pragma comment(lib,"bin/imgui-static/eiem_imgui.lib")
+#else
 #pragma comment(lib,"bin/imgui/eiem_imgui.lib")
+#endif
 #pragma comment(lib,"d3d11.lib")
 #pragma comment(lib,"dxgi.lib")
 #pragma comment(lib,"dcomp.lib")

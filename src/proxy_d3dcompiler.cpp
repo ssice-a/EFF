@@ -140,7 +140,9 @@ void LoadPlugin() {
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
   if (reason == DLL_PROCESS_ATTACH) {
+#if defined(_DLL)
     DisableThreadLibraryCalls(hModule);
+#endif
     CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)LoadPlugin, NULL, 0, NULL);
   }
   return TRUE;

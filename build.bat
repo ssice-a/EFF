@@ -40,27 +40,29 @@ if errorlevel 1 (
 if not exist "%entry_folder%" mkdir "%entry_folder%"
 if errorlevel 1 goto entry_failed
 echo [1/5] Building production eff.dll for %entry_abi% ...
-call tools\build_imgui.cmd
+rem Game installs may preload older app-local MSVC runtimes. Keep the plugin
+rem and its UI implementation self-contained instead of sharing that runtime.
+call tools\build_imgui.cmd static
 if errorlevel 1 goto entry_failed
 rc /nologo /fo "%entry_folder%\version.res" src\version.rc
 if errorlevel 1 goto entry_failed
-cl /nologo /utf-8 /O2 /Zi /MD /LD /EHsc /std:c++17 /bigobj /W4 ^
- %entry_define% %entry_capture% /Ideps\minhook_lib\include ^
+cl /nologo /utf-8 /O2 /Zi /MT /LD /EHsc /std:c++17 /bigobj /W4 ^
+ %entry_define% %entry_capture% /DEIEM_STATIC_RUNTIME=1 /Ideps\minhook_lib\include ^
  /Fo"%entry_folder%\eff_resource_entry.obj" ^
  /Fd"%entry_folder%\eff_compile.pdb" ^
  src\eiem_resource_entry.cpp "%entry_folder%\version.res" ^
  deps\minhook_lib\lib\libMinHook.x64.lib ^
  /Fe"%entry_folder%\eff.dll" ^
- /link /DLL /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO bcrypt.lib user32.lib ^
+ /link /DLL /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /NODEFAULTLIB:MSVCRT bcrypt.lib user32.lib ^
  /PDB:"%entry_folder%\eff.pdb"
 if errorlevel 1 goto entry_failed
 echo [2/5] Building DirectX proxy loader ...
-cl /nologo /O2 /MD /LD /EHsc /std:c++17 ^
+cl /nologo /O2 /MT /LD /EHsc /std:c++17 ^
  /Fo"%entry_folder%\proxy_d3dcompiler.obj" src\proxy_d3dcompiler.cpp ^
  /Fe"%entry_folder%\d3dcompiler_47.dll" /link /DLL
 if errorlevel 1 goto entry_failed
 echo [3/5] Building Vulkan proxy loader ...
-cl /nologo /O2 /MD /LD /EHsc /std:c++17 ^
+cl /nologo /O2 /MT /LD /EHsc /std:c++17 ^
  /Fo"%entry_folder%\proxy_vulkan_full.obj" src\proxy_vulkan_full.cpp ^
  /Fe"%entry_folder%\vulkan-1.dll" /link /DLL
 if errorlevel 1 goto entry_failed

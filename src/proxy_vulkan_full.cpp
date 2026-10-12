@@ -372,7 +372,9 @@ void LoadPlugin() {
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
+#if defined(_DLL)
         DisableThreadLibraryCalls(hModule);
+#endif
 #if defined(EIEM_ENABLE_GFXTRACE_CAPTURE)
         // GPU capture is opt-in for diagnostic builds.  The normal plugin
         // must not inject the RenderDoc/GfxTrace implicit layer on every
