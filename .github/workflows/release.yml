@@ -79,10 +79,23 @@ jobs:
     - name: Verify control panel and persisted key routing
       shell: pwsh
       run: |
-        cmd /c tools\diagnostics\build_control_panel_smoke.cmd
-        if ($LASTEXITCODE -ne 0) { throw 'Control panel test build failed' }
-        & bin/resource-directory-entry/control_panel_smoke.exe
-        if ($LASTEXITCODE -ne 0) { throw 'Control panel test failed' }
+        # Existing tags used E:/ for the isolated persistence fixture. Supply
+        # that scratch drive without changing the tagged source or binaries.
+        $fixtureDrive = $false
+        $needsDrive = Select-String -Path tools/diagnostics/control_panel_smoke.cpp -SimpleMatch 'std::filesystem::path("E:/")' -Quiet
+        if ($needsDrive -and -not (Test-Path 'E:\')) {
+          subst E: $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { throw 'Test scratch drive setup failed' }
+          $fixtureDrive = $true
+        }
+        try {
+          cmd /c tools\diagnostics\build_control_panel_smoke.cmd
+          if ($LASTEXITCODE -ne 0) { throw 'Control panel test build failed' }
+          & bin/resource-directory-entry/control_panel_smoke.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Control panel test failed' }
+        } finally {
+          if ($fixtureDrive) { subst E: /d }
+        }
 
     - name: Verify static Mesh consumers and assembly
       shell: pwsh

@@ -13,7 +13,7 @@ using EiemControlPanel::Action;
 UINT physical=0;
 bool Sample(const EiemKeyChord& chord) { return physical==chord.vk; }
 Package Make(const std::string& id) {
-  Package p;p.id=id;p.root=std::filesystem::path("E:/EIEM_Workspace/panel-fixture")/id;
+  Package p;p.id=id;p.root=std::filesystem::temp_directory_path()/"eff-panel-fixture"/id;
   p.defaults={{"$switch",0},{"$shape",0}};p.controls["$shape"]={u8"体型",0,1};
   p.bindings={{"衣装切换","$switch","cycle",{VK_NUMPAD1,0},{0,1,2},1},
               {"increase","$shape","hold",{VK_UP,0},{1},1},
@@ -143,9 +143,10 @@ void CrossThreadWindowChecks(){
   std::cout<<"PASS cross-thread close remains responsive while game window does not pump messages\n";
 }
 void SavedPreferencesChecks() {
-  auto folder=std::filesystem::path("E:/")/("eff-preference-smoke-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));
+  auto parent=std::filesystem::weakly_canonical(std::filesystem::temp_directory_path());
+  auto folder=parent/("eff-preference-smoke-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));
   Require(std::filesystem::create_directory(folder),"preference fixture already exists");
-  struct Cleanup {std::filesystem::path folder;~Cleanup(){std::filesystem::remove_all(folder);}} cleanup{folder};
+  struct Cleanup {std::filesystem::path folder,parent;~Cleanup(){if(folder.parent_path()==parent)std::filesystem::remove_all(folder);}} cleanup{folder,parent};
   auto p=Make("Saved");p.root=folder/"Saved";p.persistent={"$shape","$switch"};std::filesystem::create_directory(p.root);
   auto author=[&](const std::string& id){auto text="[Mod]\nformat=2\nid="+id+"\n";EiemResourceReloadPlan::Save(p.root/"mod.ini",Bytes(text.begin(),text.end()));};author(p.id);
   // Existing untagged [Values] files remain readable.
