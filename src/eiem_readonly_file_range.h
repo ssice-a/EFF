@@ -1,5 +1,6 @@
 #pragma once
 #include "eiem_loading_input_substitution.h"
+#include "eiem_load_performance.h"
 
 namespace EiemReadonlyFileRange {
 using namespace EiemNativeInput;
@@ -32,7 +33,9 @@ struct Buffer {
  explicit operator bool()const{return bool(bytes)||bool(file);}
  size_t Size()const{return bytes?bytes->size():file->Size();}
  void Read(size_t offset,unsigned char* destination,size_t count)const{
+  EiemLoadPerformance::Scope performance(EiemLoadPerformance::BufferRead);performance.hit=bool(file);
   Require(offset<=Size()&&count<=Size()-offset,"compiled backing read exceeds range");std::memcpy(destination,(bytes?bytes->data():file->Data())+offset,count);
+  EiemLoadPerformance::Bytes(EiemLoadPerformance::BufferRead,count,performance.hit);
  }
 };
 } // namespace EiemReadonlyFileRange

@@ -2,6 +2,7 @@
 #include <string_view>
 #include <fstream>
 #include <sstream>
+#include <optional>
 #include "eiem_loading_graph_audit.h"
 
 // Offline preparation only. This contract is separate from production v3 input
@@ -119,9 +120,12 @@ struct Result {
   size_t externalPaths = 0, streamPaths = 0, bundleNames = 0, opaqueObjectsPreserved = 0;
 };
 struct Recipe {std::vector<Patch> patches;size_t externalPaths=0,streamPaths=0,bundleNames=0,opaque=0;};
-inline Result PrepareSerialized(const Bytes& bytes, const Names& names,Recipe* recipe=nullptr) {
-  auto layout = ParseSerialized(bytes);
-  auto externals = ReadExternals(bytes, layout); auto refs = ReadReferences(bytes, layout);
+inline Result PrepareSerialized(const Bytes& bytes, const Names& names,Recipe* recipe=nullptr,const SerializedLayout* preparedLayout=nullptr) {
+  std::optional<SerializedLayout> parsed;if(!preparedLayout)parsed=ParseSerialized(bytes);const auto& layout=preparedLayout?*preparedLayout:*parsed;
+  // Namespace edits touch only external/stream paths and Bundle names. PPtr
+  // arrays remain byte-identical and need no pointer inventory here. Apply
+  // still rejects every identity outside the proven string sites.
+  auto externals = ReadExternals(bytes, layout); auto refs = ReadReferences(bytes, layout,ReferenceScan::Streams);
   std::vector<Patch> patches;
   Result result;
   for (const auto& ext : externals) {

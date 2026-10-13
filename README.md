@@ -4,7 +4,7 @@
 
 EFF 在《明日方舟：终末地》创建资源和实例前应用 Mod。AnimeStudio 导出来源，Blender 制作并编译独立 Mod，EFF DLL 读取结果并完成游戏内加载与热重载。
 
-配套发布：**EFF v1.4.1、EFF Blender v0.41.0、AnimeStudio v1.4.0**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
+配套发布：**EFF v1.5.0、EFF Blender v0.42.0、AnimeStudio v1.5.0**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
 
 首次制作 Mod 可先阅读带截图的简易教程：[中文](Mod%20Tutorial.md) · [English](Mod%20Tutorial_EN.md)。
 
@@ -14,11 +14,12 @@ EFF 在《明日方舟：终末地》创建资源和实例前应用 Mod。AnimeS
 - 蒙皮 Mesh 和静态 MeshFilter＋MeshRenderer 使用同一 Replace、材质、贴图及显隐规则；静态 Renderer 不支持运行时形态键。
 - 一个原 Renderer 可对应多个作者部件；未声明替换的目标保留原内容。材质和贴图可以借用游戏资源或由作者新建。
 - 按键切换、形态键与玩家数值持久化；Ins 面板独立勾选各 Mod 是否接收按键，默认全部启用，可同时启用多个 Mod。
+- Shape Keys 动画独立播放组支持快捷键播放/停止，Ins 支持暂停和实时倍率；倍率保存，调速保持进度。
 - F10 读取整个 mods 目录，统一处理增删改和空集合；沿已适配的游戏世界/展示模型生命周期重载，重新绑定动画、武器和角色音频。准备或提交失败保留当前代际。
 
 ## 安装
 
-从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v1.4.1_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。当前代理转发支持 Windows 系统目录为 `C:\Windows` 的安装；其他系统目录尚不支持。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和各 Mod 的 `state.ini`。
+从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v1.5.0_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。当前代理转发支持 Windows 系统目录为 `C:\Windows` 的安装；其他系统目录尚不支持。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和各 Mod 的 `state.ini`。
 
 ```text
 d3dcompiler_47.dll
@@ -74,6 +75,8 @@ disable_camera_fade=true
 完整原包不会写入 Mod。编译结果包含资源输入视图、依赖与实例绑定索引，大小随实际作者资源和共享修改变化。规则文件大小与 Unity 加载时的内存占用不同。详见[命中与加载流程](docs/runtime-resource-discovery.md)、[输出契约](docs/offline-resource-package-format.md)。
 
 ## 验证边界
+
+本次新增形态动画的作者导出、原生播放和隔离编译回归已通过，游戏画面及活跃动画性能仍待实测。AnimeStudio 已支持两层 VFS 与逐 Bundle 增量索引；游戏更新后自动为旧 Mod 补齐新命中 PFB 的运行链仍在开发，本次 Release 不宣称已完成自动适配。
 
 离线回归覆盖同 PFB 多 Mod、增删恢复、流偏移、静态网格、连续世界/展示重载、动画消费者与回滚。最新两角色实机 F10 请求到提交约 107 ms，待机附件已获视觉确认；这是已准备候选的样本，不能代表所有场景的耗时。独立人群 NPC/场景物件的原地 F10、完整多代资源退休和 20–30 个 Mod 的压力尚未验证；数量不等于同时渲染数量。全 LOD 导出不会自动减面。新增 BoneCloth 骨链及球/胶囊碰撞体已接入离线编译；不同动作的混合、完整物理退出和 F10 仍需实机验收。当前发布构建通过自动回归，尚无本轮新二进制的实机验收。详细边界见[热重载验收](docs/hot-reload-testing.md)。
 

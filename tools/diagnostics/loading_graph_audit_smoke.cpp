@@ -25,6 +25,11 @@ int main() {
     bytes.resize((bytes.size() + 3) & ~size_t(3));
     SerializedLayout layout; layout.types = {type}; layout.objects.emplace(-101, Object{-101,0,bytes.size(),0});
     auto refs = ReadReferences(bytes, layout);
+    auto namespaceRefs=ReadReferences(bytes,layout,ReferenceScan::Streams);
+    Require(namespaceRefs.unparsed.empty()&&namespaceRefs.pointers.empty()&&namespaceRefs.streams.size()==1&&
+      namespaceRefs.streams[0].path==refs.streams[0].path&&namespaceRefs.streams[0].field==refs.streams[0].field&&
+      namespaceRefs.streams[0].pathDataOffset==refs.streams[0].pathDataOffset&&namespaceRefs.streams[0].offset==refs.streams[0].offset&&namespaceRefs.streams[0].size==refs.streams[0].size,
+      "namespace stream-only traversal differs from full reference audit");
     Require(refs.unparsed.empty() && refs.pointers.size() == 1 && refs.streams.size() == 1,
             "reference and stream traversal failed");
     Require(refs.pointers[0].fileId == 2 && refs.pointers[0].pathId == -17 && refs.pointers[0].objectId == -101,
@@ -49,6 +54,8 @@ int main() {
     auto corrupt = bytes; corrupt.pop_back();
     layout.objects.at(-101).size = corrupt.size();
     auto rejected = ReadReferences(corrupt, layout);
+    auto namespaceRejected=ReadReferences(corrupt,layout,ReferenceScan::Streams);
+    Require(namespaceRejected.unparsed.size()==1&&namespaceRejected.streams.empty(),"stream-only audit accepted partial evidence");
     Require(rejected.unparsed.size() == 1 && rejected.pointers.empty() && rejected.streams.empty(),
             "partial object reference evidence escaped rejection");
     Type unknown; unknown.classId = 114;

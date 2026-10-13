@@ -16,6 +16,7 @@
 | 装配身份 | v36 校验序列化 Renderer 地址、目标 marker 与逐 Mesh 骨骼；v35 使用 marker/骨骼校验 | v36 为源码及本地测试能力，未部署；0/1/N 完整迁移尚未验收 |
 | 实例迁移 | 现有实现使用已记录的游戏世界/展示 owner 重建及后续创建路由 | 世界贴图正向更新通过；展示、隐藏、池和所有消费者覆盖未完成 |
 | 按键、显隐与形态 | cycle/press/hold、表达式、Renderer 原生 enabled 仲裁、形态绑定与玩家数值持久化 | 历史按键/残影已有用户验收；新代际组合与反向重载仍需覆盖 |
+| 形态动画 | Shape Keys Action/KEY slot 离线采样、独立播放组、播放/暂停/停止、Ins 实时倍率与偏好保存 | 第一版已本地安装；Blender/原生控制/真实资源隔离编译通过，游戏画面及活跃动画性能待验收 |
 | Ins 控制面板 | 内置 Windows 面板、所选 Mod 按键限制、按键按钮与形态滑块、跨线程版本校验 | 两 Mod 同键隔离及真实控件消息测试通过（前台观察注入）；已部署 v35，游戏 UI/鼠标仍待验收 |
 | 缓存与多角色 Mod | 当前源码组合完整 0/1/N 作者集合；F10 提交增删/修改，Ins 只限制按键目标；集合缓存绑定 mods 目录 | 无对应 Mod 的角色保持原版；每个 Mod 自带来源描述，基线按需扩展；当前真实样本为 LZY；已部署 v35，实机待验收 |
 | 旧代退休 | 卸载 Bundle 容器时保留存活资源引用，未知所有权隔离 | 不宣称完整 native job fence、persistent pool 或多代资源回收已验证 |
@@ -28,8 +29,13 @@
 | 主题 | 入口 | 职责 |
 |---|---|---|
 | 项目术语 | [CONTEXT](../CONTEXT.md) | 作者、基线、代际、owner 和消费者边界 |
+| 离线导出提速 | [独立实施与验收](offline-export-performance-plan.md) | 当前编译后端和消费者覆盖保持，优化单次冷编译的解析、根归属及内存开销 |
+| 游戏更新自动适配 | [自动增量构建](game-update-prefab-adaptation-plan.md) | 目录变化、精确消费者发现、单文件结果与首次加载交付；独立于导出提速验收 |
 | 代码与构建 | [代码架构](code-architecture.md)、[源码地图](../src/README.md) | 当前入口、模块职责、v35/v36 配套构建及回归命令 |
 | 实机进度 | [热重载测试](hot-reload-testing.md) | 已通过用例、安装版本与下一轮操作 |
+| 场景性能检查 | [测点与测试顺序](performance-scene-test.md) | 主线程/后台耗时、读取和形态快照、慢帧窗口；明确 Unity/GPU 未测边界 |
+| 解包资源版本 | [游戏目录与两层 VFS](unpacker-vfs-layers.md) | 基础/热更新来源、逐 Bundle 增量索引与旧索引迁移、预下载边界和编译器一致性 |
+| 形态动画 | [作者片段与播放控制](shape-animation-design.md) | 第一版已本地安装：Shape Keys Action、独立播放组、Mesh 配套导出与 Ins 速度倍率；游戏内待验收 |
 | 完整目标 | [渲染装配热重载](full-render-assembly-reload.md) | 0/1/N、登记切换、回滚、未来实例及退休契约 |
 | 离线包 | [包契约](offline-resource-package-format.md) | ABI、缓存发布、编译与原生加载 |
 | 作者声明 | [INI 格式 2](mod-ini-resource-format-v2.md) | Replace/Part、资源、表达式与二进制格式 |

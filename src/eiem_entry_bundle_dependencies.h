@@ -13,7 +13,7 @@ struct Api {
  void *bundleName=nullptr,*listClass=nullptr,*listCtor=nullptr,*listAdd=nullptr,*allInfo=nullptr;
  void *managerManifest=nullptr,*proxyManagerField=nullptr,*listItems=nullptr,*listSize=nullptr;
  void *scalarClass=nullptr,*poolField=nullptr,*poolClass=nullptr,*poolAllocate=nullptr,*listDispose=nullptr;
- void *manifestData=nullptr,*bundles=nullptr,*mappedBase=nullptr,*mappedLength=nullptr,*mappedData=nullptr;
+ void *manifestData=nullptr,*bundles=nullptr,*mappedBase=nullptr,*mappedLength=nullptr,*mappedData=nullptr,*bundleClass=nullptr;
  size_t arraySize=0,arrayCount=0,arrayHead=0,bundleSize=0,bundleNameOffset=0,bundleKeyOffset=0;
  bool capacityCtor=false,boxedAdd=false;
 } api;
@@ -49,7 +49,7 @@ void BindManifestFields(void* manifest){
   if(strcmp(il2cpp_method_get_name(method),"TryGetBundleByIndex")||il2cpp_method_get_param_count(method)!=2)continue;
   Require(TypeName(il2cpp_method_get_param(method,0))=="System.Int32"&&!bundle,"manifest Bundle lookup shape differs");bundle=il2cpp_class_from_type(il2cpp_method_get_param(method,1));
  }
- Require(bundle,"manifest Bundle value type absent");api.bundleSize=ValueSize(bundle);
+ Require(bundle,"manifest Bundle value type absent");api.bundleClass=bundle;api.bundleSize=ValueSize(bundle);
  auto keyType=TypeName(il2cpp_field_get_type(Field(bundle,"hashName")));Require(keyType=="System.Int64"||keyType=="System.UInt64","manifest Bundle key type differs");
  api.bundleKeyOffset=ValueOffset(bundle,"hashName",sizeof(uint64_t));
  auto name=il2cpp_class_from_type(il2cpp_field_get_type(Field(bundle,"name")));Require(ValueSize(name)==sizeof(int32_t),"manifest name reference shape differs");
@@ -61,6 +61,7 @@ ManifestState State(void* manifest){
  if(state.data){il2cpp_field_get_value(state.data,api.mappedBase,&state.address);il2cpp_field_get_value(state.data,api.mappedLength,&state.length);}return state;
 }
 std::map<std::string,uint64_t> ManifestKeys(void* manifest,const ManifestState& state,const Names& graph){
+ EiemLoadPerformance::Scope performance(EiemLoadPerformance::DependencyIndex);
  auto start=std::chrono::steady_clock::now();
  Require(state.data&&state.address&&state.length>0&&uint64_t(state.length)<=UINTPTR_MAX-state.address,"manifest mapped range absent");
  auto range=[&](uintptr_t p,size_t size){return p>=state.address&&p-state.address<=uint64_t(state.length)&&size<=uint64_t(state.length)-(p-state.address);};
@@ -190,12 +191,21 @@ bool Augment(void* manifest,uint64_t hash,void* list,bool direct,bool originalRe
  if(report)Log("[STARTUP-DEPENDENCY-APPEND] bundleHash=%016llX direct=%d added=%zu nativeCount=%zu gameQueued=1",(unsigned long long)hash,int(direct),added.size(),before.size());
  return originalResult||!added.empty();
 }
+#if defined(EIEM_CATALOG_SURVEY)
+#include "eiem_entry_catalog_survey.h"
+#endif
 bool All(void* self,uint64_t hash,void* list,void* info){
  auto result=originalAll(self,hash,list,info);
+#if defined(EIEM_CATALOG_SURVEY)
+ CatalogSurvey::Observe(self,list);
+#endif
  try{return Augment(self,hash,list,false,result);}catch(const std::exception& e){Log("[STARTUP-DEPENDENCY-GAP] query=all reason=%s originalPreserved=1",e.what());return result;}
 }
 bool Direct(void* self,uint64_t hash,void* list,void* info){
  auto result=originalDirect(self,hash,list,info);
+#if defined(EIEM_CATALOG_SURVEY)
+ CatalogSurvey::Observe(self,list);
+#endif
  try{return Augment(self,hash,list,true,result);}catch(const std::exception& e){Log("[STARTUP-DEPENDENCY-GAP] query=direct reason=%s originalPreserved=1",e.what());return result;}
 }
 void Install(void** assemblies,size_t count){

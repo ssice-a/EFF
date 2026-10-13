@@ -23,23 +23,54 @@ struct Lod {Address group;std::vector<LodLevel> levels;};
 struct Helper {Address component;bool custom=false;std::vector<Address> renderers;};
 struct Description {std::vector<Source> sources;std::vector<Lod> lods;std::vector<Helper> helpers;};
 inline const Value* Optional(const Type& t,const Value& v,const char* name){for(const auto& c:v.children)if(t.nodes.at(c.node).name==name)return &c;return nullptr;}
+// One immutable member analysis can serve every Prefab root in that member.
+// Root-relative paths and component ordinals remain private to each Graph.
+struct GraphData {
+ std::string cab;SerializedLayout layout;std::map<int64_t,std::shared_ptr<const Value>> values;
+ std::map<int64_t,int64_t> transforms;
+ size_t reusedObjects=0,decodedObjects=0,sourceExtent=0;
+ // previousBytes is the immutable input used to construct previous, retained
+ // by the calling compiler for this slice's lifetime.
+ GraphData(const Bytes& bytes,const std::string& c,const GraphData* previous=nullptr,const Bytes* previousBytes=nullptr):cab(c),layout(ParseSerialized(bytes)),sourceExtent(bytes.size()){
+  Require(!previous||(previousBytes&&previous->cab==cab&&previousBytes->size()==previous->sourceExtent),"assembly reuse requires matching original member");
+  std::vector<bool> sameTypes(layout.types.size(),false);
+  if(previous)for(size_t i=0;i<layout.types.size()&&i<previous->layout.types.size();++i){const auto& a=layout.types[i];const auto& b=previous->layout.types[i];
+   sameTypes[i]=a.classId==b.classId&&a.hash==b.hash&&a.nodes.size()==b.nodes.size();
+   for(size_t j=0;sameTypes[i]&&j<a.nodes.size();++j){const auto& x=a.nodes[j];const auto& y=b.nodes[j];sameTypes[i]=x.type==y.type&&x.name==y.name&&x.align==y.align&&x.children==y.children;}}
+  static const std::set<std::string> fields={"m_GameObject","m_Name","m_Component","m_Father","m_Children",
+   "m_Mesh","m_Bones","m_RootBone","m_SkinningRoot","m_ProbeAnchor","m_PerRendererLightingAnchor",
+   "m_Enabled","m_LODs","useCustomRenderers","customRenderers",
+   "m_StaticBatchInfo","m_StaticBatchRoot","m_AdditionalVertexStreams","m_EnlightenVertexStream"};
+  for(auto id:layout.order){const auto& type=layout.types.at(layout.objects.at(id).type);int kind=type.classId;
+   if(kind!=1&&!IsTransformClass(kind)&&kind!=137&&kind!=23&&kind!=33&&kind!=205&&kind!=114)continue;
+   if(kind==114&&std::none_of(type.nodes.at(0).children.begin(),type.nodes.at(0).children.end(),[&](size_t node){return type.nodes.at(node).name=="useCustomRenderers";}))continue;
+   const auto& object=layout.objects.at(id);
+   if(previous&&sameTypes.at(object.type)){auto old=previous->layout.objects.find(id);auto value=previous->values.find(id);
+    if(old!=previous->layout.objects.end()&&value!=previous->values.end()&&old->second.type==object.type&&old->second.size==object.size&&
+       std::equal(bytes.begin()+object.offset,bytes.begin()+object.offset+object.size,previousBytes->begin()+old->second.offset)){
+     values.emplace(id,value->second);++reusedObjects;continue;}}
+   values.emplace(id,std::make_shared<const Value>(ObjectFields(bytes,layout,id,fields)));++decodedObjects;
+  }
+  for(const auto& row:values)if(IsTransformClass(layout.types.at(layout.objects.at(row.first).type).classId)){
+   const auto& type=layout.types.at(layout.objects.at(row.first).type);
+   auto owner=NullableReference(type,Child(type,*row.second,"m_GameObject"),layout,cab);
+   Require(owner.first==cab&&transforms.emplace(owner.second,row.first).second,"assembly duplicate/nonlocal Transform");
+  }
+ }
+};
 class Graph {
- const Bytes& bytes;std::string cab;SerializedLayout layout;std::map<int64_t,Value> values;
- std::map<int64_t,int64_t> transforms;std::map<int64_t,std::string> paths;std::map<std::pair<int64_t,int>,std::vector<int64_t>> components;
+ std::shared_ptr<const GraphData> data;const std::string& cab;const SerializedLayout& layout;
+ const std::map<int64_t,std::shared_ptr<const Value>>& values;const std::map<int64_t,int64_t>& transforms;
+ std::map<int64_t,std::string> paths;std::map<std::pair<int64_t,int>,std::vector<int64_t>> components;
  std::vector<int64_t> renderers;
  std::map<int64_t,std::vector<int64_t>> rendererChildren;
  std::set<int64_t> visiting;int64_t root=0;
  public:
- Graph(const Bytes& b,const std::string& c,int64_t go):bytes(b),cab(c),layout(ParseSerialized(b)){
-  for(auto id:layout.order){int kind=Kind(id);if(kind!=1&&kind!=4&&kind!=137&&kind!=23&&kind!=33&&kind!=205&&kind!=114)continue;
-   // Some unrelated script objects have opaque schemas. Do not parse them.
-   if(kind==114&&!HasSchemaField(id,"useCustomRenderers"))continue;
-   values.emplace(id,ObjectValue(bytes,layout,id));
-  }
-  for(const auto& row:values)if(Kind(row.first)==4){auto owner=Pointer(row.first,"m_GameObject");Require(transforms.emplace(owner,row.first).second,"assembly duplicate Transform");}
+ Graph(const Bytes& b,const std::string& c,int64_t go):Graph(std::make_shared<const GraphData>(b,c),go){}
+ Graph(std::shared_ptr<const GraphData> prepared,int64_t go):data(std::move(prepared)),cab(data->cab),layout(data->layout),values(data->values),transforms(data->transforms){
   root=transforms.at(go);paths[root]="";Index(root);
   for(const auto& row:values)if(Kind(row.first)==1&&transforms.count(row.first)&&paths.count(transforms.at(row.first))){
-   for(const auto& entry:ConstArray(Schema(row.first),Child(Schema(row.first),row.second,"m_Component")).children){
+   for(const auto& entry:ConstArray(Schema(row.first),Child(Schema(row.first),*row.second,"m_Component")).children){
     auto ref=NullableReference(Schema(row.first),Child(Schema(row.first),entry,"component"),layout,cab);
     if(ref.first!=cab||!ref.second||!layout.objects.count(ref.second))continue;
     auto id=ref.second;components[{row.first,Kind(id)}].push_back(id);
@@ -56,11 +87,11 @@ class Graph {
  int Kind(int64_t id)const{return layout.types.at(layout.objects.at(id).type).classId;}
  bool HasSchemaField(int64_t id,const char* name)const{const auto& t=Schema(id);for(auto i:t.nodes.at(0).children)if(t.nodes.at(i).name==name)return true;return false;}
  const Type& Schema(int64_t id)const{return layout.types.at(layout.objects.at(id).type);}
- const Value& Tree(int64_t id)const{return values.at(id);}
+ const Value& Tree(int64_t id)const{return *values.at(id);}
  int64_t Local(const Type& t,const Value& v)const{auto r=NullableReference(t,v,layout,cab);Require(r.first==cab,"assembly nonlocal hierarchy/component");return r.second;}
  int64_t Pointer(int64_t id,const char* field)const{return Local(Schema(id),Child(Schema(id),Tree(id),field));}
  std::string Name(int64_t go)const{const auto& n=Child(Schema(go),Tree(go),"m_Name");return Text(n.raw.data(),n.raw.size());}
- bool Contains(int64_t id)const{return values.count(id)&&paths.count(Kind(id)==4?id:transforms.at(Pointer(id,"m_GameObject")));}
+ bool Contains(int64_t id)const{return values.count(id)&&paths.count(IsTransformClass(Kind(id))?id:transforms.at(Pointer(id,"m_GameObject")));}
  std::string Path(int64_t transform)const{return paths.at(transform);}
  Address At(int64_t component)const{auto go=Pointer(component,"m_GameObject");auto kind=Kind(component);const auto& list=components.at({go,(kind==23||kind==137)?0:kind});auto it=std::find(list.begin(),list.end(),component);Require(it!=list.end(),"assembly component absent from owner");return {Path(transforms.at(go)),unsigned(it-list.begin())};}
  Address HelperAt(int64_t component)const{auto a=At(component);a.component=0;auto go=Pointer(component,"m_GameObject");for(auto id:components.at({go,114})){if(id==component)return a;if(HasSchemaField(id,"useCustomRenderers"))++a.component;}throw std::runtime_error("assembly helper component absent");}

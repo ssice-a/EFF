@@ -163,6 +163,8 @@ def update_directory(root, *, parts=(), materials=(), textures=(), texture_only=
         blocks['@bones'] = encode_strings(part['bonePaths'])
         blocks['@shapes'] = encode_strings(part['shapeNames'])
         resource_path(root, relative).write_bytes(encode_resource(MESH, part['nativeTypeHash'], blocks))
+    if parts:
+        apply_animations(root, ini, parts, partial=True)
     current_paths = {ini[s]['path'] for s in ini.sections() if s.startswith(('Mesh', 'Material', 'Texture'))}
     for relative in old_paths - current_paths:
         resource_path(root, relative).unlink()
@@ -170,6 +172,49 @@ def update_directory(root, *, parts=(), materials=(), textures=(), texture_only=
         save_ini(root, ini)
     from .ini_reader import read_package
     return read_package(root, resource_cache)
+
+
+def apply_animations(root, ini, parts, partial=False):
+    from . import shape_animation
+    from .resource_file import read_resource
+    selected_vars=set(); mapping={}; planned={}
+    for part in parts:
+        mesh_id=identifier(part['object'])
+        pid=next((s for s in ini.sections() if s.startswith('Part') and ini[s].get('mesh')==mesh_id),None)
+        if pid is None: continue
+        selected_vars.update(v for k,v in ini[pid].items() if k.startswith('shape.'))
+        for control in part.get('shapeControls',[]):
+            if not control['enabled']:continue
+            shape=control['shape'];key='shape.'+shape;variable=ini[pid].get(key)
+            if variable is None:
+                variable='$shape_'+re.sub(r'[^A-Za-z0-9_]','_',part['object'])+'_'+identifier(control['identity'])
+                ini['Constants']['persist '+variable]=str(control['default']);ini[pid][key]=variable
+                section='ShapeControl'+identifier(control['identity'])+'_'+mesh_id
+                ini[section]=dict(variable=variable,label=control['label'],min=str(control['minimum']),max=str(control['maximum']))
+            mapping[(part['partId'],shape)]=variable;selected_vars.add(variable)
+        for clip in part.get('shapeAnimations',[]):
+            if clip['id'] not in planned: planned[clip['id']]=(dict(clip),{})
+            previous,tracks=planned[clip['id']]
+            require(all(previous[k]==clip[k] for k in ('label','key','duration','speed','loop','autoplay')),'copied animation ID has conflicting settings; recreate the playback group')
+            for shape,samples in clip['channels'].items():
+                variable=mapping.get((part['partId'],shape));require(variable is not None,'animated shape lacks a control binding: '+shape)
+                tracks[variable]=samples
+    if partial:
+        for section in list(ini.sections()):
+            if not section.startswith('ShapeAnimation'):continue
+            old=shape_animation.decode(read_resource(resource_path(root,ini[section]['path']),shape_animation.KIND))
+            if set(old['tracks'])&selected_vars:
+                require(set(old['tracks'])<=selected_vars,'partial Mesh export must include all parts in the playback group')
+                for constant in list(ini['Constants']):
+                    if constant.removeprefix('persist ')==old['speedVariable']:del ini['Constants'][constant]
+                path=resource_path(root,ini[section]['path']);ini.remove_section(section);path.unlink()
+    for cid,(clip,tracks) in planned.items():
+        variable='$anim_speed_'+identifier(cid);clip['speedVariable']=variable
+        ini['Constants']['persist '+variable]=str(clip['speed'])
+        relative='resources/shape_animation_'+cid+'.bin';path=resource_path(root,relative);path.parent.mkdir(parents=True,exist_ok=True)
+        # Private atomic replacement also preserves any previous hard-linked export.
+        temp=path.with_name(path.name+'.tmp');temp.write_bytes(shape_animation.encode(ini['Mod']['id'],clip,list(tracks.items())));temp.replace(path)
+        ini['ShapeAnimation'+cid]={'path':relative}
 
 
 def export_directory(root, *, mod_id, parts, materials, textures, rules, switches, resource_cache=None,
@@ -276,6 +321,7 @@ def export_directory(root, *, mod_id, parts, materials, textures, rules, switche
         require(0 in levels, "LOD0 target is required")
         section("Replace" + rule["sourceAsset"], values)
 
+    apply_animations(root, ini, parts)
     save_ini(root, ini)
     # The reader is also the publication gate. There is no legacy JSON fallback.
     from .ini_reader import read_package

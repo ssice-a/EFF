@@ -20,6 +20,14 @@
 #include "eiem_prefab_resource_rules.h"
 #include "eiem_loading_input_substitution.h"
 #include "eiem_resource_directory.h"
+#if defined(EIEM_CATALOG_SURVEY)
+#include "eiem_static_resource_sources.h"
+#include "eiem_mounted_source_identity.h"
+#endif
+#if defined(EIEM_PREFAB_ADAPTATION_PROBE)
+#include "eiem_runtime_author_directory.h"
+#include "eiem_prefab_bone_binding.h"
+#endif
 #include "il2cpp_api.h"
 #include "eiem_load_performance.h"
 #include "eiem_capture_skin_palette.h"
@@ -105,6 +113,15 @@ void Asset(void*,void*,const char*,void*,int64_t,void*,uint64_t);
 void Unloaded(void*);
 void Frame(int);
 }
+#if defined(EIEM_PREFAB_ADAPTATION_PROBE)
+namespace PrefabAdaptationProbe {
+void ObserveHandle(void*,void*);
+void ObserveProxy(void*,uint64_t,void*);
+void Initializing(const char*);
+void InstallOptional(void**,size_t);
+void AdvancePending();
+}
+#endif
 std::shared_ptr<const std::vector<Package>> published;
 std::shared_ptr<const EiemNativeInput::InputSubstitutions> substitutions;
 std::shared_ptr<EiemPrefabRules::Context> resourceRules;
@@ -1061,6 +1078,9 @@ void* LoadRuleInput(void* path,uint32_t callerCrc,uint64_t offset,bool asynchron
  }return nullptr;
 }
 #include "eiem_entry_full_resource_reload.h"
+#if defined(EIEM_PREFAB_ADAPTATION_PROBE)
+#include "eiem_entry_prefab_adaptation_probe.h"
+#endif
 #include "eiem_entry_reload.h"
 
 void InstallHooks(void **assemblies, size_t count) {
@@ -1214,6 +1234,9 @@ void InstallHooks(void **assemblies, size_t count) {
   LoadingObservation::InstallOptional(assemblies,count);
 #endif
   FullResourceReload::Install(assemblies,count);
+#if defined(EIEM_PREFAB_ADAPTATION_PROBE)
+  PrefabAdaptationProbe::InstallOptional(assemblies,count);
+#endif
 #if defined(EIEM_DIAGNOSTICS)
   SkinningObservation::StartOptionalReadback([&] {
     SkinningObservation::InstallReadback(assemblies, count);
@@ -1494,6 +1517,7 @@ DWORD WINAPI Start(void *) {
 } // namespace Entry
 
 void Log(const char *format, ...) {
+  EiemLoadPerformance::Scope performance(EiemLoadPerformance::Logging);
   char line[8192];
   va_list args;
   va_start(args, format);

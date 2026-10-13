@@ -16,5 +16,6 @@ $structures['compiledObjects'] = Read-Contract 'compiledObjects'
 $structures['resourcePayloads'] = Read-Contract 'resourcePayloads'
 $structures['compiledInputView'] = Read-Contract 'compiledInputView'
 $structures['compiledRuntimeIndex'] = Read-Contract 'compiledRuntimeIndex'
+$structures['shapeAnimation'] = Read-Contract 'shapeAnimation'
 $declaration = [ordered]@{format='EFF_OFFLINE_PACKAGE_PROTOCOL'; compiledMod=(Read-Contract 'compiledRuntimeIndex'); structures=$structures}
 $declaration | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $Output -Encoding utf8

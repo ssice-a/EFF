@@ -19,6 +19,9 @@
     <Reference Include="AnimeStudio.PInvoke" HintPath="..\AnimeStudio\AnimeStudio.PInvoke\bin\Release\net9.0\AnimeStudio.PInvoke.dll" />
     <Compile Include="..\AnimeStudio\AnimeStudio.GUI\EndfieldVfsArchive.cs" Link="EndfieldVfsArchive.cs" />
     <Compile Include="..\AnimeStudio\AnimeStudio.GUI\EndfieldVfsAssetIndexBuilder.cs" Link="EndfieldVfsAssetIndexBuilder.cs" />
+    <Compile Include="..\AnimeStudio\AnimeStudio.GUI\EndfieldBundleIndexCache.cs" Link="EndfieldBundleIndexCache.cs" />
+    <Compile Include="..\AnimeStudio\AnimeStudio.GUI\EndfieldIndexCommand.cs" Link="EndfieldIndexCommand.cs" />
+    <Compile Include="..\AnimeStudio\AnimeStudio.IndexTests\IncrementalIndexTests.cs" Link="IncrementalIndexTests.cs" />
     <Compile Include="..\AnimeStudio\AnimeStudio.GUI\EndfieldBundleDependencyIndex.cs" Link="EndfieldBundleDependencyIndex.cs" />
     <Compile Include="..\AnimeStudio\AnimeStudio.GUI\EndfieldIndexStore.cs" Link="EndfieldIndexStore.cs" />
     <Compile Include="..\AnimeStudio\AnimeStudio.GUI\VirtualAssetPathIndex.cs" Link="VirtualAssetPathIndex.cs" />

@@ -34,7 +34,28 @@ void Queue(Action action,const std::string& mod,const std::string& name={},doubl
   Require(panel.Submit({view->revision,view->scope,action,mod,name,value}),"panel queue full");
 }
 void Frame(bool focus=true,double delta=.25) {PanelCommands(focus,Sample);PollControls(focus,delta,Sample);}
+void AnimationChecks(){
+ auto p=Make("Anim");ShapeAnimation clip;clip.id="wing";clip.label="wing";clip.key={VK_F6,0};clip.duration=1;clip.speedVariable="$speed";clip.tracks["$shape"]={0,.5f,1};p.shapeAnimations.emplace(clip.id,clip);p.defaults["$speed"]=1;
+ {auto valid=p;valid.persistent.insert("$speed");ValidateShapeAnimations(valid);
+  auto bad=valid;bad.shapeAnimations.at("wing").speedVariable="$shape";bool rejected=false;try{ValidateShapeAnimations(bad);}catch(const std::exception&){rejected=true;}Require(rejected,"animation speed aliases shape");
+  bad=valid;auto duplicate=clip;duplicate.id="other";bad.shapeAnimations.emplace(duplicate.id,duplicate);rejected=false;try{ValidateShapeAnimations(bad);}catch(const std::exception&){rejected=true;}Require(rejected,"animation speed aliases another group");}
+ physical=0;panel.open=false;LoadControls(Graph({p}));physical=VK_F6;Frame(true,0);AdvanceAnimations(.25);Require(std::abs(ShapeValue("Anim","$shape")-.25)<1e-6,"animation play sample");Require(variables.at("Anim").at("$shape")==0,"animated output changed manual preferences");
+ auto immutable=panel.Read();panel.open=true;Queue(Action::AnimationSpeed,"Anim","wing",2);Frame(true,0);Require(animations.at("Anim").clips.at("wing").time==.25,"speed reset phase");AdvanceAnimations(.125);Require(std::abs(ShapeValue("Anim","$shape")-.5)<1e-6,"speed rate differs");
+ Queue(Action::AnimationPause,"Anim","wing");Frame(true,0);AdvanceAnimations(.5);Require(ShapeValue("Anim","$shape")==.5,"paused clip advances");
+ Queue(Action::AnimationPlay,"Anim","wing");Frame(true,0);AdvanceAnimations(.25);Require(std::abs(ShapeValue("Anim","$shape"))<1e-6,"loop wrap");
+ Queue(Action::Value,"Anim","$shape",.7);Frame(true,0);Require(!animations.at("Anim").clips.at("wing").playing&&ShapeValue("Anim","$shape")==.7,"manual slider handoff");
+ Queue(Action::AnimationSpeed,"Anim","wing",0);Frame(true,0);Require(variables.at("Anim").at("$speed")==2,"zero speed accepted");
+ Queue(Action::AnimationReset,"Anim","wing");Frame(true,0);Require(variables.at("Anim").at("$speed")==1,"default speed reset");
+ p.persistent.insert("$speed");auto fixtureRoot=std::filesystem::temp_directory_path()/std::filesystem::path("eff-animation-speed-"+std::to_string(GetCurrentProcessId()));std::filesystem::create_directories(fixtureRoot);auto speedPackage=p;speedPackage.root=fixtureRoot;
+ EiemVariables saved=p.defaults;saved["$speed"]=1.75;EiemEntryPreferences::Write(fixtureRoot/"state.ini",{{"$speed",1.75}},p.id);EiemEntryPreferences fresh;Require(fresh.Preview(speedPackage).at("$speed")==1.75,"animation speed restart persistence");std::filesystem::remove(fixtureRoot/"state.ini");std::filesystem::remove(fixtureRoot);
+ auto stale=panel.Read();Install({p},true);Queue(Action::AnimationPlay,"Anim","wing",0,stale);Frame(true,0);Require(!animations.at("Anim").clips.at("wing").playing,"stale animation command survived reload");
+ Require(!immutable->animations.at("Anim").at("wing").paused,"animation snapshot mutated");
+ panel.open=false;physical=0;Frame(true,0);physical=VK_F6;Frame(true,0);Require(animations.at("Anim").clips.at("wing").playing,"animation restart");physical=VK_UP;Frame(true,.1);Require(!animations.at("Anim").clips.at("wing").playing,"manual key handoff");
+ p.shapeAnimations.at("wing").loop=false;physical=0;LoadControls(Graph({p}));animations.at("Anim").Play(p.shapeAnimations.at("wing"));AdvanceAnimations(1.5);Require(!animations.at("Anim").clips.at("wing").playing,"once clip did not stop");
+ Install({},true);panel.open=false;physical=0;
+}
 void Checks() {
+  AnimationChecks();
   EiemControlPanel::Shortcut shortcut;
   EiemKeyChord insert{VK_INSERT,0};
   Require(!shortcut.Press(insert,true,true),"startup held Insert synthesized toggle");
@@ -235,7 +256,9 @@ void WindowChecks(bool demo) {
 }
 }
 int main(int argc,char** argv) {
+  using EiemDirectory::Require;
   std::cout.setf(std::ios::unitbuf);
+  if(argc==3&&std::string(argv[1])=="--animation-package")try{auto p=EiemDirectory::Load(std::filesystem::u8path(argv[2]));Require(p.shapeAnimations.size()==1,"Python animation package lost clips");const auto& clip=p.shapeAnimations.begin()->second;Require(clip.label==u8"翅膀运动"&&clip.key.vk==VK_F6&&clip.duration==1&&clip.tracks.size()==1,"Python/C++ animation fields differ");EiemOfflinePackage::Writer writer;EiemOfflinePackage::WriteAuthor(writer,p);EiemOfflinePackage::Reader reader{writer.b};auto roundtrip=EiemOfflinePackage::ReadAuthor(reader,p.root.parent_path());Require(reader.p==writer.b.size()&&roundtrip.shapeAnimations.size()==1&&roundtrip.shapeAnimations.begin()->second.tracks==clip.tracks,"compiled author animation roundtrip");std::cout<<"PASS Python/C++ animation package and offline author roundtrip\n";return 0;}catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
   try {if(argc>1&&std::string(argv[1])=="--cross-thread-window"){TestPanel::CrossThreadWindowChecks();return 0;}TestPanel::Checks();TestPanel::SavedPreferencesChecks();TestPanel::KeySettingsChecks();if(argc>1) TestPanel::WindowChecks(std::string(argv[1])=="--demo");return 0;}
   catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
 }

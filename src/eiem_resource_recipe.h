@@ -72,7 +72,7 @@ inline Member Describe(const EndfieldInput::Member& output,const Dictionary& ori
  size_t provenance=0;
  for(size_t p=0;p<output.bytes.size();){size_t length=0;Location old,edit;const Dictionary* dictionary=nullptr;Location location;
   if(provenance<known.size()&&known[provenance].output==p){const auto& span=known[provenance++];dictionary=&original;location={span.buffer,span.offset};length=span.size;}
-  else if(output.bytes.size()-p>=32){auto hash=Anchor(output.bytes.data()+p);auto a=original.Match(output.bytes,p,hash,old),b=author.Match(output.bytes,p,hash,edit);if(a||b){dictionary=a>=b?&original:&author;location=a>=b?old:edit;length=std::max(a,b);if(provenance<known.size())length=std::min(length,known[provenance].output-p);}}
+  else if(output.bytes.size()-p>=32&&(!original.anchors.empty()||!author.anchors.empty())){auto hash=Anchor(output.bytes.data()+p);auto a=original.Match(output.bytes,p,hash,old),b=author.Match(output.bytes,p,hash,edit);if(a||b){dictionary=a>=b?&original:&author;location=a>=b?old:edit;length=std::max(a,b);if(provenance<known.size())length=std::min(length,known[provenance].output-p);}}
   if(!length){literal(output.bytes[p++]);continue;}const auto& source=dictionary->buffers[location.buffer];
   if(!member.spans.empty()&&member.spans.back().kind==source.kind&&member.spans.back().source==source.name&&AddSize(member.spans.back().offset,member.spans.back().size)==location.offset)member.spans.back().size=AddSize(member.spans.back().size,length);
   else member.spans.push_back({source.kind,source.name,location.offset,length,{}});p+=length;

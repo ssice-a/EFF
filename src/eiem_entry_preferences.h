@@ -37,6 +37,7 @@ class EiemEntryPreferences {
   static void Validate(const EiemDirectory::Package& p,const EiemVariables& values) {
     for (const auto& v:values) {
       EiemDirectory::Require(p.defaults.count(v.first) && std::isfinite(v.second),"undeclared/nonfinite state value");
+      for(const auto& clip:p.shapeAnimations)if(clip.second.speedVariable==v.first)EiemDirectory::Require(v.second>0,"animation speed must be positive");
       auto control=p.controls.find(v.first);
       if (control!=p.controls.end()) EiemDirectory::Require(v.second>=control->second.minimum && v.second<=control->second.maximum,"state exceeds shape range");
       for (const auto& key:p.bindings) if (key.variable==v.first && key.type=="cycle")

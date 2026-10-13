@@ -10,11 +10,20 @@ constexpr const char* structure=EiemPackageProtocol::compiledRuntimeIndex;
 constexpr const char* compressionStructure="packed-xpress-huffman/le64/sha256";
 struct StreamSite {int64_t object=0;size_t offset=0,width=0;std::string member;uint64_t value=0;};
 struct MemberProof {SerializedLayout before,after;std::vector<StreamSite> streams;std::vector<EiemLoadingGeneration::Patch> pristineNamespace;};
+struct InputProofDirectory {std::set<std::string> members,addedBundles;std::vector<size_t> dependencies;};
 struct Artifact {mutable Manifest manifest;mutable std::map<std::string,MemberProof> members;std::vector<Root> pristine;std::string digest;bool genericResources=false;
  std::vector<EiemCompiledInputView::Recipe> views;std::map<std::string,Bytes> preparedFrames;
  std::vector<std::set<std::string>> inputMembers,addedBundles;
  std::vector<InputFileStamp> verifiedSources;
  std::shared_ptr<const std::vector<Bytes>> proofBlocks;
+ // Source-record stores read only a proof actually needed by composition.
+ // The callback owns a pinned file snapshot so compaction cannot change it.
+ std::function<Bytes(size_t)> proofReader;
+ // Retained only after append validates unchanged existing outputs/recipes.
+ std::map<size_t,Bytes> retainedProofBlocks;
+ // The validated directory accompanies an unchanged compressed proof. This
+ // lets append encode the old record without expanding schemas/object tables.
+ std::map<size_t,InputProofDirectory> retainedInputDirectories;
  mutable std::set<size_t> hydrated;std::shared_ptr<std::mutex> proofMutex=std::make_shared<std::mutex>();
 };
 
@@ -51,9 +60,9 @@ inline Artifact Read(const std::filesystem::path& mod,const std::filesystem::pat
  auto start=cost?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};auto bytes=EiemNativeInput::Read(mod/"compiled.bin");
  if(cost)cost("artifact-file-read",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());return Decode(bytes,mod,game,cost,verifiedAuthor);
 }
-inline Artifact ReadRuntime(const std::filesystem::path& mod,const std::filesystem::path& game,const std::function<void(const char*,double)>& cost={}){
+inline Artifact ReadRuntime(const std::filesystem::path& mod,const std::filesystem::path& game,const std::function<void(const char*,double)>& cost={},const Package* verifiedAuthor=nullptr){
  auto start=std::chrono::steady_clock::now();auto bytes=EiemNativeInput::Read(mod/"compiled.bin");
- if(cost)cost("artifact-file-read",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());return DecodeRuntime(bytes,mod,game,cost);
+ if(cost)cost("artifact-file-read",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());return DecodeRuntime(bytes,mod,game,cost,verifiedAuthor);
 }
 
 // Ordered sequence edits are based on original slots, so two Mods can expand

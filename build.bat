@@ -23,6 +23,7 @@ if /i "%~2"=="capture" (
  set "entry_capture=/DEIEM_DIAGNOSTICS /DEIEM_SHAPE_CAPTURE_GFXTRACE"
 ) else if /i "%~2"=="load-perf" (
  set "entry_capture=/DEIEM_LOAD_PERF"
+ set "entry_folder=%entry_folder%-load-perf"
 ) else if not "%~2"=="" (
  echo [ERROR] The optional second argument must be capture or load-perf.
  goto entry_failed

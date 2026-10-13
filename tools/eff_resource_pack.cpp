@@ -1,5 +1,7 @@
 #include "../src/eiem_resource_compiler.h"
 #include "../src/eiem_compiled_mod_writer.h"
+#include "../src/eiem_prepared_prefab_compiler.h"
+#include "../src/eiem_prepared_export_carryover.h"
 #include "../src/eiem_compiled_object_merge.h"
 #include "eff_author_sources.h"
 #include <iostream>
@@ -62,14 +64,16 @@ int wmain(int argc,wchar_t** argv){try{
   std::map<std::string,double> costs;std::mutex costsMutex;std::function<void(const char*,double)> cost=[&](const char* name,double elapsed){std::lock_guard<std::mutex> lock(costsMutex);costs[name]+=elapsed;};auto start=std::chrono::steady_clock::now();auto mod=std::filesystem::canonical(argv[2]),game=std::filesystem::canonical(argv[3]);
   std::optional<Package> author;std::optional<EiemStaticSources::Selection> selected;
   if(!index.empty()){author=EiemResourceReloadPlan::Measure(cost,"author-read",[&]{return Load(mod);});selected=EiemAuthorSources::Prepare(*author,game,index,cost);auto identity=selected->manifest+'\n';selected->manifest=Hash(Bytes(identity.begin(),identity.end()));}
-  EiemCompiledModWriter::Export(mod,game,cost,previous,author?&*author:nullptr,selected?&*selected:nullptr);
+  bool caughtUp=false;if(!previous.empty()){if(!author)author=Load(mod);if(!selected)selected=EiemStaticSources::Merge({*author},game);caughtUp=EiemPreparedExportCarryover::Try(mod,previous,game,*author,*selected,cost);}
+  if(!caughtUp)EiemCompiledModWriter::Export(mod,game,cost,previous,author?&*author:nullptr,selected?&*selected:nullptr,nullptr,
+   [](std::shared_ptr<const EiemCompiledMod::Artifact> artifact,const EiemStaticSources::Selection& selection){return EiemPreparedPrefabCompiler::Encode(EiemPreparedPrefabCompiler::Prepare(std::move(artifact),selection));});
   for(const auto& row:costs)std::cout<<"COMPILED-MOD-COST "<<row.first<<' '<<row.second<<'\n';std::cout<<"COMPILED-MOD-COST total "<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<<"\nCOMPILED-MOD-PUBLISHED"<<std::endl;return 0;
  }
  if((argc==5||argc==6)&&std::wstring(argv[1])==L"--prepare-static-sources"){Require(argc==5||std::wstring(argv[5])==L"--refresh","unknown source preparation option");auto package=Load(argv[4]);auto cost=[](const char* name,double elapsed){std::cout<<"COMPILED-MOD-COST "<<name<<' '<<elapsed<<'\n';};auto selection=EiemAuthorSources::Prepare(package,std::filesystem::canonical(argv[2]),std::filesystem::absolute(argv[3]),cost,argc==6);std::cout<<"STATIC-SOURCES-PREPARED paths="<<selection.assets.size()<<" candidates="<<selection.candidates.size()<<" inputs="<<selection.inputs.size()<<std::endl;return 0;}
  if(argc==3&&std::wstring(argv[1])==L"--source-request"){SourceRequest(Load(argv[2]));return 0;}
  if(argc==2&&std::wstring(argv[1])==L"--protocol") {
   std::cout<<"{\"format\":\"EFF_OFFLINE_PACKAGE_PROTOCOL\",\"version\":1,\"abi\":"<<EiemPackageProtocol::abi
-           <<",\"sourcePreparation\":\"in-process/index-vfs+author-declarations\",\"compiledMod\":\""<<EiemCompiledMod::structure<<"\",\"compiledCacheInputs\":\"validated-previous-mod\",\"compiler\":\""<<compiler<<"\",\"authorFormat\":"<<EiemPackageProtocol::authorFormat
+           <<",\"sourcePreparation\":\"in-process/index-vfs+author-declarations\",\"compiledMod\":\""<<EiemCompiledMod::structure<<"\",\"compiledCacheInputs\":\"validated-previous-mod\",\"compiledExportCarryover\":\"validated-source-selection+published-discoveries\",\"compiler\":\""<<compiler<<"\",\"authorFormat\":"<<EiemPackageProtocol::authorFormat
            <<",\"resourceVersion\":"<<EiemPackageProtocol::resourceVersion<<",\"modSetVersion\":1,\"staticSourceInputs\":\""<<EiemPackageProtocol::staticSourceInputs<<"\",\"arguments\":[\"author\",\"baseline\",\"cache\"],\"structures\":{"
            <<"\"manifest\":\""<<EiemPackageProtocol::manifestStructure<<"\",\"author\":\""<<EiemPackageProtocol::authorStructure
            <<"\",\"resource\":\""<<EiemPackageProtocol::resourceStructure<<"\",\"current\":\""<<EiemPackageProtocol::currentStructure
@@ -77,6 +81,7 @@ int wmain(int argc,wchar_t** argv){try{
            <<"\",\"runtimeRules\":\""<<EiemPackageProtocol::ruleStructure
            <<"\",\"compiledInputView\":\""<<EiemPackageProtocol::compiledInputView
            <<"\",\"compiledRuntimeIndex\":\""<<EiemPackageProtocol::compiledRuntimeIndex
+           <<"\",\"shapeAnimation\":\""<<EiemPackageProtocol::shapeAnimation
            <<"\",\"manifestEncoding\":\""<<EiemPackageProtocol::ruleEncoding<<"\",\"manifestInputs\":[\""<<EiemPackageProtocol::ruleEncoding
            <<"\",\"self-described-roots/le64\",\"legacy-root-markers/le64\",\"legacy-root-addresses/le64\"]}}"<<std::endl;
   return 0;

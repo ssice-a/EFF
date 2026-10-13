@@ -7,6 +7,7 @@
 #include <mutex>
 
 namespace EiemNativeInput {
+inline bool IsTransformClass(int kind) { return kind == 4 || kind == 224; }
 using MeshSchemaIndex = std::map<std::array<unsigned char, 16>, Type>;
 using MeshBoneHashIndex = std::map<NativeReference,std::vector<uint32_t>>;
 inline std::vector<uint32_t> BoneHashes(const Type& type,const Value& field){
@@ -28,30 +29,6 @@ inline std::map<size_t,int64_t> OriginalBoneBinding(const std::vector<uint32_t>&
     Require(found->second!=SIZE_MAX,"source Mesh bone hash is ambiguous");result.emplace(i,nativeBones.at(found->second));}
   return result;
 }
-inline Value EmptyValue(const Type& type, size_t index, unsigned depth = 0) {
-  Require(index < type.nodes.size() && depth < type.nodes.size(), "new serialized value schema limit");
-  Value value;
-  value.node = index;
-  const auto& node = type.nodes[index];
-  auto width = Primitive(node.type);
-  if (width) value.raw.resize(width);
-  else if (node.type != "string" && node.type != "TypelessData" && node.type != "Array") {
-    Require(!node.children.empty(), "unsupported new serialized leaf");
-    for (auto child : node.children) value.children.push_back(EmptyValue(type, child, depth + 1));
-  }
-  return value;
-}
-inline Value ArrayElement(const Type& type, const Value& array) {
-  Require(type.nodes.at(array.node).type == "Array" &&
-              type.nodes[array.node].children.size() == 2, "new serialized array element schema");
-  return EmptyValue(type, type.nodes[array.node].children[1]);
-}
-inline const Value& ConstArray(const Type& type, const Value& value) {
-  if (type.nodes.at(value.node).type == "Array") return value;
-  Require(value.children.size() == 1 &&
-              type.nodes.at(value.children[0].node).type == "Array", "not a serialized array");
-  return value.children[0];
-}
 inline NativeReference NullableReference(const Type& type, const Value& value,
                                           const SerializedLayout& layout,
                                           const std::string& cab) {
@@ -68,21 +45,21 @@ inline std::vector<MeshConsumer> MeshConsumers(const Bytes& bytes,const Serializ
   std::vector<MeshConsumer> result;
   for(auto id:layout.order){const auto& type=layout.types.at(layout.objects.at(id).type);
     if(type.classId!=137&&type.classId!=33)continue;
-    auto value=ObjectValue(bytes,layout,id);auto mesh=NullableReference(type,Child(type,value,"m_Mesh"),layout,cab);
+    auto value=ObjectFields(bytes,layout,id,{"m_Mesh","m_GameObject"});auto mesh=NullableReference(type,Child(type,value,"m_Mesh"),layout,cab);
     auto key=mesh;if(canonical)key.first=canonical(key.first);
     if(!mesh.second||!selected.count(key))continue;
     if(type.classId==137){result.push_back({id,0,mesh});continue;}
     auto owner=NullableReference(type,Child(type,value,"m_GameObject"),layout,cab);
     Require(owner.first==cab&&owner.second&&layout.objects.count(owner.second),"static MeshFilter has no local GameObject");
     const auto& gt=layout.types.at(layout.objects.at(owner.second).type);Require(gt.classId==1,"static MeshFilter owner is not a GameObject");
-    auto go=ObjectValue(bytes,layout,owner.second);int64_t renderer=0;size_t filters=0,renderers=0;
+    auto go=ObjectFields(bytes,layout,owner.second,{"m_Component"});int64_t renderer=0;size_t filters=0,renderers=0;
     for(const auto& entry:ConstArray(gt,Child(gt,go,"m_Component")).children){auto ref=NullableReference(gt,Child(gt,entry,"component"),layout,cab);
       // Unrelated missing/script references are preserved. Only the selected
       // visual pair needs locally resolvable components.
       if(ref.first!=cab||!ref.second||!layout.objects.count(ref.second))continue;
       const auto& ct=layout.types.at(layout.objects.at(ref.second).type);
       if(ct.classId!=23&&ct.classId!=33)continue;
-      auto component=ObjectValue(bytes,layout,ref.second);
+      auto component=ObjectFields(bytes,layout,ref.second,{"m_GameObject"});
       Require(NullableReference(ct,Child(ct,component,"m_GameObject"),layout,cab)==owner,"static component/GameObject ownership differs");
       if(ct.classId==33){++filters;Require(ref.second==id,"static GameObject has another MeshFilter");}
       else {++renderers;renderer=ref.second;}
@@ -278,6 +255,7 @@ class RendererMemberBuilder {
   const std::vector<BuiltMeshPart>& meshes;
   SerializedLayout layout;
   std::map<int64_t, Value> values;
+  std::map<int64_t, Value> hierarchyValues;
   std::map<int64_t, int64_t> transforms, parents, roots;
   std::map<int64_t, std::string> paths;
   std::map<int64_t, std::map<std::string, int64_t>> hierarchy;
@@ -296,7 +274,8 @@ class RendererMemberBuilder {
   }
   const Type& Schema(int64_t id) const { return layout.types.at(layout.objects.at(id).type); }
   Value& Tree(int64_t id, int expected = 0) {
-    Require(layout.objects.count(id) && (!expected || Schema(id).classId == expected), "Renderer local object absent/class mismatch");
+    Require(layout.objects.count(id) && (!expected || Schema(id).classId == expected ||
+            (expected == 4 && IsTransformClass(Schema(id).classId))), "Renderer local object absent/class mismatch");
     auto found = values.find(id);
     if (found == values.end()) {
       auto start=std::chrono::steady_clock::now();
@@ -305,10 +284,18 @@ class RendererMemberBuilder {
     }
     return found->second;
   }
+  const Value& InspectHierarchy(int64_t id) {
+    auto edited=values.find(id);if(edited!=values.end())return edited->second;
+    auto found=hierarchyValues.find(id);if(found==hierarchyValues.end())
+      found=hierarchyValues.emplace(id,ObjectFields(source,layout,id,{"m_GameObject","m_Name","m_Children","m_Father",
+          "m_LocalPosition","m_LocalRotation","m_LocalScale"})).first;
+    return found->second;
+  }
   int64_t Local(const Type& type, const Value& pointer, int expected) {
     auto reference = NullableReference(type, pointer, layout, cab);
     Require(reference.first == cab && reference.second, "Renderer hierarchy/bone pointer must be local and nonnull");
-    Tree(reference.second, expected);
+    Require(layout.objects.count(reference.second)&&(!expected||Schema(reference.second).classId==expected||
+            (expected==4&&IsTransformClass(Schema(reference.second).classId))),"Renderer local object absent/class mismatch");
     return reference.second;
   }
   int64_t Allocate(const char* kind, int64_t renderer, const std::string& part) {
@@ -369,13 +356,13 @@ class RendererMemberBuilder {
   }
   void Hierarchy() {
     for (auto id : layout.order) {
-      if (Schema(id).classId != 4) continue;
+      if (!IsTransformClass(Schema(id).classId)) continue;
       const auto& type = Schema(id);
-      const auto& tree = Tree(id);
+      const auto& tree = InspectHierarchy(id);
       auto owner = Local(type, Child(type, tree, "m_GameObject"), 1);
       Require(transforms.emplace(owner, id).second, "GameObject has multiple Transforms");
       auto parent = NullableReference(type, Child(type, tree, "m_Father"), layout, cab);
-      Require(parent.first == cab && (!parent.second || Schema(parent.second).classId == 4), "nonlocal/invalid Transform parent");
+      Require(parent.first == cab && (!parent.second || IsTransformClass(Schema(parent.second).classId)), "nonlocal/invalid Transform parent");
       parents[id] = parent.second;
     }
     std::set<int64_t> visiting;
@@ -385,8 +372,8 @@ class RendererMemberBuilder {
       auto parent = parents.at(id);
       if (parent) {
         visit(parent);
-        auto owner = Local(Schema(id), Child(Schema(id), Tree(id), "m_GameObject"), 1);
-        const auto& name = Child(Schema(owner), Tree(owner), "m_Name");
+        auto owner = Local(Schema(id), Child(Schema(id), InspectHierarchy(id), "m_GameObject"), 1);
+        const auto& name = Child(Schema(owner), InspectHierarchy(owner), "m_Name");
         auto text = Text(name.raw.data(), name.raw.size());
         Require(!text.empty() && text.find('/') == text.npos, "ambiguous Transform path component");
         paths[id] = paths[parent].empty() ? text : paths[parent] + "/" + text;
@@ -401,14 +388,14 @@ class RendererMemberBuilder {
     for (const auto& parent : parents) visit(parent.first);
     for (const auto& row : parents) {
       const auto& type = Schema(row.first);
-      for (const auto& child : ConstArray(type, Child(type, Tree(row.first), "m_Children")).children) {
+      for (const auto& child : ConstArray(type, Child(type, InspectHierarchy(row.first), "m_Children")).children) {
         auto id = Local(type, child, 4);
         Require(parents.at(id) == row.first, "Transform child/father reference mismatch");
       }
       if (row.second) {
         size_t count = 0;
         auto& parentType = Schema(row.second);
-        for (const auto& child : ConstArray(parentType, Child(parentType, Tree(row.second), "m_Children")).children)
+        for (const auto& child : ConstArray(parentType, Child(parentType, InspectHierarchy(row.second), "m_Children")).children)
           if (Local(parentType, child, 4) == row.first) ++count;
         Require(count == 1, "Transform absent/duplicate in parent children");
       }
@@ -508,7 +495,10 @@ public:
       int64_t rootBone=0;
       std::vector<int64_t> nativeBones;
       if(skinned){rootBone = Local(type, Child(type, original, "m_RootBone"), 4);
-        Local(type, Child(type, original, "m_SkinningRoot"), 4);
+        // Native Prefabs can leave this optional pointer empty. Keep its value;
+        // rootBone and the explicit palette still define the authored binding.
+        const auto& skinningRoot = Child(type, original, "m_SkinningRoot");
+        if(NullableReference(type, skinningRoot, layout, cab).second)Local(type, skinningRoot, 4);
         Require(roots.at(rootBone) == roots.at(tid), "Renderer root bone belongs to another hierarchy");
         for(const auto& bone:ConstArray(type,Child(type,original,"m_Bones")).children)nativeBones.push_back(Local(type,bone,4));}
       size_t rendererComponents = 0, transformComponents = 0;
@@ -701,7 +691,7 @@ private:
   }
   AffineMatrix WorldMatrix(int64_t id){
     auto result=AffineIdentity();for(auto node=id;node;node=parents.at(node)){
-      const auto& type=Schema(node);const auto& tree=Tree(node);auto p=ReadVector(type,Child(type,tree,"m_LocalPosition")),s=ReadVector(type,Child(type,tree,"m_LocalScale"));
+      const auto& type=Schema(node);const auto& tree=InspectHierarchy(node);auto p=ReadVector(type,Child(type,tree,"m_LocalPosition")),s=ReadVector(type,Child(type,tree,"m_LocalScale"));
       const auto& rotation=Child(type,tree,"m_LocalRotation");double x=FloatValue(type,Child(type,rotation,"x")),y=FloatValue(type,Child(type,rotation,"y")),z=FloatValue(type,Child(type,rotation,"z")),w=FloatValue(type,Child(type,rotation,"w"));
       auto norm=x*x+y*y+z*z+w*w;Require(norm>0&&std::isfinite(norm),"Renderer bounds invalid Transform rotation");auto k=2/norm;
       AffineMatrix local{(1-k*(y*y+z*z))*s[0],k*(x*y-z*w)*s[1],k*(x*z+y*w)*s[2],p[0],

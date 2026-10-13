@@ -31,6 +31,11 @@ using Digest = std::array<unsigned char, 32>;
 inline void Require(bool ok, const std::string& message) {
   if (!ok) throw std::runtime_error(message);
 }
+// Literal checks dominate TypeTree traversal. Build an owning error string
+// only on failure, rather than allocating it for every valid scalar/field.
+inline void Require(bool ok, const char* message) {
+  if (!ok) throw std::runtime_error(message);
+}
 inline size_t AddSize(size_t a,size_t b) {
   Require(b<=SIZE_MAX-a,"byte extent overflow");return a+b;
 }
@@ -301,6 +306,7 @@ inline Identity Source(const Settings& v, const std::string& prefix) {
   std::transform(id.path.begin(),id.path.end(),id.path.begin(),[](unsigned char c){return char(std::tolower(c));});
   return id;
 }
+#include "eiem_shape_animation_types.h"
 struct Mesh {
   std::string resource;
   unsigned vertices = 0, indices = 0;
@@ -353,12 +359,25 @@ struct Package {
   std::set<std::string> persistent;
   std::map<std::string, Control> controls;
   std::vector<Binding> bindings;
+  std::map<std::string,ShapeAnimation> shapeAnimations;
   bool keySwitchEnabled=true;
   // Compiler-only ownership metadata, reconstructed from the original authors
   // when a composed manifest is decoded. Never authored in mod.ini.
   bool composed=false;
   std::map<std::string,std::pair<std::string,std::string>> partOwners;
 };
+inline void RestoreShapeAnimations(Package& p){
+ for(const auto& row:p.resources)if(row.second->kind==8){auto decoded=DecodeShapeAnimation(*row.second);if(decoded.first==p.id)Require(p.shapeAnimations.emplace(decoded.second.id,std::move(decoded.second)).second,"duplicate animation resource");}
+}
+inline void ValidateShapeAnimations(const Package& p){
+ std::set<std::string> owned,speeds;
+ for(const auto& row:p.shapeAnimations){const auto& clip=row.second;
+  Require(!p.controls.count(clip.speedVariable)&&speeds.insert(clip.speedVariable).second,"animation speed variable aliases a shape or another group");
+  Require(p.defaults.count(clip.speedVariable)&&p.defaults.at(clip.speedVariable)==clip.speed&&p.persistent.count(clip.speedVariable),"animation speed default/persistence absent");
+  for(const auto& track:clip.tracks){auto c=p.controls.find(track.first);Require(c!=p.controls.end()&&owned.insert(track.first).second,"animation track absent or controlled by multiple groups");
+   Require(std::all_of(track.second.begin(),track.second.end(),[&](float v){return v>=c->second.minimum-1e-6&&v<=c->second.maximum+1e-6;}),"animation weight exceeds shape range");}
+ }
+}
 inline std::filesystem::path DiskPath(const std::filesystem::path& root,
                                       const std::string& relative, unsigned kind) {
   const char* folder = kind == 1 ? "meshes/" : kind == 2 ? "materials/" : kind == 4 ? "textures/" : "resources/";
@@ -437,10 +456,13 @@ inline Package Load(const std::filesystem::path& directory,const Package* verifi
   for (const auto& s : sections) {
     const auto& v = s.values;
     if (s.id == "Mod" || s.id == "Constants") continue;
-    if (Begins(s.id, "Resource")) {
+    if (Begins(s.id, "ShapeAnimation")) {
+      Keys(s,{"path"});auto decoded=DecodeShapeAnimation(load(v.at("path"),8));
+      Require(decoded.first==p.id&&s.id=="ShapeAnimation"+decoded.second.id&&p.shapeAnimations.emplace(decoded.second.id,std::move(decoded.second)).second,"shape animation owner/id mismatch");
+    } else if (Begins(s.id, "Resource")) {
       Keys(s, {"path"});
       Require(Begins(v.at("path"), "resources/"), "generic resource folder mismatch");
-      load(v.at("path"), 0);
+      Require(load(v.at("path"), 0).kind!=8,"shape animation requires a ShapeAnimation declaration");
       genericResources=true;
     } else if (Begins(s.id, "Mesh")) {
       Keys(s, {"path"});
@@ -655,6 +677,7 @@ inline Package Load(const std::filesystem::path& directory,const Package* verifi
           }
         }
   }
+  ValidateShapeAnimations(p);
   if(std::filesystem::is_regular_file(p.root/"source-inputs.bin"))allowed.insert("source-inputs.bin");
   if(std::filesystem::is_regular_file(p.root/"compiled.bin"))allowed.insert("compiled.bin");
   std::set<std::string> actual;

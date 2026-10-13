@@ -1,7 +1,18 @@
 #include "../../src/eiem_resource_compiler.h"
 #include "../../src/eiem_compiled_mod_writer.h"
+#include "../../src/eiem_compiled_mod_store.h"
 #include <iostream>
 using namespace EiemCompiledModWriter;
+std::string SerializedAuthorFolder(const Bytes& manifest){
+ EiemOfflinePackage::Reader envelope{manifest};auto tag=envelope.S();Bytes plain;
+ if(tag==EiemPackageProtocol::ruleEncoding){auto size=envelope.Size();auto packed=envelope.Blob();Require(size&&envelope.p==manifest.size(),"material fixture rule envelope differs");
+  DECOMPRESSOR_HANDLE handle=nullptr;Require(CreateDecompressor(COMPRESS_ALGORITHM_XPRESS_HUFF,nullptr,&handle)!=0,"material fixture decompressor unavailable");
+  struct Close{DECOMPRESSOR_HANDLE h;~Close(){CloseDecompressor(h);}}close{handle};plain.resize(size);SIZE_T actual=0;
+  Require(Decompress(handle,packed.data(),packed.size(),plain.data(),plain.size(),&actual)&&actual==size,"material fixture rule decompression failed");
+ }else plain=manifest;
+ EiemOfflinePackage::Reader reader{plain};Require(reader.S()=="author-references+prefab-renderer-rules+source-ranges/le64/sha256"&&!reader.B(),"material fixture is not an independent rule manifest");reader.B();
+ for(size_t i=0;i<5;++i)reader.S();reader.S();auto folder=reader.S();Require(Identifier(folder)&&folder!="."&&folder!="..","serialized author folder invalid");return folder;
+}
 void VerifiedAuthorRegression(){
  Bytes readerBytes;EiemOfflinePackage::Reader reader{readerBytes};Package snapshot;snapshot.id="verified";
  auto native=std::make_shared<Resource>();native->kind=1;native->bytes={1,2,3,4};native->contentHash=Hash(native->bytes);snapshot.resources.emplace("meshes/one.mesh",native);reader.verifiedAuthor=&snapshot;
@@ -30,7 +41,7 @@ void NullTextureSlotRegression(const std::filesystem::path& mod,const std::files
 }
 int wmain(int argc,wchar_t** argv){try{
  VerifiedAuthorRegression();
- Require(argc==5,"incremental_material_smoke <game> <original-Mod> <edited-Mod> <export-folder>");
+ Require(argc==4||argc==5,"incremental_material_smoke <game> <original-Mod> <edited-Mod> [export-folder]");
  auto game=std::filesystem::canonical(argv[1]),original=std::filesystem::canonical(argv[2]),edited=std::filesystem::canonical(argv[3]);
  auto before=EiemCompiledMod::Read(original,game),after=EiemCompiledMod::Read(edited,game);
  const auto& author=after.manifest.package;auto changes=MaterialParameterChanges(author,before.manifest.package);Require(!changes.empty(),"real parameter edit did not take the selective path");
@@ -39,6 +50,18 @@ int wmain(int argc,wchar_t** argv){try{
  unsafe=author;auto& material=unsafe.materials.begin()->second;material.textures["_NewSlot"]="changed";Require(MaterialParameterChanges(unsafe,before.manifest.package).empty(),"texture reference edit was accepted as parameter-only");
  auto temporary=std::filesystem::temp_directory_path()/(L"eff-material-regression-"+std::to_wstring(GetCurrentProcessId()));Require(std::filesystem::create_directory(temporary),"material regression directory already exists");
  struct Cleanup{std::filesystem::path path;~Cleanup(){std::error_code error;std::filesystem::remove_all(path,error);}}cleanup{temporary};
+ // A source-record reader retains a lazy proof callback. Author edits must
+ // materialize and retire that callback before mutating proofs, otherwise the
+ // next writer would silently persist the old material object proof again.
+ auto store=temporary/L"compiled.bin";EiemResourceCatalogDelta::Catalog catalog;catalog.domain="material-fixture";
+ for(const auto& source:before.manifest.plan.originals)catalog.entries[source.file]={source.hash,source.physical.u8string()+":"+std::to_string(source.offset),{}};
+ auto saved=EiemCompiledModStore::Save(store,0,before,game,{},catalog);auto lazy=EiemCompiledModStore::Load(store,original,game,true);
+ Require(lazy.artifact.proofReader&&lazy.artifact.hydrated.empty(),"material fixture eagerly read old source proofs");
+ Require(RecompileMaterialParameters(lazy.artifact,author,EiemStaticSources::LoadMod(original,game),{}),"lazy source-store material edit rejected");
+ Require(!lazy.artifact.proofReader,"material mutation retained stale proof reader");
+ for(size_t i=0;i<after.views.size();++i)Require(lazy.artifact.views.at(i).startupHash==after.views.at(i).startupHash,"lazy source-store material result differs from exported views");
+ auto updated=EiemCompiledModStore::Save(store,saved.generation,lazy.artifact,game,{},catalog);auto storeRoundtrip=EiemCompiledModStore::Load(store,edited,game,false);
+ Require(storeRoundtrip.generation==updated.generation&&EiemCompiledMod::Encode(storeRoundtrip.artifact,game)==EiemCompiledMod::Encode(lazy.artifact,game),"material edit persisted stale source proof");
  auto cold=temporary/L"mod";std::filesystem::copy(edited,cold,std::filesystem::copy_options::recursive);std::filesystem::remove(cold/L"compiled.bin");
  Export(cold,game);auto expected=EiemCompiledMod::Read(cold,game);Require(after.views.size()==expected.views.size(),"incremental source coverage differs from full compile");
  size_t matched=0;for(size_t i=0;i<after.views.size();++i){Require(after.manifest.plan.originals[i].hash==expected.manifest.plan.originals[i].hash,"incremental original source differs");
@@ -47,7 +70,10 @@ int wmain(int argc,wchar_t** argv){try{
  // Export compiles in an atomic staging folder before publishing. Decode
  // deliberately relocates the author root to the published Mod directory.
  // Restore only that serialized folder name when checking the original bytes.
- auto disk=EiemNativeInput::Read(edited/L"compiled.bin");auto exported=after;exported.manifest.package.root=edited.parent_path()/argv[4];
+ auto disk=EiemNativeInput::Read(edited/L"compiled.bin");EiemOfflinePackage::Reader packet{disk};Require(packet.S()==EiemPackageProtocol::compiledRuntimeIndex,"material fixture packet differs");
+ auto indexBytes=Unpack(packet.Blob());EiemOfflinePackage::Reader index{indexBytes};Require(index.S()==EiemPackageProtocol::compiledRuntimeIndex,"material fixture index differs");
+ auto exported=after;exported.manifest.package.root=edited.parent_path()/std::filesystem::u8path(SerializedAuthorFolder(index.Blob()));
+ if(argc==5)Require(exported.manifest.package.root.filename()==argv[4],"supplied export folder differs from serialized author folder");
  Require(EiemCompiledMod::Encode(exported,game)==disk,"incremental compiled roundtrip differs beyond author relocation");
  auto normalized=EiemCompiledMod::Encode(after,game);auto roundtrip=EiemCompiledMod::Decode(normalized,edited,game);
  Require(EiemCompiledMod::Encode(roundtrip,game)==normalized,"relocated compiled roundtrip is not canonical");

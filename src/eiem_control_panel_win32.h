@@ -102,7 +102,7 @@ class Window {
     ImGui::TextUnformatted(u8"MOD 按键控制");ImGui::Spacing();
     ImGui::TextDisabled("%s",u8"勾选响应按键的 Mod，同一个键可以同时控制多个 Mod。");
     ImGui::Separator();ImGui::Spacing();
-    if(view&&view->graph)for(const auto& p:*view->graph)if(!p.bindings.empty()){
+    if(view&&view->graph)for(const auto& p:*view->graph)if(!p.bindings.empty()||std::any_of(p.shapeAnimations.begin(),p.shapeAnimations.end(),[](const auto& c){return c.second.key.vk!=0;})){
       ImGui::PushID(p.id.c_str());bool active=view->keySwitchEnabled.at(p.id);
       if(ImGui::Checkbox(Label(p).c_str(),&active))Send(Action::Keyboard,p.id,{},active?1:0);
       Item(Action::Keyboard,p.id);ImGui::PopID();
@@ -112,7 +112,7 @@ class Window {
     if(view&&view->graph)for(const auto& p:*view->graph)if(p.id==view->selected)selected=&p;
     bool opened=ImGui::BeginCombo(u8"Mod",selected?Label(*selected).c_str():u8"无可控制的 Mod");
     Item(Action::Select,"");
-    if(opened){if(view&&view->graph)for(const auto& p:*view->graph)if(!p.bindings.empty()||!p.controls.empty()){
+    if(opened){if(view&&view->graph)for(const auto& p:*view->graph)if(!p.bindings.empty()||!p.controls.empty()||!p.shapeAnimations.empty()){
       if(ImGui::Selectable(Label(p).c_str(),p.id==view->selected)){StopHold();Send(Action::Select,p.id);}
       Item(Action::Select,p.id);
     }ImGui::EndCombo();}
@@ -135,6 +135,17 @@ class Window {
         if(c.minimum==c.maximum)ImGui::Text("%s = %.3f",c.label.c_str(),value);
         else{ImGui::SetNextItemWidth(-1);if(ImGui::SliderScalar(c.label.c_str(),ImGuiDataType_Double,&value,&c.minimum,&c.maximum,"%.3f"))Send(Action::Value,p.id,row.first,value);Item(Action::Value,p.id,row.first);}
         ImGui::PopID();
+      }
+      if(!p.shapeAnimations.empty())ImGui::SeparatorText(u8"形态动画");
+      for(const auto& row:p.shapeAnimations){const auto& clip=row.second;ImGui::PushID(clip.id.c_str());const auto& playback=view->animations.at(p.id).at(clip.id);
+        ImGui::Text("%s  [%s]",clip.label.c_str(),playback.playing?(playback.paused?u8"暂停":u8"播放中"):u8"停止");
+        if(ImGui::Button(playback.paused?u8"继续":u8"播放"))Send(Action::AnimationPlay,p.id,clip.id);Item(Action::AnimationPlay,p.id,clip.id);ImGui::SameLine();
+        if(ImGui::Button(u8"暂停"))Send(Action::AnimationPause,p.id,clip.id);Item(Action::AnimationPause,p.id,clip.id);ImGui::SameLine();
+        if(ImGui::Button(u8"停止"))Send(Action::AnimationStop,p.id,clip.id);Item(Action::AnimationStop,p.id,clip.id);
+        double speed=view->values.at(p.id).at(clip.speedVariable),low=.1,high=4;
+        if(ImGui::SliderScalar(u8"速度倍率",ImGuiDataType_Double,&speed,&low,&high,"%.2fx"))Send(Action::AnimationSpeed,p.id,clip.id,speed);Item(Action::AnimationSpeed,p.id,clip.id);
+        if(ImGui::InputDouble(u8"输入倍率",&speed,.1,1,"%.3f")&&std::isfinite(speed)&&speed>0)Send(Action::AnimationSpeed,p.id,clip.id,speed);
+        if(ImGui::Button(u8"恢复作者默认"))Send(Action::AnimationReset,p.id,clip.id);Item(Action::AnimationReset,p.id,clip.id);ImGui::PopID();
       }
       if(ImGui::CollapsingHeader(u8"资源来源"))for(const auto& row:p.targetIndex)ImGui::TextWrapped("%s",row.first.path.c_str());
       if(nextHold!=holdName){StopHold();if(!nextHold.empty()&&Send(Action::Hold,p.id,nextHold,1)){holdPackage=p.id;holdName=nextHold;}}

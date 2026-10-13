@@ -4,6 +4,17 @@ using AnimeStudio;
 using AnimeStudio.GUI;
 
 args = ProbeUnityVersion.ReadOption(args);
+if (args.Length > 0 && args[0] == "--update-eff-index") return EndfieldIndexCommand.Run(args);
+if (args.Length == 3 && args[0] == "--test-real-incremental-index")
+{
+    try { return IncrementalIndexTests.Real(args[1], args[2]); }
+    catch (Exception error) { Console.Error.WriteLine("REAL-INCREMENTAL-INDEX failed: " + error); return 1; }
+}
+if (args.Length == 1 && args[0] == "--test-incremental-index")
+{
+    try { return IncrementalIndexTests.Run(); }
+    catch (Exception error) { Console.Error.WriteLine("INCREMENTAL-INDEX failed: " + error); return 1; }
+}
 if (args.Length > 0 && args[0] == "--prepare-static-sources")
 {
     try { return StaticModSourceCommand.Run(args); }
@@ -84,7 +95,7 @@ if (args.Length == 4 && args[0] == "--build-index")
     var progress = new Progress<EndfieldIndexProgress>(value =>
     {
         if (value.ProcessedBundles % 1024 == 0 || value.ProcessedBundles == value.TotalBundles)
-            Console.WriteLine($"{value.ProcessedBundles}/{value.TotalBundles} assets={value.AssetCount} cabs={value.CabCount} failed={value.FailedBundles}");
+            Console.WriteLine($"{value.ProcessedBundles}/{value.TotalBundles} assets={value.AssetCount} cabs={value.CabCount} failed={value.FailedBundles} parsed={value.ParsedBundles} reused={value.ReusedBundles} removed={value.RemovedBundles}");
     });
     var path = await EndfieldVfsAssetIndexBuilder.BuildAsync(
         buildArchive, args[2], GameManager.GetGameByType(GameType.ArknightsEndfield),

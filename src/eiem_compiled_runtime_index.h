@@ -23,17 +23,22 @@ inline EiemResourceRecipe::Member ReadCompiledMember(EiemOfflinePackage::Reader&
  }Require(extent==member.size&&input<a.manifest.plan.inputs.size(),"compiled deferred member incomplete");return member;
 }
 inline void HydrateInput(const Artifact& a,size_t input){
- if(!a.proofBlocks)return;std::lock_guard<std::mutex> lock(*a.proofMutex);if(a.hydrated.count(input))return;
- auto plain=Unpack(a.proofBlocks->at(input));EiemOfflinePackage::Reader r{plain};SchemaReader schemas;
+ auto retained=a.retainedProofBlocks.find(input);if(!a.proofBlocks&&!a.proofReader&&retained==a.retainedProofBlocks.end())return;
+ std::lock_guard<std::mutex> lock(*a.proofMutex);if(a.hydrated.count(input))return;
+ const auto& expectedMembers=a.inputMembers.size()==a.manifest.plan.inputs.size()?a.inputMembers.at(input):a.retainedInputDirectories.at(input).members;
+ // A source merged into a lazily loaded artifact can have its own retained
+ // block while the callback still addresses the older store's directory.
+ // Prefer that explicit block; its index may not exist in the old reader.
+ auto plain=Unpack(retained!=a.retainedProofBlocks.end()?retained->second:(a.proofBlocks?a.proofBlocks->at(input):a.proofReader(input)));EiemOfflinePackage::Reader r{plain};SchemaReader schemas;
  std::map<std::string,MemberProof> proofs;auto n=r.Count();for(size_t i=0;i<n;++i){auto name=r.S();MemberProof p;p.before=ReadLayout(r,schemas);p.after=ReadLayout(r,schemas);
   Require(ExternalPrefix(p.before.externals,p.after.externals),"compiled deferred external order differs");auto count=r.Count();for(size_t j=0;j<count;++j){StreamSite site;site.object=int64_t(r.N());site.offset=r.Size();site.width=r.Size();site.member=r.S();site.value=r.N();auto object=p.after.objects.find(site.object);
    Require(object!=p.after.objects.end()&&site.width&&site.width<=8&&site.offset<=object->second.size&&site.width<=object->second.size-site.offset,"compiled deferred stream extent differs");p.streams.push_back(std::move(site));}
   count=r.Count();for(size_t j=0;j<count;++j){EiemLoadingGeneration::Patch patch;patch.offset=r.Size();patch.before=r.S();Require(!patch.before.empty(),"compiled deferred pristine name empty");p.pristineNamespace.push_back(std::move(patch));}
-  Require(a.inputMembers.at(input).count(name)&&proofs.emplace(name,std::move(p)).second,"compiled deferred member proof duplicate/absent");
+  Require(expectedMembers.count(name)&&proofs.emplace(name,std::move(p)).second,"compiled deferred member proof duplicate/absent");
  }
  std::vector<MemberNamespaceRecipe> names;n=r.Count();for(size_t i=0;i<n;++i){MemberNamespaceRecipe recipe;recipe.member=r.S();recipe.hash=r.S();Require(proofs.count(recipe.member)&&DigestText(recipe.hash),"compiled deferred namespace identity differs");auto count=r.Count();for(size_t j=0;j<count;++j){EiemLoadingGeneration::Patch patch;patch.offset=r.Size();patch.before=r.S();patch.after=r.S();Require(!patch.before.empty()&&patch.before.size()==patch.after.size(),"compiled deferred name width differs");recipe.patches.push_back(std::move(patch));}names.push_back(std::move(recipe));}
  std::vector<EiemResourceRecipe::Member> members;n=r.Count();std::set<std::string> seen;for(size_t i=0;i<n;++i){auto member=ReadCompiledMember(r,a,input);Require(seen.insert(member.name).second,"compiled deferred recipe duplicated");members.push_back(std::move(member));}
- Require(r.p==plain.size()&&proofs.size()==a.inputMembers.at(input).size()&&!members.empty(),"compiled deferred proof coverage differs");
+ Require(r.p==plain.size()&&proofs.size()==expectedMembers.size()&&!members.empty(),"compiled deferred proof coverage differs");
  for(auto& proof:proofs)Require(a.members.emplace(proof.first,std::move(proof.second)).second,"compiled proof member spans multiple inputs");
  a.manifest.plan.namespaceRecipes.at(input)=std::move(names);a.manifest.plan.memberRecipes.at(input)=std::move(members);a.hydrated.insert(input);
 }
@@ -56,7 +61,8 @@ inline void ReadNativeViews(EiemOfflinePackage::Reader& r,Artifact& a){
  n=r.Count();for(size_t i=0;i<n;++i){auto resource=r.S();auto bytes=r.Blob();auto frame=std::find_if(plan.frameRecipes.begin(),plan.frameRecipes.end(),[&](const auto& row){return row.resource==resource;});Require(frame!=plan.frameRecipes.end()&&Hash(bytes)==frame->hash&&a.preparedFrames.emplace(resource,std::move(bytes)).second,"compiled index frame proof differs");}
  Require(a.preparedFrames.size()==plan.frameRecipes.size(),"compiled index frame coverage differs");
 }
-inline Bytes Encode(const Artifact& a,const std::filesystem::path& game){
+inline Bytes Encode(const Artifact& a,const std::filesystem::path& game,const std::function<void(const char*,double)>& cost={}){
+ auto checkpoint=std::chrono::steady_clock::now();auto report=[&](const char* name){auto now=std::chrono::steady_clock::now();if(cost)cost(name,std::chrono::duration<double,std::milli>(now-checkpoint).count());checkpoint=now;};
  Require(!a.views.empty(),"compiled native views absent; re-export this Mod");
  auto portable=a.manifest;auto& plan=portable.plan;Require(a.views.size()==plan.inputs.size(),"compiled index view source coverage differs");
  for(auto& source:plan.originals){source.physical=source.physical.lexically_relative(game);Require(!source.physical.empty()&&!source.physical.is_absolute()&&source.physical.u8string().find("..")==std::string::npos,"compiled source escapes game");}
@@ -64,24 +70,42 @@ inline Bytes Encode(const Artifact& a,const std::filesystem::path& game){
  for(auto& root:plan.roots){root.assembly={};root.preparedAssembly.reset();}
  Writer w;w.S(EiemPackageProtocol::compiledRuntimeIndex);w.Blob(EiemOfflinePackage::Encode(portable));std::vector<Bytes> proofBlocks;
  auto assemblyIds=WritePreparedAssemblies(w,a);
+ report("compiled-encode-assemblies");
  w.N(a.manifest.plan.originals.size());for(size_t i=0;i<a.manifest.plan.originals.size();++i){const auto& source=a.manifest.plan.originals[i];auto stamp=FileStamp(source.physical);if(a.verifiedSources.size()!=a.manifest.plan.originals.size()||!SameStamp(stamp,a.verifiedSources.at(i))){ReadSource({},source);Require(SameStamp(stamp,FileStamp(source.physical)),"compiled source changed while recording offline stamp");}w.N(stamp.bytes);w.N(stamp.written);}
  const auto& own=a.manifest.plan;w.N(own.frameRecipes.size());for(const auto& frame:own.frameRecipes){w.S(frame.resource);w.S(frame.hash);w.N(frame.offset);w.N(frame.size);w.N(frame.count);for(auto n:frame.stride)w.N(n);for(auto n:frame.start)w.N(n);}
- std::map<std::string,size_t> memberInputs;for(size_t i=0;i<own.inputs.size();++i){HydrateInput(a,i);for(const auto& member:own.memberRecipes.at(i))Require(memberInputs.emplace(member.name,i).second,"compiled member has multiple inputs");}
- w.N(own.inputs.size());for(size_t i=0;i<own.inputs.size();++i){Writer proof;SchemaWriter schemas;std::set<std::string> members;for(const auto& recipe:own.memberRecipes.at(i))if(a.members.count(recipe.name))members.insert(recipe.name);w.Set(members);proof.N(members.size());
+ std::map<std::string,size_t> memberInputs;for(size_t i=0;i<own.inputs.size();++i){auto retained=a.retainedInputDirectories.find(i);
+  if(retained!=a.retainedInputDirectories.end()){Require(a.retainedProofBlocks.count(i)||a.proofReader,"retained input directory lacks compressed proof");for(const auto& name:retained->second.members)Require(memberInputs.emplace(name,i).second,"retained member has multiple inputs");}
+  else {HydrateInput(a,i);for(const auto& member:own.memberRecipes.at(i))Require(memberInputs.emplace(member.name,i).second,"compiled member has multiple inputs");}}
+ report("compiled-encode-source-directory");
+ // Each source has its own schema/compression dictionary. Encode independently
+ // in a bounded pool, then concatenate in source order for identical bytes.
+ // Hydration above finishes before workers read the immutable member map.
+ std::vector<Bytes> directories(own.inputs.size());proofBlocks.resize(own.inputs.size());
+ EiemOfflineCompile::ParallelInputs(own.inputs.size(),[&](size_t i){Writer directoryBytes;auto directory=a.retainedInputDirectories.find(i);
+  if(directory!=a.retainedInputDirectories.end()){const auto& record=directory->second;directoryBytes.Set(record.members);std::set<size_t> unique;
+   directoryBytes.N(record.dependencies.size());for(auto dependency:record.dependencies){Require(dependency<own.inputs.size()&&dependency!=i&&unique.insert(dependency).second,"retained input dependency invalid");directoryBytes.N(dependency);}directoryBytes.Set(record.addedBundles);proofBlocks[i]=a.retainedProofBlocks.count(i)?a.retainedProofBlocks.at(i):a.proofReader(i);directories[i]=std::move(directoryBytes.b);return;}
+  Writer proof;SchemaWriter schemas;std::set<std::string> members;for(const auto& recipe:own.memberRecipes.at(i))if(a.members.count(recipe.name))members.insert(recipe.name);directoryBytes.Set(members);proof.N(members.size());
   std::set<std::string> added;std::set<size_t> dependencies;auto add=[&](const std::string& member){auto found=memberInputs.find(member);if(found!=memberInputs.end()&&found->second!=i)dependencies.insert(found->second);};for(const auto& external:own.inputs[i].externals)add(external);
-  for(const auto& name:members){const auto& p=a.members.at(name);proof.S(name);WriteLayout(proof,p.before,schemas);WriteLayout(proof,p.after,schemas);proof.N(p.streams.size());for(const auto& site:p.streams){proof.N(uint64_t(site.object));proof.N(site.offset);proof.N(site.width);proof.S(site.member);proof.N(site.value);}proof.N(p.pristineNamespace.size());for(const auto& patch:p.pristineNamespace){proof.N(patch.offset);proof.S(patch.before);}
+  bool retained=a.retainedProofBlocks.count(i)!=0;
+  for(const auto& name:members){const auto& p=a.members.at(name);if(!retained){proof.S(name);WriteLayout(proof,p.before,schemas);WriteLayout(proof,p.after,schemas);proof.N(p.streams.size());for(const auto& site:p.streams){proof.N(uint64_t(site.object));proof.N(site.offset);proof.N(site.width);proof.S(site.member);proof.N(site.value);}proof.N(p.pristineNamespace.size());for(const auto& patch:p.pristineNamespace){proof.N(patch.offset);proof.S(patch.before);}}
    Require(ExternalPrefix(p.before.externals,p.after.externals),"compiled index external prefix differs");for(const auto& external:p.after.externals)add(external);
    for(size_t n=p.before.externals.size();n<p.after.externals.size();++n){auto found=memberInputs.find(p.after.externals[n]);Require(found!=memberInputs.end(),"compiled index new dependency input absent");if(found->second!=i){const auto& bundle=own.inputs[found->second].bundle;Require(!bundle.empty(),"compiled index new dependency Bundle absent");added.insert(bundle);}}
   }
-  w.N(dependencies.size());for(auto dependency:dependencies)w.N(dependency);w.Set(added);
-  const auto& names=own.namespaceRecipes.at(i);proof.N(names.size());for(const auto& recipe:names){proof.S(recipe.member);proof.S(recipe.hash);proof.N(recipe.patches.size());for(const auto& patch:recipe.patches){proof.N(patch.offset);proof.S(patch.before);proof.S(patch.after);}}
-  proof.N(own.memberRecipes[i].size());for(const auto& member:own.memberRecipes[i])WriteCompiledMember(proof,member);proofBlocks.push_back(Pack(proof.b));
- }
+  directoryBytes.N(dependencies.size());for(auto dependency:dependencies)directoryBytes.N(dependency);directoryBytes.Set(added);
+  if(retained)proofBlocks[i]=a.retainedProofBlocks.at(i);
+  else{const auto& names=own.namespaceRecipes.at(i);proof.N(names.size());for(const auto& recipe:names){proof.S(recipe.member);proof.S(recipe.hash);proof.N(recipe.patches.size());for(const auto& patch:recipe.patches){proof.N(patch.offset);proof.S(patch.before);proof.S(patch.after);}}
+   proof.N(own.memberRecipes[i].size());for(const auto& member:own.memberRecipes[i])WriteCompiledMember(proof,member);proofBlocks[i]=Pack(proof.b);}
+  directories[i]=std::move(directoryBytes.b);
+ },4);
+ w.N(own.inputs.size());for(const auto& directory:directories)w.Raw(directory.data(),directory.size());report("compiled-encode-proofs-wall");
  w.N(a.pristine.size());for(size_t i=0;i<a.pristine.size();++i){const auto& root=a.pristine[i];w.S(root.path);w.N(root.input);w.S(root.cab);w.N(uint64_t(root.source));w.N(assemblyIds.pristine.at(i));}
  WriteNativeViews(w,a);
+ report("compiled-encode-native-index");
  // Independently compressed proof sections stay compressed on the runtime
  // path. Do not decompress a whole envelope just to skip author-only records.
- Writer packet;packet.S(EiemPackageProtocol::compiledRuntimeIndex);packet.Blob(Pack(w.b));packet.N(proofBlocks.size());for(const auto& proof:proofBlocks)packet.Blob(proof);
+ auto packedIndex=Pack(w.b);report("compiled-encode-index-pack");Writer packet;packet.S(EiemPackageProtocol::compiledRuntimeIndex);
+ size_t packetBytes=AddSize(AddSize(packet.b.size(),packedIndex.size()),48);for(const auto& proof:proofBlocks)packetBytes=AddSize(packetBytes,AddSize(8,proof.size()));packet.b.reserve(packetBytes);
+ packet.Blob(packedIndex);packet.N(proofBlocks.size());for(const auto& proof:proofBlocks)packet.Blob(proof);
  auto hash=Sha(packet.b.data(),packet.b.size());packet.Raw(hash.data(),hash.size());return packet.b;
 }
 inline Artifact DecodeIndexed(const Bytes& bytes,const Bytes& plain,const std::filesystem::path& mod,const std::filesystem::path& game,bool runtime,const std::function<void(const char*,double)>& cost,const std::shared_ptr<const std::vector<Bytes>>& externalProofs,const Package* verifiedAuthor=nullptr){
@@ -108,5 +132,5 @@ inline Artifact DecodeCompiled(const Bytes& bytes,const std::filesystem::path& m
  auto plain=Unpack(index);if(cost)cost("artifact-unpack",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());return DecodeIndexed(bytes,plain,mod,game,runtime,cost,proofs,verifiedAuthor);
 }
 inline Artifact Decode(const Bytes& bytes,const std::filesystem::path& mod,const std::filesystem::path& game,const std::function<void(const char*,double)>& cost={},const Package* verifiedAuthor=nullptr){return DecodeCompiled(bytes,mod,game,false,cost,verifiedAuthor);}
-inline Artifact DecodeRuntime(const Bytes& bytes,const std::filesystem::path& mod,const std::filesystem::path& game,const std::function<void(const char*,double)>& cost={}){return DecodeCompiled(bytes,mod,game,true,cost);}
+inline Artifact DecodeRuntime(const Bytes& bytes,const std::filesystem::path& mod,const std::filesystem::path& game,const std::function<void(const char*,double)>& cost={},const Package* verifiedAuthor=nullptr){return DecodeCompiled(bytes,mod,game,true,cost,verifiedAuthor);}
 } // namespace EiemCompiledMod

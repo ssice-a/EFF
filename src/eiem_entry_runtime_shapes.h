@@ -174,7 +174,7 @@ template <class T> T Scalar(void* method, void* self = nullptr, void** arguments
   Require(boxed && CopyRaw(il2cpp_object_unbox(boxed),&result,sizeof(result)), "runtime shape scalar result");
   return result;
 }
-bool Main() { return Scalar<unsigned char>(api.main) != 0; }
+bool Main() { bool main=Scalar<unsigned char>(api.main)!=0;if(main)EiemLoadPerformance::ObserveMainThread();return main; }
 bool Alive(void* object) {
   if (!object) return false;
   void* arguments[] = {object};
@@ -199,6 +199,7 @@ void* VectorArray(size_t count) {
   return value;
 }
 void Retire(std::vector<Snapshot>& snapshots) {
+  EiemLoadPerformance::Scope performance(EiemLoadPerformance::CaptureRetire);performance.hit=!snapshots.empty();
   for (auto& snapshot : snapshots) {
     auto mesh = snapshot.mesh.Get();
     if (Alive(mesh)) { void* args[] = {mesh}; Call(api.destroy,nullptr,args); }
@@ -364,6 +365,7 @@ void SetFilterMesh(void* filter,void* mesh) {
 #endif
 bool RequestMatrices(void* renderer,void* pointer,int size) {
   const bool nativeResult=originalMatrixRequest(renderer,pointer,size);
+  EiemLoadPerformance::Scope performance(EiemLoadPerformance::CaptureMatrices);
   bool result=nativeResult;
   if (!enabled || !scope || building || observing || !scope->supplied.count(renderer)) return result;
   // An accepted native request owns this destination until its own completion.
@@ -374,6 +376,7 @@ bool RequestMatrices(void* renderer,void* pointer,int size) {
   auto ready=scope->ready.find(renderer);
   if (!nativeResult && palette!=scope->capturePalettes.end() && ready!=scope->ready.end() && ready->second) {
     result=EiemCaptureSkin::Deliver(palette->second,pointer,size);
+    performance.hit=result;
     Log("[SHAPE-CAPTURE-MATRICES] renderer=%p bytes=%d matrices=%zu nativeAccepted=0 delivered=%d synchronous=1 callerBufferOnly=1",
         renderer,size,palette->second.size(),int(result));
 #if defined(EIEM_DIAGNOSTICS)
@@ -446,11 +449,13 @@ EiemCaptureSkin::Palette CapturePaletteFor(void* renderer,void* mesh) {
   return EiemCaptureSkin::Build(rootWorld,inverse,world,bindPoses);
 }
 void* SnapshotFor(void* renderer, void* source, const Spec& spec) {
+  EiemLoadPerformance::Scope performance(EiemLoadPerformance::CaptureSnapshot);
   Require(bool(scope), "runtime shape snapshot budget");
   auto ready = scope->ready.find(renderer);
   Require(ready != scope->ready.end() && ready->second, "runtime shape native skin matrices not finished");
   auto duplicate = scope->supplied.find(renderer);
   if (duplicate != scope->supplied.end()) return duplicate->second;
+  performance.hit=true;
   Bind(renderer,source,spec);
   auto& data = Read(source,spec);
   std::map<std::string,float> weights;
@@ -637,6 +642,7 @@ bool CurrentGeneration() {
 // The game's model completion callback supplies this exact instance root.
 // Include inactive children so later visibility/LOD changes need no scene scan.
 size_t RegisterModel(void* root) {
+  EiemLoadPerformance::Scope performance(EiemLoadPerformance::ModelRegister);
   if (!enabled || registrationPaused || !Main() || !Alive(root) || !CurrentGeneration()) return 0;
   PruneCached();
   Require(api.modelRenderers && api.rendererType,"runtime model registration unavailable");
@@ -653,9 +659,10 @@ size_t RegisterModel(void* root) {
       if(binding!=bound.end()&&binding->second.renderer.Get()==renderer&&binding->second.mesh.Get()==mesh&&binding->second.modelReady)++ready;
     }
   }
-  return ready;
+  performance.hit=ready!=0;return ready;
 }
 size_t RegisterRendererList(void* renderers,bool modelReady) {
+  EiemLoadPerformance::Scope performance(EiemLoadPerformance::ModelRegister);
   auto klass=il2cpp_object_get_class(renderers);void *iterator=nullptr,*itemsField=nullptr,*sizeField=nullptr;
   while(auto field=il2cpp_class_get_fields(klass,&iterator)) {
     auto name=il2cpp_field_get_name(field);
@@ -675,7 +682,7 @@ size_t RegisterRendererList(void* renderers,bool modelReady) {
     auto binding=bound.find(renderer);
     if(binding!=bound.end()&&binding->second.renderer.Get()==renderer&&binding->second.mesh.Get()==mesh&&binding->second.modelReady)++ready;
   }
-  return ready;
+  performance.hit=ready!=0;return ready;
 }
 bool GetEnabled(void* renderer) {
   // View parts save their initial enabled state after helper initialization.
@@ -689,6 +696,9 @@ bool GetEnabled(void* renderer) {
   return originalEnabledGetter(renderer);
 }
 void HelperInitialized(void* self,void* info) {
+#if defined(EIEM_PREFAB_ADAPTATION_PROBE)
+  PrefabAdaptationProbe::Initializing("EntityRenderHelper.InitAll");
+#endif
   originalHelperInit(self,info);
   try {
     if(!enabled||registrationPaused||!helperRenderersField||!Main()||!CurrentGeneration())return;
@@ -703,12 +713,17 @@ void Update() {
   int frame = Scalar<int>(api.frame);
   if (frame == lastFrame) return;
   lastFrame = frame;
-  EiemLoadPerformance::Scope performance(EiemLoadPerformance::Controls);
+  EiemLoadPerformance::MainFrame(unsigned(frame));
+  EiemLoadPerformance::Scope performance(EiemLoadPerformance::PluginFrame);
 #if defined(EIEM_DIAGNOSTICS)
   ReloadObservation::Frame(frame);
   LoadingObservation::Frame(frame);
 #endif
   CommitPendingReload();
+  EiemLoadPerformance::Scope controls(EiemLoadPerformance::Controls);
+#if defined(EIEM_PREFAB_ADAPTATION_PROBE)
+  PrefabAdaptationProbe::AdvancePending();
+#endif
   if (!CurrentGeneration()) return;
   PollGpuCapture();
   // Poll once per Unity frame, independent of the number of model instances.
@@ -717,13 +732,14 @@ void Update() {
   EiemLoadPerformance::Frame(elapsed);
   auto window = GetForegroundWindow(); DWORD pid=0; GetWindowThreadProcessId(window,&pid);
   bool focused = active.load() && pid == GetCurrentProcessId();
-  PanelCommands(focused);
-  PollControls(focused,elapsed);
+  {EiemLoadPerformance::Scope input(EiemLoadPerformance::ControlInput);PanelCommands(focused);PollControls(focused,elapsed);}
+  {EiemLoadPerformance::Scope animation(EiemLoadPerformance::ShapeAnimation);AdvanceAnimations(elapsed);}
 #if defined(EIEM_DIAGNOSTICS)
   if (traceBoundaries && frame%300==0)
     Log("[DEBUG-shape-v24-INPUT] frame=%d focusPid=%lu focused=%d packages=%zu bound=%zu delta=%.9g",
         frame,pid,int(focused),keys.size(),bound.size(),elapsed);
 #endif
+  EiemLoadPerformance::Scope bindings(EiemLoadPerformance::ControlBindings);
   for (auto it=bound.begin();it!=bound.end();) {
     const auto& spec=specs.at(it->second.marker);
     bool visibilityDirty=spec.visible&&it->second.modelReady&&it->second.visibilityRevision!=RuntimeControls::valueRevision;
@@ -740,7 +756,7 @@ void Update() {
     ApplyVisibility(renderer,it->second,spec,true);
     for (const auto& control : spec.controls) {
       int index=it->second.indices.at(control.first);
-      float target=float(variables.at(spec.package).at(control.second)*100.0);
+      float target=float(ShapeValue(spec.package,control.second)*100.0);
       void* readArgs[]={&index};
       float before=Scalar<float>(api.getWeight,renderer,readArgs);
       if (before!=target) {
@@ -766,6 +782,9 @@ void FrameTick(void* self,void* info) {
   try { Update(); } catch(const std::exception& e) { Log("[SHAPE-RUNTIME-GAP] frameUpdate=%s",e.what()); }
 }
 void Init(void* self, void* renderers, void* configs, void* custom, bool skip, void* info) {
+#if defined(EIEM_PREFAB_ADAPTATION_PROBE)
+  PrefabAdaptationProbe::Initializing("EntityRenderHelperMaterialController.Init");
+#endif
   // Share the existing exact Init detour with optional observation. The
   // observer calls this same original once; no second MinHook layer.
 #if defined(EIEM_DIAGNOSTICS)

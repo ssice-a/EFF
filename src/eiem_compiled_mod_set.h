@@ -2,6 +2,7 @@
 #include "eiem_compiled_mod.h"
 #include "eiem_compiled_object_merge.h"
 #include "eiem_native_input_offsets.h"
+#include "eiem_source_namespace_keys.h"
 
 // Combines already compiled records. No resource builders, scene scans, game
 // resource queries or author-side executables are called by this path.
@@ -22,6 +23,7 @@ struct Set {
  std::vector<PreparedNamespaces> namespaces;
  std::vector<EiemNativeInputOffsets::Layout> layouts;
  std::vector<Catalog> catalog;
+ std::vector<std::string> sourceNamespaceKeys;
  std::vector<std::vector<std::pair<size_t,size_t>>> contributors;
  mutable std::map<size_t,std::shared_ptr<const Bytes>> isolated;
  std::map<size_t,std::weak_ptr<const Bytes>> isolatedRefs;
@@ -211,15 +213,16 @@ inline EiemRenderAssemblyDescription::Description MergeAssembly(const Root& pris
 }
 inline void SelectIsolatedInputs(Set& set){
  auto& plan=set.manifest.plan;Require(plan.startupHashes.size()==set.catalog.size(),"compiled source hash coverage differs");
+ Require(set.sourceNamespaceKeys.size()==set.catalog.size(),"compiled source namespace coverage differs");
  std::set<size_t> isolated;for(const auto& root:plan.roots){Require(root.input<set.catalog.size(),"compiled root input differs");isolated.insert(root.input);}
  for(size_t i=0;i<set.catalog.size();++i)if(plan.startupHashes[i]!=set.catalog[i].source.hash)isolated.insert(i);
  // A new Prefab/edited object needs an independent identity. Unchanged
  // dependencies keep the game's CAB identity and ResourceManager ownership;
  // opening renamed copies would duplicate their textures and GPU resources.
  for(size_t i=0;i<set.catalog.size();++i){const auto& catalog=set.catalog[i];bool own=isolated.count(i)!=0;
-  for(const auto& member:catalog.members){auto& name=plan.names.members.at(member.first);name=own?"CAB-"+EiemLoadingGeneration::Token(plan.key,member.first,32):member.first;
+  for(const auto& member:catalog.members){auto& name=plan.names.members.at(member.first);name=own?"CAB-"+EiemLoadingGeneration::Token(set.sourceNamespaceKeys.at(i),member.first,32):member.first;
    if(!own)plan.shared.insert(member.first);}
-  if(!catalog.input.bundle.empty())plan.names.bundles.at(catalog.input.bundle)=own?EiemLoadingGeneration::BundleIdentity(plan.key,catalog.input.bundle):catalog.input.bundle;
+  if(!catalog.input.bundle.empty())plan.names.bundles.at(catalog.input.bundle)=own?EiemLoadingGeneration::BundleIdentity(set.sourceNamespaceKeys.at(i),catalog.input.bundle):catalog.input.bundle;
  }
  for(auto& member:plan.names.members){auto cab=member.first.substr(0,36);if(member.first==cab+".resS")member.second=plan.names.members.at(cab)+".resS";}
  plan.closure.assign(isolated.begin(),isolated.end());
@@ -291,8 +294,12 @@ inline std::shared_ptr<Set> Read(const std::filesystem::path& game,const std::sh
   plan.inputDependencies.emplace_back(dependencies.begin(),dependencies.end());
  }
  for(const auto& catalog:set->catalog)identity+='\n'+catalog.source.file+":"+catalog.source.hash;plan.key=Hash(Bytes(identity.begin(),identity.end()));
- for(size_t i=0;i<set->catalog.size();++i){auto& catalog=set->catalog[i];plan.originals.push_back(catalog.source);plan.inputs.push_back(catalog.input);plan.inputs.back().hash.clear();plan.inputs.back().path.clear();plan.rendererRules.emplace_back();plan.startupHashes.emplace_back();for(const auto& row:catalog.members)plan.names.members.emplace(row.first,"CAB-"+EiemLoadingGeneration::Token(plan.key,row.first,32));
-  if(!catalog.input.bundle.empty())plan.names.bundles.emplace(catalog.input.bundle,EiemLoadingGeneration::BundleIdentity(plan.key,catalog.input.bundle));plan.closure.push_back(i);
+ std::vector<EiemSourceNamespaceKeys::Source> namespaceSources;namespaceSources.reserve(set->catalog.size());
+ for(size_t i=0;i<set->catalog.size();++i){const auto& catalog=set->catalog[i];EiemSourceNamespaceKeys::Source source{catalog.source.file,catalog.source.hash,{},plan.inputDependencies.at(i)};
+  for(const auto& contributor:set->contributors.at(i)){const auto& artifact=*set->mods.at(contributor.first);source.contributors.insert(artifact.manifest.package.id+":"+artifact.manifest.plan.contract);}namespaceSources.push_back(std::move(source));}
+ auto namespaceKeys=EiemSourceNamespaceKeys::Build(namespaceSources);set->sourceNamespaceKeys=namespaceKeys;
+ for(size_t i=0;i<set->catalog.size();++i){auto& catalog=set->catalog[i];plan.originals.push_back(catalog.source);plan.inputs.push_back(catalog.input);plan.inputs.back().hash.clear();plan.inputs.back().path.clear();plan.rendererRules.emplace_back();plan.startupHashes.emplace_back();for(const auto& row:catalog.members)plan.names.members.emplace(row.first,"CAB-"+EiemLoadingGeneration::Token(namespaceKeys[i],row.first,32));
+  if(!catalog.input.bundle.empty())plan.names.bundles.emplace(catalog.input.bundle,EiemLoadingGeneration::BundleIdentity(namespaceKeys[i],catalog.input.bundle));plan.closure.push_back(i);
  }
  for(const auto& mod:set->mods)for(const auto& member:mod->manifest.plan.names.members)if(!plan.names.members.count(member.first)){auto cab=member.first.substr(0,36);Require(member.first==cab+".resS"&&plan.names.members.count(cab),"compiled stream name lacks owning CAB");plan.names.members.emplace(member.first,plan.names.members.at(cab)+".resS");}
  if(previous)for(const auto& member:previous->manifest.plan.names.members)if(!plan.names.members.count(member.first)){auto cab=member.first.substr(0,36);if(member.first==cab+".resS"&&plan.names.members.count(cab))plan.names.members.emplace(member.first,plan.names.members.at(cab)+".resS");}

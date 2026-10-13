@@ -4,13 +4,13 @@
 
 AnimeStudio exports source assets and templates. Blender creates and compiles each independent Mod. EFF applies the compiled rules before the game creates resources and uses the game's model lifecycle for reloads.
 
-Paired releases: **EFF v1.4.1, EFF Blender v0.41.0, AnimeStudio v1.4.0**. There is one production DLL package. Compatibility follows byte structures, fields, source hashes and references.
+Paired releases: **EFF v1.5.0, EFF Blender v0.42.0, AnimeStudio v1.5.0**. There is one production DLL package. Compatibility follows byte structures, fields, source hashes and references.
 
 See the illustrated quick tutorial for installation, extraction, Blender editing and export: [English](Mod%20Tutorial_EN.md) · [中文](Mod%20Tutorial.md).
 
 ## Install
 
-Download `EFF_v1.4.1_dll.zip` from [Releases](https://github.com/ssice-a/EFF/releases), quit the game and extract beside `Endfield.exe`. The current proxy forwarders support Windows installations at `C:\Windows`; other system directories are not supported yet. Preserve `plugin/eff.ini`, your Mods and their `state.ini` when upgrading.
+Download `EFF_v1.5.0_dll.zip` from [Releases](https://github.com/ssice-a/EFF/releases), quit the game and extract beside `Endfield.exe`. The current proxy forwarders support Windows installations at `C:\Windows`; other system directories are not supported yet. Preserve `plugin/eff.ini`, your Mods and their `state.ini` when upgrading.
 
 ```text
 d3dcompiler_47.dll
@@ -38,6 +38,7 @@ The production DLL and proxies statically link their own C/C++ runtime implement
 - One source Renderer can expand into multiple author parts. Unspecified targets retain original content. Materials and textures may use game templates or author-created data.
 - **Ins** opens independent keyboard checkboxes for each Mod, all enabled by default. Multiple Mods can respond to the same key. The dropdown selects the Mod whose buttons and sliders are shown. Key switches, shape controls and saved player values remain supported.
 - **F10** reads the full current Mod set, handles additions/removals/changes and the empty set, and reloads supported world/display owners with animation, weapon and audio rebinding. Failed preparation or submission keeps the current generation.
+- Shape Keys clips have independent playback groups and play/stop shortcuts. Ins provides pause and persistent live speed controls without resetting playback phase.
 
 UI and world instances of a Mod share control values. UI reload uses the game's
 loader and page item binding, retaining the displayed model until candidate
@@ -60,6 +61,8 @@ Exports under the game's `plugin/mods/` locate the installation automatically; o
 Complete original bundles are not saved in the Mod. Compiled outputs include native input views, dependency and instance-binding indices; size follows actual author resources and shared edits and is not an estimate of Unity memory usage. See the [loading flow](docs/runtime-resource-discovery.md) and [output contract](docs/offline-resource-package-format.md).
 
 ## Validation limits
+
+Shape animation authoring, native playback controls and isolated compilation have regression coverage; in-game animation rendering and active playback costs remain unverified. AnimeStudio supports layered VFS and incremental Bundle indexing. Automatic runtime adaptation of older Mods to newly matching Prefabs is still under development and is not claimed by this release.
 
 Regression checks cover shared-PFB composition, removals, stream relocation, static Meshes, sequential world/display reloads, animation consumers and rollback. The latest in-game two-character F10 took about 107 ms from request to commit, with idle attachments visually confirmed. This measured an already prepared candidate, not every scene's latency. Independent crowd NPC/scene-object refresh, complete generation retirement and 20–30 Mod pressure remain unverified. Exporting all LOD targets does not generate reduced geometry. New BoneCloth chains and sphere/capsule colliders are connected to offline compilation. Animation blending, complete physics teardown and F10 still require in-game acceptance. This release build passed automated regressions; new in-game acceptance has not been performed for these binaries.
 

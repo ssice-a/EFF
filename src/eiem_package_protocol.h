@@ -3,6 +3,7 @@
 // Compatibility describes fields and encodings, not release/build numbers.
 // ABI/compiler labels below are informational and remain for old tools.
 namespace EiemPackageProtocol {
+constexpr const char* shapeAnimation = "sampled-shape-weight-clips/le32/1";
 constexpr const char* manifestStructure = "author-graph+inputs+roots+closure+parts+materials/le64/sha256";
 constexpr const char* authorStructure = "mod-ini/parts+replace+resources+controls";
 constexpr const char* resourceStructure = "block-directory/le64/sha256/type-tree";

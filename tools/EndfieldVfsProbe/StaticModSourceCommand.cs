@@ -52,8 +52,11 @@ internal static class StaticModSourceCommand
             throw new ArgumentException("--prepare-static-sources GAME INDEX MOD COMPILER [--refresh]");
         var game = Path.GetFullPath(args[1]); var indexPath = Path.GetFullPath(args[2]);
         var mod = Path.GetFullPath(args[3]); var compiler = Path.GetFullPath(args[4]);
+        var archive = EndfieldVfsArchive.Open(game);
+        var catalogIdentity = EndfieldIndexStore.Load(indexPath, new HashSet<string>(StringComparer.OrdinalIgnoreCase)).VfsFingerprint;
+        if (catalogIdentity != archive.Fingerprint) throw new InvalidDataException("Source index must describe both installed VFS layers; reopen the game folder with current AnimeStudio.");
         var request = Request(compiler, mod);
-        var requestHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(request + "\nselection=reverse-mesh-consumers+declared-assets+material-dependency-closure")));
+        var requestHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(request + "\nselection=reverse-mesh-consumers+declared-assets+material-dependency-closure\nresourceCatalog="+catalogIdentity)));
         var destination = Path.Combine(mod, "source-inputs.bin");
         if (args.Length == 5 && File.Exists(destination))
         {
@@ -68,14 +71,11 @@ internal static class StaticModSourceCommand
         }
         using var document = JsonDocument.Parse(request);
         var sources = document.RootElement.GetProperty("sources").EnumerateArray().ToArray();
-        var streaming = EndfieldVfsArchive.Open(Path.Combine(game, "Endfield_Data", "StreamingAssets", "VFS"));
-        var persistentRoot = Path.Combine(game, "Endfield_Data", "Persistent", "VFS");
-        var persistent = Directory.Exists(persistentRoot) ? EndfieldVfsArchive.Open(persistentRoot) : null;
         var requestedContainers = sources.Select(s => Logical(s.GetProperty("path").GetString()!))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var index = EndfieldIndexStore.Load(indexPath, requestedContainers);
-        if (index.VfsFingerprint != streaming.Fingerprint)
-            throw new InvalidDataException("The existing source index no longer describes the installed streaming archive; regenerate it with AnimeStudio.");
+        if (index.VfsFingerprint != archive.Fingerprint)
+            throw new InvalidDataException("The existing source index no longer describes both installed VFS layers; regenerate it with AnimeStudio.");
         var assets = new SortedDictionary<string, string>(StringComparer.Ordinal);
         var meshSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var materialSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -134,12 +134,8 @@ internal static class StaticModSourceCommand
         var inputs = new List<Input>();
         foreach (var bundle in selected.Order(StringComparer.Ordinal))
         {
-            EndfieldVfsEntry cached = null;
-            persistent?.TryGet(bundle, out cached);
-            streaming.TryGet(bundle, out var shipped);
-            var entry = ChooseSource(cached, shipped);
+            if (!archive.TryGet(bundle, out var entry)) throw new InvalidDataException("Source absent from current VFS: " + bundle);
             if (entry.Encrypted) throw new InvalidDataException("Outer-encrypted static source is unsupported: " + bundle);
-            var archive = entry.SourceBlc.StartsWith(persistentRoot, StringComparison.OrdinalIgnoreCase) ? persistent! : streaming;
             var bytes = archive.ReadPayload(entry.LogicalPath);
             if (Convert.ToHexString(MD5.HashData(bytes)) != entry.FileDataMd5) throw new InvalidDataException("Source range MD5 differs: " + bundle);
             var relative = Path.GetRelativePath(game, entry.SourceChk).Replace('\\', '/');

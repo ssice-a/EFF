@@ -1,5 +1,6 @@
 #pragma once
 #include "eiem_resource_directory.h"
+#include "eiem_shape_animation_player.h"
 #include <atomic>
 #include <deque>
 #include <mutex>
@@ -13,8 +14,9 @@ struct Snapshot {
   std::map<std::string,bool> keySwitchEnabled;
   std::shared_ptr<const std::vector<EiemDirectory::Package>> graph;
   std::map<std::string,EiemVariables> values;
+  std::map<std::string,std::map<std::string,EiemShapeAnimation::Playback>> animations;
 };
-enum class Action { Select, Keyboard, Invoke, Hold, Value };
+enum class Action { Select, Keyboard, Invoke, Hold, Value, AnimationPlay, AnimationPause, AnimationStop, AnimationSpeed, AnimationReset };
 struct Command {
   uint64_t revision=0, scope=0;
   Action action=Action::Select;
@@ -44,7 +46,7 @@ public:
     // crossing a selection command or another action.
     if (!commands.empty()) {
       auto& last=commands.back();
-      if (command.action==Action::Value && last.action==command.action &&
+      if ((command.action==Action::Value||command.action==Action::AnimationSpeed) && last.action==command.action &&
           last.revision==command.revision && last.scope==command.scope &&
           last.package==command.package && last.name==command.name) {
         last.value=command.value;return true;

@@ -60,14 +60,20 @@ def read_package(root, resource_cache=None):
             persistence.add(variable)
 
     mesh_rows, materials, textures, parts, controls, bindings, rules = {}, [], [], [], [], [], []
+    animations=[]
     for name in ini.sections():
         if name in known:
             continue
         identifier(name)
         known.add(name)
-        if name.startswith("Resource"):
+        if name.startswith('ShapeAnimation'):
+            from .shape_animation import decode, KIND
+            values=keys(name,('path',));clip=decode(load(values['path'],KIND))
+            require(clip['owner']==mod['id'] and name=='ShapeAnimation'+clip['id'],'animation owner/id mismatch')
+            animations.append(clip)
+        elif name.startswith("Resource"):
             values = keys(name, ("path",))
-            load(values['path'], 0)
+            require(load(values['path'], 0)['kind'] != 8, 'shape animation requires a ShapeAnimation declaration')
         elif name.startswith("Mesh"):
             values = keys(name, ("path",))
             resource = load(values["path"], MESH)
@@ -204,6 +210,16 @@ def read_package(root, resource_cache=None):
             control = shape_controls[variable]
             require(all(control["minimum"] <= v <= control["maximum"] for b in bindings if b["variable"] == variable for v in b["values"]),
                     "shape key target outside control range")
+    animated=set(); animation_speeds=set()
+    for clip in animations:
+        require(clip['speedVariable'] not in shape_controls and clip['speedVariable'] not in animation_speeds,
+                'animation speed variable aliases a shape or another group')
+        animation_speeds.add(clip['speedVariable'])
+        require(states.get(clip['speedVariable'])==clip['speed'] and clip['speedVariable'] in persistence,'animation speed default/persistence')
+        for variable,samples in clip['tracks'].items():
+            require(variable in shape_controls and variable not in animated,'animation missing/conflicting shape channel')
+            animated.add(variable);c=shape_controls[variable]
+            require(all(c['minimum']-1e-6<=v<=c['maximum']+1e-6 for v in samples),'animation exceeds shape range')
     for generated in ("source-inputs.bin", "compiled.bin"):
         if (root / generated).is_file():
             allowed.add(generated)
@@ -213,7 +229,7 @@ def read_package(root, resource_cache=None):
     require(actual == allowed, "unreferenced/source files in Mod directory: " + str(sorted(actual ^ allowed)))
     return dict(format="EFF_NATIVE_MOD_DIRECTORY", version=2, modId=mod["id"], keySwitchEnabled=key_switch_enabled(mod.get("key_switch_enabled", "1")), parts=parts, materials=materials,
                 textures=textures, rules=rules, states=states, persistentStates=persistence, keyBindings=bindings,
-                shapeControls=controls, _resources=resources, _files=allowed)
+                shapeControls=controls, shapeAnimations=animations, _resources=resources, _files=allowed)
 
 
 def key_switch_enabled(value="1"):

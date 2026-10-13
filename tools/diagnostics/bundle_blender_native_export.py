@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MODULES = (
     'author_source', 'serialized_file', 'type_tree', 'mesh', 'delta_apply',
     'resource_file', 'ini_package', 'ini_reader', 'texture_fields',
-    'state_rules', 'payload', 'hashing', 'physics',
+    'state_rules', 'payload', 'hashing', 'physics', 'shape_animation',
 )
 
 

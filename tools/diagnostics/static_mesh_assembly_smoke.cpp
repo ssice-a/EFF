@@ -51,9 +51,30 @@ struct Fixture {
 template<class F> void Rejected(F f){bool rejected=false;try{f();}catch(const std::exception&){rejected=true;}Require(rejected,"invalid static assembly accepted");}
 int main(){try{
  Fixture f;auto before=f.BytesOf();Package p;p.id="static";Identity target{"assets/static.mesh","Static"},mat{"assets/material.mat","Mat"};p.targetIndex[target]="R";p.rules["R"].parts={"P","Q"};
+ // Shared member parsing must keep root ownership and component ordinals local.
+ auto shared=std::make_shared<const EiemRenderAssemblyDescription::GraphData>(before,f.cab);
+ EiemRenderAssemblyDescription::Graph firstRoot(shared,10),secondRoot(shared,20);
+ Require(firstRoot.Renderers()==std::vector<int64_t>{13}&&secondRoot.Renderers()==std::vector<int64_t>{23},"shared member analysis mixed Prefab roots");
+ auto ownershipLayout=ParseSerialized(before);EiemPrefabConsumers::Ownership ownership(before,ownershipLayout,f.cab);
+ Require(ownership.GameObjects(10)==std::set<int64_t>{10}&&ownership.Owner(13)==10&&ownership.Owner(23)==20,"lightweight ownership differs from exact roots");
+ Fixture repeatedChild;repeatedChild.List(11,"m_Children",{21,21});repeatedChild.Pointer(21,"m_Father",11);
+ auto repeatedBytes=repeatedChild.BytesOf();auto repeatedLayout=ParseSerialized(repeatedBytes);
+ Rejected([&]{EiemPrefabConsumers::Ownership index(repeatedBytes,repeatedLayout,f.cab);index.GameObjects(10);});
+ Fixture wrongParent;wrongParent.List(11,"m_Children",{21});auto wrongBytes=wrongParent.BytesOf();auto wrongLayout=ParseSerialized(wrongBytes);
+ Rejected([&]{EiemPrefabConsumers::Ownership index(wrongBytes,wrongLayout,f.cab);index.GameObjects(10);});
+ auto truncated=before;truncated.resize(ownershipLayout.objects.at(13).offset+ownershipLayout.objects.at(13).size-1);
+ Rejected([&]{ObjectFields(truncated,ownershipLayout,13,{"m_GameObject"});});
  auto folder=std::filesystem::temp_directory_path()/("eff-static-mesh-"+std::to_string(GetCurrentProcessId()));Require(!std::filesystem::exists(folder),"fixture directory exists");std::filesystem::create_directory(folder);
  struct Cleanup {std::filesystem::path path;~Cleanup(){std::filesystem::remove_all(path);}}cleanup{folder};auto bundle=Bundle(before,f.cab);auto file=folder/"input.vfs";EiemResourceReloadPlan::Save(file,bundle);
  EiemStaticSources::Selection selection;selection.manifest="fixture";selection.assets[target.path]="input";selection.inputs["input"]={"input",EiemResourceReloadPlan::Hash(bundle),file,0,bundle.size()};selection.candidates={"input"};auto found=EiemStaticSources::FindConsumers(selection,{target});Require(found.renderers==2&&found.roots==std::set<std::string>{"assets/a.prefab","assets/b.prefab"},"offline static consumers/PFB roots differ");
+ Require(found.decisions.at("input").roots.size()==2,"offline discovery discarded same-Bundle root observations");
+ Fixture negative;negative.Add(102,5);negative.Pointer(12,"m_Mesh",102);negative.Pointer(22,"m_Mesh",102);negative.Pointer(32,"m_Mesh",102);
+ auto negativeBundle=Bundle(negative.BytesOf(),negative.cab);auto negativeFile=folder/"negative.vfs";EiemResourceReloadPlan::Save(negativeFile,negativeBundle);
+ auto withNegative=selection;withNegative.inputs["negative"]={"negative",EiemResourceReloadPlan::Hash(negativeBundle),negativeFile,0,negativeBundle.size()};withNegative.candidates.insert("negative");
+ auto conclusions=EiemStaticSources::FindConsumers(withNegative,{target});Require(conclusions.decisions.size()==2&&conclusions.decisions.at("negative").roots.empty(),"offline discovery discarded negative conclusion");
+ auto persisted=EiemConsumerUpdateRecords::Decode(EiemConsumerUpdateRecords::Encode(conclusions.decisions));std::map<std::string,EiemConsumerUpdateRecords::Stamp> currentStamps;
+ for(const auto& row:conclusions.decisions)currentStamps.emplace(row.first,row.second.stamp);
+ Require(EiemConsumerUpdateRecords::Pending(currentStamps,persisted).empty(),"offline conclusions rechecked unchanged candidates");
  // Independent inputs may finish out of order. Keep their complete consumer
  // and root sets, including multiple Prefabs in one serialized member.
  auto multiple=selection;multiple.inputs["second"]=multiple.inputs.at("input");multiple.inputs["second"].logical="second";multiple.candidates.insert("second");
@@ -66,6 +87,56 @@ int main(){try{
  auto encodedResult=BuildRendererInput(bundle,p,assets,parts,{});
  Require(EndfieldInput::Encode(bundle,direct.members)==encodedResult.bytes&&directResult.parts.size()==encodedResult.parts.size()&&directResult.changedObjects==encodedResult.changedObjects,"in-memory Renderer stage differs from encoded stage");
  auto built=RendererMemberBuilder(before,f.cab,p,assets,parts).Build();Require(built.matches==2&&built.parts.size()==4&&built.addedObjects==8,"static Mesh consumers/one-to-many assembly missing");
+ auto adapted=std::make_shared<const EiemRenderAssemblyDescription::GraphData>(built.bytes,f.cab,shared.get(),&before);
+ auto reparsed=std::make_shared<const EiemRenderAssemblyDescription::GraphData>(built.bytes,f.cab);
+ Require(adapted->reusedObjects&&adapted->decodedObjects&&adapted->decodedObjects<reparsed->decodedObjects,"modified member did not reuse unchanged assembly objects");
+ EiemRenderAssemblyDescription::Graph sharedCandidate(adapted,10),coldCandidate(reparsed,10);
+ std::map<NativeReference,std::string> reuseMarkers{{{f.cab,100},"first"},{{f.cab,101},"second"}};
+ auto sharedDescription=EiemRenderAssemblyDescription::Build(firstRoot,sharedCandidate,f.cab,p,assets,reuseMarkers);
+ auto coldDescription=EiemRenderAssemblyDescription::Build(firstRoot,coldCandidate,f.cab,p,assets,reuseMarkers);
+ EiemOfflinePackage::Writer sharedAssembly,coldAssembly;EiemOfflinePackage::WriteAssembly(sharedAssembly,sharedDescription);EiemOfflinePackage::WriteAssembly(coldAssembly,coldDescription);
+ Require(sharedAssembly.b==coldAssembly.b,"reused assembly analysis changed Renderer/LOD/helper output");
+ auto changedSchema=f;for(auto& node:changedSchema.types[0].nodes)if(node.name=="m_Name")node.name="differentName";
+ auto schemaBytes=changedSchema.BytesOf();auto schemaAnalysis=std::make_shared<const EiemRenderAssemblyDescription::GraphData>(schemaBytes,f.cab,shared.get(),&before);
+ Require(schemaAnalysis->values.at(10)!=shared->values.at(10),"same schema hash hid changed field structure during assembly reuse");
+ // A model Prefab can contain UI children. RectTransform inherits the same
+ // hierarchy fields; preserve these nodes while discovering/rebuilding Meshes.
+ Fixture rect;auto rectType=rect.types[1];rectType.classId=224;rectType.hash[0]=224;rect.types.push_back(rectType);
+ rect.Add(40,0);SetString(rect.T(40),Child(rect.T(40),rect.V(40),"m_Name"),"UI");
+ rect.Add(41,rect.types.size()-1);rect.Pointer(41,"m_GameObject",40);rect.Pointer(41,"m_Father",11);
+ rect.List(40,"m_Component",{41},"component");rect.List(11,"m_Children",{41});
+ auto rectBytes=rect.BytesOf();EiemRenderAssemblyDescription::Graph rectGraph(rectBytes,rect.cab,10);
+ Require(rectGraph.Contains(41)&&rectGraph.Path(41)==EiemRenderAssemblyDescription::Segment("UI",0),"RectTransform child omitted from Prefab addresses");
+ auto rectBuilt=RendererMemberBuilder(rectBytes,rect.cab,p,assets,parts).Build();
+ Require(rectBuilt.matches==2&&rectBuilt.parts.size()==4,"RectTransform child prevented Renderer assembly");
+ EiemRenderAssemblyDescription::Graph rectAfter(rectBuilt.bytes,rect.cab,10);
+ Require(rectAfter.Path(41)==rectGraph.Path(41),"Renderer assembly changed an unrelated RectTransform address");
+ // Some native skinned consumers leave m_SkinningRoot empty. Their explicit
+ // root/bone palette remains valid; preserve the optional native pointer.
+ Fixture skin;skin.types.push_back(Schema(137,{Ref("m_GameObject"),Ref("m_Mesh"),
+  {"bool","m_Enabled",{}},Arr("m_Materials",Ref("data")),Arr("m_Bones",Ref("data")),
+  Ref("m_RootBone"),Ref("m_SkinningRoot"),Arr("m_BlendShapeWeights",{"float","data",{}}),
+  {"bool","m_DirtyAABB",{}},{"AABB","m_AABB",{Vec("m_Center"),Vec("m_Extent")}}}));
+ skin.objects.at(13)={skin.types.size()-1,EmptyValue(skin.types.back(),0)};
+ skin.Pointer(13,"m_GameObject",10);skin.Pointer(13,"m_Mesh",100);skin.Pointer(13,"m_RootBone",11);
+ skin.List(13,"m_Bones",{11});skin.List(13,"m_Materials",{200});
+ skin.Pointer(12,"m_Mesh",102);skin.Pointer(22,"m_Mesh",102);skin.Add(102,5);
+ auto skinnedPackage=p;skinnedPackage.meshes["M"].bones={""};
+ RendererBoundsCache skinBounds;skinBounds.values.emplace(std::make_tuple(std::string("mesh"),size_t(0),AffineIdentity()),
+  std::make_pair(Vector3{0,0,0},Vector3{1,1,1}));
+ auto buildSkin=[&](){auto input=skin.BytesOf();RendererMemberBuilder builder(input,skin.cab,skinnedPackage,assets,parts);
+  builder.SetBoundsCache(skinBounds);return builder.Build();};
+ auto emptySkin=buildSkin();Require(emptySkin.matches==1&&emptySkin.parts.size()==2,"null optional skinning root prevented skinned assembly");
+ auto emptyLayout=ParseSerialized(emptySkin.bytes);
+ for(const auto& part:emptySkin.parts){const auto& t=emptyLayout.types.at(emptyLayout.objects.at(part.renderer).type);
+  auto value=ObjectValue(emptySkin.bytes,emptyLayout,part.renderer);
+  Require(NullableReference(t,Child(t,value,"m_SkinningRoot"),emptyLayout,skin.cab).second==0,"null native skinning root was synthesized");}
+ skin.Pointer(13,"m_SkinningRoot",11);auto explicitSkin=buildSkin();auto explicitLayout=ParseSerialized(explicitSkin.bytes);
+ for(const auto& part:explicitSkin.parts){const auto& t=explicitLayout.types.at(explicitLayout.objects.at(part.renderer).type);
+  auto value=ObjectValue(explicitSkin.bytes,explicitLayout,part.renderer);
+  Require(NullableReference(t,Child(t,value,"m_SkinningRoot"),explicitLayout,skin.cab)==NativeReference{skin.cab,11},"explicit native skinning root changed");}
+ skin.Pointer(13,"m_SkinningRoot",10);Rejected(buildSkin);
+ skin.Pointer(13,"m_SkinningRoot",0);skin.Pointer(13,"m_RootBone",0);Rejected(buildSkin);
  auto crossAssets=assets;const std::string materialCab="CAB-"+std::string(32,'c');crossAssets.at(mat).cab=materialCab;
  auto cross=RendererMemberBuilder(before,f.cab,p,crossAssets,parts).Build();auto crossLayout=ParseSerialized(cross.bytes);
  Require(crossLayout.externals==std::vector<std::string>{materialCab},"cross-CAB Material was not registered exactly once");

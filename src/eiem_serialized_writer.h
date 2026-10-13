@@ -197,11 +197,43 @@ inline Value ObjectValue(const Bytes& source, const SerializedLayout& layout, in
   Require(EncodeValue(type, value) == bytes, "source serialized value roundtrip changed bytes");
   return value;
 }
+// Read-only projection. Retained fields keep their original schema nodes;
+// omitted fields are still range/schema checked but never allocated. This
+// value must not be serialized as a replacement for the complete object.
+inline Value ObjectFields(const Bytes& source,const SerializedLayout& layout,int64_t id,
+                          const std::set<std::string>& wanted) {
+  const auto& object=layout.objects.at(id);const auto& type=layout.types.at(object.type);
+  Reader reader(source,object.offset,false,AddSize(object.offset,object.size));
+  Value value;value.node=0;std::set<std::string> names;
+  for(auto child:type.nodes.at(0).children){const auto& name=type.nodes.at(child).name;
+    Require(type.nodes.at(0).uniqueFields||names.insert(name).second,"duplicate projected object field");
+    if(wanted.count(name))value.children.push_back(ReadValue(type,child,reader,object.offset,1));
+    else SkipValue(type,child,reader,object.offset,1);
+  }
+  if(type.nodes.at(0).align)reader.Skip((size_t(0)-(reader.p-object.offset))&3);
+  Require(reader.p==object.offset+object.size,"projected object extent differs");return value;
+}
 struct AddedObject {
   int64_t id = 0;
   size_t type = 0;
   Bytes bytes;
 };
+// Generic TypeTree value construction belongs to the codec. Independent
+// author assets must not include a Renderer/Prefab builder for these helpers.
+inline Value EmptyValue(const Type& type, size_t index, unsigned depth = 0) {
+  Require(index < type.nodes.size() && depth < type.nodes.size(), "new serialized value schema limit");
+  Value value;value.node=index;const auto& node=type.nodes[index];auto width=Primitive(node.type);
+  if(width)value.raw.resize(width);
+  else if(node.type!="string"&&node.type!="TypelessData"&&node.type!="Array"){
+    Require(!node.children.empty(),"unsupported new serialized leaf");
+    for(auto child:node.children)value.children.push_back(EmptyValue(type,child,depth+1));
+  }return value;
+}
+inline Value ArrayElement(const Type& type,const Value& array){
+  Require(type.nodes.at(array.node).type=="Array"&&type.nodes[array.node].children.size()==2,"new serialized array element schema");
+  return EmptyValue(type,type.nodes[array.node].children[1]);
+}
+inline const Value& ConstArray(const Type& type,const Value& value){return ArrayValue(type,value);}
 inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout,
                               const std::map<int64_t, Bytes>& replacements,
                               const std::vector<AddedObject>& added = {},

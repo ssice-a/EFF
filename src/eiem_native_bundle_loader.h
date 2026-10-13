@@ -41,19 +41,22 @@ std::shared_ptr<EiemInputSpanView::Cursor> StreamView(void* stream){
  auto view=found->second.lock();if(!view){viewStreams.erase(found);viewStreamsPresent=!viewStreams.empty();}return view;
 }
 void StreamRead(void* array,int32_t offset,int32_t count,void* stream,void* result,void* info){
- auto view=StreamView(stream);if(!view){originalStreamRead(array,offset,count,stream,result,info);return;}
+ std::shared_ptr<EiemInputSpanView::Cursor> view;{EiemLoadPerformance::Scope route(EiemLoadPerformance::StreamRoute);view=StreamView(stream);route.hit=bool(view);}if(!view){originalStreamRead(array,offset,count,stream,result,info);return;}
+ EiemLoadPerformance::Scope performance(EiemLoadPerformance::ViewRead);performance.hit=true;
  int32_t read=0;try{size_t length=0;Require(result&&offset>=0&&count>=0&&Entry::ArrayLength(array,&length)&&size_t(offset)<=length&&size_t(count)<=length-size_t(offset),"compiled stream Read buffer range differs");
   read=int32_t(view->Read((unsigned char*)array+32+offset,size_t(count)));
+  EiemLoadPerformance::Bytes(EiemLoadPerformance::ViewRead,uint64_t(read));
  }catch(const std::exception& error){Log("[NATIVE-VIEW-READ-FAILED] reason=%s",error.what());}
  if(result)std::memcpy(result,&read,sizeof(read));
 }
 void StreamSeek(int64_t offset,uint32_t origin,void* stream,void* result,void* info){
- auto view=StreamView(stream);if(!view){originalStreamSeek(offset,origin,stream,result,info);return;}
+ std::shared_ptr<EiemInputSpanView::Cursor> view;{EiemLoadPerformance::Scope route(EiemLoadPerformance::StreamRoute);view=StreamView(stream);route.hit=bool(view);}if(!view){originalStreamSeek(offset,origin,stream,result,info);return;}
+ EiemLoadPerformance::Scope performance(EiemLoadPerformance::ViewSeek);performance.hit=true;
  int64_t position=-1;try{Require(result,"compiled stream Seek result absent");position=view->Seek(offset,origin);}catch(const std::exception& error){Log("[NATIVE-VIEW-SEEK-FAILED] reason=%s",error.what());}
  if(result)std::memcpy(result,&position,sizeof(position));
 }
 void StreamLength(void* stream,void* result,void* info){
- auto view=StreamView(stream);if(!view){originalStreamLength(stream,result,info);return;}
+ std::shared_ptr<EiemInputSpanView::Cursor> view;{EiemLoadPerformance::Scope route(EiemLoadPerformance::StreamRoute);view=StreamView(stream);route.hit=bool(view);}if(!view){originalStreamLength(stream,result,info);return;}
  int64_t length=view->Length();if(result)std::memcpy(result,&length,sizeof(length));
 }
 std::shared_ptr<uint32_t> MemoryIdentity(void* bundle){
@@ -85,6 +88,9 @@ void CompleteMemory(void* request,void* bundle){
  memoryWork=!memoryRequests.empty()||!memoryUnloads.empty();
 }
 void CollectMemory(){
+#if defined(EIEM_LOAD_PERF)
+ static ULONGLONG reported=0;auto now=GetTickCount64();if(now-reported>=5000){reported=now;size_t requests=0,bundles=0,unloads=0,views=0;{std::lock_guard<std::mutex> lock(memoryMutex);requests=memoryRequests.size();bundles=memoryBundles.size();unloads=memoryUnloads.size();}{std::lock_guard<std::mutex> lock(viewMutex);views=viewStreams.size();}Log("[DEBUG-loadperf] nativeLifetime=1 requests=%zu bundles=%zu unloads=%zu viewStreams=%zu consumersRetained=1",requests,bundles,unloads,views);}
+#endif
  if(!memoryWork.load(std::memory_order_relaxed))return;
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::StreamLifetime);
  // Public getters can reenter completion observers. Never hold this mutex

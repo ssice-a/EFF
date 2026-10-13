@@ -132,13 +132,14 @@ inline void Walk(const Type& type, size_t index, Reader& reader, size_t base,
   if (node.align || node.type == "string")
     reader.Skip((size_t(0) - (reader.p - base)) & 3);
 }
-inline References ReadReferences(const Bytes& bytes, const SerializedLayout& layout) {
+enum class ReferenceScan { All, Streams };
+inline References ReadReferences(const Bytes& bytes, const SerializedLayout& layout,ReferenceScan scan=ReferenceScan::All) {
   References result;
   std::vector<std::vector<bool>> masks;
   for (const auto& type : layout.types) {
     std::vector<bool> mask(type.nodes.size(), false);
     for (size_t i = type.nodes.size(); i-- > 0;) {
-      mask[i] = ReferenceNode(type.nodes[i]);
+      mask[i] = ReferenceNode(type.nodes[i])&&(scan==ReferenceScan::All||type.nodes[i].type.rfind("PPtr<",0)!=0);
       for (auto child : type.nodes[i].children) mask[i] = mask[i] || mask.at(child);
     }
     masks.push_back(std::move(mask));

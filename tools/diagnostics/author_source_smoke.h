@@ -25,7 +25,7 @@ inline void AuthorSourceRegression() {
  auto invalid=index;invalid.push_back(0);rejected(invalid);invalid=index;invalid.pop_back();rejected(invalid);invalid=index;invalid[invalid.size()-16]=102;rejected(invalid);
  invalid=prefix;cab(invalid,"CAB-one","Bundles/Windows/Conflicting.ab",{});rejected(invalid);
  Bytes badString{255,255,255,255,8};bool failed=false;try{EiemAuthorSources::Reader r(badString);r.S();}catch(const std::exception&){failed=true;}Require(failed,"overflowing source string accepted");
- Require(VfsLogical("\x01 prefix Assets\\StreamingAssets\\Bundles/Windows/A.ab!suffix")=="bundles/windows/a.ab"&&VfsLogical("Data/Bundles/B.ab")=="bundles/b.ab"&&VfsLogical("/Bundles/C.ab/")=="bundles/c.ab","VFS path normalization differs");
+ Require(VfsLogical("\x01 prefix Assets\\StreamingAssets\\Bundles/Windows/A.ab!suffix")=="bundles/windows/a.ab!suffix"&&VfsLogical("Data/Bundles/B.ab")=="bundles/b.ab"&&VfsLogical("/Bundles/C.ab/")=="bundles/c.ab"&&VfsLogical("Data/Json/floor+1.json")=="json/floor+1.json","VFS path normalization truncated printable punctuation");
  Require(Md5(Bytes{'a','b','c'})=="900150983CD24FB0D6963F7D28E17F72","native source MD5 differs");
 
  auto vfs=root/"vfs";std::filesystem::create_directory(vfs);

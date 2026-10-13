@@ -23,13 +23,20 @@ Build the author compiler with `tools/build_resource_pack.cmd v35`. Source disco
 ## Run
 
 ```text
-tools\AnimeStudio\dist\win-x64-vfs-next\AnimeStudio.GUI.exe
+tools\AnimeStudio\dist\net9.0-windows\AnimeStudio.GUI.exe
 ```
 
 Choose `File -> Open Endfield VFS...`, then select:
 
-1. `D:\Hypergryph Launcher\games\Endfield Game\Endfield_Data\StreamingAssets\VFS`
+1. `D:\Hypergryph Launcher\games` (or the exact Endfield game folder)
 2. a workspace outside drive C (the verified workspace is `E:\EFF_Workspace`)
+
+The browser locates the installed game's StreamingAssets and Persistent VFS
+layers, selects the current BLC version per block, and locates its CHK ranges
+in either layer. A games folder with multiple Endfield installations requires
+selecting one explicitly. Existing selections of the installed VFS folders
+also include their sibling layer; an isolated VFS copy remains a single layer.
+Launcher preload ZIPs and patch files are not active VFS inputs.
 
 The first open of a new game build reads each logical Bundle directly from its
 `.chk` range, decrypts it in memory, records its Unity objects and CAB
@@ -38,8 +45,12 @@ same VFS/workspace resumes from the last checkpoint. No plaintext Bundle tree
 is created.
 
 The result is `index\endfield_assets.eidx`, a versioned compact binary index.
-It is reused while the VFS fingerprint is unchanged and rebuilt after a game
-update. On the verified client:
+It is reused while both layers' identity is unchanged and rebuilt after a game
+update. The combined identity includes BLC content hashes and BLC/CHK file
+metadata. Legacy single-layer indexes require one rebuild. Unreadable bundles
+prevent publishing a current index. Source discovery uses the same identity
+before reusing its descriptor, and cannot substitute old bytes when a new
+payload is unavailable. On the previously verified single-layer client:
 
 ```text
 logical VFS files: 448,995

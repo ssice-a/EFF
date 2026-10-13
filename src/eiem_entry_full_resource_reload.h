@@ -583,12 +583,19 @@ void ProxyPreload(void* self,bool asynchronous,void* info){
  struct Scope {bool prior=proxyContext;uint64_t hash=proxyPathHash;void* source=proxySource;Ref held,uiCandidate=proxyUIOverride;~Scope(){proxyContext=prior;proxyPathHash=hash;proxySource=source;proxyUIOverride=uiCandidate;}}scope;
  proxyContext=false;proxyUIOverride={};
  try{auto asset=Call(api.proxyAsset,self);if(Inherits(asset,"","AssetProxy")){auto source=Call(api.proxyGet,asset);
-   if(Inherits(source,"UnityEngine","GameObject")&&RuntimeShapes::Alive(source)){scope.held=Ref::Make(source,false);proxySource=source;proxyPathHash=RuntimeShapes::Scalar<uint64_t>(api.proxyHash,asset);proxyContext=true;proxyUIOverride=CandidateUIProxy(self,proxyPathHash);}}}
+   if(Inherits(source,"UnityEngine","GameObject")&&RuntimeShapes::Alive(source)){scope.held=Ref::Make(source,false);proxySource=source;proxyPathHash=RuntimeShapes::Scalar<uint64_t>(api.proxyHash,asset);
+#if defined(EIEM_PREFAB_ADAPTATION_PROBE)
+    PrefabAdaptationProbe::ObserveProxy(source,proxyPathHash,asset);
+#endif
+    proxyContext=true;proxyUIOverride=CandidateUIProxy(self,proxyPathHash);}}}
  catch(const std::exception& e){proxyContext=false;Log("[FULL-RELOAD-PROXY-GAP] reason=%s gameFlowPreserved=1",e.what());}
  originalProxyPreload(self,asynchronous,info);
 }
 void* ResourceGet(void* self,void* info){
  auto source=originalResourceGet(self,info);if(readingSource||!enabled||!RuntimeShapes::Main()||!source)return source;
+#if defined(EIEM_PREFAB_ADAPTATION_PROBE)
+ PrefabAdaptationProbe::ObserveHandle(self,source);
+#endif
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::Prefab);
  try{
   // Exact resource path comes from the game's existing handle. Offline roots
@@ -654,6 +661,7 @@ bool SameAuthorSnapshot(const Prepared& prepared,const EiemCompiledModSet::Set& 
 }
 void PollCompiled(bool trigger){
  if(!enabled||!active)return;
+ EiemLoadPerformance::Scope performance(EiemLoadPerformance::ResourcePrepare);performance.hit=trigger;
  static std::string lastError,failedStamp;
  auto clock=trigger&&reloadClock.load()?reloadClock.load():NativeBundle::Clock();
  try{
@@ -810,6 +818,7 @@ void Install(void** assemblies,size_t count){
 void Dispose(Lease& lease){if(lease.shared||lease.disposed||!lease.handle.Get())return;Require(lease.done,"reload lease disposed before completion");
  auto self=Self(lease.handle,api.handleClass);lease.disposed=true;Call(api.dispose,self);}
 void Drain(Attempt& a){
+ EiemLoadPerformance::Scope performance(EiemLoadPerformance::ReloadDrain);
  if(a.prepared)a.prepared->ruleInputs.clear(); // Loaded streams retain their backing; unsent worker bytes have no native consumer.
  for(const auto& owner:a.owners)if(owner.uiRequest&&owner.uiRequest->submitted&&!owner.uiRequest->completed)return;
  // Never drop requests/file locks while native work can still use them.

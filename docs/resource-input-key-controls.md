@@ -57,6 +57,31 @@ Registration inspects the original source getter, including during afterimage
 capture. Immutable capture snapshots retain their native palette, frame and
 lifetime until actual native Release.
 
+## Shape animation clips
+
+`[ShapeAnimation<ID>] path=resources/shape_animation_<ID>.bin` declares a sampled
+Shape Keys clip. Its independent resource stores owner/clip identities, shortcut,
+duration, default speed, loop/autoplay and float32 weight tracks. It refers to
+the existing part shape variables without duplicating Mesh deltas. Blender's
+separate N → EFF → 形态动画 panel reads the Shape Keys Action and its KEY slot;
+Object transform Actions, drivers and active NLA tracks are not accepted.
+
+Each enabled group owns distinct shape channels. Physical shortcuts toggle
+play/stop under the same per-Mod keyboard and focus rules. Ins exposes play,
+pause/resume, stop, a speed slider, direct positive-number input and author-default
+reset. Changing speed advances subsequent game time at the new rate without
+moving the current phase. Speed preferences persist; sampled outputs and playback
+time do not overwrite manual values or cause per-frame preference/UI writes.
+Manual shape sliders and keys stop the associated group before applying a value.
+Stopped or completed non-looping clips restore manual weights.
+
+Instances of one Mod share clip time. F10 rebuilds playback state, restarting
+autoplay clips and stopping the others while retaining valid speed preferences.
+Mesh/full exports update clips; material/texture updates retain them. Animations
+require the `sampled-shape-weight-clips/le32/1` compiler/consumer structure.
+The locally installed first version has Blender, package and native player
+regression coverage; in-game animation rendering remains unverified.
+
 ## LZY bindings
 
 | Key | Controlled Mesh suffixes | Declared cycle |

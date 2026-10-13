@@ -32,6 +32,10 @@ inline void FreezeMaterialDonors(std::vector<EiemResourceRecipe::Span>& spans,co
  }
 }
 inline bool RecompileMaterialParameters(Artifact& artifact,const Package& author,const EiemStaticSources::Selection& selection,const std::function<void(const char*,double)>& cost){
+ if(artifact.proofReader){for(size_t i=0;i<artifact.manifest.plan.inputs.size();++i)HydrateInput(artifact,i);artifact.proofReader={};}
+ if(!artifact.retainedProofBlocks.empty()&&!artifact.proofBlocks)for(size_t i=0;i<artifact.manifest.plan.inputs.size();++i)HydrateInput(artifact,i);
+ artifact.retainedProofBlocks.clear();
+ artifact.retainedInputDirectories.clear();
  const auto old=artifact.manifest.package;auto changed=MaterialParameterChanges(author,old);if(changed.empty())return false;
  auto& plan=artifact.manifest.plan;
  if(!plan.rulesOnly||!plan.spanRecipes||artifact.views.size()!=plan.originals.size()||artifact.verifiedSources.size()!=plan.originals.size())return false;

@@ -33,6 +33,10 @@ def imports(data):
 
 path = Path(sys.argv[1])
 data = path.read_bytes()
+load_perf = '--load-perf' in sys.argv[2:]
+checked = data.replace(b'[DEBUG-loadperf]', b'load-performance') if load_perf else data
+if load_perf:
+    assert b'[DEBUG-loadperf]' in data, 'Expected enabled performance measurements'
 for dll in imports(data):
     assert not dll.startswith(('msvcp', 'vcruntime', 'api-ms-win-crt-')) and dll != 'ucrtbase.dll', \
         f'Production DLL depends on host C++ runtime: {dll}'
@@ -45,9 +49,9 @@ for proxy in ('d3dcompiler_47.dll', 'vulkan-1.dll'):
 for marker in (
     b"[DEBUG-", b"[ENTRY-CAPTURE]", b"[ENTRY-SNAPSHOT]", b"[ENTRY-SNAPSHOT-SELECTION]",
     b"[ENTRY-COUNTERS]", b"[CAPTURE-ELIGIBILITY]", b"[RELOAD-LOAD-SUBMITTED]",
-    b"resource-input-diagnostics", b"snapshot-ranges.tsv",
+    b"resource-input-diagnostics", b"snapshot-ranges.tsv", b"[ADAPT-PROBE-", b"[CATALOG-SURVEY-",
 ):
-    assert marker not in data, f"Production DLL contains diagnostic marker: {marker!r}"
+    assert marker not in checked, f"Production DLL contains diagnostic marker: {marker!r}"
 for marker in (
     b"[FULL-RELOAD-COMMIT]", b"[FULL-RELOAD-REJECT]", b"eff_log.txt",
     b"ForceExitAllPerformOnEntity", b"_PreloadSpIdlePerform", b"_PreloadSpDashPerform",
@@ -55,4 +59,4 @@ for marker in (
     b"[SHAPE-CAPTURE-COMPLETION]",
 ):
     assert marker in data, f"Production DLL is missing functional binding: {marker!r}"
-print(f"PASS production DLL: {path.name}, {len(data):,} bytes; host C++ runtime independent, probes excluded, lifecycle bindings retained")
+print(f"PASS {'performance' if load_perf else 'production'} DLL: {path.name}, {len(data):,} bytes; host C++ runtime independent, capture probes excluded, lifecycle bindings retained")

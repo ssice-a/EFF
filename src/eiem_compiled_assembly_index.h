@@ -7,20 +7,25 @@ inline AssemblyIds WritePreparedAssemblies(Writer& output,const Artifact& a){
  using namespace EiemRenderAssemblyDescription;
  std::map<std::string,size_t> strings;std::vector<std::string> stringValues;
  std::map<std::vector<std::string>,size_t> palettes;std::vector<const std::vector<std::string>*> paletteValues;
- std::map<std::string,size_t> assemblies;std::vector<const Description*> values;AssemblyIds ids;
- auto add=[&](const Description& value){Writer encoded;WriteAssembly(encoded,value);auto hash=Hash(encoded.b);auto found=assemblies.emplace(hash,values.size());if(found.second)values.push_back(&value);return found.first->second;};
- for(const auto& root:a.manifest.plan.roots)ids.roots.push_back(add(root.Assembly()));for(const auto& root:a.pristine)ids.pristine.push_back(add(root.Assembly()));
+ std::map<Bytes,size_t> assemblies;AssemblyIds ids;
  auto text=[&](const std::string& value){auto found=strings.emplace(value,stringValues.size());if(found.second)stringValues.push_back(value);return found.first->second;};
  auto palette=[&](const std::vector<std::string>& value){auto found=palettes.emplace(value,paletteValues.size());if(found.second){paletteValues.push_back(&value);for(const auto& bone:value)text(bone);}return found.first->second;};
- Writer body;auto address=[&](const Address& value){body.N(text(value.path));body.N(value.component);};
- for(const auto* d:values){body.N(d->sources.size());for(const auto& source:d->sources){body.N(text(source.cab));body.N(uint64_t(source.id));address(source.renderer);body.N(source.targets.size());
-   for(const auto& target:source.targets){address(target.renderer);body.N(text(target.marker));body.N(palette(target.Bones()));for(const auto* path:{&target.root,&target.skin,&target.probe,&target.lighting})body.N(text(*path));for(bool flag:{target.hasRoot,target.hasSkin,target.hasProbe,target.hasLighting,target.extension})body.B(flag);}
+ // Dictionary IDs are injective within this invocation. Use the actual compact
+ // body as the exact deduplication key instead of first serializing and hashing
+ // every repeated long bone path. A duplicate adds no dictionary entries, so
+ // first-use string/palette/assembly order and the output bytes stay identical.
+ Writer body;auto add=[&](const Description& d){Writer encoded;
+  auto address=[&](const Address& value){encoded.N(text(value.path));encoded.N(value.component);};
+  encoded.N(d.sources.size());for(const auto& source:d.sources){encoded.N(text(source.cab));encoded.N(uint64_t(source.id));address(source.renderer);encoded.N(source.targets.size());
+   for(const auto& target:source.targets){address(target.renderer);encoded.N(text(target.marker));encoded.N(palette(target.Bones()));for(const auto* path:{&target.root,&target.skin,&target.probe,&target.lighting})encoded.N(text(*path));for(bool flag:{target.hasRoot,target.hasSkin,target.hasProbe,target.hasLighting,target.extension})encoded.B(flag);}
   }
-  body.N(d->lods.size());for(const auto& lod:d->lods){address(lod.group);body.N(lod.levels.size());for(const auto& level:lod.levels){body.D(level.height);body.D(level.fade);body.N(level.renderers.size());for(const auto& renderer:level.renderers)address(renderer);}}
-  body.N(d->helpers.size());for(const auto& helper:d->helpers){address(helper.component);body.B(helper.custom);body.N(helper.renderers.size());for(const auto& renderer:helper.renderers)address(renderer);}
- }
+  encoded.N(d.lods.size());for(const auto& lod:d.lods){address(lod.group);encoded.N(lod.levels.size());for(const auto& level:lod.levels){encoded.D(level.height);encoded.D(level.fade);encoded.N(level.renderers.size());for(const auto& renderer:level.renderers)address(renderer);}}
+  encoded.N(d.helpers.size());for(const auto& helper:d.helpers){address(helper.component);encoded.B(helper.custom);encoded.N(helper.renderers.size());for(const auto& renderer:helper.renderers)address(renderer);}
+  auto found=assemblies.emplace(std::move(encoded.b),assemblies.size());if(found.second)body.Raw(found.first->first.data(),found.first->first.size());return found.first->second;
+ };
+ for(const auto& root:a.manifest.plan.roots)ids.roots.push_back(add(root.Assembly()));for(const auto& root:a.pristine)ids.pristine.push_back(add(root.Assembly()));
  output.S(assemblyIndex);output.Strings(stringValues);output.N(paletteValues.size());for(const auto* bones:paletteValues){output.N(bones->size());for(const auto& bone:*bones)output.N(strings.at(bone));}
- output.N(values.size());output.Blob(body.b);output.N(ids.roots.size());for(auto id:ids.roots)output.N(id);return ids;
+ output.N(assemblies.size());output.Blob(body.b);output.N(ids.roots.size());for(auto id:ids.roots)output.N(id);return ids;
 }
 inline std::vector<std::shared_ptr<const EiemRenderAssemblyDescription::Description>> ReadPreparedAssemblies(EiemOfflinePackage::Reader& reader,Plan& plan){
  using namespace EiemRenderAssemblyDescription;Require(reader.S()==assemblyIndex,"compiled assembly index structure differs");auto strings=reader.Strings();
