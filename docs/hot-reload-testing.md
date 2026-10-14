@@ -1,3 +1,15 @@
+## 2026-10-14 连续 F10 的 Bundle 重复加载与控制状态
+
+实机 PID 26632 在 10:34:33 提交 generation=2，随后从 10:35:29 起的新候选均被原生加载拒绝，10:38:39、10:38:45 和 10:39:54 的 F10 重试保持第 2 代。游戏 Player.log 同时记录 `The AssetBundle 'IO.Stream' can't be loaded because another AssetBundle with the same files is already loaded.`，不能把作者包已更新或此前 COMMIT 当成后续材质更新成功。作者包回读确认内衣亮度 50、V 速度 -0.04 及最新紫色 Tint 已编译；用户确认游戏画面没有同步这些修改。
+
+源命名按资源内容保持稳定，但新候选仍尝试重开上一代持有的相同 Bundle。修正为只复用已完成并通过所有权核验的 Bundle，以来源文件身份和最终字节哈希／包含 CAB 与外部引用重定位的编译视图身份匹配。索引使用弱引用，各代共享容器持有；拒绝候选或退休旧代只释放其持有，最后一个持有者才调用一次 `Unload(false)`。内容不同、不同来源或已卸载的容器不复用；异步预热及后来遇到原生根的同步路径共用该规则。未修改 Shader、作者资源、Blender 工程或 DLL 数据协议。
+
+同次日志从首次 COMMIT 后每帧出现 `SHAPE-RUNTIME-GAP ... invalid map<K, T> key`。独立回归复现编译资源热重载的 `CompiledControls` 没有建立动画 Player，而每帧更新即使对没有动画的 Mod 也访问对应 Player。冷启动与编译热重载现在调用同一动画准备函数，为所有 Mod 建立 Player、片段及初始按键边沿状态。该错误与候选 Bundle 被拒绝分别修复，不能以控制错误解释贴图加载失败。
+
+新增回归先在旧实现失败，修正后 v35/v36 完整事务、连续 Bundle 复用／延迟根／内容变化／失败重试／最后持有者退出及编译控制准备回归通过。实际 DLL 仍需安装后冷启动并连续导出、F10 两次，核对画面变化、提交代际及原生重复 Bundle 错误是否消失；离线回归不是实机验收。
+
+10:55 在确认 Endfield 已退出后备份安装 v35 性能版 `plugin/eff.dll`，SHA256 `F2CA5176647AC4944DB8EA8A41BFDE410520908EE9730B181B6CDF5D7F2720FE`，2,427,392 字节。244 个 Mod／配置文件哈希前后相同；备份、原日志及收据在忽略目录 `bin/hot-reload-audit-20261014`。PE 导入检查与游戏 app-local 运行库下的真实 DLL 隔离加载通过，常规帧形态桥接回归也通过。未发布 Release，实机验证待完成。
+
 ## 2026-10-12 NPC 按键显隐完成登记
 
 实机 PID 39228 的 09:55:23 日志记录 Typhoea 小键盘 1 已触发（vk=97、focused=1、enabled=1、panel=0、value=2），但登记状态为 ready=60、pending=120。这些 pending 实例只有原生材质控制器初始化，没有经过 BaseModelViewPart/UI 的完成通知；运行时按设计暂不筛选未完成模型的显隐，导致已替换模型的 NPC 不跟随按键。lino 在此前采样时被用户禁用，不能拿该次按键采样证明其完成路径。

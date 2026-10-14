@@ -20,7 +20,10 @@ inline std::vector<uint32_t> BoneHashes(const Type& type,const Value& field){
 }
 inline std::map<size_t,int64_t> OriginalBoneBinding(const std::vector<uint32_t>& sourceHashes,
     const std::vector<int64_t>& nativeBones,const std::vector<uint32_t>& authorHashes) {
-  Require(sourceHashes.size()==nativeBones.size(),"native Renderer palette differs from its source Mesh");
+  // Some native PFBs retain a shorter or different palette than their Mesh.
+  // It need not be a prefix: do not infer any slot binding from this pair.
+  // ResolveBones still requires a unique binding from the concrete hierarchy.
+  if(sourceHashes.size()!=nativeBones.size())return {};
   std::map<uint32_t,size_t> slots;
   for(size_t i=0;i<sourceHashes.size();++i){auto found=slots.find(sourceHashes[i]);
     if(found==slots.end())slots.emplace(sourceHashes[i],i);else found->second=SIZE_MAX;}
@@ -466,7 +469,9 @@ public:
       const auto& type=Schema(matched.renderer);const auto& renderer=Tree(matched.renderer);
       auto root=Local(type,Child(type,renderer,"m_RootBone"),4);
       const auto& bones=ConstArray(type,Child(type,renderer,"m_Bones"));
-      Require(bones.children.size()==part->sourceBoneHashes.size(),"native LOD bone palette count differs");
+      // Only complete positional pairs can donate hashes to other Renderers.
+      // A mismatched pair is resolved below using the existing hierarchy path.
+      if(bones.children.size()!=part->sourceBoneHashes.size())continue;
       auto& bindings=skeletonBindings[root];
       for(size_t slot=0;slot<bones.children.size();++slot){auto bone=Local(type,bones.children[slot],4);
         Require(roots.at(bone)==roots.at(root),"native LOD bone belongs to another hierarchy");

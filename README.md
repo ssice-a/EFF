@@ -4,7 +4,7 @@
 
 EFF 在《明日方舟：终末地》创建资源和实例前应用 Mod。AnimeStudio 导出来源，Blender 制作并编译独立 Mod，EFF DLL 读取结果并完成游戏内加载与热重载。
 
-配套发布：**EFF v1.5.0、EFF Blender v0.42.0、AnimeStudio v1.5.0**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
+配套发布：**EFF v1.6.0、EFF Blender v0.43.0、AnimeStudio v1.5.0**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
 
 首次制作 Mod 可先阅读带截图的简易教程：[中文](Mod%20Tutorial.md) · [English](Mod%20Tutorial_EN.md)。
 
@@ -14,12 +14,12 @@ EFF 在《明日方舟：终末地》创建资源和实例前应用 Mod。AnimeS
 - 蒙皮 Mesh 和静态 MeshFilter＋MeshRenderer 使用同一 Replace、材质、贴图及显隐规则；静态 Renderer 不支持运行时形态键。
 - 一个原 Renderer 可对应多个作者部件；未声明替换的目标保留原内容。材质和贴图可以借用游戏资源或由作者新建。
 - 按键切换、形态键与玩家数值持久化；Ins 面板独立勾选各 Mod 是否接收按键，默认全部启用，可同时启用多个 Mod。
-- Shape Keys 动画独立播放组支持快捷键播放/停止，Ins 支持暂停和实时倍率；倍率保存，调速保持进度。
+- Shape Keys 动画支持多网格同步播放、多个组共享频道；冲突组切换播放，Ins 支持暂停和实时倍率，调速保持进度。
 - F10 读取整个 mods 目录，统一处理增删改和空集合；沿已适配的游戏世界/展示模型生命周期重载，重新绑定动画、武器和角色音频。准备或提交失败保留当前代际。
 
 ## 安装
 
-从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v1.5.0_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。当前代理转发支持 Windows 系统目录为 `C:\Windows` 的安装；其他系统目录尚不支持。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和各 Mod 的 `state.ini`。
+从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v1.6.0_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。当前代理转发支持 Windows 系统目录为 `C:\Windows` 的安装；其他系统目录尚不支持。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和各 Mod 的 `state.ini`。
 
 ```text
 d3dcompiler_47.dll

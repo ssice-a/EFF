@@ -8,7 +8,11 @@ using RuntimeShapes::Ref;
 using Plan=EiemResourceReloadPlan::Plan;
 using namespace EiemNativeInput;
 struct Lease {Ref pathHash,handle,source;bool done=false,disposed=false,shared=false;};
-struct Bundle {Ref path,request,object,bytes;std::shared_ptr<NativeBundle::FileHold> file;int id=0;bool done=false,owned=false,unloadCalled=false;};
+struct SharedBundle {Ref object;int id=0;bool unloadCalled=false;};
+struct Bundle {Ref path,request,object,bytes;std::shared_ptr<NativeBundle::FileHold> file;int id=0;bool done=false,owned=false,unloadCalled=false;std::shared_ptr<SharedBundle> shared;};
+// Only verified, completed containers enter this weak index. The owning
+// generations hold the lease; the index never extends native lifetime.
+std::map<std::pair<std::string,std::string>,std::weak_ptr<SharedBundle>> bundleCache;
 struct Asset {Ref label,request,prefab;bool done=false;};
 struct Route {Ref source,candidate;int sourceId=0,candidateId=0;};
 using Routes=std::vector<Route>;
@@ -645,6 +649,7 @@ RuntimeControls::State CompiledControls(const std::shared_ptr<const std::vector<
  for(const auto& package:*graph){
   state.variables[package.id]=package.defaults;state.keys[package.id]=package.bindings;
   state.keySwitchEnabled[package.id]=RuntimeControls::keySettings.Preview(package);
+  RuntimeControls::PrepareAnimations(state,package);
   for(const auto& part:package.parts)Require(owners.emplace(plan.composed?EiemComposedPackage::Name(package.id,part.first):part.first,std::make_pair(&package,part.first)).second,"compiled part owner collision");
  }
  // Provenance markers were already computed by the compiler. Do not hash the
@@ -817,6 +822,18 @@ void Install(void** assemblies,size_t count){
 }
 void Dispose(Lease& lease){if(lease.shared||lease.disposed||!lease.handle.Get())return;Require(lease.done,"reload lease disposed before completion");
  auto self=Self(lease.handle,api.handleClass);lease.disposed=true;Call(api.dispose,self);}
+void UnloadBundle(Bundle& bundle){
+ if(bundle.unloadCalled)return;
+ if(bundle.shared&&bundle.shared.use_count()>1){
+  // Retire this generation's lease without unloading the container another
+  // candidate/committed generation still needs, including its lazy assets.
+  bundle.shared.reset();bundle.object={};bundle.unloadCalled=true;return;
+ }
+ if(bundle.shared&&bundle.shared->unloadCalled){bundle.unloadCalled=true;return;}
+ if(!RuntimeShapes::Alive(bundle.object.Get()))return;
+ bundle.unloadCalled=true;if(bundle.shared)bundle.shared->unloadCalled=true;
+ unsigned char destroyObjects=0;void* args[]={&destroyObjects};Call(NativeBundle::api.unload,bundle.object.Get(),args);
+}
 void Drain(Attempt& a){
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::ReloadDrain);
  if(a.prepared)a.prepared->ruleInputs.clear(); // Loaded streams retain their backing; unsent worker bytes have no native consumer.
@@ -832,8 +849,7 @@ void Drain(Attempt& a){
  bool owned=true;for(const auto& b:a.bundles)owned=owned&&(!b.second.object.Get()||b.second.owned);
  if(!owned){a.quarantined=true;a.phase=Phase::Drained;Log("[FULL-RELOAD-QUARANTINE] ownershipUnverified=1 nativeRequestsDrained=1 bundlesAndLeasesRetained=1");return;}
  for(auto& b:a.bundles)if(!b.second.unloadCalled&&RuntimeShapes::Alive(b.second.object.Get())){
-  unsigned char all=0;void* args[]={&all};b.second.unloadCalled=true;
-  try{Call(NativeBundle::api.unload,b.second.object.Get(),args);}catch(...){a.quarantined=true;a.phase=Phase::Drained;Log("[FULL-RELOAD-QUARANTINE] unloadCallFailed=1 leasesRetained=1 repeatedUnloadRefused=1");throw;}
+  try{UnloadBundle(b.second);}catch(...){a.quarantined=true;a.phase=Phase::Drained;Log("[FULL-RELOAD-QUARANTINE] unloadCallFailed=1 leasesRetained=1 repeatedUnloadRefused=1");throw;}
  }
  for(auto& l:a.leases)try{Dispose(l);}catch(...){a.quarantined=true;a.phase=Phase::Drained;Log("[FULL-RELOAD-QUARANTINE] leaseDisposeCallFailed=1 remainingLeasesRetained=1 repeatedDisposeRefused=1");throw;}
  a.phase=Phase::Drained;
@@ -844,11 +860,11 @@ void RetireGeneration(Attempt& a){
  // skinning jobs finished. Never destroy Mesh/Material/Texture/capture objects.
  for(const auto& b:a.bundles)Require(b.second.done&&b.second.owned,"retirement requires completed owned Bundles");
  for(auto& b:a.bundles)if(!b.second.unloadCalled&&RuntimeShapes::Alive(b.second.object.Get())){
-  unsigned char destroyObjects=0;void* args[]={&destroyObjects};b.second.unloadCalled=true;
-  Call(NativeBundle::api.unload,b.second.object.Get(),args);
+  UnloadBundle(b.second);
  }
  for(auto& l:a.leases)Dispose(l);
  a.assets.clear();a.bundles.clear();a.leases.clear();a.owners.clear();a.verifier.reset();a.prepared.reset();
+ for(auto it=bundleCache.begin();it!=bundleCache.end();)if(it->second.expired())it=bundleCache.erase(it);else ++it;
  Log("[FULL-RELOAD-RETIRED] bundleContainersUnloadedFalse=1 strongGenerationRefsReleased=1 sharedSourceLeases=%zu captureObjectsOwnedByNativeRelease=1",sourceLeases.size());
 }
 void RetireSuperseded(){
@@ -1268,14 +1284,34 @@ void Begin(std::shared_ptr<Prepared> p){
  value->selectionRevision=~ownerRevision;SelectObservedRoots(*value);attempt=std::move(value);
  Log("[FULL-RELOAD-BEGIN] key=%s inputs=%zu closure=%zu directSharedCABs=%zu nativeSubmission=awaitShortcut",attempt->prepared->plan->key.c_str(),attempt->prepared->plan->inputs.size(),attempt->prepared->plan->closure.size(),attempt->prepared->plan->shared.size());
 }
+std::pair<std::string,std::string> BundleIdentity(const Plan& plan,size_t index){
+ const auto& input=plan.inputs.at(index);auto view=plan.viewIdentities.find(index);
+ // The isolated view identity includes its proven source content and all
+ // relocated CAB/external names. Byte-backed inputs use the final byte hash.
+ return {input.file,view==plan.viewIdentities.end()?input.hash:(view->second.empty()?std::string{}:"view:"+view->second)};
+}
+bool ReuseBundle(Attempt& a,size_t index,Bundle& b){
+ auto identity=BundleIdentity(*a.prepared->plan,index);if(identity.first.empty()||identity.second.empty())return false;
+ auto found=bundleCache.find(identity);if(found==bundleCache.end())return false;auto shared=found->second.lock();
+ if(!shared||shared->unloadCalled||!RuntimeShapes::Alive(shared->object.Get())){bundleCache.erase(found);return false;}
+ Require(Id(shared->object.Get())==shared->id,"shared reload Bundle native identity changed");
+ b.object=shared->object;b.id=shared->id;b.shared=std::move(shared);b.done=b.owned=true;
+ a.prepared->ruleInputs.erase(index);a.prepared->ruleViews.erase(index);
+ Log("[FULL-RELOAD-BUNDLE-REUSE] file=%s nativeId=%d exactInputIdentity=1 newNativeLoad=0",identity.first.c_str(),b.id);return true;
+}
 void CheckBundle(Attempt& a,size_t index,Bundle& b){
- Require(RuntimeShapes::Alive(b.object.Get()),"reload candidate Bundle load failed");b.id=Id(b.object.Get());
+ Require(RuntimeShapes::Alive(b.object.Get()),"reload candidate Bundle load failed: "+a.prepared->plan->inputs.at(index).file);b.id=Id(b.object.Get());
 #if defined(EIEM_DIAGNOSTICS)
  {std::lock_guard<std::mutex> lock(LoadingObservation::mutex);for(const auto& original:LoadingObservation::bundles)if(original.second.weak.Get()==original.first&&RuntimeShapes::Alive(original.first))Require(Id(original.first)!=b.id,"reload candidate Bundle aliases observed original");}
 #endif
  for(const auto& previous:a.bundles)if(previous.first!=index&&previous.second.done)Require(previous.second.id!=b.id,"reload two candidate inputs alias native Bundle");
  for(const auto& r:retained)for(const auto& old:r->bundles)if(old.second.done)Require(old.second.id!=b.id,"reload generation native Bundle cache collision");
- b.done=true;b.owned=true;Log("[FULL-RELOAD-BUNDLE] file=%s nativeId=%d namespaceIsolated=1",a.prepared->plan->inputs[index].file.c_str(),b.id);
+ b.done=true;b.owned=true;
+ auto identity=BundleIdentity(*a.prepared->plan,index);if(!identity.first.empty()&&!identity.second.empty()){
+  auto& cached=bundleCache[identity];auto live=cached.lock();Require(!live||live->unloadCalled||!RuntimeShapes::Alive(live->object.Get()),"reload bypassed an identical live Bundle lease");
+  b.shared=std::make_shared<SharedBundle>();b.shared->object=b.object;b.shared->id=b.id;cached=b.shared;
+ }
+ Log("[FULL-RELOAD-BUNDLE] file=%s nativeId=%d namespaceIsolated=1",a.prepared->plan->inputs[index].file.c_str(),b.id);
 }
 std::vector<size_t> RequiredBundles(const Plan& plan,const std::set<size_t>& roots){
  if(plan.inputDependencies.size()!=plan.inputs.size()||plan.inputs.empty())return plan.closure;
@@ -1292,6 +1328,7 @@ std::vector<size_t> RequiredBundles(const Plan& plan,const std::set<size_t>& roo
 void EnsureObservedBundles(Attempt& a,size_t root){
  for(auto input:RequiredBundles(*a.prepared->plan,{root})){auto& bundle=a.bundles[input];if(bundle.done)continue;
   Require(!bundle.request.Get(),"observed root reached an incomplete candidate Bundle");
+  if(ReuseBundle(a,input,bundle))continue;
   if(a.prepared->rules){auto view=a.prepared->ruleViews.find(input);if(view!=a.prepared->ruleViews.end())bundle.object=Ref::Make(NativeBundle::LoadView(view->second,0,false),false);
    else bundle.object=Ref::Make(NativeBundle::LoadBytes(a.prepared->ruleInputs.at(input),0,false),false);
   }else {auto bytes=std::make_shared<const EiemNativeInput::Bytes>(a.prepared->files.at(input)->BytesLocked());bundle.object=Ref::Make(NativeBundle::LoadBytes(bytes,0,false),false);}
@@ -1332,6 +1369,7 @@ void Step(Attempt& a){
    }
   }
   for(auto index:needed){if(!budget()||inFlight>=4)break;auto& b=a.bundles[index];if(b.done||b.request.Get())continue;
+   if(ReuseBundle(a,index,b))continue;
    if(a.prepared->rules){auto view=a.prepared->ruleViews.find(index);if(view!=a.prepared->ruleViews.end())b.request=Ref::Make(NativeBundle::LoadView(view->second,0,true),false);else{auto bytes=a.prepared->ruleInputs.at(index);b.request=Ref::Make(NativeBundle::LoadBytes(bytes,0,true),false);}}
    else{b.file=a.prepared->files.at(index);Require(bool(b.file),"reload candidate worker file lock lost");b.path=Ref::Make(il2cpp_string_new(plan.inputs[index].path.u8string().c_str()),false);
     uint32_t crc=0;uint64_t offset=0;void* args[]={b.path.Get(),&crc,&offset};b.request=Ref::Make(Call(NativeBundle::api.load,nullptr,args),false);}

@@ -49,7 +49,70 @@ struct Fixture {
  }
 };
 template<class F> void Rejected(F f){bool rejected=false;try{f();}catch(const std::exception&){rejected=true;}Require(rejected,"invalid static assembly accepted");}
+void NativePaletteFallbackRegression(){
+ // Real failure pattern: source Mesh has [Head,Lip,LeftEye,Neck,RightEye],
+ // while the serialized Renderer retains only [Head,Neck]. It is not a prefix.
+ Fixture f;
+ f.types[5]=Schema(43,{{"string","m_Name",{}},Arr("m_BoneNameHashes",{"UInt32","data",{}})});
+ f.objects.at(100)={5,EmptyValue(f.types[5],0)};f.Add(102,5);
+ for(auto filter:{12,22,32})f.Pointer(filter,"m_Mesh",102);
+ f.types.push_back(Schema(137,{Ref("m_GameObject"),Ref("m_Mesh"),
+  {"bool","m_Enabled",{}},Arr("m_Materials",Ref("data")),Arr("m_Bones",Ref("data")),
+  Ref("m_RootBone"),Ref("m_SkinningRoot"),Arr("m_BlendShapeWeights",{"float","data",{}}),
+  {"bool","m_DirtyAABB",{}},{"AABB","m_AABB",{Vec("m_Center"),Vec("m_Extent")}}}));
+ f.objects.at(13)={f.types.size()-1,EmptyValue(f.types.back(),0)};
+ f.Pointer(13,"m_GameObject",10);f.Pointer(13,"m_Mesh",100);f.Pointer(13,"m_RootBone",71);
+ f.List(13,"m_Bones",{71,51});f.List(13,"m_Materials",{200});
+ auto node=[&](int64_t go,int64_t tr,int64_t parent,const char* name){
+  f.Add(go,0);SetString(f.T(go),Child(f.T(go),f.V(go),"m_Name"),name);
+  f.Add(tr,1);f.Pointer(tr,"m_GameObject",go);f.Pointer(tr,"m_Father",parent);
+  SetVector(f.T(tr),Child(f.T(tr),f.V(tr),"m_LocalScale"),{1,1,1});
+  SetFloat(f.T(tr),Child(f.T(tr),Child(f.T(tr),f.V(tr),"m_LocalRotation"),"w"),1);
+  f.List(go,"m_Component",{tr},"component");
+  if(parent)f.List(parent,"m_Children",{tr});
+ };
+ node(40,41,0,"Timeline");f.Pointer(11,"m_Father",41);f.Pointer(21,"m_Father",41);f.List(41,"m_Children",{11,21});
+ node(50,51,11,"Neck");node(70,71,51,"Head");node(80,81,71,"Lip");
+ node(110,111,71,"LeftEye");node(120,121,71,"RightEye");
+ // The second actor has the same bone paths under the same timeline root.
+ node(150,151,21,"Neck");node(170,171,151,"Head");node(180,181,171,"Lip");
+ node(210,211,171,"LeftEye");node(220,221,171,"RightEye");
+ Package p;p.id="palette";Identity target{"assets/face.mesh","Face"},mat{"assets/material.mat","Mat"};
+ p.targetIndex[target]="R";p.rules["R"].parts={"P"};p.parts["P"].mesh="M";p.parts["P"].material="A";p.materials["A"].source=mat;
+ p.meshes["M"]={"mesh",3,3,{"Neck/Head/Lip","Neck","Neck/Head","Neck/Head/RightEye","Neck/Head/LeftEye"},{}};
+ auto resource=std::make_shared<Resource>();resource->type=f.types[5].hash;
+ auto hashes=EmptyValue(f.types[5],0);auto& array=ArrayValue(f.types[5],Child(f.types[5],hashes,"m_BoneNameHashes"));
+ for(auto hash:{22,44,11,55,33})AppendInteger(array.raw,hash,4);array.count=5;
+ resource->bytes=EncodeValue(f.types[5],Child(f.types[5],hashes,"m_BoneNameHashes"));
+ resource->blocks["m_BoneNameHashes"]={0,resource->bytes.size()};p.resources["mesh"]=resource;
+ AssetIndex assets;assets[target].cab=assets[mat].cab=f.cab;assets[target].pathId=100;assets[target].classId=43;
+ assets[target].type=resource->type;assets[mat].pathId=200;assets[mat].classId=21;
+ std::vector<BuiltMeshPart> parts{{target,"R","P",f.cab,100,100,3,3,{11,22,33,44,55}}};
+ MeshSchemaIndex schemas{{resource->type,f.types[5]}};
+ RendererBoundsCache bounds;bounds.values.emplace(std::make_tuple(std::string("mesh"),size_t(2),AffineIdentity()),
+  std::make_pair(Vector3{0,0,0},Vector3{1,1,1}));
+ auto build=[&](){auto input=f.BytesOf();RendererMemberBuilder builder(input,f.cab,p,assets,parts);
+  builder.SetMeshSchemas(schemas);builder.SetBoundsCache(bounds);return builder.Build();};
+ auto check=[&](){auto result=build();Require(result.parts.size()==1&&result.parts[0].bones==std::vector<int64_t>({81,51,71,121,111}),
+  "incomplete native palette used prefix slots or another actor's skeleton");
+  auto layout=ParseSerialized(result.bytes);auto renderer=ObjectValue(result.bytes,layout,13);const auto& type=layout.types.at(layout.objects.at(13).type);
+  std::vector<int64_t> actual;for(const auto& bone:ConstArray(type,Child(type,renderer,"m_Bones")).children)
+   actual.push_back(NullableReference(type,bone,layout,f.cab).second);
+  Require(actual==result.parts[0].bones,"resolved fallback palette was not written into the candidate");};
+ check();
+ // A missing local path must fail even if an identical path exists on actor B.
+ SetString(f.T(80),Child(f.T(80),f.V(80),"m_Name"),"OtherLip");Rejected(build);
+ SetString(f.T(80),Child(f.T(80),f.V(80),"m_Name"),"Lip");
+ node(230,231,71,"Lip");Rejected(build);
+ SetString(f.T(230),Child(f.T(230),f.V(230),"m_Name"),"OtherLip");check();
+ // Longer and empty source palettes also offer no reliable slot mapping.
+ auto& palette=ArrayValue(f.T(13),Child(f.T(13),f.V(13),"m_Bones"));palette.children.clear();palette.count=0;check();
+ f.List(13,"m_Bones",{71,51,81,111,121,71});check();
+ palette.children.clear();palette.count=0;f.List(13,"m_Bones",{71,81,111,51,121});check();
+ std::cout<<"PASS incomplete native palette: exact paths, reordered author slots, written candidate, empty/longer palettes, missing/ambiguous paths and sibling actor isolation\n";
+}
 int main(){try{
+ NativePaletteFallbackRegression();
  Fixture f;auto before=f.BytesOf();Package p;p.id="static";Identity target{"assets/static.mesh","Static"},mat{"assets/material.mat","Mat"};p.targetIndex[target]="R";p.rules["R"].parts={"P","Q"};
  // Shared member parsing must keep root ownership and component ordinals local.
  auto shared=std::make_shared<const EiemRenderAssemblyDescription::GraphData>(before,f.cab);

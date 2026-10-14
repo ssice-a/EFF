@@ -210,15 +210,15 @@ def read_package(root, resource_cache=None):
             control = shape_controls[variable]
             require(all(control["minimum"] <= v <= control["maximum"] for b in bindings if b["variable"] == variable for v in b["values"]),
                     "shape key target outside control range")
-    animated=set(); animation_speeds=set()
+    animation_speeds=set()
     for clip in animations:
         require(clip['speedVariable'] not in shape_controls and clip['speedVariable'] not in animation_speeds,
                 'animation speed variable aliases a shape or another group')
         animation_speeds.add(clip['speedVariable'])
         require(states.get(clip['speedVariable'])==clip['speed'] and clip['speedVariable'] in persistence,'animation speed default/persistence')
         for variable,samples in clip['tracks'].items():
-            require(variable in shape_controls and variable not in animated,'animation missing/conflicting shape channel')
-            animated.add(variable);c=shape_controls[variable]
+            require(variable in shape_controls,'animation missing shape channel')
+            c=shape_controls[variable]
             require(all(c['minimum']-1e-6<=v<=c['maximum']+1e-6 for v in samples),'animation exceeds shape range')
     for generated in ("source-inputs.bin", "compiled.bin"):
         if (root / generated).is_file():

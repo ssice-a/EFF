@@ -54,8 +54,42 @@ void AnimationChecks(){
  p.shapeAnimations.at("wing").loop=false;physical=0;LoadControls(Graph({p}));animations.at("Anim").Play(p.shapeAnimations.at("wing"));AdvanceAnimations(1.5);Require(!animations.at("Anim").clips.at("wing").playing,"once clip did not stop");
  Install({},true);panel.open=false;physical=0;
 }
+void CompiledAnimationChecks(){
+ auto plain=Make("CompiledPlain"),animated=Make("CompiledAnim");
+ ShapeAnimation clip;clip.id="wing";clip.key={VK_F6,0};clip.duration=1;clip.speedVariable="$speed";clip.tracks["$shape"]={0,.5f,1};
+ animated.shapeAnimations.emplace(clip.id,clip);animated.defaults["$speed"]=1;
+ auto graph=Graph({plain,animated});auto candidate=FullResourceReload::CompiledControls(graph,EiemResourceReloadPlan::Plan{},EiemGlobalConfig{});
+ Require(candidate.animations.count(plain.id)&&candidate.animations.count(animated.id),"compiled reload omitted per-package animation players");
+ Require(candidate.animations.at(animated.id).clips.count(clip.id)&&candidate.panelSnapshot->animations.at(animated.id).count(clip.id),"compiled reload omitted animation clips/UI snapshot");
+ physical=VK_F6;panel.open=false;MergeLive(candidate,Sample);Swap(candidate);AdvanceAnimations(.25);
+ Require(ShapeValue(plain.id,"$shape")==0&&!animations.at(animated.id).clips.at(clip.id).playing,"compiled reload lost manual shapes or triggered a held animation key");
+ physical=0;Frame(true,0);physical=VK_F6;Frame(true,0);AdvanceAnimations(.25);
+ Require(std::abs(ShapeValue(animated.id,"$shape")-.25)<1e-6,"compiled reload animation playback failed");
+ Install({},true);panel.open=false;physical=0;
+ std::cout<<"PASS compiled F10 controls preserve players for plain/animated packages, clips/UI, held-key edges and shape sampling\n";
+}
+void SharedChannelAnimationChecks(){
+ auto p=Make("Shared");p.controls["$other"]={"other",0,1};p.defaults["$other"]=.3;
+ auto clip=[&](const std::string& id,const std::string& variable,UINT key){ShapeAnimation c;c.id=id;c.label=id;c.key={key,0};c.duration=1;c.speedVariable="$speed_"+id;c.tracks[variable]={0,.5f,1};p.defaults[c.speedVariable]=1;p.persistent.insert(c.speedVariable);p.shapeAnimations[id]=c;};
+ clip("open","$shape",VK_F6);clip("close","$shape",VK_F7);clip("other","$other",VK_F8);
+ p.shapeAnimations.at("close").tracks["$shape"]={1,.5f,0};ValidateShapeAnimations(p);
+ physical=0;panel.open=false;LoadControls(Graph({p}));physical=VK_F6;Frame(true,0);AdvanceAnimations(.25);
+ physical=0;Frame(true,0);physical=VK_F8;Frame(true,0);AdvanceAnimations(.1);
+ Require(animations.at(p.id).clips.at("open").playing&&animations.at(p.id).clips.at("other").playing,"disjoint shape channels cannot play concurrently");
+ panel.open=true;Queue(Action::AnimationPause,p.id,"open");Frame(true,0);Queue(Action::AnimationPlay,p.id,"close");Frame(true,0);
+ auto& player=animations.at(p.id);Require(!player.clips.at("open").playing&&player.clips.at("close").playing&&player.clips.at("other").playing,"new animation failed to replace only its shared-channel conflicts");
+ auto snapshot=panel.Read();Require(!snapshot->animations.at(p.id).at("open").playing&&snapshot->animations.at(p.id).at("close").playing,"replaced group UI state is stale");
+ Require(ShapeValue(p.id,"$shape")==1,"replacement did not publish the new initial pose");
+ Queue(Action::AnimationStop,p.id,"open");Frame(true,0);Require(ShapeValue(p.id,"$shape")==1,"stopping inactive group erased another group's output");
+ AdvanceAnimations(.25);Require(std::abs(ShapeValue(p.id,"$shape")-.75)<1e-6,"shared-channel replacement sampling failed");
+ Queue(Action::Value,p.id,"$shape",.4);Frame(true,0);Require(!player.clips.at("close").playing&&player.clips.at("other").playing&&ShapeValue(p.id,"$shape")==.4,"manual shape handoff stopped unrelated animation");
+ Install({},true);panel.open=false;physical=0;
+ std::cout<<"PASS shared-channel groups: validation, keys/Ins replacement including paused clips, disjoint playback, UI state and inactive stop/manual handoff\n";
+}
 void Checks() {
   AnimationChecks();
+  CompiledAnimationChecks();
+  SharedChannelAnimationChecks();
   EiemControlPanel::Shortcut shortcut;
   EiemKeyChord insert{VK_INSERT,0};
   Require(!shortcut.Press(insert,true,true),"startup held Insert synthesized toggle");

@@ -311,11 +311,13 @@ int main(int argc,char** argv) {
       const auto api=RuntimeShapes::api;const auto variables=RuntimeShapes::variables;
       const auto keys=RuntimeShapes::keys;const auto held=RuntimeShapes::held;
       const auto bound=RuntimeShapes::bound;const auto specs=RuntimeShapes::specs;
+      const auto animations=RuntimeControls::animations;
       const auto lastFrame=RuntimeShapes::lastFrame;
       const auto packageGeneration=RuntimeShapes::packageGeneration;
       const auto boundCount=RuntimeShapes::boundCount.load();
       RuntimeShapes::bound.clear();RuntimeShapes::specs.clear();RuntimeShapes::keys.clear();
       RuntimeShapes::variables={{"fixture",{{"shape",.75}}}};
+      Package animationOwner;animationOwner.id="fixture";RuntimeControls::animations[animationOwner.id].Prepare(animationOwner);
       RuntimeShapes::specs["marker"]={"fixture","part","marker",1,{"bend"},{{"bend","shape"}}};
       RuntimeShapes::bound[self]={RuntimeShapes::Ref::Make(self,false),RuntimeShapes::Ref::Make(root,false),"marker",{{"bend",0}}};
       RuntimeShapes::api.frame=(void*)0x301;RuntimeShapes::api.elapsed=(void*)0x302;
@@ -334,6 +336,7 @@ int main(int argc,char** argv) {
       Require(Test::weightWrites==2 && Test::weight==25,"next regular frame fails to update shape");
       RuntimeShapes::bound=bound;RuntimeShapes::specs=specs;RuntimeShapes::api=api;
       RuntimeShapes::variables=variables;RuntimeShapes::keys=keys;RuntimeShapes::held=held;
+      RuntimeControls::animations=animations;
       RuntimeShapes::lastFrame=lastFrame;RuntimeShapes::packageGeneration=packageGeneration;
       RuntimeShapes::boundCount.store(boundCount);
       Require(Test::handles.empty(),"regular frame test leaks managed handles");

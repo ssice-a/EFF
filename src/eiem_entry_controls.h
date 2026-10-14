@@ -75,14 +75,18 @@ void PreviewPreferences(State& state) {
     catch(const std::exception& e) {Log("[CONTROL-STATE-GAP] load=%s reason=%s usingDefaults=1",p.id.c_str(),e.what());}
   }
 }
+void PrepareAnimations(State& state,const Package& package) {
+  auto& player=state.animations[package.id];player.Prepare(package);
+  for(const auto& clip:package.shapeAnimations)
+    player.clips.at(clip.first).held=clip.second.key.vk&&Down(clip.second.key);
+}
 State Prepare(const std::shared_ptr<const std::vector<Package>>& graph,const EiemGlobalConfig&) {
   Require(bool(graph),"runtime control graph unavailable");
   State state;state.graph=graph;
   for (const auto& package:*graph) {
     state.variables[package.id]=package.defaults;state.keys[package.id]=package.bindings;
     state.keySwitchEnabled[package.id]=keySettings.Preview(package);
-    state.animations[package.id].Prepare(package);
-    for(const auto& clip:package.shapeAnimations)state.animations.at(package.id).clips.at(clip.first).held=clip.second.key.vk&&Down(clip.second.key);
+    PrepareAnimations(state,package);
     for(const auto& rule:package.rules) if(!rule.second.skip)
       for(const auto& target:rule.second.targets) for(const auto& partId:rule.second.parts) {
         const auto& part=package.parts.at(partId);const auto& mesh=package.meshes.at(part.mesh);

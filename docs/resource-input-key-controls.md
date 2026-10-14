@@ -63,10 +63,14 @@ lifetime until actual native Release.
 Shape Keys clip. Its independent resource stores owner/clip identities, shortcut,
 duration, default speed, loop/autoplay and float32 weight tracks. It refers to
 the existing part shape variables without duplicating Mesh deltas. Blender's
-separate N → EFF → 形态动画 panel reads the Shape Keys Action and its KEY slot;
+unified N → EFF → 形态动画组管理 lists every group without requiring an active Mesh,
+and edits each member's Shape Keys Action and KEY slot inline;
 Object transform Actions, drivers and active NLA tracks are not accepted.
 
-Each enabled group owns distinct shape channels. Physical shortcuts toggle
+Meshes and channels may belong to multiple groups. Starting a group stops any
+playing or paused group sharing its channels; disjoint groups can play together.
+Conflicts are indexed once during control preparation, not recomputed per frame.
+Physical shortcuts toggle
 play/stop under the same per-Mod keyboard and focus rules. Ins exposes play,
 pause/resume, stop, a speed slider, direct positive-number input and author-default
 reset. Changing speed advances subsequent game time at the new rate without
@@ -78,7 +82,8 @@ Stopped or completed non-looping clips restore manual weights.
 Instances of one Mod share clip time. F10 rebuilds playback state, restarting
 autoplay clips and stopping the others while retaining valid speed preferences.
 Mesh/full exports update clips; material/texture updates retain them. Animations
-require the `sampled-shape-weight-clips/le32/1` compiler/consumer structure.
+require `sampled-shape-weight-clips/le32/1` plus the compiler/consumer declaration
+`shapeAnimationPlayback=shared-channel-groups/replace-conflicting-playback`.
 The locally installed first version has Blender, package and native player
 regression coverage; in-game animation rendering remains unverified.
 

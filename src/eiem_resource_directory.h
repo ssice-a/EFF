@@ -370,11 +370,11 @@ inline void RestoreShapeAnimations(Package& p){
  for(const auto& row:p.resources)if(row.second->kind==8){auto decoded=DecodeShapeAnimation(*row.second);if(decoded.first==p.id)Require(p.shapeAnimations.emplace(decoded.second.id,std::move(decoded.second)).second,"duplicate animation resource");}
 }
 inline void ValidateShapeAnimations(const Package& p){
- std::set<std::string> owned,speeds;
+ std::set<std::string> speeds;
  for(const auto& row:p.shapeAnimations){const auto& clip=row.second;
   Require(!p.controls.count(clip.speedVariable)&&speeds.insert(clip.speedVariable).second,"animation speed variable aliases a shape or another group");
   Require(p.defaults.count(clip.speedVariable)&&p.defaults.at(clip.speedVariable)==clip.speed&&p.persistent.count(clip.speedVariable),"animation speed default/persistence absent");
-  for(const auto& track:clip.tracks){auto c=p.controls.find(track.first);Require(c!=p.controls.end()&&owned.insert(track.first).second,"animation track absent or controlled by multiple groups");
+  for(const auto& track:clip.tracks){auto c=p.controls.find(track.first);Require(c!=p.controls.end(),"animation track absent");
    Require(std::all_of(track.second.begin(),track.second.end(),[&](float v){return v>=c->second.minimum-1e-6&&v<=c->second.maximum+1e-6;}),"animation weight exceeds shape range");}
  }
 }

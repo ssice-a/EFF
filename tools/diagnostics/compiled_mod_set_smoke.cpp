@@ -657,7 +657,10 @@ int main(int argc,char** argv){try{
  ExternalDependencyRegression();
  auto binding=OriginalBoneBinding({11,22,33},{101,202,303},{33,44,11});
  Require(binding==std::map<size_t,int64_t>{{0,303},{2,101}},"native palette correspondence lost reordered/original bones");
- Rejected([&]{OriginalBoneBinding({11,22},{101},{11});});
+ Require(OriginalBoneBinding({11,22,33,44,55},{101,404},{22,44,11}).empty(),
+  "incomplete native palette invented a positional binding");
+ Require(OriginalBoneBinding({11},{101,202},{11}).empty(),"longer native palette invented a positional binding");
+ Require(OriginalBoneBinding({11},{},{11}).empty(),"empty native palette invented a positional binding");
  Rejected([&]{OriginalBoneBinding({11,11},{101,202},{11});});
  auto equal=[](int a,int b){return a==b;};
  auto sequence=MergeSequence(std::vector<int>{1,2,3},std::vector<std::vector<int>>{{1,4,2,3},{1,2,5,3}},equal);

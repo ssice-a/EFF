@@ -1211,6 +1211,32 @@ void SelectedBundleClosureRegression(){
  a.selectedRoots.insert(1);a.phase=Phase::Bundles;Step(a);Require(opened==5&&a.bundles.count(1)&&a.bundles.count(4),"later loaded root did not extend the native closure or reopened existing inputs");
  for(auto& request:scheduleDone)request.second=true;Step(a);Require(a.phase==Phase::Assets,"extended dependency closure stalled");
 }
+void RepeatedBundleReloadRegression(){
+ using namespace FullResourceReload;Reset();
+ auto path=std::filesystem::temp_directory_path()/("eff-bundle-reuse-"+std::to_string(GetCurrentProcessId()));EiemResourceReloadPlan::Save(path,{1,2,3,4});
+ {
+  auto hold=std::make_shared<NativeBundle::FileHold>(path);NativeBundle::api.load=(void*)50;
+  auto ready=[&](bool view){auto p=Prepare();auto plan=std::make_shared<Plan>(*p->plan);plan->inputs.resize(1);plan->inputs[0].file="same-source.vfs";plan->inputs[0].path=path;plan->inputs[0].hash=std::string(64,'A');plan->closure={0};if(view)plan->viewIdentities[0]=std::string(64,'V');p->plan=plan;p->files[0]=hold;return p;};
+  for(bool view:{false,true}){
+   Attempt old;old.prepared=ready(view);old.phase=Phase::Passed;auto& original=old.bundles[0];original.object=Ref::Make(bundle,false);CheckBundle(old,0,original);
+   Attempt next;next.prepared=ready(view);next.phase=Phase::Bundles;
+   auto opens=opened;Step(next);
+   Require(opened==opens&&next.bundles.at(0).done&&next.bundles.at(0).object.Get()==bundle,"consecutive F10 reopened an identical live Bundle instead of reusing it");
+   auto lazyUnloads=unloadCalls;Attempt lazy;lazy.prepared=ready(view);EnsureObservedBundles(lazy,0);
+   Require(opened==opens&&lazy.bundles.at(0).done&&lazy.bundles.at(0).object.Get()==bundle,"lazy observed-root load reopened a shared native Bundle");
+   lazy.phase=Phase::Reject;Drain(lazy);Require(unloadCalls==lazyUnloads,"lazy candidate retirement unloaded another generation's container");
+   auto unloads=unloadCalls;RetireGeneration(old);Require(unloadCalls==unloads&&RuntimeShapes::Alive(next.bundles.at(0).object.Get()),"old generation retired a Bundle still borrowed by the new generation");
+   Attempt retry;retry.prepared=ready(view);retry.phase=Phase::Bundles;Step(retry);Require(opened==opens&&retry.bundles.at(0).done,"rejected-generation retry reopened a shared Bundle");
+   retry.phase=Phase::Reject;Drain(retry);Require(unloadCalls==unloads,"rejected candidate unloaded the committed shared Bundle");
+   Attempt changed;changed.prepared=ready(view);auto updated=std::make_shared<Plan>(*changed.prepared->plan);if(view)updated->viewIdentities[0]=std::string(64,'W');else updated->inputs[0].hash=std::string(64,'B');changed.prepared->plan=updated;changed.phase=Phase::Bundles;
+   Step(changed);Require(opened==opens+1&&changed.bundles.at(0).request.Get()&&!changed.bundles.at(0).done,"changed Bundle content incorrectly reused the previous native object");
+   RetireGeneration(next);Require(unloadCalls==unloads+1,"last shared Bundle owner did not retire its container exactly once");
+   RetireGeneration(next);Require(unloadCalls==unloads+1,"shared Bundle retirement repeated Unload");
+  }
+ }
+ std::filesystem::remove(path);Reset();
+ std::cout<<"PASS consecutive F10/lazy Bundle reuse by exact byte/view identity, changed-content reload, failed retry isolation and last-owner Unload(false)\n";
+}
 void CommittedRetryRegression(){
  using namespace FullResourceReload;Reset();enabled=true;RuntimeShapes::enabled=true;RecordPart();recordPartFinished=true;
  auto priorNewRoot=newRoot;
@@ -1841,6 +1867,7 @@ int main(int argc,char** argv){
 #endif
   check("native lifecycle",NativeLifecycleRegression);check("typed character audio",[]{typedAudioOnly=true;NativeLifecycleRegression();typedAudioOnly=false;});check("texture identity",TextureIdentityRegression);check("shared material identity",SharedMaterialIdentityRegression);check("load scheduling",PrewarmScheduleRegression);check("committed retry",CommittedRetryRegression);check("released pool",ReleasedPoolRegression);check("display virtual override",DisplayOverrideRegression);check("rule memory loads",RuleMemoryRegression);check("native byte stream ownership",NativeByteStreamRegression);
   check("selected Bundle closure",SelectedBundleClosureRegression);
+  check("consecutive F10 Bundle reuse and ownership",RepeatedBundleReloadRegression);
   check("latest publication",LatestPublicationRegression);check("offline failure cancellation",OfflineRejectionRegression);check("startup",StartupNoWorldRegression);check("Mesh gate",ChangedMeshGateRegression);check("retirement",RetirementRegression);
   check("published startup Frame",StartupAlreadyPublishedRegression);
   check("world Frame",[]{FullFrameRegression(false);});check("display Frame",[]{FullFrameRegression(true);});

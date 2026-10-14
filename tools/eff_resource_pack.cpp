@@ -82,6 +82,7 @@ int wmain(int argc,wchar_t** argv){try{
            <<"\",\"compiledInputView\":\""<<EiemPackageProtocol::compiledInputView
            <<"\",\"compiledRuntimeIndex\":\""<<EiemPackageProtocol::compiledRuntimeIndex
            <<"\",\"shapeAnimation\":\""<<EiemPackageProtocol::shapeAnimation
+           <<"\",\"shapeAnimationPlayback\":\""<<EiemPackageProtocol::shapeAnimationPlayback
            <<"\",\"manifestEncoding\":\""<<EiemPackageProtocol::ruleEncoding<<"\",\"manifestInputs\":[\""<<EiemPackageProtocol::ruleEncoding
            <<"\",\"self-described-roots/le64\",\"legacy-root-markers/le64\",\"legacy-root-addresses/le64\"]}}"<<std::endl;
   return 0;
