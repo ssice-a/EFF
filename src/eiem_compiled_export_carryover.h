@@ -5,8 +5,14 @@
 // Export never infers a logical source from a Bundle label or a hashed file ID.
 namespace EiemCompiledExportCarryover {
 using namespace EiemCompiledMod;
-inline EiemStaticSources::Selection Merge(const EiemStaticSources::Selection& current,const EiemStaticSources::Selection& previous,const Artifact& published){
+inline bool RevisionsChanged(const EiemStaticSources::Selection& current,const EiemStaticSources::Selection& previous){
+ for(const auto& row:previous.inputs){auto found=current.inputs.find(row.first);if(found==current.inputs.end()||found->second.revision!=row.second.revision)return true;}return false;
+}
+inline EiemStaticSources::Selection Merge(const EiemStaticSources::Selection& current,const EiemStaticSources::Selection& previous,const Artifact& published,bool currentSelectionComplete=false){
  EiemStaticSources::Validate(current);EiemStaticSources::Validate(previous);EiemCompiledModStore::VerifySourceSelection(published,previous);
+ // Only a complete index verified against today's installed VFS can retire
+ // or supersede old discoveries. A partial selection still cannot resolve it.
+ if(currentSelectionComplete&&RevisionsChanged(current,previous))return current;
  auto result=current;
  for(const auto& row:previous.inputs){auto found=result.inputs.find(row.first);
   if(found==result.inputs.end())result.inputs.emplace(row);
@@ -31,9 +37,9 @@ inline EiemResourceCatalogDelta::Catalog Catalog(const EiemStaticSources::Select
  EiemResourceCatalogDelta::Catalog catalog;catalog.domain="verified-export-source-selection";
  for(const auto& row:selection.inputs){auto dependencies=selection.dependencies.find(row.first);catalog.entries.emplace(row.first,EiemResourceCatalogDelta::Entry{row.second.revision,row.second.physical.generic_u8string()+":"+std::to_string(row.second.offset)+":"+std::to_string(row.second.size),dependencies==selection.dependencies.end()?std::set<std::string>{}:dependencies->second});}return catalog;
 }
-inline void RebindSources(Artifact& artifact,const EiemStaticSources::Selection& selection){
+inline void RebindSources(Artifact& artifact,const EiemStaticSources::Selection& selection,bool allowRetired=false){
  std::map<std::string,const EiemStaticSources::Entry*> identities;for(const auto& row:selection.inputs){auto identity=row.first+'\n'+row.second.revision;identities.emplace(Hash(Bytes(identity.begin(),identity.end()))+".vfs",&row.second);}
- for(auto& source:artifact.manifest.plan.originals){const auto& entry=*identities.at(source.file);Require(source.hash==entry.revision&&source.size==entry.size,"inherited source byte identity differs");source.physical=entry.physical;source.offset=entry.offset;}
+ for(auto& source:artifact.manifest.plan.originals){auto found=identities.find(source.file);if(found==identities.end()){Require(allowRetired,"inherited source missing from current selection");continue;}const auto& entry=*found->second;Require(source.hash==entry.revision&&source.size==entry.size,"inherited source byte identity differs");source.physical=entry.physical;source.offset=entry.offset;}
  artifact.verifiedSources.clear();
 }
 inline void CopySnapshot(const std::filesystem::path& source,const std::filesystem::path& target){

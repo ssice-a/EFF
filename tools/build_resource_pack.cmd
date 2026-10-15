@@ -18,7 +18,7 @@ if not "%~1"=="" if /i not "%~1"=="v35" if /i not "%~1"=="v36" (
  exit /b 1
 )
 if not exist "%pack_folder%" mkdir "%pack_folder%"
-cl /nologo /utf-8 /O2 /MD /EHsc /std:c++17 /bigobj /W4 %pack_define% /Fo"%pack_folder%\eff_resource_pack.obj" tools\eff_resource_pack.cpp /Fe"%pack_folder%\eff_resource_pack.exe" /link bcrypt.lib
+cl /nologo /utf-8 /O2 /MT /EHsc /std:c++17 /bigobj /W4 %pack_define% /Fo"%pack_folder%\eff_resource_pack.obj" tools\eff_resource_pack.cpp /Fe"%pack_folder%\eff_resource_pack.exe" /link bcrypt.lib
 set "pack_result=%errorlevel%"
 popd
 exit /b %pack_result%

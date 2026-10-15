@@ -48,6 +48,41 @@ jobs:
       run: |
         cmd /c build.bat v35
 
+    - uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 9.0.x
+
+    - name: Verify updated-game model pool binding
+      shell: pwsh
+      run: |
+        cmd /c tools\diagnostics\build_model_pool_discard_smoke.cmd
+        if ($LASTEXITCODE -ne 0) { throw 'Model pool adapter test build failed' }
+        & bin/model-pool-discard/smoke.exe
+        if ($LASTEXITCODE -ne 0) { throw 'Model pool adapter test failed' }
+
+    - name: Verify public index and source package contracts
+      shell: pwsh
+      run: |
+        dotnet run --project tools/AnimeStudio/AnimeStudio.IndexTests/AnimeStudio.IndexTests.csproj -c Release -p:TargetFrameworks=net9.0-windows
+        if ($LASTEXITCODE -ne 0) { throw 'Public index and BLC regression failed' }
+        dotnet run --project tools/AnimeStudio/AnimeStudio.UpdateTests/AnimeStudio.UpdateTests.csproj -c Release -p:TargetFrameworks=net9.0-windows
+        if ($LASTEXITCODE -ne 0) { throw 'Source update regression failed' }
+
+    - name: Build standalone Mod repair tool
+      shell: pwsh
+      run: |
+        cmd /c tools\build_resource_pack.cmd v35
+        if ($LASTEXITCODE -ne 0) { throw 'Repair compiler build failed' }
+        $compiler = (Resolve-Path bin/resource-pack-v35/eff_resource_pack.exe).Path
+        dotnet publish tools/EFF.Repair/EFF.Repair.csproj -c Release -o bin/eff-repair/release -p:NativeCompilerPath=$compiler
+        if ($LASTEXITCODE -ne 0) { throw 'Repair tool build failed' }
+        dotnet bin/eff-repair/release/EFF.Repair.dll --smoke-ui "$pwd/bin/eff-repair/release-ui.png"
+        if ($LASTEXITCODE -ne 0) { throw 'Repair UI smoke test failed' }
+        if (-not (Test-Path bin/eff-repair/release-ui.png)) { throw 'Repair UI screenshot was not generated' }
+        [xml]$project = Get-Content tools/EFF.Repair/EFF.Repair.csproj
+        $version = $project.Project.PropertyGroup.Version
+        Compress-Archive -Path bin/eff-repair/release/* -DestinationPath "EFF-Repair-v$version-win-x64.zip"
+
     - name: Verify production DLL excludes temporary diagnostics
       shell: pwsh
       run: |
@@ -176,8 +211,10 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ env.RELEASE_TAG }}
+        draft: true
         files: |
           EFF_${{ env.RELEASE_TAG }}_dll.zip
+          EFF-Repair-*-win-x64.zip
         body_path: RELEASE_NOTES.md
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

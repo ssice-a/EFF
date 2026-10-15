@@ -8,6 +8,20 @@
 #include <regex>
 #include "author_source_smoke.h"
 
+void GameUpdateCarryoverRegression(){
+ using namespace EiemCompiledMod;
+ EiemStaticSources::Selection previous;previous.manifest="old-catalog";
+ for(const char* name:{"bundles/a.ab","bundles/retired.ab"}){auto digest=Hash(Bytes(name,name+strlen(name)));previous.inputs.emplace(name,EiemStaticSources::Entry{name,digest,std::filesystem::temp_directory_path()/"old-removed.chk",0,1});previous.candidates.insert(name);}
+ Artifact published;for(const auto& row:previous.inputs){auto identity=row.first+'\n'+row.second.revision;published.manifest.plan.originals.push_back({Hash(Bytes(identity.begin(),identity.end()))+".vfs",row.second.revision,row.second.physical,0,1});published.manifest.plan.rendererRules.emplace_back();}
+ auto current=previous;current.manifest="current-catalog";current.inputs.erase("bundles/retired.ab");current.candidates.erase("bundles/retired.ab");current.inputs.at("bundles/a.ab").revision=Hash(Bytes{9});current.inputs.at("bundles/a.ab").physical=std::filesystem::temp_directory_path()/"current.chk";
+ Rejected([&]{EiemCompiledExportCarryover::Merge(current,previous,published);});
+ auto refreshed=EiemCompiledExportCarryover::Merge(current,previous,published,true);
+ Require(refreshed.inputs.size()==1&&refreshed.inputs.at("bundles/a.ab").revision==current.inputs.at("bundles/a.ab").revision&&!refreshed.candidates.count("bundles/retired.ab"),"verified current game index retained stale or retired sources");
+ auto relocated=previous;for(auto& row:relocated.inputs)row.second.physical=std::filesystem::temp_directory_path()/"relocated.chk";
+ auto same=EiemCompiledExportCarryover::Merge(relocated,previous,published,true);Require(same.inputs.at("bundles/a.ab").physical==relocated.inputs.at("bundles/a.ab").physical,"same-content source relocation retained old CHK");
+ std::cout<<"PASS game-update carryover: incomplete conflicting selection rejects; complete current index refreshes changed/retired sources; same-content relocation preserved\n";
+}
+
 void AssemblySelectionRegression(){
  using namespace EiemRenderAssemblyDescription;using EiemResourceReloadPlan::Root;
  Root pristine;pristine.path="assets/shared.prefab";
@@ -466,6 +480,7 @@ void CompareCompiledArtifacts(const std::filesystem::path& game,const std::files
  std::cout<<"PASS equivalent compiled startup and isolated replay: inputs="<<a.inputs.size()<<" roots="<<a.roots.size()<<'\n';
 }
 int main(int argc,char** argv){try{
+ GameUpdateCarryoverRegression();
  if(argc==5&&std::string(argv[1])=="--write-runtime-index"){
   using namespace EiemCompiledMod;auto game=std::filesystem::u8path(argv[2]),source=std::filesystem::u8path(argv[3]),destination=std::filesystem::u8path(argv[4]);
   Require(std::filesystem::weakly_canonical(source)!=std::filesystem::weakly_canonical(destination),"runtime index validation must use a separate directory");

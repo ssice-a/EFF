@@ -116,7 +116,7 @@ def scan_blc(blc: Path, target: str) -> dict[str, object] | None:
         _length, offset = read_i64(data, offset)
         _chunk_type, offset = read_u8(data, offset)
         if code_version > 3:
-            _main_tag, offset = read_i32(data, offset)
+            _main_tag, offset = read_bytes(data, offset, 8 if code_version >= 5 else 4)
         file_count, offset = read_i32(data, offset)
         for _ in range(file_count):
             name_len, offset = read_u16(data, offset)
@@ -132,7 +132,7 @@ def scan_blc(blc: Path, target: str) -> dict[str, object] | None:
             if encrypted:
                 iv_seed, offset = read_i64(data, offset)
             if code_version > 3:
-                _file_tag, offset = read_i32(data, offset)
+                _file_tag, offset = read_bytes(data, offset, 8 if code_version >= 5 else 4)
 
             logical = normalize(raw_name)
             if logical.casefold() == wanted:

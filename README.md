@@ -4,7 +4,7 @@
 
 EFF 在《明日方舟：终末地》创建资源和实例前应用 Mod。AnimeStudio 导出来源，Blender 制作并编译独立 Mod，EFF DLL 读取结果并完成游戏内加载与热重载。
 
-配套发布：**EFF v1.6.0、EFF Blender v0.43.0、AnimeStudio v1.5.0**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
+配套发布：**EFF v1.7.0、EFF Blender v0.44.0、AnimeStudio v1.6.0**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
 
 首次制作 Mod 可先阅读带截图的简易教程：[中文](Mod%20Tutorial.md) · [English](Mod%20Tutorial_EN.md)。
 
@@ -19,7 +19,7 @@ EFF 在《明日方舟：终末地》创建资源和实例前应用 Mod。AnimeS
 
 ## 安装
 
-从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v1.6.0_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。当前代理转发支持 Windows 系统目录为 `C:\Windows` 的安装；其他系统目录尚不支持。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和各 Mod 的 `state.ini`。
+从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v1.7.0_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。当前代理转发支持 Windows 系统目录为 `C:\Windows` 的安装；其他系统目录尚不支持。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和各 Mod 的 `state.ini`。
 
 ```text
 d3dcompiler_47.dll
@@ -40,7 +40,9 @@ plugin/
 
 正式 DLL 与代理静态链接自身的 C/C++ 运行实现，不依赖游戏目录中较旧的 MSVCP/VCRUNTIME；无需修改游戏运行库。DLL 包不包含编译器、AnimeStudio 运行库或来源工具。已有安装的 `plugin/tools/eff_resource_pack.exe` 和 `plugin/tools/static-sources/` 可删除；新版 DLL 不调用它们。若已有同名代理加载器，请先确认使用的图形后端与插件加载方式。
 
-把包含 `mod.ini` 的完整 Mod 文件夹直接放入 `plugin/mods/`。新版 Mod 的 `compiled.bin` 必须随作者资源一起分发；旧 Mod 请使用配套 Blender 插件重新导出。文件夹可移动到其他安装，编译结果中的来源路径相对游戏目录，不含作者机器的绝对游戏路径。游戏更新使来源摘要变化时需要重新导出。
+把包含 `mod.ini` 的完整 Mod 文件夹直接放入 `plugin/mods/`。`compiled.bin` 必须随作者资源一起分发。文件夹可移动到其他安装，来源路径相对游戏目录。游戏更新后，玩家可使用同一 Release 的 `EFF-Repair-v0.1.0-win-x64.zip`：选择游戏与 Mod 目录，在工具内下载匹配的完整索引，退出游戏后修复；原包会备份。工具需要 .NET 9 Windows Desktop Runtime，不要求 Blender 或自行解包。
+
+作者也可用 AnimeStudio 更新原解包资源，再从原 Blender 工程重新导出，无需使用修复工具。修复使用当前游戏的来源和消费者；资产删除、来源歧义或不受支持的结构会报告失败，保留原包。
 
 ## 游戏内使用
 
@@ -76,7 +78,7 @@ disable_camera_fade=true
 
 ## 验证边界
 
-本次新增形态动画的作者导出、原生播放和隔离编译回归已通过，游戏画面及活跃动画性能仍待实测。AnimeStudio 已支持两层 VFS 与逐 Bundle 增量索引；游戏更新后自动为旧 Mod 补齐新命中 PFB 的运行链仍在开发，本次 Release 不宣称已完成自动适配。
+本次更新的 BLC v5、公共索引、来源事务更新、旧工程隔离导出及旧 Mod 修复回归已通过。DLL 不承担游戏更新后的后台发现、编译或自动回写；更新适配在游戏外完成。全部角色画面、活跃动画性能和骨架实质变化仍需独立验收，见[本轮实现与验证](docs/update-workflows-20261015.md)。
 
 离线回归覆盖同 PFB 多 Mod、增删恢复、流偏移、静态网格、连续世界/展示重载、动画消费者与回滚。最新两角色实机 F10 请求到提交约 107 ms，待机附件已获视觉确认；这是已准备候选的样本，不能代表所有场景的耗时。独立人群 NPC/场景物件的原地 F10、完整多代资源退休和 20–30 个 Mod 的压力尚未验证；数量不等于同时渲染数量。全 LOD 导出不会自动减面。新增 BoneCloth 骨链及球/胶囊碰撞体已接入离线编译；不同动作的混合、完整物理退出和 F10 仍需实机验收。当前发布构建通过自动回归，尚无本轮新二进制的实机验收。详细边界见[热重载验收](docs/hot-reload-testing.md)。
 

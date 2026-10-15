@@ -29,15 +29,20 @@ inline void AuthorSourceRegression() {
  Require(Md5(Bytes{'a','b','c'})=="900150983CD24FB0D6963F7D28E17F72","native source MD5 differs");
 
  auto vfs=root/"vfs";std::filesystem::create_directory(vfs);
- auto blc=[&](const char* name,uint64_t offset){
-  Bytes plain;number(plain,11,4);number(plain,0,2);number(plain,0,8);number(plain,0,4);number(plain,0,8);number(plain,0,1);number(plain,1,4);
-  plain.resize(plain.size()+16+16);number(plain,0,8);number(plain,0,1);number(plain,2,4);
-  for(const char* logical:{"Data/Bundles/Selected.ab","Data/Bundles/Unrelated.ab"}){number(plain,strlen(logical),2);plain.insert(plain.end(),logical,logical+strlen(logical));number(plain,0,8);plain.resize(plain.size()+16+16);number(plain,offset,8);number(plain,5,8);number(plain,0,1);number(plain,0,1);}
+ auto blc=[&](const char* name,uint64_t offset,int code=3){
+  Bytes plain;number(plain,code==3?11:code,4);if(code>3)number(plain,11,4);number(plain,0,2);number(plain,0,8);number(plain,0,4);number(plain,0,8);number(plain,0,1);number(plain,2,4);
+  auto tag=[&](){if(code>3)number(plain,0xFEDCBA9876543210ULL,code>=5?8:4);};
+  for(size_t chunk=0;chunk<2;++chunk){
+   plain.resize(plain.size()+16+16);number(plain,0,8);number(plain,0,1);tag();number(plain,2,4);
+   // Encrypted records and an unrelated first chunk must not shift the selected entry.
+   for(size_t file=0;file<2;++file){std::string logical="Data/Bundles/"+std::string(chunk==1&&file==0?"Selected.ab":("Unrelated"+std::to_string(chunk)+std::to_string(file)+".ab"));number(plain,logical.size(),2);plain.insert(plain.end(),logical.begin(),logical.end());number(plain,0,8);plain.resize(plain.size()+16+16);number(plain,offset,8);number(plain,5,8);number(plain,0,1);number(plain,file,1);if(file)number(plain,0x1122334455667788ULL,8);tag();}
+  }
   number(plain,0,4);Bytes nonce(12);ChaCha(plain,nonce.data());nonce.insert(nonce.end(),plain.begin(),plain.end());EiemResourceReloadPlan::Save(vfs/name,nonce);
  };
  blc("a.blc",1);blc("b.blc",2);
  auto selected=ReadVfs(vfs,{"bundles/selected.ab"});
  Require(selected.size()==1&&selected.begin()->second.offset==2&&selected.begin()->second.size==5,"parallel VFS parsing changed last-metadata precedence or selected unrelated assets");
+ for(int code:{4,5}){blc("b.blc",uint64_t(code),code);auto current=ReadVfs(vfs,{"bundles/selected.ab"});Require(current.size()==1&&current.begin()->second.offset==uint64_t(code)&&current.begin()->second.size==5&&current.begin()->second.md5==std::string(32,'0'),"BLC v4/v5 tags or encrypted IV shifted the selected source");}
  auto fingerprint=Fingerprint(vfs,Files(vfs,L".blc"));Require(ReadVfs(vfs,{"bundles/selected.ab"},fingerprint).size()==1,"VFS fingerprint rejected identical files");
  failed=false;try{ReadVfs(vfs,{"bundles/selected.ab"},std::string(64,'0'));}catch(const std::exception&){failed=true;}Require(failed,"stale VFS fingerprint accepted");
  std::cout<<"PASS author exact-source discovery, filtered index, dependency/count validation, VFS routing and deterministic parallel metadata\n";

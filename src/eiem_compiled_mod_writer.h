@@ -129,7 +129,8 @@ inline Artifact Compile(const Package& author,const EiemStaticSources::Selection
  return artifact;
 }
 inline void Export(const std::filesystem::path& mod,const std::filesystem::path& game,std::function<void(const char*,double)> cost={},const std::filesystem::path& previous={},const Package* preparedAuthor=nullptr,const EiemStaticSources::Selection* preparedSelection=nullptr,const EiemStaticSources::Discovery* preparedDiscovery=nullptr,
- const std::function<Bytes(std::shared_ptr<const Artifact>,const EiemStaticSources::Selection&)>& preparePrefab={}){
+ const std::function<Bytes(std::shared_ptr<const Artifact>,const EiemStaticSources::Selection&)>& preparePrefab={},bool currentSelectionComplete=false){
+ Require(!currentSelectionComplete||preparedSelection,"complete source selection requires the verified current index adapter");
  auto author=Measure(cost,"author-read",[&]{return preparedAuthor?*preparedAuthor:Load(mod);});auto selected=Measure(cost,"source-selection",[&]{return preparedSelection?*preparedSelection:EiemStaticSources::Merge({author},game);});
  std::optional<Artifact> cached;std::optional<EiemCompiledModStore::Loaded> store;std::optional<EiemStaticSources::Selection> inherited;bool sameDiscovery=false;
  const auto& cacheRoot=previous.empty()?mod:previous;
@@ -145,8 +146,9 @@ inline void Export(const std::filesystem::path& mod,const std::filesystem::path&
   for(const auto& row:inherited->inputs){auto found=selected.inputs.find(row.first);if(found==selected.inputs.end()||found->second.revision!=row.second.revision)sameDiscovery=false;}
   for(const auto& row:inherited->assets){auto found=selected.assets.find(row.first);if(found==selected.assets.end()||found->second!=row.second)sameDiscovery=false;}
   if(inherited->dependencies!=selected.dependencies)sameDiscovery=false;
-  selected=Measure(cost,"compiled-source-carryover",[&]{return EiemCompiledExportCarryover::Merge(selected,*inherited,*cached);});
-  EiemCompiledExportCarryover::RebindSources(*cached,selected);
+  bool gameRefresh=currentSelectionComplete&&EiemCompiledExportCarryover::RevisionsChanged(selected,*inherited);
+  selected=Measure(cost,"compiled-source-carryover",[&]{return EiemCompiledExportCarryover::Merge(selected,*inherited,*cached,currentSelectionComplete);});
+  EiemCompiledExportCarryover::RebindSources(*cached,selected,gameRefresh);
   // The descriptor keeps the source tool's request identity, not the combined
   // compiler identity, so a subsequent export still reuses the index selection.
   auto descriptor=selected;if(std::filesystem::is_regular_file(mod/"source-inputs.bin"))descriptor.manifest=EiemStaticSources::LoadMod(mod,game).manifest;

@@ -1,4 +1,5 @@
 #pragma once
+#include "eiem_model_pool_discard.h"
 #include "eiem_offline_resource_package.h"
 // Resource reload transaction: offline manifest -> preloaded isolated graph ->
 // native graph -> exact prefab content/owner preflight -> game-owned rebuild.
@@ -72,6 +73,7 @@ struct Api {
  void *shaderSupported=nullptr,*materialPassCount=nullptr,*materialKeywords=nullptr;
  void *getModel=nullptr,*getPath=nullptr,*modelCom=nullptr,*modelEntity=nullptr,*delegateTarget=nullptr,*released=nullptr;
  void *instance=nullptr,*discard=nullptr,*remove=nullptr,*loadModel=nullptr,*follow=nullptr;
+ bool discardHasUnloadImmediately=false;
  ObjectField modelManager,effectManager,world,performManager;
  void* performExit=nullptr;
  void *animationCom=nullptr,*animationData=nullptr,*animationChange=nullptr,*animationAnimator=nullptr,*animationValid=nullptr;
@@ -180,6 +182,7 @@ void BindMaterialTextureProperties(void* material){
 }
 int Id(void* p){Require(RuntimeShapes::Alive(p),"reload native object retired");return RuntimeShapes::Scalar<int>(api.instanceId,p);}
 void* Self(const Ref& value,void* expected){auto p=value.Get();Require(p&&il2cpp_object_get_class(p)==expected,"reload boxed value type differs");return il2cpp_object_unbox(p);}
+void DiscardPool(void* manager,const Ref& path){EiemModelPoolDiscard::Discard({api.discard,api.discardHasUnloadImmediately},manager,Self(path,api.pathClass),[](void* method,void* receiver,void** args){Call(method,receiver,args);});}
 Ref Path(const std::string& path){auto text=Ref::Make(il2cpp_string_new(path.c_str()),false);void* args[]={text.Get()};return Ref::Make(Call(api.toPath,nullptr,args),false);}
 Ref Type(void* klass){Require(klass,"reload type absent");return Ref::Make(il2cpp_type_get_object(il2cpp_class_get_type(klass)),false);}
 Ref prefabType,rendererType,characterAudioType;
@@ -777,7 +780,10 @@ void Install(void** assemblies,size_t count){
   api.performManager=BindObjectField(world,"charInteractPerformManager","Beyond.Gameplay.Core.CharInteractPerform.CharInteractPerformManager");
   auto perform=FindClass("Beyond.Gameplay.Core.CharInteractPerform","CharInteractPerformManager",assemblies,count);
   api.performExit=Method(perform,"ForceExitAllPerformOnEntity",{"Beyond.Gameplay.Core.Entity","System.String"},"System.Void",false);
-  auto modelManager=FindClass("Beyond.Gameplay.View","ModelManager",assemblies,count);api.discard=Method(modelManager,"DiscardPooledObjects",{"Beyond.Resource.StringPathHash"},"System.Void",false);
+  auto modelManager=FindClass("Beyond.Gameplay.View","ModelManager",assemblies,count);
+  auto discard=EiemModelPoolDiscard::Bind([&](bool extra){return extra?Exact(modelManager,"DiscardPooledObjects",{"Beyond.Resource.StringPathHash","System.Boolean"},"System.Void",false):Exact(modelManager,"DiscardPooledObjects",{"Beyond.Resource.StringPathHash"},"System.Void",false);});
+  Require(discard.method,"reload exact ModelManager.DiscardPooledObjects signature absent (path[, unloadImmediately])");api.discard=discard.method;api.discardHasUnloadImmediately=discard.unloadArgument;
+  Log("[FULL-RELOAD-POOL-API] unloadImmediatelyArgument=%d forcedAssetUnload=0",int(discard.unloadArgument));
   auto basePart=FindClass("Beyond.Gameplay.View","BaseModelViewPart",assemblies,count),complexPart=FindClass("Beyond.Gameplay.View","ComplexModelViewPart",assemblies,count);
   Require(il2cpp_object_get_virtual_method,"reload public virtual dispatch unavailable");
   api.partRelease=Method(basePart,"ReleaseModel",{},"System.Void",false);api.partLoad=Method(basePart,"StartSyncLoad",{},"System.Boolean",false);
@@ -1211,7 +1217,7 @@ void Rebuild(Attempt& a){
   // discard matched idle-only paths, so opening the UI later cannot reuse an
   // old pooled root that escaped the currently visible owner enumeration.
   for(size_t i=0;i<a.owners.size();++i){const auto& owner=a.owners[i];if(owner.uiModel)continue;a.mutated=i+1;ReleaseConsumers(owner);RemoveOwner(owner);}
-  for(const auto& path:poolPaths){void* args[]={Self(path,api.pathClass)};Call(api.discard,manager.Get(),args);}
+  for(const auto& path:poolPaths)DiscardPool(manager.Get(),path);
   for(auto& owner:a.owners){
    if(owner.uiModel)continue;
    // This pair and follow-effect refresh are the audited game's own same-ID
@@ -1239,7 +1245,7 @@ void Rebuild(Attempt& a){
    RecordUIModel(owner.component.Get(),owner.root.Get(),owner.path,owner.uiParent.Get(),owner.uiCallback.Get());
   }catch(const std::exception& e){restored=false;Log("[FULL-RELOAD-ROLLBACK-GAP] uiPage=%s rootsAndLeasesRetained=1",e.what());}
   for(size_t i=0;i<a.mutated;++i)try{
-   auto& owner=a.owners[i];if(owner.uiModel)continue;void* args[]={Self(owner.pathHash,api.pathClass)};ReleaseConsumers(owner);RemoveOwner(owner);Call(api.discard,manager.Get(),args);LoadOwner(owner);
+   auto& owner=a.owners[i];if(owner.uiModel)continue;ReleaseConsumers(owner);RemoveOwner(owner);DiscardPool(manager.Get(),owner.pathHash);LoadOwner(owner);
    auto restoredRoot=CurrentRoot(owner);Require(RuntimeShapes::Alive(restoredRoot),"reload rollback original root missing");ReloadConsumers(owner,restoredRoot);Follow(owner);
    Require(MeshProfile(restoredRoot)==owner.originalMeshes,"reload rollback original native Mesh identity/coverage differs");
   }catch(const std::exception& e){restored=false;Log("[FULL-RELOAD-ROLLBACK-GAP] reason=%s rootsAndLeasesRetained=1",e.what());}

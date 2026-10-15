@@ -176,7 +176,7 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==22){++removeCalls;if(performActive&&performPropAlive){performPropAlive=false;stalePerformProp=true;}currentRoot=nullptr;return nullptr;}
  if(m==155){Require(self==performManager&&args&&args[0]==entity&&!args[1],"perform exit used another entity or squad-switch reason");Require(!performActive||(currentRoot&&animationRoot==currentRoot),"perform exit ran after retiring its model/Animator");++performStops;consumerCalls.push_back(155);performActive=performPropAlive=stalePerformProp=false;return nullptr;}
  if(m==97){++overrideReleases;++removeCalls;currentRoot=nullptr;return nullptr;}
- if(m==23){Require(!currentRoot,"pool discarded before old owner released");++discardCalls;return nullptr;}
+ if(m==23){Require(!currentRoot,"pool discarded before old owner released");if(FullResourceReload::api.discardHasUnloadImmediately)Require(args[1]&&*(unsigned char*)args[1]==0,"pool discard forced asset unload or omitted updated Boolean argument");++discardCalls;return nullptr;}
  if(m==24){Require(discardCalls>=removeCalls,"model loaded before path-scoped pool discard");++loadCalls;
   if(recordPartFinished)FullResourceReload::PartLoading(mainPart,configBox,loadCallback,nullptr);else currentRoot=NativeCreate(source);return nullptr;}
  if(m==25){++followCalls;return nullptr;}
@@ -265,7 +265,7 @@ void Setup(){
  RuntimeShapes::api.modelRenderers=(void*)86;RuntimeShapes::api.rendererType=(void*)81;
  auto& a=FullResourceReload::api;a.instanceId=(void*)3;a.components=(void*)5;a.materials=(void*)11;a.shader=(void*)12;
  a.texture=(void*)75;a.textureIds=(void*)82;a.textureById=(void*)83;
- a.instance=(void*)20;a.getModel=(void*)21;a.remove=(void*)22;a.discard=(void*)23;a.loadModel=(void*)24;a.follow=(void*)25;a.released=(void*)26;
+ a.instance=(void*)20;a.getModel=(void*)21;a.remove=(void*)22;a.discard=(void*)23;a.discardHasUnloadImmediately=true;a.loadModel=(void*)24;a.follow=(void*)25;a.released=(void*)26;
  a.animationCom=(void*)64;a.animationData=(void*)65;a.animationAnimator=(void*)66;a.animationValid=(void*)67;a.animationChange=(void*)68;
  a.animationIdlePreload=(void*)156;a.animationDashPreload=(void*)157;
  a.weaponCom=(void*)69;a.weaponUnload=(void*)70;a.weaponReload=(void*)71;a.weaponMounts=(void*)72;a.componentLookup=(void*)96;a.audioInvalidate=(void*)74;
@@ -403,7 +403,7 @@ void NativeLifecycleRegression(){
  Reset();nativeFactory=1;
  // Reproduce the old release/load-only sequence: a new root exists, but the
  // animation component still targets the previous skeleton (T pose).
- {auto a=MakeAttempt();auto& owner=a.owners.front();CaptureConsumers(owner);RemoveOwner(owner);void* args[]={Self(owner.pathHash,api.pathClass)};Call(api.discard,manager,args);LoadOwner(owner);
+ {auto a=MakeAttempt();auto& owner=a.owners.front();CaptureConsumers(owner);RemoveOwner(owner);DiscardPool(manager,owner.pathHash);LoadOwner(owner);
   bool refused=false;try{VerifyAnimation(owner,currentRoot);}catch(const std::exception&){refused=true;}
   Require(refused&&animationRoot==oldRoot&&currentRoot!=oldRoot,"fixture did not reproduce stale animation after primitive model reload");
   ReloadConsumers(owner,currentRoot);VerifyAnimation(owner,currentRoot);

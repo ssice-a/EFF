@@ -8,7 +8,7 @@
 namespace EiemPreparedExportCarryover {
 using namespace EiemCompiledMod;
 inline bool Try(const std::filesystem::path& mod,const std::filesystem::path& previous,const std::filesystem::path& game,const Package& author,
- const EiemStaticSources::Selection& current,const std::function<void(const char*,double)>& cost={}){
+ const EiemStaticSources::Selection& current,const std::function<void(const char*,double)>& cost={},bool currentSelectionComplete=false){
  if(previous.empty()||std::filesystem::weakly_canonical(mod)==std::filesystem::weakly_canonical(previous))return false;
  auto path=mod/"compiled.bin",publishedPath=previous/"compiled.bin";
  if(!std::filesystem::is_regular_file(path)||!std::filesystem::is_regular_file(publishedPath)||!EiemCompiledModStore::IsStore(path)||!EiemCompiledModStore::IsStore(publishedPath)||std::filesystem::hard_link_count(path)!=1)return false;
@@ -16,7 +16,7 @@ inline bool Try(const std::filesystem::path& mod,const std::filesystem::path& pr
  auto stage=EiemCompiledModStore::Load(path,mod,game,true);if(!stage.selection||stage.artifact.manifest.plan.author!=PackageDigest(author))return false;
  auto published=EiemCompiledModStore::Load(publishedPath,previous,game,true);if(!published.selection)return false;
  Require(author.id==published.artifact.manifest.package.id,"concurrent discoveries belong to another Mod");
- auto selected=EiemCompiledExportCarryover::Merge(current,*published.selection,published.artifact);
+ auto selected=EiemCompiledExportCarryover::Merge(current,*published.selection,published.artifact,currentSelectionComplete);
  // Core or already known source changes need the ordinary affected-input path.
  for(const auto& row:stage.selection->inputs){auto next=selected.inputs.find(row.first);if(next==selected.inputs.end()||next->second.revision!=row.second.revision)return false;
   auto oldDeps=stage.selection->dependencies.find(row.first),newDeps=selected.dependencies.find(row.first);if((oldDeps==stage.selection->dependencies.end())!=(newDeps==selected.dependencies.end())||(oldDeps!=stage.selection->dependencies.end()&&oldDeps->second!=newDeps->second))return false;}

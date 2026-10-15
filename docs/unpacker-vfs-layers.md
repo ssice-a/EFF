@@ -1,5 +1,19 @@
 # 游戏目录与两层 VFS 索引
 
+## 2026-10-15 游戏更新后的 BLC v5
+
+已在正式安装的新游戏资源中复现 `07A1BB91.blc` 的 `Invalid file count 1882092395`。ChaCha20 密钥和解密方式未变，BLC codeVersion 已变为 5；chunk 与 file 记录末尾的 tag 均从 4 字节扩展为 8 字节。旧 reader 少读后错位，将路径字节当成了文件数量。AnimeStudio、Blender 配套原生来源编译器及单路径诊断脚本均已按格式读取字段，保留 v3/v4 支持和原数量/范围检查。
+
+当前实际两层目录为 502371 个逻辑条目、273608 个 Bundle；所有 Bundle 均可定位物理载荷。62955 个其他条目缺少可读取载荷，不能将目录解析成功解释为所有非 Bundle 内容已下载。基础 Bundle 块版本为 26781849，Persistent 为 27010254；合并指纹为 `EFF_VFS_LAYERS_V1:3F08AF3C7DEEEB2312C6E2EBFCD0796790D5B8A6EDF9DB809AF1619412F7FC36`。
+
+验证包含：v3/v4/v5 多 chunk/file、64 位高位非零 tag、加密记录 IV 跳过、原报错块的 2 个资源；12 个当前 Bundle 的 C#/C++ 物理路径、范围、MD5 与指纹一致，打包后的 AnimeStudio reader 读取实际字节的 MD5 亦一致。当前游戏真实 Bundle 的隔离增量/冷构建字节一致，仅解析 2 个、复用 6 个、删除 1 个旧逻辑项。其余增量与两层选择回归通过；这些抽样不代表已重新解析全部 273608 个 Bundle。
+
+仅修正目录字段宽度，Bundle 解析语义身份与 eidx 格式不变；软件升级本身不触发全量重建。用户原索引未改写，打开原工作区后仍由既有增量构建器按当前游戏内容选择复用或解析。
+
+已备份安装修正版 AnimeStudio 到 `E:/vscode/EIEM/tools/AnimeStudio/dist/net9.0-windows`，保留现有配置、密钥文件和日志；Blender 的 `nativepack/eff_resource_pack.exe` 已备份更新，已安装插件通过 junction 使用该文件。安装与验证记录位于 `bin/vfs-update-diagnosis-20261015/`。未修改游戏资源、游戏 DLL、Mod 或 Blender 工程；本次为本地修复，尚未发布新 Release。
+
+## 2026-10-13 两层来源接入记录
+
 2026-10-13。AnimeStudio 的 Open Endfield VFS 支持游戏目录、上一级 games 目录、Endfield_Data 或已安装游戏的 VFS 子目录。只检查直接子目录中的 Endfield 安装，不递归搜索启动器临时目录；发现多个安装时要求明确选一份。独立 VFS 副本仍按单层打开。预下载的分卷 ZIP 和 CHK 差分不是已安装来源，不自动参与合并。
 
 ## 来源选择

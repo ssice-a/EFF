@@ -4,13 +4,13 @@
 
 AnimeStudio exports source assets and templates. Blender creates and compiles each independent Mod. EFF applies the compiled rules before the game creates resources and uses the game's model lifecycle for reloads.
 
-Paired releases: **EFF v1.6.0, EFF Blender v0.43.0, AnimeStudio v1.5.0**. There is one production DLL package. Compatibility follows byte structures, fields, source hashes and references.
+Paired releases: **EFF v1.7.0, EFF Blender v0.44.0, AnimeStudio v1.6.0**. There is one production DLL package. Compatibility follows byte structures, fields, source hashes and references.
 
 See the illustrated quick tutorial for installation, extraction, Blender editing and export: [English](Mod%20Tutorial_EN.md) · [中文](Mod%20Tutorial.md).
 
 ## Install
 
-Download `EFF_v1.6.0_dll.zip` from [Releases](https://github.com/ssice-a/EFF/releases), quit the game and extract beside `Endfield.exe`. The current proxy forwarders support Windows installations at `C:\Windows`; other system directories are not supported yet. Preserve `plugin/eff.ini`, your Mods and their `state.ini` when upgrading.
+Download `EFF_v1.7.0_dll.zip` from [Releases](https://github.com/ssice-a/EFF/releases), quit the game and extract beside `Endfield.exe`. The current proxy forwarders support Windows installations at `C:\Windows`; other system directories are not supported yet. Preserve `plugin/eff.ini`, your Mods and their `state.ini` when upgrading.
 
 ```text
 d3dcompiler_47.dll
@@ -29,7 +29,7 @@ plugin/
       textures/
 ```
 
-The production DLL and proxies statically link their own C/C++ runtime implementation and do not depend on the game's older MSVCP/VCRUNTIME files. Do not replace the game's runtime files. The DLL distribution has no compiler, source tools or AnimeStudio libraries. Previous `plugin/tools/eff_resource_pack.exe` and `plugin/tools/static-sources/` are unused and can be removed. Move complete Mod folders directly into `plugin/mods/`. Re-export older Mods with the paired Blender add-on to produce `compiled.bin`. Relative game source paths make the output portable; changed game source hashes require re-export.
+The production DLL and proxies statically link their own C/C++ runtime implementation and do not depend on the game's older MSVCP/VCRUNTIME files. Do not replace the game's runtime files. The DLL distribution has no compiler, source tools or AnimeStudio libraries. Previous `plugin/tools/eff_resource_pack.exe` and `plugin/tools/static-sources/` are unused and can be removed. Move complete Mod folders directly into `plugin/mods/`. Re-export older Mods with the paired Blender add-on to produce `compiled.bin`. Relative game source paths make the output portable. After game updates, players can use the optional EFF-Repair-v0.1.0-win-x64.zip from the same Release to download the matching full index and repair Mods with backups. It needs .NET 9 Windows Desktop Runtime, not Blender or manual extraction. Authors can instead refresh extracted sources in AnimeStudio and export their original projects again.
 
 ## Features and controls
 
@@ -62,7 +62,7 @@ Complete original bundles are not saved in the Mod. Compiled outputs include nat
 
 ## Validation limits
 
-Shape animation authoring, native playback controls and isolated compilation have regression coverage; in-game animation rendering and active playback costs remain unverified. AnimeStudio supports layered VFS and incremental Bundle indexing. Automatic runtime adaptation of older Mods to newly matching Prefabs is still under development and is not claimed by this release.
+The current update has regression coverage for BLC v5, portable full indexes, transactional extracted-source refresh, an existing Blender project and old-Mod repair. Update adaptation runs outside the game. The DLL performs no background discovery, compilation or Mod writes. Broad in-game visual coverage, active-animation performance and substantial skeleton changes still require separate validation.
 
 Regression checks cover shared-PFB composition, removals, stream relocation, static Meshes, sequential world/display reloads, animation consumers and rollback. The latest in-game two-character F10 took about 107 ms from request to commit, with idle attachments visually confirmed. This measured an already prepared candidate, not every scene's latency. Independent crowd NPC/scene-object refresh, complete generation retirement and 20–30 Mod pressure remain unverified. Exporting all LOD targets does not generate reduced geometry. New BoneCloth chains and sphere/capsule colliders are connected to offline compilation. Animation blending, complete physics teardown and F10 still require in-game acceptance. This release build passed automated regressions; new in-game acceptance has not been performed for these binaries.
 

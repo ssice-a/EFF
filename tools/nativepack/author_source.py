@@ -2,10 +2,43 @@
 import ctypes
 import hashlib
 import json
+import contextlib
+import os
 from pathlib import Path
 from .serialized_file import SerializedFile
 from .type_tree import require
 from .hashing import sha256_bytes
+
+@contextlib.contextmanager
+def source_read_lock(package):
+    """Coordinate with AnimeStudio's whole-package replacement, without a watcher."""
+    if os.name != 'nt':
+        yield
+        return
+    from ctypes import wintypes
+    path = str(Path(package).resolve()).rstrip('\\/').replace('\\', '/')
+    path = path.translate(str.maketrans('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'))
+    name = 'Local\\EFFSource-' + hashlib.sha256(path.encode('utf-8')).hexdigest().upper()
+    api = ctypes.WinDLL('kernel32', use_last_error=True)
+    api.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    api.CreateMutexW.restype = wintypes.HANDLE
+    api.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    api.WaitForSingleObject.restype = wintypes.DWORD
+    api.ReleaseMutex.argtypes = [wintypes.HANDLE]
+    api.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = api.CreateMutexW(None, False, name)
+    if not handle:
+        raise OSError(ctypes.get_last_error(), '无法锁定解包来源')
+    acquired = False
+    try:
+        result = api.WaitForSingleObject(handle, 0)
+        require(result in (0, 0x80), '解包来源正在更新，请在 AnimeStudio 完成后重新导出')
+        acquired = True
+        yield
+    finally:
+        if acquired:
+            api.ReleaseMutex(handle)
+        api.CloseHandle(handle)
 
 class AuthorCore:
     def __init__(self, path):
@@ -27,7 +60,9 @@ class AuthorSource:
     def __init__(self, package, core):
         self.package = Path(package).resolve()
         self.core = core
-        self.manifest = json.loads((self.package/'source/manifest.json').read_text('utf-8-sig'))
+        manifest = (self.package/'source/manifest.json').read_bytes()
+        self.manifest_hash = sha256_bytes(manifest)
+        self.manifest = json.loads(manifest.decode('utf-8-sig'))
         require(self.manifest.get('format') == 'EFFSOURCE' and isinstance(self.manifest.get('serializedFiles'), list) and isinstance(self.manifest.get('resources'), list), 'unsupported source baseline structure')
         self.rows = {}
         identities = set()
@@ -38,6 +73,9 @@ class AuthorSource:
             identities.add(cab.casefold())
             self.rows[cab] = row
         self.files = {}
+    def assert_current(self):
+        require(sha256_bytes((self.package/'source/manifest.json').read_bytes()) == self.manifest_hash,
+                '解包来源在导出期间发生更新，暂存结果未发布；请重新导出')
     def resolve(self, kind, path, asset):
         values = [r for r in self.manifest['resources'] if
                   (r['type'], r['logicalPath'], r['name']) == (kind, path, asset)]

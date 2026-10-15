@@ -2,7 +2,7 @@
 
 // Build metadata only. Runtime configuration does not participate in versioning.
 #define EIEM_VERSION_MAJOR 1
-#define EIEM_VERSION_MINOR 6
+#define EIEM_VERSION_MINOR 7
 #define EIEM_VERSION_PATCH 0
 #define EIEM_STRINGIFY2(x) #x
 #define EIEM_STRINGIFY(x) EIEM_STRINGIFY2(x)

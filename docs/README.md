@@ -30,7 +30,7 @@
 |---|---|---|
 | 项目术语 | [CONTEXT](../CONTEXT.md) | 作者、基线、代际、owner 和消费者边界 |
 | 离线导出提速 | [独立实施与验收](offline-export-performance-plan.md) | 当前编译后端和消费者覆盖保持，优化单次冷编译的解析、根归属及内存开销 |
-| 游戏更新自动适配 | [自动增量构建](game-update-prefab-adaptation-plan.md) | 目录变化、精确消费者发现、单文件结果与首次加载交付；独立于导出提速验收 |
+| 游戏更新修复 | [三端实现与验证](update-workflows-20261015.md)、[修复工具设计](eff-repair-tool-design.md) | 游戏外 Mod 修复；作者重新解包后可直接从旧工程导出，在线索引尚未发布；[原运行时探索](game-update-prefab-adaptation-plan.md)保留为历史 |
 | 代码与构建 | [代码架构](code-architecture.md)、[源码地图](../src/README.md) | 当前入口、模块职责、v35/v36 配套构建及回归命令 |
 | 实机进度 | [热重载测试](hot-reload-testing.md) | 已通过用例、安装版本与下一轮操作 |
 | 场景性能检查 | [测点与测试顺序](performance-scene-test.md) | 主线程/后台耗时、读取和形态快照、慢帧窗口；明确 Unity/GPU 未测边界 |
@@ -41,7 +41,7 @@
 | 作者声明 | [INI 格式 2](mod-ini-resource-format-v2.md) | Replace/Part、资源、表达式与二进制格式 |
 | 控制与偏好 | [资源输入按键](resource-input-key-controls.md) | 显隐、形态、数值状态及配置事务 |
 | Blender 导出 | [分资源导出](blender-scoped-resource-export.md) | 全部/仅 Mesh/材质与贴图/贴图及运行中发布 |
-| 源基线 | [导出基线](exporter-source-baseline.md) | pristine 来源与作者数据隔离 |
+| 源基线 | [导出基线](exporter-source-baseline.md) | pristine 来源与作者数据隔离；AnimeStudio 更新已有解包资源、Blender 接受来源更新 |
 | 顶点通道 | [顶点数据契约](vertex-data-contract.md) | 原生通道、形变布局与切线生成 |
 | 相机 | [反虚化契约](camera-fade.md) | CameraMono 原评估后的清理与验证边界 |
 | 后续物理 | [三端设计](physics-authoring-design.md)、[作者 v5](physics-authoring-v5.md)、[源图 v2](physics-authoring-v2.md) | 目标及作者文件，不能代替运行时能力 |

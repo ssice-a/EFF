@@ -47,8 +47,11 @@ struct InputFileStamp {
 };
 inline InputFileStamp FileStamp(const std::filesystem::path& path) {
   WIN32_FILE_ATTRIBUTE_DATA attributes{};
-  Require(GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes) &&
-              !(attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY), "loading input file stamp unavailable");
+  if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes)) {
+    auto error = GetLastError();
+    throw std::runtime_error("loading input file stamp unavailable: " + path.u8string() + " win32=" + std::to_string(error));
+  }
+  Require(!(attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY), "loading input is a directory: " + path.u8string());
   return {(uint64_t(attributes.nFileSizeHigh) << 32) | attributes.nFileSizeLow,
           (uint64_t(attributes.ftLastWriteTime.dwHighDateTime) << 32) | attributes.ftLastWriteTime.dwLowDateTime};
 }
