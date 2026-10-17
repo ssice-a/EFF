@@ -3,6 +3,8 @@
 #include "eiem_compiled_object_merge.h"
 #include "eiem_native_input_offsets.h"
 #include "eiem_source_namespace_keys.h"
+#include "eiem_logical_source_routes.h"
+#include "eiem_input_retention.h"
 
 // Combines already compiled records. No resource builders, scene scans, game
 // resource queries or author-side executables are called by this path.
@@ -33,6 +35,7 @@ struct Set {
  std::map<size_t,InputFileStamp> sourceStamps;
  std::map<std::filesystem::path,InputFileStamp> files;
  std::map<std::filesystem::path,Bytes> iniBytes;
+ EiemLogicalSourceRoutes::Routes logicalSources;
 };
 inline std::vector<std::pair<size_t,size_t>> Writers(const Set& set,size_t index){
  std::vector<std::pair<size_t,size_t>> result;for(const auto& contributor:set.contributors.at(index)){
@@ -48,7 +51,7 @@ inline void EnsureCatalogProof(Catalog& catalog,bool retire=false){
 }
 inline std::map<std::filesystem::path,InputFileStamp> AuthorStamps(const std::filesystem::path& root){
  std::map<std::filesystem::path,InputFileStamp> result;for(const auto& file:std::filesystem::recursive_directory_iterator(root))if(file.is_regular_file()){
-  auto name=file.path().filename().u8string(),extension=file.path().extension().u8string();auto relative=file.path().lexically_relative(root).generic_u8string();if(name=="mod.ini"||name=="compiled.bin"||extension==".mesh"||extension==".mat"||extension==".tex"||Begins(relative,"resources/"))result.emplace(file.path(),FileStamp(file.path()));}return result;
+ auto name=file.path().filename().u8string(),extension=file.path().extension().u8string();auto relative=file.path().lexically_relative(root).generic_u8string();if(name=="mod.ini"||name=="compiled.bin"||name=="source-inputs.bin"||extension==".mesh"||extension==".mat"||extension==".tex"||Begins(relative,"resources/"))result.emplace(file.path(),FileStamp(file.path()));}return result;
 }
 inline std::string DirectoryStamp(const std::filesystem::path& directory){
  Writer w;for(const auto& root:EiemComposedPackage::Roots(directory)){w.S(root.filename().u8string());for(const auto& file:AuthorStamps(root)){w.S(file.first.lexically_relative(root).u8string());w.N(file.second.bytes);w.N(file.second.written);}}return Hash(w.b);
@@ -214,8 +217,10 @@ inline EiemRenderAssemblyDescription::Description MergeAssembly(const Root& pris
 inline void SelectIsolatedInputs(Set& set){
  auto& plan=set.manifest.plan;Require(plan.startupHashes.size()==set.catalog.size(),"compiled source hash coverage differs");
  Require(set.sourceNamespaceKeys.size()==set.catalog.size(),"compiled source namespace coverage differs");
- std::set<size_t> isolated;for(const auto& root:plan.roots){Require(root.input<set.catalog.size(),"compiled root input differs");isolated.insert(root.input);}
- for(size_t i=0;i<set.catalog.size();++i)if(plan.startupHashes[i]!=set.catalog[i].source.hash)isolated.insert(i);
+ std::vector<size_t> roots;for(const auto& root:plan.roots)roots.push_back(root.input);
+ std::vector<unsigned char> changed(set.catalog.size());for(size_t i=0;i<changed.size();++i)changed[i]=plan.startupHashes[i]!=set.catalog[i].source.hash;
+ auto retained=EiemInputRetention::Select(plan.inputDependencies,changed,roots);std::set<size_t> isolated;
+ for(size_t i=0;i<retained.size();++i)if(retained[i])isolated.insert(i);
  // A new Prefab/edited object needs an independent identity. Unchanged
  // dependencies keep the game's CAB identity and ResourceManager ownership;
  // opening renamed copies would duplicate their textures and GPU resources.
@@ -244,7 +249,7 @@ inline std::shared_ptr<Set> Read(const std::filesystem::path& game,const std::sh
  auto started=std::chrono::steady_clock::now();auto report=[&](const char* stage,std::chrono::steady_clock::time_point begin){if(cost)cost(stage,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count());};
  auto directory=modsDirectory.empty()?game/"plugin/mods":modsDirectory;auto roots=EiemComposedPackage::Roots(directory);if(roots.empty()&&!previous)return {};
  if(auto refreshed=RefreshKeySwitches(previous,directory))return refreshed;
- auto set=std::make_shared<Set>();std::string identity=structure;std::vector<Package> authors;
+ auto set=std::make_shared<Set>();if(previous)set->logicalSources=previous->logicalSources;std::string identity=structure;std::vector<Package> authors;
  // Independent Mod indexes and payloads can be verified concurrently. Source
  // identity/composition publication remains ordered and transactional.
  std::vector<std::shared_ptr<Artifact>> decoded(roots.size());
@@ -266,11 +271,12 @@ inline std::shared_ptr<Set> Read(const std::filesystem::path& game,const std::sh
   auto after=AuthorStamps(root);Require(stamps.size()==after.size(),"Mod files changed while reading compiled rules");for(const auto& row:stamps)Require(after.count(row.first)&&SameStamp(row.second,after.at(row.first)),"Mod changed while reading compiled rules");
   identity+='\n'+root.filename().u8string()+":"+a->digest+":"+a->manifest.plan.contract;authors.push_back(current);set->mods.push_back(a);set->frames.push_back(std::move(frames));
   auto ini=EiemNativeInput::Read(root/"mod.ini");Require(Sha(ini.data(),ini.size())==current.iniHash,"Mod INI changed while capturing compiled snapshot");set->iniBytes.emplace(root,std::move(ini));set->files.insert(stamps.begin(),stamps.end());++rootIndex;
+  if(std::filesystem::is_regular_file(root/"source-inputs.bin"))EiemLogicalSourceRoutes::Include(set->logicalSources,EiemStaticSources::LoadMod(root,game));
  }
  auto compositionStarted=std::chrono::steady_clock::now();auto& manifest=set->manifest;manifest.composed=true;manifest.rootAssembly=true;manifest.packages=authors;manifest.package=EiemComposedPackage::Compose(authors,true,false);auto& plan=manifest.plan;plan.composed=true;plan.rulesOnly=true;plan.key=Hash(Bytes(identity.begin(),identity.end()));plan.author=PackageDigest(manifest.package);plan.contract=InputContractDigest(manifest.package);report("author-composition",compositionStarted);
  auto catalogStarted=std::chrono::steady_clock::now();
  std::map<std::string,size_t> inputs;std::map<std::string,std::pair<std::shared_ptr<const Root>,size_t>> pristine;
- auto add=[&](const Catalog& entry){auto old=inputs.find(entry.source.file);if(old!=inputs.end()){auto& existing=set->catalog.at(old->second);const auto& source=existing.source;Require(source.hash==entry.source.hash&&source.physical==entry.source.physical&&source.offset==entry.source.offset&&source.size==entry.source.size,"compiled shared source range conflict");existing.input.externals.insert(entry.input.externals.begin(),entry.input.externals.end());existing.dependencyFiles.insert(entry.dependencyFiles.begin(),entry.dependencyFiles.end());for(const auto& root:entry.pristine){auto found=std::find_if(existing.pristine.begin(),existing.pristine.end(),[&](const auto& value){return value->path==root->path;});if(found==existing.pristine.end())existing.pristine.push_back(root);else Require((*found)->cab==root->cab&&(*found)->source==root->source,"compiled pristine root identity conflict");}return old->second;}size_t i=set->catalog.size();inputs.emplace(entry.source.file,i);set->catalog.push_back(entry);set->contributors.emplace_back();return i;};
+ auto add=[&](const Catalog& entry){auto old=inputs.find(entry.source.file);if(old!=inputs.end()){auto& existing=set->catalog.at(old->second);const auto& source=existing.source;Require(source.hash==entry.source.hash&&source.size==entry.source.size,"compiled shared source content conflict");existing.input.externals.insert(entry.input.externals.begin(),entry.input.externals.end());existing.dependencyFiles.insert(entry.dependencyFiles.begin(),entry.dependencyFiles.end());for(const auto& root:entry.pristine){auto found=std::find_if(existing.pristine.begin(),existing.pristine.end(),[&](const auto& value){return value->path==root->path;});if(found==existing.pristine.end())existing.pristine.push_back(root);else Require((*found)->cab==root->cab&&(*found)->source==root->source,"compiled pristine root identity conflict");}return old->second;}size_t i=set->catalog.size();inputs.emplace(entry.source.file,i);set->catalog.push_back(entry);set->contributors.emplace_back();return i;};
  if(previous)for(size_t old=0;old<previous->catalog.size();++old)if(!previous->contributors[old].empty()){const auto& catalog=previous->catalog[old];auto i=add(catalog);for(const auto& root:catalog.pristine)pristine.emplace(root->path,std::make_pair(root,i));}
  std::map<std::string,std::vector<std::pair<const Root*,std::set<std::pair<std::string,int64_t>>>>> rootVariants;
  for(size_t m=0;m<set->mods.size();++m){const auto& a=*set->mods[m];const auto& own=a.manifest.plan;const auto& package=a.manifest.package;
@@ -285,6 +291,10 @@ inline std::shared_ptr<Set> Read(const std::filesystem::path& game,const std::sh
   }
   for(const auto& row:own.parts){auto part=row.second;part.id=EiemComposedPackage::Name(package.id,part.id);part.material=EiemComposedPackage::Name(package.id,part.material);Require(plan.parts.emplace(row.first,std::move(part)).second,"compiled part marker conflict");}
   for(const auto& row:own.materials)Require(plan.materials.emplace(EiemComposedPackage::Name(package.id,row.first),row.second).second,"compiled material identity conflict");plan.shared.insert(own.shared.begin(),own.shared.end());plan.meshParts+=own.meshParts;plan.rendererParts+=own.rendererParts;plan.textures+=own.textures;plan.materialMatches+=own.materialMatches;
+ }
+ if(std::filesystem::is_directory(game/"Endfield_Data/StreamingAssets/VFS")){
+  std::vector<EiemResourceReloadPlan::Source> sources;for(const auto& entry:set->catalog)sources.push_back(entry.source);
+  EiemLogicalSourceRoutes::Rebind(sources,set->logicalSources,game);for(size_t i=0;i<sources.size();++i)set->catalog[i].source=std::move(sources[i]);
  }
  report("catalog-membership",catalogStarted);auto namesStarted=std::chrono::steady_clock::now();
  std::map<std::string,size_t> memberInputs;for(size_t i=0;i<set->catalog.size();++i)for(const auto& member:set->catalog[i].members)Require(memberInputs.emplace(member.first,i).second,"compiled CAB has multiple input owners");
@@ -347,9 +357,10 @@ inline std::shared_ptr<Set> Read(const std::filesystem::path& game,const std::sh
   auto writers=Writers(*set,i);auto contribution=writers.size()==1?writers.front():(writers.empty()&&!set->contributors[i].empty()?set->contributors[i].front():std::make_pair(SIZE_MAX,SIZE_MAX));
   if(contribution.first!=SIZE_MAX&&writers.size()<=1){const auto& mod=set->mods.at(contribution.first);if(mod->views.size()==mod->manifest.plan.originals.size()&&!mod->views.empty()){
    auto begin=std::chrono::steady_clock::now();auto& buffers=viewBuffers[i];auto found=priorInputs.find(set->catalog[i].source.file);EiemCompiledInputView::Buffer original;viewSourceStamps[i]=FileStamp(set->catalog[i].source.physical);
-   if(found!=priorInputs.end()){auto old=found->second;auto cached=previous->sourceBuffers.find(old);auto stamp=previous->sourceStamps.find(old);if(cached!=previous->sourceBuffers.end()&&stamp!=previous->sourceStamps.end()&&set->catalog[i].source.hash==previous->catalog[old].source.hash&&SameStamp(stamp->second,viewSourceStamps[i]))original=cached->second;}
+   if(found!=priorInputs.end()){auto old=found->second;auto cached=previous->sourceBuffers.find(old);auto stamp=previous->sourceStamps.find(old);const auto& prior=previous->catalog[old].source;const auto& current=set->catalog[i].source;if(cached!=previous->sourceBuffers.end()&&stamp!=previous->sourceStamps.end()&&current.hash==prior.hash&&current.physical==prior.physical&&current.offset==prior.offset&&SameStamp(stamp->second,viewSourceStamps[i]))original=cached->second;}
    if(!original){const auto& source=set->catalog[i].source;auto mapped=std::make_shared<const EiemReadonlyFileRange::Range>(source.physical,source.offset,source.size);
-    if(!SameStamp(mapped->Stamp(),mod->verifiedSources.at(contribution.second))){auto hash=Sha(mapped->Data(),mapped->Size());Require(Hex(hash.data(),hash.size())==source.hash,"compiled source content differs; re-export this Mod");}
+    const auto& authored=mod->manifest.plan.originals.at(contribution.second);
+    if(set->logicalSources.count(source.file)||source.physical!=authored.physical||source.offset!=authored.offset||!SameStamp(mapped->Stamp(),mod->verifiedSources.at(contribution.second))){auto hash=Sha(mapped->Data(),mapped->Size());Require(Hex(hash.data(),hash.size())==source.hash,"game source content changed; repair the Mod offline: "+(set->logicalSources.count(source.file)?set->logicalSources.at(source.file):source.file));}
     viewSourceStamps[i]=mapped->Stamp();original=EiemCompiledInputView::Buffer(std::move(mapped));}buffers.emplace(std::make_pair(EiemResourceRecipe::Original,std::string{}),original);
    for(const auto& resource:mod->manifest.package.resources)buffers.emplace(std::make_pair(EiemResourceRecipe::Author,resource.first),std::shared_ptr<const Bytes>(resource.second,&resource.second->bytes));
    for(const auto& frame:mod->preparedFrames)buffers.emplace(std::make_pair(EiemResourceRecipe::ExpandedFrame,frame.first),std::shared_ptr<const Bytes>(mod,&frame.second));

@@ -9,10 +9,12 @@
 // it has not yet been persisted by the offline exporter or wired to Unity.
 namespace EiemPreparedPrefabCompiler {
 using namespace EiemCompiledMod;
+constexpr const char* descriptorStructure="EFF_PREPARED_PFB/author+core-inputs+assets+schemas+palettes+native-bundle-routes/le64";
 struct Prepared {
  std::shared_ptr<const Artifact> baseline;EiemStaticSources::Selection current;
  Package resolved;
  std::map<std::string,std::string> coreInputs;
+ std::map<std::string,std::string> sharedBundles;
  AssetIndex assets;MeshSchemaIndex schemas;MeshBoneHashIndex palettes;MaterialPreloadIndex preloads;
  std::vector<BuiltMeshPart> meshes;std::map<NativeReference,std::string> markers;
  std::set<NativeReference> targets;std::set<std::string> resourceCabs;
@@ -23,11 +25,17 @@ inline Prepared Prepare(std::shared_ptr<const Artifact> baseline,const EiemStati
  for(const auto& resource:author.resources)Require(!Begins(resource.first,"resources/")&&!resource.second->blocks.count("@physics"),"prepared PFB slice requires separate generic/Physics adaptation");
  std::set<std::string> sources;auto add=[&](const std::string& path){if(!path.empty())sources.insert(current.assets.at(EiemStaticSources::Logical(path)));};
  for(const auto& target:author.targetIndex)add(target.first.path);for(const auto& material:author.materials)add(material.second.source.path);for(const auto& texture:author.textures)add(texture.second.source.path);
+ std::optional<EiemStaticSources::Selection> sourceSnapshot;
+ if(std::filesystem::is_regular_file(author.root/"source-inputs.bin"))sourceSnapshot=EiemStaticSources::Decode(Read(author.root/"source-inputs.bin"));
  sources=EiemStaticSources::Closure(current,std::move(sources));std::vector<Bytes> inputs;std::vector<EndfieldInput::Bundle> bundles;
- for(const auto& name:sources){const auto& entry=current.inputs.at(name);auto id=name+'\n'+entry.revision;auto file=Hash(Bytes(id.begin(),id.end()))+".vfs";
-  Require(std::any_of(a.manifest.plan.originals.begin(),a.manifest.plan.originals.end(),[&](const auto& row){return row.file==file&&row.hash==entry.revision;}),"prepared author resource changed; adapt core sources first");
+ for(const auto& name:sources){const auto& entry=current.inputs.at(name);auto file=EiemStaticSources::SourceFile(name,entry.revision);
+  auto compiled=std::any_of(a.manifest.plan.originals.begin(),a.manifest.plan.originals.end(),[&](const auto& row){return row.file==file&&row.hash==entry.revision;});
+  // Pruned native dependencies still have their exact author-build provenance
+  // in source-inputs.bin. They supply templates/metadata, not runtime views.
+  bool shared=sourceSnapshot&&sourceSnapshot->inputs.count(name)&&sourceSnapshot->inputs.at(name).revision==entry.revision;
+  Require(compiled||shared,"prepared author resource changed; adapt core sources first");
   prepared.coreInputs.emplace(name,entry.revision);
-  inputs.push_back(EiemStaticSources::Payload(entry));bundles.push_back(EndfieldInput::Decode(inputs.back()));AddSourceInventory(prepared.assets,prepared.schemas,prepared.palettes,prepared.preloads,bundles.back(),author);
+  inputs.push_back(EiemStaticSources::Payload(entry));bundles.push_back(EndfieldInput::Decode(inputs.back()));AddSourceInventory(prepared.assets,prepared.schemas,prepared.palettes,prepared.preloads,bundles.back(),author,&prepared.sharedBundles);
  }
  if(std::any_of(author.textures.begin(),author.textures.end(),[](const auto& row){return row.second.source.path.empty();}))ResolveTextureTemplates(prepared.resolved,inputs,prepared.assets,&bundles);
  for(const auto& target:author.targetIndex){const auto& asset=prepared.assets.at(target.first);Require(asset.classId==43,"prepared target is not a Mesh");prepared.targets.insert({EiemStaticSources::Cab(asset.cab),asset.pathId});prepared.resourceCabs.insert(asset.cab);
@@ -40,8 +48,8 @@ inline Prepared Prepare(std::shared_ptr<const Artifact> baseline,const EiemStati
  return prepared;
 }
 inline Bytes Encode(const Prepared& prepared){
- Writer w;w.S("EFF_PREPARED_PFB/author+core-inputs+assets+schemas+palettes/le64");const auto& a=*prepared.baseline;
- w.S(a.manifest.plan.author);w.S(a.manifest.plan.contract);WriteAuthor(w,prepared.resolved,true);w.Strings(prepared.coreInputs);
+ Writer w;w.S(descriptorStructure);const auto& a=*prepared.baseline;
+ w.S(a.manifest.plan.author);w.S(a.manifest.plan.contract);WriteAuthor(w,prepared.resolved,true);w.Strings(prepared.coreInputs);w.Strings(prepared.sharedBundles);
  w.N(prepared.assets.size());for(const auto& row:prepared.assets){const auto& v=row.second;w.Id(row.first);w.S(v.path);w.S(v.asset);w.S(v.cab);w.N(uint64_t(v.pathId));w.N(uint64_t(v.classId));w.Raw(v.type.data(),v.type.size());}
  w.N(prepared.schemas.size());for(const auto& row:prepared.schemas){const auto& type=row.second;w.Raw(row.first.data(),row.first.size());w.N(uint64_t(type.classId));w.N(type.nodes.size());for(const auto& node:type.nodes){w.S(node.type);w.S(node.name);w.B(node.align);w.N(node.children.size());for(auto child:node.children)w.N(child);}}
  w.N(prepared.palettes.size());for(const auto& row:prepared.palettes){w.S(row.first.first);w.N(uint64_t(row.first.second));w.N(row.second.size());for(auto value:row.second)w.N(value);}
@@ -51,10 +59,11 @@ inline Bytes Encode(const Prepared& prepared){
  return Pack(w.b);
 }
 inline Prepared Decode(const Bytes& packed,std::shared_ptr<const Artifact> baseline,const EiemStaticSources::Selection& current){
- Require(bool(baseline),"prepared PFB descriptor lacks author snapshot");auto bytes=Unpack(packed);EiemOfflinePackage::Reader r{bytes};Require(r.S()=="EFF_PREPARED_PFB/author+core-inputs+assets+schemas+palettes/le64","prepared PFB descriptor structure differs");
+ Require(bool(baseline),"prepared PFB descriptor lacks author snapshot");auto bytes=Unpack(packed);EiemOfflinePackage::Reader r{bytes};Require(r.S()==descriptorStructure,"prepared PFB descriptor structure differs");
  Prepared result;result.baseline=std::move(baseline);result.current=current;const auto& a=*result.baseline;Require(r.S()==a.manifest.plan.author&&r.S()==a.manifest.plan.contract,"prepared PFB descriptor belongs to another author");
  r.verifiedAuthor=&a.manifest.package;result.resolved=ReadAuthor(r,a.manifest.package.root.parent_path(),true,a.manifest.package.root);Require(result.resolved.id==a.manifest.package.id,"prepared resolved author identity differs");
  result.coreInputs=r.StringsMap();Require(!result.coreInputs.empty(),"prepared core resource seal empty");for(const auto& row:result.coreInputs)Require(DigestText(row.second)&&current.inputs.at(row.first).revision==row.second,"prepared core resources changed; update them before compiling a PFB");
+ result.sharedBundles=r.StringsMap();for(const auto& row:result.sharedBundles)Require(!row.first.empty()&&!row.second.empty(),"prepared native dependency route absent");
  auto n=r.Count();for(size_t i=0;i<n;++i){auto key=r.Id();Asset asset;asset.path=r.S();asset.asset=r.S();asset.cab=r.S();asset.pathId=int64_t(r.N());asset.classId=int(r.N());r.Raw(asset.type.data(),asset.type.size());Require(asset.pathId&&key.path==asset.path&&key.asset==asset.asset&&result.assets.emplace(key,std::move(asset)).second,"prepared asset identity repeated/invalid");}
  n=r.Count();for(size_t i=0;i<n;++i){std::array<unsigned char,16> key{};r.Raw(key.data(),key.size());Type type;type.hash=key;type.classId=int(r.N());Require(type.classId==43,"prepared Mesh schema type differs");auto count=r.Count();for(size_t j=0;j<count;++j){Node node;node.type=r.S();node.name=r.S();node.align=r.B();auto children=r.Count();for(size_t k=0;k<children;++k){auto child=r.Size();Require(child>j&&child<count,"prepared Mesh schema has invalid child/cycle");node.children.push_back(child);}type.nodes.push_back(std::move(node));}Require(!type.nodes.empty(),"prepared Mesh schema empty");PrepareFixedWidths(type);Require(result.schemas.emplace(key,std::move(type)).second,"prepared Mesh schema repeated");}
  auto reference=[&](){auto cab=r.S();auto id=int64_t(r.N());Require(!cab.empty()&&id,"prepared resource reference empty");return NativeReference{std::move(cab),id};};
@@ -83,7 +92,7 @@ inline EiemSourceAdaptationJobs::Result Compile(const Prepared& prepared,const E
  }
  stage("pfb-match");if(result.decision.roots.empty())return result;
  auto artifact=std::make_shared<Artifact>();auto& m=artifact->manifest;auto& p=m.plan;const auto& prior=baseline.manifest.plan;
- m.package=author;m.rootAssembly=true;p.rulesOnly=p.spanRecipes=true;p.author=prior.author;p.contract=prior.contract;p.parts=prior.parts;p.materials=prior.materials;p.materialMatches=prior.materialMatches;p.textures=prior.textures;p.frameRecipes=prior.frameRecipes;p.names=prior.names;p.shared=prior.shared;
+ m.package=author;m.rootAssembly=true;p.rulesOnly=p.spanRecipes=true;p.author=prior.author;p.contract=prior.contract;p.parts=prior.parts;p.materials=prior.materials;p.materialMatches=prior.materialMatches;p.textures=prior.textures;p.frameRecipes=prior.frameRecipes;p.names=prior.names;p.shared=prior.shared;p.sharedBundles=prepared.sharedBundles;
  auto identity=request.source+'\n'+entry.revision;auto file=Hash(Bytes(identity.begin(),identity.end()))+".vfs";p.key=Hash(Bytes(identity.begin(),identity.end()));m.baseline=p.key;
  p.originals={{file,entry.revision,entry.physical,entry.offset,entry.size}};p.closure={0};p.inputDependencies.resize(1);p.namespaceRecipes.resize(1);p.memberRecipes.resize(1);p.rendererRules.resize(1);
  for(const auto& row:matchedMeshes)p.rendererRules[0].push_back({row.first.first,row.first.second,row.second});

@@ -108,4 +108,5 @@ int wmain(int argc,wchar_t** argv){try{
   ReleaseMutex(single.value);single.owned=false;
  }}catch(const std::exception& e){std::cerr<<"OFFLINE-REJECT reason="<<e.what()<<" previousGenerationRetained=1"<<std::endl;if(!o.watch)return 1;}
  if(o.watch)std::this_thread::sleep_for(std::chrono::seconds(1));}while(o.watch);return 0;
- }catch(const std::exception& e){std::cerr<<e.what()<<std::endl;return 1;}}
+ }catch(const EiemAuthorSources::IndexNeedsRefresh& e){std::cerr<<"OFFLINE-SOURCE-INDEX-STALE\n"<<e.what()<<std::endl;return 3;}
+ catch(const std::exception& e){std::cerr<<e.what()<<std::endl;return 1;}}

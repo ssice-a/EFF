@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>eff_source_index</AssemblyName>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../AnimeStudio/AnimeStudio/AnimeStudio.csproj" />
+    <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldVfsArchive.cs" Link="Sources/EndfieldVfsArchive.cs" />
+    <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldVfsAssetIndexBuilder.cs" Link="Sources/EndfieldVfsAssetIndexBuilder.cs" />
+    <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldIndexWorkspace.cs" Link="Sources/EndfieldIndexWorkspace.cs" />
+    <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldPortableIndex.cs" Link="Sources/EndfieldPortableIndex.cs" />
+    <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldBundleIndexCache.cs" Link="Sources/EndfieldBundleIndexCache.cs" />
+    <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldIndexStore.cs" Link="Sources/EndfieldIndexStore.cs" />
+    <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldBundleDependencyIndex.cs" Link="Sources/EndfieldBundleDependencyIndex.cs" />
+    <Compile Include="../AnimeStudio/AnimeStudio.GUI/VirtualAssetPathIndex.cs" Link="Sources/VirtualAssetPathIndex.cs" />
+    <Content Include="../../LICENSE" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../THIRD_PARTY_NOTICES" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

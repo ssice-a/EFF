@@ -87,6 +87,12 @@ def bundle(destination, compiler=None, abi=35):
         raise FileNotFoundError('missing author core DLL: ' + str(author_core))
     shutil.copy2(author_core, core / 'eff_author_core.dll')
     shutil.copy2(compiler, core / 'eff_resource_pack.exe')
+    source_index = ROOT / 'bin/source-index-helper/eff_source_index.exe'
+    if not source_index.is_file():
+        raise FileNotFoundError('Build the paired offline source-index helper before packaging Blender')
+    shutil.copy2(source_index, core / 'eff_source_index.exe')
+    shutil.copy2(ROOT / 'THIRD_PARTY_NOTICES', destination / 'THIRD_PARTY_NOTICES')
+    shutil.copy2(ROOT / 'LICENSE', destination / 'LICENSE')
     (core / 'package-protocol.json').write_text(json.dumps(protocol, indent=2) + '\n', 'utf-8')
     vendor = ROOT / 'bin/author-core/vendor'
     if not (vendor / 'PIL').is_dir():

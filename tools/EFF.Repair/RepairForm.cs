@@ -19,7 +19,7 @@ internal sealed class RepairForm : Form
     private string Workspace => Path.Combine(data, "workspace");
     internal RepairForm(bool autoCheck = true)
     {
-        Text = "EFF Mod 修复工具 0.1";Width = 920;Height = 660;MinimumSize = new Size(920, 560);StartPosition = FormStartPosition.CenterScreen;
+        Text = "EFF Mod 修复工具 0.2";Width = 920;Height = 660;MinimumSize = new Size(920, 560);StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Microsoft YaHei UI", 9);BackColor = Color.FromArgb(245, 246, 249);AllowDrop = true;
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 1, RowCount = 9 };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
@@ -105,7 +105,12 @@ internal sealed class RepairForm : Form
     {
         if (!GameDiscovery.Valid(game.Text)) throw new IOException("请选择有效游戏目录");
         var selectedGame = game.Text;archive = await Task.Run(() => EndfieldVfsArchive.Open(selectedGame));
-        if (!EndfieldVfsAssetIndexBuilder.TryGetCurrentIndex(archive, Workspace, out var index)) throw new IOException("请先下载或导入匹配当前游戏的完整索引");
+        if (!EndfieldVfsAssetIndexBuilder.TryGetCurrentIndex(archive, Workspace, out var index))
+        {
+            Report("正在按逻辑路径核对 Bundle 内容并重新绑定索引位置…");
+            if (!await Task.Run(() => EndfieldVfsAssetIndexBuilder.TryRebindUnchangedContent(archive, Workspace, cancellation!.Token)))
+                throw new IOException("索引无法按当前 Bundle 内容安全复用，请先下载或导入匹配当前内容的完整索引。");
+        }
         var selected = list.CheckedIndices.Cast<int>().Select(i => paths[i]).ToArray();if (selected.Length == 0) throw new IOException("请先勾选需要修复的 Mod");
         var progress = new Progress<string>(Report);var content = EndfieldPortableIndex.ContentIdentity(archive);int completed = 0, failed = 0;
         foreach (var mod in selected)

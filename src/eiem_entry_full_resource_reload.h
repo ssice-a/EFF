@@ -191,6 +191,12 @@ PartFinishedFn originalPartFinished=nullptr;
 PartFinishedFn originalBasePartFinished=nullptr,originalPartReleased=nullptr;
 using PartLoadingFn=void(*)(void*,void*,void*,void*);
 PartLoadingFn originalPartLoading=nullptr;
+// BaseModelComponent._LoadMainModelInternal performs the same release/configure/load
+// sequence as BaseModelViewPart.LoadModel, but the current game inlines that path
+// for several synchronous and model-change entries. Keep the ownership scope across
+// that internal call so ReleaseModel cannot erase the authoritative part record.
+using MainModelInternalFn=void(*)(void*,bool,void*,void*);
+MainModelInternalFn originalMainModelInternal=nullptr;
 struct PartLoadScope {
  void* part;PartLoadScope* previous;
  static thread_local PartLoadScope* current;
@@ -248,6 +254,27 @@ bool InheritsClass(void* klass,const char* ns,const char* name){
  }return false;
 }
 bool Inherits(void* object,const char* ns,const char* name){return InheritsClass(object?il2cpp_object_get_class(object):nullptr,ns,name);}
+struct MainModelLoadScope {
+ void* model;MainModelLoadScope* previous;
+ static thread_local MainModelLoadScope* current;
+ explicit MainModelLoadScope(void* value):model(value),previous(current){current=this;}
+ ~MainModelLoadScope(){current=previous;}
+ static void* Owner(void* part){
+  // A new main part can be allocated after method entry. Check the actual
+  // component attachment at release time, without scanning models or Renderers.
+  for(auto scope=current;scope;scope=scope->previous)
+   if(ReadObject(scope->model,"m_mainPart","Beyond.Gameplay.View.ComplexModelViewPart")==part)return scope->model;
+  return nullptr;
+ }
+};
+inline thread_local MainModelLoadScope* MainModelLoadScope::current=nullptr;
+void RecordMainPartOwner(void* model,void* part){
+ Require(Inherits(model,"Beyond.Gameplay.View","BaseModelComponent")&&
+         ReadObject(model,"m_mainPart","Beyond.Gameplay.View.ComplexModelViewPart")==part,
+         "reload main-part attachment differs");
+ auto& live=liveParts[part];live.part=Ref::Make(part,true);live.model=Ref::Make(model,true);
+ live.ownerRecorded=true;live.ownershipError.clear();
+}
 std::string PartCallbackType(void* basePart){
  auto type=il2cpp_field_get_type(Field(basePart,"m_loadFinishCb",nullptr));auto klass=il2cpp_class_from_type(type);
  Require(InheritsClass(klass,"System","Delegate"),"reload model load callback is not a delegate");
@@ -277,8 +304,7 @@ void RecordPartLoad(void* self,void* callback){
 void PartAdded(void* self,void* part,void* info){
  originalPartAdded(self,part,info);
  try{if(!RuntimeShapes::Main()||ReadObject(self,"m_mainPart","Beyond.Gameplay.View.ComplexModelViewPart")!=part)return;
-  Require(Inherits(self,"Beyond.Gameplay.View","BaseModelComponent"),"reload main-part owner type differs");
-  auto& live=liveParts[part];live.part=Ref::Make(part,true);live.model=Ref::Make(self,true);live.ownerRecorded=true;live.ownershipError.clear();
+  RecordMainPartOwner(self,part);
  }catch(const std::exception& e){liveParts[part].ownershipError=e.what();Log("[FULL-RELOAD-PART-GAP] reason=%s",e.what());}
 }
 void PartLoading(void* self,void* data,void* callback,void* info){
@@ -288,6 +314,24 @@ void PartConfigured(void* self,void* data,void* info){
  // Display callers also use SetupData -> StartSyncLoad directly, without
  // LoadModel's callback. Record this real game entry before completion.
  RecordPartLoad(self,nullptr);originalPartConfigured(self,data,info);
+}
+void MainModelInternal(void* self,bool isSyncLoadSlow,void* callback,void* info){
+ // The internal method owns the main part and writes its fields directly. It
+ // does not enter BaseModelViewPart.LoadModel, so the ordinary PartLoadScope
+ // would otherwise be absent when its virtual ReleaseModel runs.
+ MainModelLoadScope loading(self);
+ try{if(RuntimeShapes::Main()){
+  auto part=ReadObject(self,"m_mainPart","Beyond.Gameplay.View.ComplexModelViewPart");
+  if(part){
+   RecordPartLoad(part,nullptr);
+   RecordMainPartOwner(self,part);
+  }
+ }}catch(const std::exception& e){
+  Log("[FULL-RELOAD-PART-GAP] internalMainModelLoad=%s",e.what());
+ }
+ // This callback is System.Action, not LoadModel's Action<bool, part> owner.
+ // Forward its MethodInfo and let the original run exactly once, even on error.
+ originalMainModelInternal(self,isSyncLoadSlow,callback,info);
 }
 #if defined(EIEM_DIAGNOSTICS)
 void ProbeModelMaterials(void* root,const char* phase);
@@ -317,6 +361,10 @@ void BasePartFinished(void* self,void* info){
 std::vector<Ref> Components(void* root);
 void PartReleased(void* self,void* info){
  std::vector<Ref> renderers;
+ bool incoming=PartLoadScope::Contains(self);
+ try{if(RuntimeShapes::Main())if(auto model=MainModelLoadScope::Owner(self)){
+  RecordMainPartOwner(model,self);incoming=true;
+ }}catch(const std::exception& e){Log("[FULL-RELOAD-PART-GAP] internalMainPartRelease=%s",e.what());}
  try{if(RuntimeShapes::Main()&&!RuntimeShapes::bound.empty()){
   auto root=ReadObject(self,"m_model","UnityEngine.GameObject");if(RuntimeShapes::Alive(root))renderers=Components(root);
  }}catch(const std::exception& e){Log("[FULL-RELOAD-PART-GAP] releaseControlRegistration=%s",e.what());}
@@ -327,7 +375,7 @@ void PartReleased(void* self,void* info){
  for(const auto& renderer:renderers)RuntimeShapes::bound.erase(renderer.Get());
  RuntimeShapes::boundCount.store(unsigned(RuntimeShapes::bound.size()));
  auto live=liveParts.find(self);
- if(PartLoadScope::Contains(self)&&live!=liveParts.end()){
+ if(incoming&&live!=liveParts.end()){
   // LoadModel releases the old root before starting its replacement. Keep
   // the incoming load's owner, but retire every reference to the old root.
   live->second.root={};live->second.path.clear();live->second.persistent=false;
@@ -794,6 +842,7 @@ void Install(void** assemblies,size_t count){
   Require(Entry::Install(basePart,"ReleaseModel",{},"System.Void",false,(void*)PartReleased,(void**)&originalPartReleased),"model part release lifecycle hook unavailable");
   auto callbackType=PartCallbackType(basePart);
   Require(Entry::Install(basePart,"LoadModel",{"Beyond.Gameplay.View.BaseModelViewPartData",callbackType.c_str()},"System.Void",false,(void*)PartLoading,(void**)&originalPartLoading),"model part owner lifecycle hook unavailable");
+  Require(Entry::Install(model,"_LoadMainModelInternal",{"System.Boolean","System.Action"},"System.Void",false,(void*)MainModelInternal,(void**)&originalMainModelInternal),"internal main-model lifecycle hook unavailable");
   Require(Method(complexPart,"PostDealLoadedModel",{},"System.Void",false),"model part completion method absent");
   Require(Entry::Install(complexPart,"PostDealLoadedModel",{},"System.Void",false,(void*)PartFinished,(void**)&originalPartFinished),"model part lifecycle hook unavailable");
   auto effect=FindClass("Beyond.Gameplay","EffectManager",assemblies,count);api.follow=Method(effect,"ChangeEntityFollowEffect",{"Beyond.Gameplay.Core.Entity"},"System.Void",false);
@@ -1106,7 +1155,9 @@ void DiscoverOwners(Attempt& a){
   }
   if(!part||!RuntimeShapes::Alive(root)||ReadObject(part,"m_model","UnityEngine.GameObject")!=root){it=liveParts.erase(it);continue;}
   auto& live=it++->second;if(coveredRoots.count(root)||!FindRoot(*a.prepared->plan,live.path))continue;
-  Require(live.ownerRecorded,"reload model part load ownership was not recorded");
+  Require(live.ownerRecorded,"reload model part load ownership was not recorded; path="+live.path+
+          " partType="+std::string(il2cpp_class_get_name(il2cpp_object_get_class(part)))+
+          " rootId="+std::to_string(Id(root)));
   Require(live.ownershipError.empty(),"reload model part ownership unavailable: "+live.ownershipError);
   if(live.model.handle){auto model=live.model.Get();Require(model,"reload recorded model owner retired");
    world(model,Call(api.modelEntity,model),root,part);continue;

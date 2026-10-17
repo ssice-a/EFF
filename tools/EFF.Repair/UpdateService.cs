@@ -14,7 +14,7 @@ internal static class UpdateService
     private static readonly HttpClient Client = CreateClient();
     private static HttpClient CreateClient()
     {
-        var client = new HttpClient { Timeout = TimeSpan.FromMinutes(15) };client.DefaultRequestHeaders.UserAgent.ParseAdd("EFF-Repair/0.1.0");return client;
+        var client = new HttpClient { Timeout = TimeSpan.FromMinutes(15) };client.DefaultRequestHeaders.UserAgent.ParseAdd("EFF-Repair/0.2.0");return client;
     }
     internal static Uri Https(string value)
     {

@@ -13,7 +13,7 @@ inline bool Try(const std::filesystem::path& mod,const std::filesystem::path& pr
  auto path=mod/"compiled.bin",publishedPath=previous/"compiled.bin";
  if(!std::filesystem::is_regular_file(path)||!std::filesystem::is_regular_file(publishedPath)||!EiemCompiledModStore::IsStore(path)||!EiemCompiledModStore::IsStore(publishedPath)||std::filesystem::hard_link_count(path)!=1)return false;
  {EiemModUpdateStore::File file(path,false);auto snapshot=EiemModUpdateStore::Read(file);auto bytes=EiemModUpdateStore::Get(file,snapshot,"runtime/author-seal");EiemOfflinePackage::Reader seal{bytes};if(seal.S()!=PackageDigest(author))return false;}
- auto stage=EiemCompiledModStore::Load(path,mod,game,true);if(!stage.selection||stage.artifact.manifest.plan.author!=PackageDigest(author))return false;
+ auto stage=EiemCompiledModStore::Load(path,mod,game,true);if(!stage.selection||stage.artifact.manifest.plan.author!=PackageDigest(author)||!SharedInputsPruned(stage.artifact))return false;
  auto published=EiemCompiledModStore::Load(publishedPath,previous,game,true);if(!published.selection)return false;
  Require(author.id==published.artifact.manifest.package.id,"concurrent discoveries belong to another Mod");
  auto selected=EiemCompiledExportCarryover::Merge(current,*published.selection,published.artifact,currentSelectionComplete);
@@ -28,6 +28,7 @@ inline bool Try(const std::filesystem::path& mod,const std::filesystem::path& pr
  if(pending.empty()){publishSelection();return true;}
  EiemModUpdateStore::File backing(path,false);auto snapshot=EiemModUpdateStore::Read(backing);if(!snapshot.blocks.count("runtime/prepared-pfb"))return false;
  auto descriptor=EiemModUpdateStore::Get(backing,snapshot,"runtime/prepared-pfb");
+ {auto plain=Unpack(descriptor);EiemOfflinePackage::Reader fields{plain};if(fields.S()!=EiemPreparedPrefabCompiler::descriptorStructure)return false;} // Regenerate obsolete descriptors with the full author compiler.
  auto prepared=EiemPreparedPrefabCompiler::Decode(descriptor,std::make_shared<const Artifact>(stage.artifact),selected);
  auto artifact=std::move(stage.artifact);std::set<std::string> affected;
  for(const auto& source:pending){auto result=EiemResourceReloadPlan::Measure(cost,"export-catchup-pfb",[&]{return EiemPreparedPrefabCompiler::Compile(prepared,{source,EiemSourceAdaptationCompiler::StampFor(author,selected,source)});});

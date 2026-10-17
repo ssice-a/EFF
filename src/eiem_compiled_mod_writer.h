@@ -125,6 +125,16 @@ inline Artifact Compile(const Package& author,const EiemStaticSources::Selection
  });});Manifest manifest{std::move(plan),author,Hash(EiemNativeInput::Read(baseline/"baseline.tsv"))};
  Artifact artifact;artifact.manifest=std::move(manifest);for(auto& proof:proofs)MergeProof(artifact,std::move(proof));Require(artifact.pristine.size()==artifact.manifest.plan.roots.size(),"compiled pristine roots missing");
  artifact.views=std::move(views);artifact.preparedFrames=std::move(preparedFrames);
+ auto& compact=artifact.manifest.plan;
+ if(!compact.retainedInputs.empty()){
+  const auto retained=std::move(compact.retainedInputs);std::vector<size_t> remap(compact.inputs.size(),SIZE_MAX);
+  for(size_t i=0;i<retained.size();++i)remap.at(retained[i])=i;
+  auto select=[&](auto& values){using Values=std::decay_t<decltype(values)>;Values result;result.reserve(retained.size());for(auto old:retained)result.push_back(std::move(values.at(old)));values=std::move(result);};
+  select(compact.inputs);select(compact.originals);select(compact.startupHashes);select(compact.rendererRules);select(compact.namespaceRecipes);select(compact.memberRecipes);select(artifact.views);
+  for(auto& root:compact.roots){Require(remap.at(root.input)!=SIZE_MAX,"retention removed a Prefab root");root.input=remap[root.input];}
+  for(auto& root:artifact.pristine){Require(remap.at(root.input)!=SIZE_MAX,"retention removed a pristine root");root.input=remap[root.input];}
+  std::vector<size_t> closure;for(auto old:compact.closure)if(remap.at(old)!=SIZE_MAX)closure.push_back(remap[old]);compact.closure=std::move(closure);
+ }
  for(auto& root:artifact.manifest.plan.roots){auto pristine=std::find_if(artifact.pristine.begin(),artifact.pristine.end(),[&](const auto& row){return row.path==root.path;});Require(pristine!=artifact.pristine.end(),"compiled root proof absent");root.cab=pristine->cab;root.source=pristine->source;}
  return artifact;
 }
@@ -153,14 +163,14 @@ inline void Export(const std::filesystem::path& mod,const std::filesystem::path&
   // compiler identity, so a subsequent export still reuses the index selection.
   auto descriptor=selected;if(std::filesystem::is_regular_file(mod/"source-inputs.bin"))descriptor.manifest=EiemStaticSources::LoadMod(mod,game).manifest;
   EiemOfflineCompile::AtomicSave(mod/"source-inputs.bin",EiemCompiledModStore::SourceSelection(descriptor,game));
-  if(!preparedDiscovery&&sameDiscovery&&cached->manifest.rootAssembly&&cached->views.size()==cached->manifest.plan.originals.size()&&cached->manifest.plan.contract==InputContractDigest(author)&&(!store||cached->manifest.plan.author==PackageDigest(author))){
+  if(!preparedDiscovery&&sameDiscovery&&SharedInputsPruned(*cached)&&cached->manifest.rootAssembly&&cached->views.size()==cached->manifest.plan.originals.size()&&cached->manifest.plan.contract==InputContractDigest(author)&&(!store||cached->manifest.plan.author==PackageDigest(author))){
    for(const auto& source:cached->manifest.plan.originals)ReadSource({},source);
    if(cached){cached->manifest.package=author;cached->manifest.plan.author=PackageDigest(author);
     if(store){if(std::filesystem::weakly_canonical(cacheRoot)!=std::filesystem::weakly_canonical(mod))EiemCompiledExportCarryover::CopySnapshot(cacheRoot/"compiled.bin",mod/"compiled.bin");return;}
     auto bytes=EiemCompiledMod::Encode(*cached,std::filesystem::weakly_canonical(game));if(!std::filesystem::is_regular_file(mod/"compiled.bin")||bytes!=EiemNativeInput::Read(mod/"compiled.bin"))EiemOfflineCompile::AtomicSave(mod/"compiled.bin",bytes);return;}
   }
  }
- if(!store&&sameDiscovery&&cached&&cached->manifest.rootAssembly&&Measure(cost,"incremental-material-wall",[&]{return RecompileMaterialParameters(*cached,author,selected,cost);})){
+ if(!store&&sameDiscovery&&cached&&SharedInputsPruned(*cached)&&cached->manifest.rootAssembly&&Measure(cost,"incremental-material-wall",[&]{return RecompileMaterialParameters(*cached,author,selected,cost);})){
   auto bytes=Measure(cost,"compiled-encode",[&]{return EiemCompiledMod::Encode(*cached,std::filesystem::weakly_canonical(game),cost);});
   auto decoded=Measure(cost,"compiled-roundtrip",[&]{return EiemCompiledMod::Decode(bytes,mod,game,{},&author);});Require(decoded.manifest.plan.contract==InputContractDigest(author),"incremental material author roundtrip differs");
   Measure(cost,"compiled-publish",[&]{EiemOfflineCompile::AtomicSave(mod/"compiled.bin",bytes);return 0;});return;

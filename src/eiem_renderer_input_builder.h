@@ -747,13 +747,17 @@ inline void AddMeshSchemas(MeshSchemaIndex& schemas, const Bytes& input,
 // All source indexes describe the same immutable input. Decode its bundle,
 // TypeTrees and asset table once; retain each index's own validation rules.
 inline void AddSourceInventory(AssetIndex& assets,MeshSchemaIndex& schemas,MeshBoneHashIndex& palettes,
-    MaterialPreloadIndex& preloads,const EndfieldInput::Bundle& bundle,const Package& package) {
+    MaterialPreloadIndex& preloads,const EndfieldInput::Bundle& bundle,const Package& package,
+    std::map<std::string,std::string>* bundleOwners=nullptr) {
+  std::string bundleName;
   for(const auto& member:bundle.members)if(SerializedHeader(member.bytes)) {
     auto layout=ParseSerialized(member.bytes);auto catalog=SerializedAssets(member.bytes,member.name,layout);
+    if(bundleOwners)for(const auto& row:layout.objects)if(layout.types.at(row.second.type).classId==142){const auto& type=layout.types.at(row.second.type);auto value=ObjectValue(member.bytes,layout,row.first);const auto& name=Child(type,value,"m_Name");auto text=Text(name.raw.data(),name.raw.size());Require(bundleName.empty()||bundleName==text,"source inventory Bundle identity ambiguous");bundleName=std::move(text);}
     AddMeshSchemas(schemas,member.bytes,member.name,layout,catalog,&palettes,&package);
     AddMaterialPreloads(preloads,member.bytes,member.name,layout,catalog,package);
     AddAssets(assets,std::move(catalog));
   }
+  if(bundleOwners){Require(!bundleName.empty(),"source inventory native Bundle identity absent");for(const auto& member:bundle.members){auto inserted=bundleOwners->emplace(member.name,bundleName);Require(inserted.second||inserted.first->second==bundleName,"source inventory CAB has multiple Bundle owners");}}
 }
 inline void AddSourceInventory(AssetIndex& assets,MeshSchemaIndex& schemas,MeshBoneHashIndex& palettes,
     MaterialPreloadIndex& preloads,const Bytes& input,const Package& package) {

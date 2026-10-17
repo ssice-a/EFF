@@ -4,7 +4,7 @@
     <TargetFramework>net9.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Nullable>annotations</Nullable>
     <DefineConstants>$(DefineConstants);EFF_SOURCE_READER</DefineConstants>
     <NativeCompilerPath Condition="'$(NativeCompilerPath)' == ''">$(MSBuildThisFileDirectory)../Blender/nativepack/eff_resource_pack.exe</NativeCompilerPath>

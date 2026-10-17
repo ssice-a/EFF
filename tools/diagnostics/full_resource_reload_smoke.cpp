@@ -42,7 +42,7 @@ void BuildDependencyManifest(){
  }
 }
 int nativeFactory=1;bool ignoreCandidate=false;
-bool recordPartFinished=false,completePartLoading=true;
+bool recordPartFinished=false,completePartLoading=true,internalMainModelLoad=false;
 bool typedAudioOnly=false;
 bool displayOverride=false;unsigned overrideReleases=0;
 void* callbackTarget=(void*)0x1010;
@@ -178,7 +178,8 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==97){++overrideReleases;++removeCalls;currentRoot=nullptr;return nullptr;}
  if(m==23){Require(!currentRoot,"pool discarded before old owner released");if(FullResourceReload::api.discardHasUnloadImmediately)Require(args[1]&&*(unsigned char*)args[1]==0,"pool discard forced asset unload or omitted updated Boolean argument");++discardCalls;return nullptr;}
  if(m==24){Require(discardCalls>=removeCalls,"model loaded before path-scoped pool discard");++loadCalls;
-  if(recordPartFinished)FullResourceReload::PartLoading(mainPart,configBox,loadCallback,nullptr);else currentRoot=NativeCreate(source);return nullptr;}
+  if(internalMainModelLoad)FullResourceReload::MainModelInternal(model,true,loadCallback,(void*)0xDC02);
+  else if(recordPartFinished)FullResourceReload::PartLoading(mainPart,configBox,loadCallback,nullptr);else currentRoot=NativeCreate(source);return nullptr;}
  if(m==25){++followCalls;return nullptr;}
  if(m==26)return released?&yes:&no;
  if(m==30){++disposeCalls;if(throwDispose)throw std::runtime_error("fixture Dispose threw after side effect");return nullptr;}
@@ -345,7 +346,7 @@ void Reset(){
  propertyArrays.clear();propertyIds={314};propertyTextures.clear();propertyElementWidth=4;
  std::atomic_store(&FullResourceReload::routes,std::shared_ptr<const FullResourceReload::Routes>(std::make_shared<FullResourceReload::Routes>()));
  currentRoot=oldRoot;removeCalls=discardCalls=loadCalls=cloneCalls=followCalls=disposeCalls=unloadCalls=0;rejectVertex=false;sourceAlive=true;throwDispose=false;done=0;generation=2;
- animationRoot=oldRoot;animationRebinds=weaponUnloads=weaponReloads=weaponRemounts=audioInvalidations=0;ignoreCandidate=false;recordPartFinished=false;completePartLoading=true;callbackTarget=model;
+ animationRoot=oldRoot;animationRebinds=weaponUnloads=weaponReloads=weaponRemounts=audioInvalidations=0;ignoreCandidate=false;recordPartFinished=false;completePartLoading=true;internalMainModelLoad=false;callbackTarget=model;
  weaponMountRoot=oldRoot;weaponRequestMountRoot=nullptr;consumerCalls.clear();
  identitySameMesh=false;textureValue=oldTexture;
  scheduleDone.clear();scheduleBundles.clear();opened=leaseRequests=sceneQueries=0;
@@ -909,6 +910,53 @@ void LoadReleaseOwnershipRegression(){
   Require(!liveParts.count(mainPart),"standalone ReleaseModel retained an inactive ownership record");
  }
 }
+void InternalMainModelOwnershipRegression(){
+ using namespace FullResourceReload;
+ auto saved=originalMainModelInternal;auto initialNewRoot=newRoot;
+ struct Cleanup {MainModelInternalFn saved;void* root;~Cleanup(){originalMainModelInternal=saved;newRoot=root;Reset();}}cleanup{saved,initialNewRoot};
+ // The current game inlines release/config/load inside this component method.
+ // It can also create the main part after entry. Neither path enters LoadModel.
+ originalMainModelInternal=[](void* self,bool synchronous,void* callback,void* info){
+  Require(self==model&&synchronous==completePartLoading&&callback==loadCallback&&info==(void*)0xDC02,
+          "internal model load receiver, callback or MethodInfo differs");
+  if(!hasPart){hasPart=true;PartAdded(self,mainPart,nullptr);}
+  PartReleased(mainPart,nullptr);
+  if(completePartLoading){currentRoot=NativeCreate(source);PartFinished(mainPart,nullptr);}
+ };
+ for(bool existing:{false,true})for(bool synchronous:{false,true}){
+  newRoot=initialNewRoot;Reset();hasPart=existing;
+  // The internal callback is an ordinary Action, not a part-owner delegate.
+  callbackTarget=unrelatedModel;completePartLoading=synchronous;
+  MainModelInternal(model,synchronous,loadCallback,(void*)0xDC02);
+  Require(liveParts.count(mainPart)&&liveParts.at(mainPart).ownerRecorded&&liveParts.at(mainPart).model.Get()==model,
+          "inline main-model release erased or misassigned its new/existing part ownership");
+  if(!synchronous){
+   auto pending=MakeAttempt();pending.owners.clear();bool refused=false;try{DiscoverOwners(pending);}catch(const std::exception&){refused=true;}
+   Require(refused&&!removeCalls,"F10 accepted an unfinished internal main-model load");
+   currentRoot=NativeCreate(source);PartFinished(mainPart,nullptr);
+  }
+  animationRoot=currentRoot;
+  auto a=MakeAttempt();a.owners.clear();DiscoverOwners(a);
+  Require(a.owners.size()==1&&!a.owners.front().viewPart&&a.owners.front().animation.Get()==animation,
+          "internal main-model completion became a display owner");
+  internalMainModelLoad=true;completePartLoading=true;
+  for(unsigned repeat=0;repeat<3;++repeat){
+   if(repeat)newRoot=(void*)(uintptr_t(initialNewRoot)+0x20+repeat);
+   a=MakeAttempt();a.prepared->base=generation.load();a.owners.clear();DiscoverOwners(a);Rebuild(a);
+   Require(a.phase==Phase::Passed&&generation==3+repeat&&liveParts.count(mainPart)&&
+           liveParts.at(mainPart).ownerRecorded&&liveParts.at(mainPart).model.Get()==model&&
+           liveParts.at(mainPart).root.Get()==currentRoot&&animationRebinds==repeat+1&&animationRoot==currentRoot,
+           "consecutive F10 internal rebuild lost owner registration or animation");
+  }
+  PartReleased(mainPart,nullptr);
+  Require(!liveParts.count(mainPart),"standalone release retained internal load ownership");
+ }
+ Reset();static unsigned calls=0;calls=0;
+ originalMainModelInternal=[](void*,bool,void*,void*){++calls;throw std::runtime_error("fixture original internal load failed");};
+ bool threw=false;try{MainModelInternal(model,true,loadCallback,(void*)0xDC02);}catch(const std::exception& e){threw=std::string(e.what())=="fixture original internal load failed";}
+ Require(threw&&calls==1,"internal lifecycle observer retried or swallowed an original game error");
+ Require(!MainModelLoadScope::current&&!PartLoadScope::current,"failed internal load retained a thread-local ownership scope");
+}
 void BoneVerificationCostRegression(){
  using namespace FullResourceReload;Reset();auto p=Prepare();BoneHierarchy hierarchy(oldRoot);
  hierarchy.Verify(oldRenderer,{bone},bone,p->plan->parts.at("marker"));
@@ -1146,13 +1194,14 @@ void UIModelReloadRegression(){
 void PartCallbackBindingRegression(){
  struct MethodRow {MInfo info{};const char* name;const char* parameters[2];};
  static MethodRow rows[]={{ {},"Invoke",{"System.Boolean","Beyond.Gameplay.View.BaseModelViewPart"}},
-  {{},"LoadModel",{"Beyond.Gameplay.View.BaseModelViewPartData","System.Action<System.Boolean,Beyond.Gameplay.View.BaseModelViewPart>"}}};
+  {{},"LoadModel",{"Beyond.Gameplay.View.BaseModelViewPartData","System.Action<System.Boolean,Beyond.Gameplay.View.BaseModelViewPart>"}},
+  {{},"_LoadMainModelInternal",{"System.Boolean","System.Action"}}};
  for(auto& row:rows)row.info.mp=(void*)1;
  auto previous=std::make_tuple(il2cpp_class_get_methods,il2cpp_method_get_name,il2cpp_method_get_param_count,
   il2cpp_method_get_flags,il2cpp_method_get_return_type,il2cpp_method_get_param,il2cpp_type_get_name,il2cpp_class_get_type,il2cpp_class_from_type);
  auto restore=[&]{std::tie(il2cpp_class_get_methods,il2cpp_method_get_name,il2cpp_method_get_param_count,
   il2cpp_method_get_flags,il2cpp_method_get_return_type,il2cpp_method_get_param,il2cpp_type_get_name,il2cpp_class_get_type,il2cpp_class_from_type)=previous;};
- il2cpp_class_get_methods=[](void* klass,void** it)->void*{if(*it)return nullptr;*it=(void*)1;return &rows[klass==delegateClass?0:1];};
+ il2cpp_class_get_methods=[](void* klass,void** it)->void*{if(*it)return nullptr;*it=(void*)1;return &rows[klass==delegateClass?0:klass==modelClass?2:1];};
  il2cpp_method_get_name=[](void* method)->const char*{return static_cast<MethodRow*>(method)->name;};
  il2cpp_method_get_param_count=[](void*)->uint32_t{return 2;};
  il2cpp_method_get_flags=[](void*,uint32_t*)->uint32_t{return 0x86;};
@@ -1164,6 +1213,9 @@ void PartCallbackBindingRegression(){
  try{
   auto callback=FullResourceReload::PartCallbackType(instanceClass);
   Require(Exact(instanceClass,"LoadModel",{"Beyond.Gameplay.View.BaseModelViewPartData",callback.c_str()},"System.Void",false)==&rows[1],"model LoadModel binding did not use the actual callback type");
+  Require(Exact(modelClass,"_LoadMainModelInternal",{"System.Boolean","System.Action"},"System.Void",false)==&rows[2]&&
+          !Exact(modelClass,"_LoadMainModelInternal",{"System.Boolean",callback.c_str()},"System.Void",false),
+          "internal model binding confused System.Action with the part-owner delegate");
   rows[0].parameters[1]="UnityEngine.Object";bool refused=false;
   try{FullResourceReload::PartCallbackType(instanceClass);}catch(const std::exception&){refused=true;}
   Require(refused,"model callback with a different argument structure was accepted");
@@ -1853,6 +1905,7 @@ int main(int argc,char** argv){
   check("unowned Renderer rejection details",OwnershipRejectionDetailsRegression);
   check("provisional material-controller Renderer coverage",ProvisionalRendererOwnershipRegression);
   check("LoadModel release ownership",LoadReleaseOwnershipRegression);
+  check("internal main-model ownership",InternalMainModelOwnershipRegression);
   check("bone verification cost",BoneVerificationCostRegression);
   check("UI page API binding",UIPageApiBindingRegression);
   check("UI Lua exception details",UILuaExceptionRegression);

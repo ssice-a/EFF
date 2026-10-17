@@ -46,6 +46,7 @@ inline Artifact Merge(const Artifact& previous,const Artifact& delta){
   for(const auto& member:delta.members){bool belongs=std::any_of(added.memberRecipes.at(i).begin(),added.memberRecipes.at(i).end(),[&](const auto& recipe){return recipe.name==member.first;});if(belongs)Require(result.members.emplace(member).second,"new source repeats an existing CAB");}
  }
  for(const auto& row:added.names.members)plan.names.members.emplace(row);for(const auto& row:added.names.bundles)plan.names.bundles.emplace(row);
+ for(const auto& row:added.sharedBundles){auto found=plan.sharedBundles.emplace(row);Require(found.second||found.first->second==row.second,"appended native dependency route conflicts");}
  for(const auto& frame:delta.preparedFrames){auto found=result.preparedFrames.find(frame.first);Require(found==result.preparedFrames.end()||found->second==frame.second,"delta author frame changed");result.preparedFrames.emplace(frame);}
  for(const auto& frame:added.frameRecipes)if(std::none_of(plan.frameRecipes.begin(),plan.frameRecipes.end(),[&](const auto& row){return row.resource==frame.resource;}))plan.frameRecipes.push_back(frame);
  std::map<std::string,size_t> memberInputs;for(size_t i=0;i<plan.memberRecipes.size();++i){auto directory=result.retainedInputDirectories.find(i);

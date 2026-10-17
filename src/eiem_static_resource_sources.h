@@ -13,6 +13,7 @@ inline std::string Logical(std::string s) {std::replace(s.begin(),s.end(),'\\','
 inline std::string Cab(std::string s) {s=Logical(s);return s.substr(s.find_last_of('/')==s.npos?0:s.find_last_of('/')+1);}
 inline bool Ends(const std::string& s,const char* suffix) {auto n=strlen(suffix);return s.size()>=n&&s.compare(s.size()-n,n,suffix)==0;}
 struct Entry {std::string logical,revision;std::filesystem::path physical;uint64_t offset=0,size=0;};
+inline std::string SourceFile(const std::string& logical,const std::string& revision){auto identity=logical+'\n'+revision;return Hash(Bytes(identity.begin(),identity.end()))+".vfs";}
 struct Selection {
  std::string manifest;
  std::map<std::string,std::string> assets;
@@ -145,7 +146,7 @@ inline void Ensure(const Selection& s,const std::filesystem::path& baseline,cons
  if(d.roots.empty())return;auto sources=std::move(d.sources);std::filesystem::create_directories(baseline);std::string table="EFF_RESOURCE_RELOAD_BASELINE\t1\n",ranges="EFF_RESOURCE_SOURCE_RANGES\t1\n";
  auto game=gameRoot.empty()?baseline.parent_path().parent_path():gameRoot;
  auto sourceRow=[&](const EiemResourceReloadPlan::Source& entry){auto relative=entry.physical.lexically_relative(game).u8string();Require(!relative.empty()&&relative.find("..") ==std::string::npos,"rule original outside game");return "input\t"+entry.file+"\t"+entry.hash+"\t"+relative+"\t"+std::to_string(entry.offset)+"\t"+std::to_string(entry.size)+"\n";};
- for(const auto& source:sources){const auto& e=s.inputs.at(source);auto identity=source+"\n"+e.revision;auto name=Hash(Bytes(identity.begin(),identity.end()))+".vfs";
+ for(const auto& source:sources){const auto& e=s.inputs.at(source);auto name=SourceFile(source,e.revision);
   previous.erase(name);previousRanges.erase(name);table+=sourceRow({name,e.revision,e.physical,e.offset,e.size});ranges+=name+"\t"+e.physical.u8string()+"\t"+std::to_string(e.offset)+"\t"+std::to_string(e.size)+"\t"+e.revision+"\n";
  }for(const auto& old:previousRanges)ranges+=old.second;for(const auto& old:previous)table+=sourceRow(old.second);for(const auto& root:d.roots)table+="root\t"+root+"\tGameObject\n";
  EiemOfflineCompile::AtomicSave(baseline/"source-ranges.tsv",Bytes(ranges.begin(),ranges.end()));EiemOfflineCompile::AtomicSave(baseline/"baseline.tsv",Bytes(table.begin(),table.end()));

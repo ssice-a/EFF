@@ -26,7 +26,7 @@ internal static class Program
                 if (args.Length == 5 && args[0] == "--repair")
                 {
                     var archive = EndfieldVfsArchive.Open(args[2]);
-                    if (!EndfieldVfsAssetIndexBuilder.TryGetCurrentIndex(archive, args[3], out var index)) throw new IOException("工作区没有与当前游戏匹配的索引");
+                    if (!EndfieldVfsAssetIndexBuilder.TryGetOrRebindCurrentIndex(archive, args[3], out var index)) throw new IOException("工作区索引无法按当前逻辑 Bundle 内容复用，请导入匹配当前内容的完整索引。");
                     var result = RepairService.Repair(args[1], args[2], index, EndfieldPortableIndex.ContentIdentity(archive), null, CancellationToken.None).GetAwaiter().GetResult();
                     File.WriteAllText(args[4], result);return 0;
                 }

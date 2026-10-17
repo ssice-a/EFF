@@ -6,6 +6,7 @@
 #include "eiem_runtime_shape_identity.h"
 #include "eiem_loading_input_substitution.h"
 #include "eiem_offline_compile_helpers.h"
+#include "eiem_input_retention.h"
 #include <fstream>
 #include <functional>
 #include <chrono>
@@ -61,6 +62,11 @@ struct Plan {
  std::vector<size_t> closure;std::set<std::string> shared;
  // Offline input edges; runtime unions indices when independently compiled Mods share a file.
  std::vector<std::vector<size_t>> inputDependencies;
+ // Transient author-build selection. Compacted before an artifact is encoded.
+ std::vector<size_t> retainedInputs;
+ // Build-only routing for new references to native dependencies omitted from
+ // compiled views. Encoders persist their Bundle edges, without copying them.
+ std::map<std::string,std::string> sharedBundles;
  // Native views already prove their source/author bytes offline. Their
  // relocated identity is separate from the byte SHA of a materialized file.
  std::map<size_t,std::string> viewIdentities;
@@ -465,10 +471,21 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
   TextureSlot slot;slot.property=p.first;slot.nonnull=p.second.second!=0;auto found=textures.find(p.second);if(found!=textures.end()){slot.local=true;slot.texture=found->second;}mat.slots.push_back(std::move(slot));
  }}
  for(const auto& m:package.materials)plan.materials.emplace(m.first,materials.at(m.first));
+ std::vector<unsigned char> retained(sources.size(),1);
+ if(rulesOnly&&describeInput){
+  std::vector<std::vector<size_t>> dependencies(sources.size());std::vector<unsigned char> changed(sources.size());std::vector<size_t> roots;
+  for(size_t i=0;i<sources.size();++i){changed[i]=Hash(rebuilt[i])!=sources[i].hash;for(const auto& external:plan.inputs[i].externals){auto owner=memberInput.find(external);if(owner!=memberInput.end()&&owner->second!=i)dependencies[i].push_back(owner->second);}}
+  for(const auto& root:plan.roots)roots.push_back(root.input);
+  retained=EiemInputRetention::Select(dependencies,changed,roots);
+  for(size_t i=0;i<retained.size();++i)if(retained[i])plan.retainedInputs.push_back(i);
+  for(auto it=plan.names.members.begin();it!=plan.names.members.end();)if(!retained[memberInput.at(it->first)]){auto owner=memberInput.at(it->first);Require(!plan.inputs[owner].bundle.empty(),"shared native dependency lacks Bundle identity");plan.sharedBundles.emplace(it->first,plan.inputs[owner].bundle);plan.shared.insert(it->first);it=plan.names.members.erase(it);}else ++it;
+  for(size_t i=0;i<retained.size();++i)if(!retained[i]&&!plan.inputs[i].bundle.empty())plan.names.bundles.erase(plan.inputs[i].bundle);
+  if(cost){cost("inputs-retained",double(plan.retainedInputs.size()));cost("inputs-shared-original",double(sources.size()-plan.retainedInputs.size()));}
+ }
  std::set<size_t> closure;std::vector<size_t> queue;
  for(const auto& r:plan.roots)queue.push_back(r.input);
  while(!queue.empty()){auto i=queue.back();queue.pop_back();if(!closure.insert(i).second)continue;
-  for(const auto& e:plan.inputs[i].externals){auto f=memberInput.find(e);if(f==memberInput.end()){if(e!="unity default resources")plan.shared.insert(e);}else queue.push_back(f->second);}
+  for(const auto& e:plan.inputs[i].externals){auto f=memberInput.find(e);if(f==memberInput.end()||!retained[f->second]){if(e!="unity default resources")plan.shared.insert(e);}else queue.push_back(f->second);}
  }
   plan.closure.assign(closure.begin(),closure.end());Require(!plan.closure.empty(),"reload root closure empty");
   std::filesystem::create_directories(destination);
@@ -506,6 +523,7 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
    authorSpans=std::make_unique<EiemResourceRecipe::Dictionary>(std::move(buffers));
   }
   auto publishOne=[&](size_t i){
+   if(!retained[i]){plan.startupHashes[i]=publishedHashes[i]=sources[i].hash;metadata[i].analysis={};rebuilt[i].clear();if(inMemoryBuild)editedBundles[i]={};return;}
    // Same authored payload in the original CAB namespace for the game's first
    // ordinary resource load; the isolated variant below is used by F10.
    if(rulesOnly)plan.startupHashes[i]=Hash(rebuilt[i]);else Measure(workerCost,"startup-write",[&]{return SaveFromCache(destination/"startup"/sources[i].file,appearanceFiles[i],rebuilt[i]);});

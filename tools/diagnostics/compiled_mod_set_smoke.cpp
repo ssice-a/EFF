@@ -315,7 +315,7 @@ void NativeResidencyRegression(){
  using namespace EiemCompiledModSet;Set set;auto& plan=set.manifest.plan;plan.key=std::string(64,'F');
  for(size_t i=0;i<4;++i){Catalog catalog;auto cab="CAB-"+std::string(32,char('a'+i));catalog.source.hash=std::string(64,'0');catalog.input.bundle="bundle-"+std::to_string(i);catalog.members.emplace(cab,std::make_shared<const MemberProof>());set.catalog.push_back(catalog);
   plan.inputs.push_back(catalog.input);plan.names.members.emplace(cab,"CAB-"+std::string(32,'f'));plan.names.members.emplace(cab+".resS","CAB-"+std::string(32,'f')+".resS");plan.names.bundles.emplace(catalog.input.bundle,"isolated-"+std::to_string(i));plan.startupHashes.push_back(catalog.source.hash);}
- set.sourceNamespaceKeys.assign(set.catalog.size(),plan.key);
+ set.sourceNamespaceKeys.assign(set.catalog.size(),plan.key);plan.inputDependencies.resize(set.catalog.size());
  Root root;root.input=0;plan.roots.push_back(root);plan.startupHashes[1]=std::string(64,'1');SelectIsolatedInputs(set);
  Require(plan.closure==std::vector<size_t>({0,1}),"unchanged dependencies were opened as isolated native bundles");
  for(size_t i=0;i<4;++i){auto cab=set.catalog[i].members.begin()->first;bool own=i<2;Require((plan.names.members.at(cab)!=cab)==own,"changed/root and shared CAB identities differ");Require(plan.names.members.at(cab+".resS")==plan.names.members.at(cab)+".resS","stream identity differs from its owning CAB");Require((plan.names.bundles.at(set.catalog[i].input.bundle)!=set.catalog[i].input.bundle)==own,"shared Bundle identity differs");}
@@ -325,6 +325,18 @@ void NativeResidencyRegression(){
  plan.startupHashes[1]=set.catalog[1].source.hash;SelectIsolatedInputs(set);Require(plan.closure==std::vector<size_t>({0}),"retired Mod lost its pristine root or retained unmodified resource copies");
  auto sharedCab=set.catalog[1].members.begin()->first;Require(plan.names.members.at(sharedCab)==sharedCab,"retired author dependency did not return to game identity");
  plan.roots.clear();SelectIsolatedInputs(set);Require(plan.closure.empty(),"unused empty set retained native candidates");
+}
+void InputRetentionRegression(){
+ using EiemInputRetention::Select;
+ // Prefab -> unchanged intermediate -> edited Material -> original Shader.
+ // A separate dependency cycle stays native; a consumer cycle leading to an
+ // edit must be retained in full, independently of graph traversal order.
+ std::vector<std::vector<size_t>> graph{{1,4},{2},{3},{},{5},{4},{1,7},{6}};
+ auto keep=Select(graph,{0,0,1,0,0,0,0,0},{0});
+ Require(keep==std::vector<unsigned char>({1,1,1,0,0,0,1,1}),"retention lost an intermediate/consumer cycle or copied terminal native dependencies");
+ Require(Select(graph,std::vector<unsigned char>(8),{0})==std::vector<unsigned char>({1,0,0,0,0,0,0,0}),"pristine restore copied unmodified resources");
+ Rejected([&]{Select({{1}}, {1}, {0});});
+ std::cout<<"PASS input retention: edited inputs, unchanged consumers, roots, cycles and shared terminal dependencies\n";
 }
 void InputSpanViewRegression(){
  using namespace EiemInputSpanView;
@@ -423,6 +435,23 @@ void ProfileNativeViews(const std::filesystem::path& game,const std::filesystem:
 }
 void AddressedRecipeRegression(){
  using namespace EiemResourceRecipe;Bytes original(256),payload(128);
+ // Long author streams must retain the exact prefix at block boundaries,
+ // unequal extents and hash collisions (an anchor is only a candidate).
+ Bytes longSource(8193);uint32_t seed=0x71859624;
+ for(auto& byte:longSource){seed^=seed<<13;seed^=seed>>17;seed^=seed<<5;byte=uint8_t(seed);}
+ Dictionary longDictionary({{Author,"long",&longSource}});
+ for(const auto& entry:longDictionary.anchors)Require(longDictionary.MayMatch(longSource.data()+entry.second.offset),"recipe prefix filter rejected an existing anchor");
+ Require(!Dictionary({}).MayMatch(longSource.data()),"empty recipe dictionary claimed an anchor");
+ for(size_t extent: {size_t(17),size_t(32),size_t(63),size_t(64),size_t(65),size_t(1023),size_t(1024),size_t(1025),longSource.size()-64}){
+  for(size_t mismatch: {size_t(0),size_t(17),size_t(31),size_t(32),size_t(63),size_t(64),size_t(65),size_t(1023),size_t(1024),size_t(1025),extent}){
+   Bytes candidate(7,0);candidate.insert(candidate.end(),longSource.begin()+64,longSource.begin()+64+extent);
+   if(mismatch<extent)candidate[7+mismatch]^=1;
+   size_t expected=0;while(expected<extent&&candidate[7+expected]==longSource[64+expected])++expected;
+   Location location{SIZE_MAX,SIZE_MAX};auto match=longDictionary.Match(candidate,7,Anchor(longSource.data()+64),location);
+   Require(match==(expected<32?0:expected),"recipe block comparison changed matching prefix");
+   Require(match?(location.buffer==0&&location.offset==64):(location.buffer==SIZE_MAX&&location.offset==SIZE_MAX),"recipe block comparison changed anchor location");
+  }
+ }
  for(size_t i=0;i<original.size();++i)original[i]=uint8_t(i*13+7);
  for(size_t i=0;i<payload.size();++i)payload[i]=uint8_t(i*17+11);
  auto resource=std::make_shared<Resource>();resource->bytes=payload;Package package;package.resources.emplace("author",resource);
@@ -479,8 +508,42 @@ void CompareCompiledArtifacts(const std::filesystem::path& game,const std::files
  Require(a.names.members==b.names.members&&a.names.bundles==b.names.bundles,"compiled namespace identities differ");
  std::cout<<"PASS equivalent compiled startup and isolated replay: inputs="<<a.inputs.size()<<" roots="<<a.roots.size()<<'\n';
 }
+void LogicalRouteRegression(){
+ using namespace EiemCompiledMod;using namespace EiemResourceReloadPlan;
+ auto game=std::filesystem::temp_directory_path()/("eff-logical-route-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));
+ Require(std::filesystem::create_directory(game),"logical route fixture exists");struct Cleanup{std::filesystem::path path;~Cleanup(){std::error_code error;std::filesystem::remove_all(path,error);}}cleanup{game};
+ auto root=game/"Endfield_Data/StreamingAssets/VFS";std::filesystem::create_directories(root);Bytes payload{0,0,0,7,8,9};auto chunk=root/(std::string(32,'A')+".chk");Save(chunk,payload);
+ Bytes plain;auto n=[&](uint64_t value,size_t width){AppendInteger(plain,value,width);};n(4,4);n(100,4);n(0,2);n(1,8);n(1,4);n(payload.size(),8);n(0,1);n(1,4);
+ plain.insert(plain.end(),16,0xAA);plain.insert(plain.end(),16,0xBB);n(payload.size(),8);n(0,1);n(0,4);n(1,4);
+ std::string path="Data/Bundles/Windows/moved.ab";n(path.size(),2);plain.insert(plain.end(),path.begin(),path.end());n(0,8);plain.insert(plain.end(),16,0xCC);plain.insert(plain.end(),16,0xDD);n(3,8);n(3,8);n(0,1);n(0,1);n(0,4);n(0,4);
+ Bytes nonce(12);EiemVfsCatalog::ChaCha(plain,nonce.data());nonce.insert(nonce.end(),plain.begin(),plain.end());Save(root/"current.blc",nonce);
+ std::string logical="bundles/windows/moved.ab";auto revision=Hash(Bytes{7,8,9});EiemStaticSources::Selection selection;selection.manifest="logical-test";selection.inputs[logical]={logical,revision,game/"removed.chk",0,3};
+ EiemLogicalSourceRoutes::Routes routes;EiemLogicalSourceRoutes::Include(routes,selection);std::vector<EiemResourceReloadPlan::Source> sources{{EiemStaticSources::SourceFile(logical,revision),revision,game/"removed.chk",55,3}};
+ EiemLogicalSourceRoutes::Rebind(sources,routes,game);Require(sources[0].physical==chunk&&sources[0].offset==3&&ReadSource({},sources[0])==Bytes({7,8,9}),"logical source retained a stale physical range");
+ Rejected([&]{EiemLogicalSourceRoutes::Rebind(sources,{},game);});auto wrong=sources;wrong[0].size=4;Rejected([&]{EiemLogicalSourceRoutes::Rebind(wrong,routes,game);});
+ payload[4]=99;Save(chunk,payload);Rejected([&]{ReadSource({},sources[0]);});
+ std::cout<<"PASS logical source routes: deleted old CHK, current range rebinding, missing provenance/range rejection, changed-byte SHA rejection\n";
+}
+void ComparePrunedArtifacts(const std::filesystem::path& game,const std::filesystem::path& beforeRoot,const std::filesystem::path& afterRoot){
+ using namespace EiemCompiledMod;
+ auto before=EiemCompiledMod::Read(beforeRoot,game),after=EiemCompiledMod::Read(afterRoot,game);
+ const auto& a=before.manifest.plan;const auto& b=after.manifest.plan;
+ Require(a.author==b.author&&a.contract==b.contract,"pruning changed author data");
+ std::map<std::string,const Root*> roots;for(const auto& root:a.roots)roots.emplace(root.path,&root);
+ Require(roots.size()==b.roots.size(),"pruning lost Prefab roots");
+ for(const auto& root:b.roots){const auto& old=*roots.at(root.path);Writer left,right;EiemOfflinePackage::WriteAssembly(left,old.Assembly());EiemOfflinePackage::WriteAssembly(right,root.Assembly());Require(left.b==right.b,"pruning changed Renderer/bone/LOD/helper assembly");}
+ EiemPrefabRules::Context oldReplay(std::make_shared<const Plan>(a),before.manifest.package),newReplay(std::make_shared<const Plan>(b),after.manifest.package);
+ std::map<std::string,size_t> kept;for(size_t i=0;i<b.originals.size();++i)kept.emplace(b.originals[i].file,i);
+ size_t removed=0;for(size_t i=0;i<a.originals.size();++i){auto found=kept.find(a.originals[i].file);if(found==kept.end()){Require(a.startupHashes.at(i)==a.originals[i].hash,"pruning dropped an edited input");++removed;continue;}
+  Require(a.originals[i].hash==b.originals[found->second].hash&&oldReplay.Materialize(i,false)==newReplay.Materialize(found->second,false),"pruning changed raw Mesh/Material/Texture/Physics bytes");}
+ Require(SharedInputsPruned(after),"unnecessary terminal inputs remain");
+ auto packet=EiemCompiledMod::Encode(after,game);auto roundtrip=EiemCompiledMod::Decode(packet,afterRoot,game);Require(EiemCompiledMod::Encode(roundtrip,game)==packet,"pruned artifact roundtrip differs");
+ std::cout<<"PASS pruned artifact: beforeInputs="<<a.inputs.size()<<" afterInputs="<<b.inputs.size()<<" removedReadOnly="<<removed<<" roots="<<b.roots.size()<<" authorAndAssembliesAndEditedBytesUnchanged=1 roundtrip=1\n";
+}
 int main(int argc,char** argv){try{
  GameUpdateCarryoverRegression();
+ LogicalRouteRegression();
+ if(argc==5&&std::string(argv[1])=="--compare-pruned-artifacts"){ComparePrunedArtifacts(std::filesystem::u8path(argv[2]),std::filesystem::u8path(argv[3]),std::filesystem::u8path(argv[4]));return 0;}
  if(argc==5&&std::string(argv[1])=="--write-runtime-index"){
   using namespace EiemCompiledMod;auto game=std::filesystem::u8path(argv[2]),source=std::filesystem::u8path(argv[3]),destination=std::filesystem::u8path(argv[4]);
   Require(std::filesystem::weakly_canonical(source)!=std::filesystem::weakly_canonical(destination),"runtime index validation must use a separate directory");
@@ -668,6 +731,7 @@ int main(int argc,char** argv){try{
  GenericObjectRegression();
  PreloadIntervalRegression();
  NativeResidencyRegression();
+ InputRetentionRegression();
  SharedInputRegression();
  ExternalDependencyRegression();
  auto binding=OriginalBoneBinding({11,22,33},{101,202,303},{33,44,11});

@@ -32,7 +32,8 @@ def source_read_lock(package):
     acquired = False
     try:
         result = api.WaitForSingleObject(handle, 0)
-        require(result in (0, 0x80), '解包来源正在更新，请在 AnimeStudio 完成后重新导出')
+        require(result in (0, 0x80),
+                '解包来源正被其他导出或 AnimeStudio 更新占用，请等待该任务完成后重试：' + str(Path(package).resolve()))
         acquired = True
         yield
     finally:

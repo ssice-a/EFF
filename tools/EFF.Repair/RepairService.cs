@@ -100,8 +100,10 @@ internal static class RepairService
     {
         mod = Path.GetFullPath(mod).TrimEnd('\\');RequireGameClosed(game);await ValidateProtocol(game, token);
         if (!File.Exists(Path.Combine(mod, "mod.ini"))) throw new IOException("不是有效 Mod：" + mod);
-        var author = AuthorIdentity(mod);var compiler = Hash(Compiler);var indexStamp = new FileInfo(index);
-        var baseline = content + "/" + indexStamp.Length + "/" + indexStamp.LastWriteTimeUtc.Ticks;
+        var author = AuthorIdentity(mod);var compiler = Hash(Compiler);
+        // The public index is identified by logical Bundle content. Local
+        // index timestamps and CHK placement do not invalidate a repaired Mod.
+        var baseline = content;
         var receipt = StatePath(mod);
         if (File.Exists(receipt))
         {

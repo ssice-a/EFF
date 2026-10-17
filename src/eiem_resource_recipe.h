@@ -45,14 +45,32 @@ struct Location {size_t buffer=0,offset=0;};
 inline uint64_t Anchor(const unsigned char* bytes){uint64_t value=1469598103934665603ull;for(size_t i=0;i<32;++i)value=(value^bytes[i])*1099511628211ull;return value;}
 struct Dictionary {
  std::vector<Buffer> buffers;std::unordered_map<uint64_t,Location> anchors;
+ std::vector<uint64_t> prefixFilter;size_t prefixMask=0;
+ static uint64_t Prefix(const unsigned char* bytes){uint64_t value=0;std::memcpy(&value,bytes,8);value^=value>>33;value*=0xff51afd7ed558ccdull;value^=value>>33;value*=0xc4ceb9fe1a85ec53ull;return value^(value>>33);}
  explicit Dictionary(std::vector<Buffer> sources):buffers(std::move(sources)){
   for(size_t i=0;i<buffers.size();++i){const auto& bytes=*buffers[i].bytes;if(bytes.size()<32)continue;
    for(size_t p=0;p<=bytes.size()-32;p+=64)anchors.emplace(Anchor(bytes.data()+p),Location{i,p});
   }
+  // Negative-only filter: a candidate still uses the original 32-byte hash,
+  // anchor choice and exact comparison. False positives only cost a lookup.
+  if(!anchors.empty()){
+   size_t bits=64;auto wanted=MultiplySize(anchors.size(),16);while(bits<wanted)bits=MultiplySize(bits,2);
+   prefixFilter.resize(bits/64);prefixMask=bits-1;
+   for(const auto& entry:anchors){const auto& location=entry.second;auto hash=Prefix(buffers[location.buffer].bytes->data()+location.offset);auto a=size_t(hash)&prefixMask,b=size_t(hash>>32)&prefixMask;prefixFilter[a/64]|=uint64_t(1)<<(a%64);prefixFilter[b/64]|=uint64_t(1)<<(b%64);}
+  }
+ }
+ bool MayMatch(const unsigned char* bytes)const{
+  if(prefixFilter.empty())return false;auto hash=Prefix(bytes);auto a=size_t(hash)&prefixMask,b=size_t(hash>>32)&prefixMask;
+  return (prefixFilter[a/64]&(uint64_t(1)<<(a%64)))&&(prefixFilter[b/64]&(uint64_t(1)<<(b%64)));
  }
  size_t Match(const Bytes& bytes,size_t offset,uint64_t hash,Location& location)const{
   auto found=anchors.find(hash);if(found==anchors.end())return 0;const auto& source=*buffers[found->second.buffer].bytes;auto limit=std::min(bytes.size()-offset,source.size()-found->second.offset);size_t length=0;
-  while(length<limit&&bytes[offset+length]==source[found->second.offset+length])++length;
+  // Most hits cover a complete author stream. Compare long equal runs in
+  // blocks, then find the exact first different byte without changing spans.
+  const auto* left=bytes.data()+offset;const auto* right=source.data()+found->second.offset;
+  while(limit-length>=1024&&std::memcmp(left+length,right+length,1024)==0)length+=1024;
+  while(limit-length>=64&&std::memcmp(left+length,right+length,64)==0)length+=64;
+  while(length<limit&&left[length]==right[length])++length;
   if(length<32)return 0;location=found->second;return length;
  }
 };
@@ -72,7 +90,9 @@ inline Member Describe(const EndfieldInput::Member& output,const Dictionary& ori
  size_t provenance=0;
  for(size_t p=0;p<output.bytes.size();){size_t length=0;Location old,edit;const Dictionary* dictionary=nullptr;Location location;
   if(provenance<known.size()&&known[provenance].output==p){const auto& span=known[provenance++];dictionary=&original;location={span.buffer,span.offset};length=span.size;}
-  else if(output.bytes.size()-p>=32&&(!original.anchors.empty()||!author.anchors.empty())){auto hash=Anchor(output.bytes.data()+p);auto a=original.Match(output.bytes,p,hash,old),b=author.Match(output.bytes,p,hash,edit);if(a||b){dictionary=a>=b?&original:&author;location=a>=b?old:edit;length=std::max(a,b);if(provenance<known.size())length=std::min(length,known[provenance].output-p);}}
+  else if(output.bytes.size()-p>=32){auto bytes=output.bytes.data()+p;auto maybeOld=original.MayMatch(bytes),maybeEdit=author.MayMatch(bytes);
+   if(maybeOld||maybeEdit){auto hash=Anchor(bytes);auto a=maybeOld?original.Match(output.bytes,p,hash,old):0,b=maybeEdit?author.Match(output.bytes,p,hash,edit):0;if(a||b){dictionary=a>=b?&original:&author;location=a>=b?old:edit;length=std::max(a,b);if(provenance<known.size())length=std::min(length,known[provenance].output-p);}}
+  }
   if(!length){literal(output.bytes[p++]);continue;}const auto& source=dictionary->buffers[location.buffer];
   if(!member.spans.empty()&&member.spans.back().kind==source.kind&&member.spans.back().source==source.name&&AddSize(member.spans.back().offset,member.spans.back().size)==location.offset)member.spans.back().size=AddSize(member.spans.back().size,length);
   else member.spans.push_back({source.kind,source.name,location.offset,length,{}});p+=length;

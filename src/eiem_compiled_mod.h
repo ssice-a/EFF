@@ -27,6 +27,15 @@ struct Artifact {mutable Manifest manifest;mutable std::map<std::string,MemberPr
  mutable std::set<size_t> hydrated;std::shared_ptr<std::mutex> proofMutex=std::make_shared<std::mutex>();
 };
 
+inline bool SharedInputsPruned(const Artifact& artifact){
+ const auto& plan=artifact.manifest.plan;if(plan.inputDependencies.size()!=plan.inputs.size())return false;
+ std::vector<unsigned char> changed(plan.inputs.size());std::vector<size_t> roots;
+ for(size_t i=0;i<changed.size();++i)changed[i]=plan.startupHashes.at(i)!=plan.originals.at(i).hash;
+ for(const auto& root:plan.roots)roots.push_back(root.input);
+ auto retained=EiemInputRetention::Select(plan.inputDependencies,changed,roots);
+ return std::all_of(retained.begin(),retained.end(),[](unsigned char keep){return keep!=0;});
+}
+
 inline Bytes Pack(const Bytes& plain){
  COMPRESSOR_HANDLE h=nullptr;Require(CreateCompressor(COMPRESS_ALGORITHM_XPRESS_HUFF,nullptr,&h)!=0,"compiled Mod compressor unavailable");
  struct Close{COMPRESSOR_HANDLE h;~Close(){CloseCompressor(h);}}close{h};SIZE_T n=0;

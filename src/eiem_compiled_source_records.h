@@ -23,7 +23,7 @@ inline InputProofDirectory Directory(const Artifact& a,size_t i,const std::map<s
  for(const auto& external:p.inputs.at(i).externals)add(external);
  for(const auto& recipe:p.memberRecipes.at(i)){auto found=a.members.find(recipe.name);if(found==a.members.end())continue;result.members.insert(recipe.name);const auto& proof=found->second;
   Require(ExternalPrefix(proof.before.externals,proof.after.externals),"source-record external prefix changed");for(const auto& external:proof.after.externals)add(external);
-  for(size_t j=proof.before.externals.size();j<proof.after.externals.size();++j){auto owner=owners.find(proof.after.externals[j]);Require(owner!=owners.end(),"source-record added dependency absent");if(owner->second!=i)result.addedBundles.insert(p.inputs.at(owner->second).bundle);}
+  for(size_t j=proof.before.externals.size();j<proof.after.externals.size();++j){const auto& external=proof.after.externals[j];auto owner=owners.find(external);if(owner==owners.end()){auto shared=p.sharedBundles.find(external);Require(shared!=p.sharedBundles.end(),"source-record added dependency absent: "+external);result.addedBundles.insert(shared->second);}else if(owner->second!=i)result.addedBundles.insert(p.inputs.at(owner->second).bundle);}
  }result.dependencies.assign(dependencies.begin(),dependencies.end());return result;
 }
 inline Bytes Proof(const Artifact& a,size_t i,const InputProofDirectory& directory){
