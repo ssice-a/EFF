@@ -19,7 +19,7 @@ internal sealed class RepairForm : Form
     private string Workspace => Path.Combine(data, "workspace");
     internal RepairForm(bool autoCheck = true)
     {
-        Text = "EFF Mod 修复工具 0.2";Width = 920;Height = 660;MinimumSize = new Size(920, 560);StartPosition = FormStartPosition.CenterScreen;
+        Text = "EFF Mod 修复工具 " + Program.ToolVersion.ToString(3);Width = 920;Height = 660;MinimumSize = new Size(920, 560);StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Microsoft YaHei UI", 9);BackColor = Color.FromArgb(245, 246, 249);AllowDrop = true;
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 1, RowCount = 9 };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
@@ -78,7 +78,7 @@ internal sealed class RepairForm : Form
         catch (OperationCanceledException) when (!cancellation!.IsCancellationRequested) { catalog = null;throw new IOException("更新检查超时，无法确认是否有新版本；请稍后重试。"); }
         catch (HttpRequestException error) { catalog = null;throw new IOException("无法检查更新：" + error.Message, error); }
         if (catalog is null) { Report("发布源尚未提供修复索引目录，当前无法取得在线索引；可导入维护者提供的完整索引文件。");return; }
-        if (!string.IsNullOrEmpty(catalog.ToolVersion) && Version.TryParse(catalog.ToolVersion.TrimStart('v'), out var version) && version > new Version(0, 1, 0))
+        if (!string.IsNullOrEmpty(catalog.ToolVersion) && Version.TryParse(catalog.ToolVersion.TrimStart('v'), out var version) && version > Program.ToolVersion)
         {
             Report("修复工具有新版本：" + catalog.ToolVersion);
             if (!string.IsNullOrEmpty(catalog.ToolUrl) && MessageBox.Show(this, "修复工具有新版本，打开下载页面？", "工具更新", MessageBoxButtons.YesNo) == DialogResult.Yes)

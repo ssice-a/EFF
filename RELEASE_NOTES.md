@@ -1,4 +1,4 @@
-# EFF v1.8.0
+# EFF v1.8.1
 
 配套：[EFF Blender v0.45.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.45.0)、[AnimeStudio v1.7.0](https://github.com/ssice-a/AnimeStudio/releases/tag/v1.7.0)。
 
@@ -10,7 +10,7 @@
 
 ## 下载与安装
 
-- `EFF_v1.8.0_dll.zip`：退出游戏后解压到游戏根目录，保留个人 `plugin/eff.ini`、Mods 和 `state.ini`。只含生产 DLL、代理和默认配置，不含作者工具或诊断探针；静态链接 C/C++ 运行实现，当前代理支持 `C:\Windows`。
+- `EFF_v1.8.1_dll.zip`：退出游戏后解压到游戏根目录，保留个人 `plugin/eff.ini`、Mods 和 `state.ini`。只含生产 DLL、代理和默认配置，不含作者工具或诊断探针；静态链接 C/C++ 运行实现，当前代理支持 `C:\Windows`。
 - `EFF-Repair-v0.2.0-win-x64.zip`：独立游戏外修复工具，需要 .NET 9 Windows Desktop Runtime。退出游戏后修复，保留原包备份。
 - `EFF-Endfield-Index-20261017.effindex.gz`：修复工具自动下载的完整索引；不含 Mesh/贴图或作者 Mod，解压约 831 MB。旧内容对应索引仍可从先前版本取得。
 
