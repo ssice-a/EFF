@@ -34,9 +34,14 @@ def imports(data):
 path = Path(sys.argv[1])
 data = path.read_bytes()
 load_perf = '--load-perf' in sys.argv[2:]
+effects_debug = '--effects-debug' in sys.argv[2:]
 checked = data.replace(b'[DEBUG-loadperf]', b'load-performance') if load_perf else data
 if load_perf:
     assert b'[DEBUG-loadperf]' in data, 'Expected enabled performance measurements'
+if effects_debug:
+    assert b'[EFFECT-DEBUG-READY]' in data and b'EFF-Effects-' in data, 'Expected isolated effects debug channel'
+else:
+    assert b'[EFFECT-DEBUG-' not in data and b'EFF-Effects-' not in data, 'Production DLL includes opt-in effects debugger'
 for dll in imports(data):
     assert not dll.startswith(('msvcp', 'vcruntime', 'api-ms-win-crt-')) and dll != 'ucrtbase.dll', \
         f'Production DLL depends on host C++ runtime: {dll}'
@@ -59,4 +64,4 @@ for marker in (
     b"[SHAPE-CAPTURE-COMPLETION]",
 ):
     assert marker in data, f"Production DLL is missing functional binding: {marker!r}"
-print(f"PASS {'performance' if load_perf else 'production'} DLL: {path.name}, {len(data):,} bytes; host C++ runtime independent, capture probes excluded, lifecycle bindings retained")
+print(f"PASS {'effects-debug' if effects_debug else 'performance' if load_perf else 'production'} DLL: {path.name}, {len(data):,} bytes; host C++ runtime independent, capture probes excluded, lifecycle bindings retained")

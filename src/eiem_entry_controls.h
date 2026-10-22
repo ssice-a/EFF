@@ -11,6 +11,7 @@ struct Spec {
   std::vector<std::string> channels;
   std::map<std::string,std::string> controls;
   std::shared_ptr<EiemExpression> visible;
+  std::string material;
 };
 
 std::map<std::string,Spec> specs;
@@ -22,6 +23,9 @@ EiemEntryPreferences preferences;
 EiemModKeySettings keySettings;
 std::map<std::string,bool> held;
 EiemControlPanel::Store panel;
+struct AnimationKey {size_t package=0;std::string clip;};
+std::vector<AnimationKey> animationKeys;
+std::vector<size_t> animationPackages;
 std::string selected, uiHold;
 std::map<std::string,bool> keySwitchEnabled;
 uint64_t revision=0, scopeRevision=0;
@@ -36,6 +40,8 @@ struct State {
   std::string selected;
   std::map<std::string,bool> keySwitchEnabled;
   std::shared_ptr<EiemControlPanel::Snapshot> panelSnapshot;
+  std::vector<AnimationKey> animationKeys;
+  std::vector<size_t> animationPackages;
 };
 bool Selectable(const Package& p) { return !p.bindings.empty() || !p.controls.empty() || !p.shapeAnimations.empty(); }
 bool HasKeys(const Package& p){return !p.bindings.empty()||std::any_of(p.shapeAnimations.begin(),p.shapeAnimations.end(),[](const auto& row){return row.second.key.vk!=0;});}
@@ -44,6 +50,9 @@ void PreparePanel(State& state) {
   // Runs before property writes, preserving no-throw graph publication.
   state.panelSnapshot=std::make_shared<EiemControlPanel::Snapshot>();
   state.panelSnapshot->graph=state.graph;
+  state.animationKeys.clear();state.animationPackages.clear();
+  for(size_t i=0;i<state.graph->size();++i){const auto& p=state.graph->at(i);if(!p.shapeAnimations.empty())state.animationPackages.push_back(i);
+    for(const auto& row:p.shapeAnimations)if(row.second.key.vk)state.animationKeys.push_back({i,row.first});}
   if (state.selected.empty()) {
     for (const auto& p:*state.graph) if (!p.bindings.empty()) {state.selected=p.id;break;}
     if (state.selected.empty()) for (const auto& p:*state.graph) if (Selectable(p)) {state.selected=p.id;break;}
@@ -80,10 +89,13 @@ void PrepareAnimations(State& state,const Package& package) {
   for(const auto& clip:package.shapeAnimations)
     player.clips.at(clip.first).held=clip.second.key.vk&&Down(clip.second.key);
 }
-State Prepare(const std::shared_ptr<const std::vector<Package>>& graph,const EiemGlobalConfig&) {
+State Prepare(const std::shared_ptr<const std::vector<Package>>& graph,const EiemGlobalConfig& config) {
   Require(bool(graph),"runtime control graph unavailable");
   State state;state.graph=graph;
   for (const auto& package:*graph) {
+    auto validateKey=[&](const EiemKeyChord& key){Require(!key.vk||(key.vk!=config.reload.vk&&key.vk!=config.gui.vk&&key.vk!=config.effectsReload.vk),"Mod shortcut overlaps a global shortcut: "+package.id);};
+    for(const auto& key:package.bindings)validateKey(key.key);
+    for(const auto& clip:package.shapeAnimations)validateKey(clip.second.key);
     state.variables[package.id]=package.defaults;state.keys[package.id]=package.bindings;
     state.keySwitchEnabled[package.id]=keySettings.Preview(package);
     PrepareAnimations(state,package);
@@ -91,7 +103,7 @@ State Prepare(const std::shared_ptr<const std::vector<Package>>& graph,const Eie
       for(const auto& target:rule.second.targets) for(const auto& partId:rule.second.parts) {
         const auto& part=package.parts.at(partId);const auto& mesh=package.meshes.at(part.mesh);
         Spec spec{package.id,partId,RuntimePartName(package,partId,target.second),mesh.vertices,mesh.shapes,part.shapes,part.visible};
-        Require(state.specs.emplace(spec.marker,std::move(spec)).second,"runtime part provenance collision");
+        spec.material=part.material;Require(state.specs.emplace(spec.marker,std::move(spec)).second,"runtime part provenance collision");
       }
   }
   PreviewPreferences(state);PreparePanel(state);return state;
@@ -99,6 +111,7 @@ State Prepare(const std::shared_ptr<const std::vector<Package>>& graph,const Eie
 void Swap(State& state) noexcept {
   specs.swap(state.specs);variables.swap(state.variables);keys.swap(state.keys);animations.swap(state.animations);
   held.swap(state.held);controlGraph.swap(state.graph);
+  animationKeys.swap(state.animationKeys);animationPackages.swap(state.animationPackages);
   selected.swap(state.selected);keySwitchEnabled.swap(state.keySwitchEnabled);uiHold.clear();
   ++revision;++scopeRevision;++valueRevision;
   if(state.panelSnapshot) {
@@ -176,7 +189,7 @@ void PanelCommands(bool focused,bool (*sample)(const EiemKeyChord&)=Down) {
       if(command.action==Action::AnimationSpeed||command.action==Action::AnimationReset){double speed=command.action==Action::AnimationReset?clip.speed:command.value;if(!std::isfinite(speed)||speed<=0)continue;values.at(clip.speedVariable)=speed;changed.insert(owner->id);}
       else if(command.action==Action::AnimationPlay)player.Play(clip);
       else if(command.action==Action::AnimationStop)player.Stop(clip);
-      else if(playback.playing)playback.paused=!playback.paused;
+      else if(playback.playing)player.Pause(clip);
       publish=true;continue;
     }
     if(command.action==Action::Value) {
@@ -219,9 +232,9 @@ void PollControls(bool focused,double elapsed,bool (*sample)(const EiemKeyChord&
     if (physical!=previous || before!=value && key.type!="hold")
       Log("[CONTROL-RUNTIME-KEY] package=%s binding=%s vk=%u down=%d focused=%d enabled=%d panel=%d value=%.6g",package.first.c_str(),key.id.c_str(),key.key.vk,int(physical),int(focused),int(keySwitchEnabled.at(package.first)),int(panel.open.load()),value);
   }
-  if(controlGraph)for(const auto& p:*controlGraph)for(const auto& row:p.shapeAnimations){const auto& clip=row.second;auto& player=animations.at(p.id);auto& state=player.clips.at(row.first);bool physical=clip.key.vk&&sample(clip.key),previous=state.held;state.held=physical;if(focused&&!panel.open&&keySwitchEnabled.at(p.id)&&physical&&!previous){if(state.playing)player.Stop(clip);else player.Play(clip);publish=true;}}
+  if(controlGraph)for(const auto& binding:animationKeys){const auto& p=controlGraph->at(binding.package);const auto& clip=p.shapeAnimations.at(binding.clip);auto& player=animations.at(p.id);auto& state=player.clips.at(clip.id);bool physical=sample(clip.key),previous=state.held;state.held=physical;if(focused&&!panel.open&&keySwitchEnabled.at(p.id)&&physical&&!previous){if(state.playing)player.Stop(clip);else player.Play(clip);publish=true;}}
   Capture(changed);if(publish||!changed.empty()) PublishPanel();
 }
-void AdvanceAnimations(double elapsed){bool publish=false;if(controlGraph)for(const auto& p:*controlGraph)publish=animations.at(p.id).Advance(p,variables.at(p.id),elapsed)||publish;if(publish)PublishPanel();}
+void AdvanceAnimations(double elapsed){bool publish=false;if(controlGraph)for(auto index:animationPackages){const auto& p=controlGraph->at(index);publish=animations.at(p.id).Advance(p,variables.at(p.id),elapsed)||publish;}if(publish)PublishPanel();}
 double ShapeValue(const std::string& package,const std::string& variable){return animations.at(package).Value(variables.at(package),variable);}
 } // namespace RuntimeControls

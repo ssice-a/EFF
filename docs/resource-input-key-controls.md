@@ -105,8 +105,9 @@ visibility. Arrow shape holds retain their assignments.
 The reload shortcut comes from game `plugin/eff.ini`. Current source defaults,
 generated configuration, project template and the 2026-10-06 v35 deployment
 use F10 (VK_F10). After editing a binding, use the old active shortcut once
-to publish the new one. Mod bindings may overlap global shortcuts; users control
-which Mods respond through their INI flags and panel checkboxes. `gui=INSERT` toggles
+to publish the new one. Mod bindings may share keys with other Mods, but cannot
+overlap the global reload, effects-reload or GUI keys. Users control which Mods
+respond through their INI flags and panel checkboxes. `gui=INSERT` toggles
 the built-in control panel in current source. The separate Lua adapter is still
 not wired to this host.
 
@@ -120,6 +121,24 @@ panels do not render. No game graphics hook is added.
 The panel is an independent top-level tool window, without a cross-thread HWND
 owner. Visibility still follows game focus/minimization. This avoids a synchronous
 hide/activation wait on the game's window thread when closing the panel.
+
+Drag the window edges or its visible bottom-right grip to resize it, or use the
+title-bar maximize button. The client area has a 420 × 320 pixel minimum;
+overflowing content scrolls vertically. The panel redraws and resizes its D3D
+backbuffer during the native drag loop on the UI thread. Combo boxes, buttons
+and shape sliders follow the available width, and help text wraps. Closing and
+reopening with Ins retains the current size within the same game session;
+window geometry is not saved across game restarts.
+
+2026-10-20 local verification: the real Windows/ImGui/D3D harness passed corner
+hit testing, minimum dimensions, small/large/restored client and backbuffer sizes,
+scrollable overflow, button layout/input, unchanged control state and cross-thread
+close. Foreground and mouse observations were injected as in the existing harness;
+this does not replace in-game verification. The v35 production build passed PE
+and isolated loading checks with the game's runtime DLLs, and was backed up and
+installed locally. The 297 protected Mod/config/proxy files retained their hashes;
+the install receipt is
+`bin/panel-resize-20261020/backup-20261020-102838-281032/install-receipt.json`.
 
 The panel lists independent keyboard checkboxes for Mods with
 bindings. Each applies immediately and atomically saves the same INI flag on

@@ -11,13 +11,14 @@ inline std::string Prefix(const std::string& id) {
   return "M"+Hex(hash.data(),hash.size())+"_";
 }
 inline std::string Name(const std::string& id,const std::string& section) {return Prefix(id)+section;}
-inline std::vector<std::filesystem::path> Roots(const std::filesystem::path& directory) {
-  if(!std::filesystem::exists(directory)) return {};
-  Require(std::filesystem::is_directory(directory),"Mod path is not a directory");
-  std::vector<std::filesystem::path> result;
-  for(const auto& e:std::filesystem::directory_iterator(directory))
-    if(e.is_directory() && std::filesystem::is_regular_file(e.path()/"mod.ini")) result.push_back(std::filesystem::canonical(e.path()));
-  std::sort(result.begin(),result.end());
+inline bool IsEffectRoot(const std::filesystem::path& root) {
+  for(const auto& section:ParseIni(Read(root/"mod.ini")))
+    if(section.id=="Mod")return section.values.count("type")&&section.values.at("type")=="effect";
+  return false;
+}
+inline std::vector<std::filesystem::path> Roots(const std::filesystem::path& directory,bool includeEffects=false) {
+  auto result=EiemModDirectory::Roots(directory);
+  if(!includeEffects)result.erase(std::remove_if(result.begin(),result.end(),[](const auto& root){return IsEffectRoot(root);}),result.end());
   return result;
 }
 inline std::string ResourceDigest(const Resource& resource) {
@@ -56,7 +57,7 @@ inline Package Compose(const std::vector<Package>& authors,bool forceSet=false,b
   std::vector<const Package*> ordered;std::set<std::string> ids,folders;
   for(const auto& p:authors) {
     Require(!p.composed && ids.insert(p.id).second,"duplicate/composed Mod id: "+p.id);
-    auto folder=InputPath(p.root.filename().u8string());
+    auto folder=InputPath(std::filesystem::weakly_canonical(p.root).u8string());
     Require(folders.insert(folder).second,"duplicate Mod directory: "+folder);
     ordered.push_back(&p);
   }

@@ -2,11 +2,12 @@
 setlocal
 pushd "%~dp0"
 rem Production entry: serialized native inputs and generation reload only.
-rem Usage: build.bat [v36|v35] [capture|load-perf]. No deployment is performed.
+rem Usage: build.bat [v36|v35] [capture|load-perf|effects-debug]. No deployment is performed.
 set "entry_abi=v35"
 set "entry_folder=bin\resource-directory-entry-v35"
 set "entry_define=/DEFF_OFFLINE_PACKAGE_V35=1"
 set "entry_capture="
+set "entry_effects="
 if /i "%~1"=="v35" (
  set "entry_abi=v35"
  set "entry_folder=bin\resource-directory-entry-v35"
@@ -24,8 +25,11 @@ if /i "%~2"=="capture" (
 ) else if /i "%~2"=="load-perf" (
  set "entry_capture=/DEIEM_LOAD_PERF"
  set "entry_folder=%entry_folder%-load-perf"
+) else if /i "%~2"=="effects-debug" (
+ set "entry_effects=/DEIEM_EFFECTS_DEBUG"
+ set "entry_folder=%entry_folder%-effects-debug"
 ) else if not "%~2"=="" (
- echo [ERROR] The optional second argument must be capture or load-perf.
+ echo [ERROR] The optional second argument must be capture, load-perf or effects-debug.
  goto entry_failed
 )
 where cl >nul 2>nul
@@ -48,7 +52,7 @@ if errorlevel 1 goto entry_failed
 rc /nologo /fo "%entry_folder%\version.res" src\version.rc
 if errorlevel 1 goto entry_failed
 cl /nologo /utf-8 /O2 /Zi /MT /LD /EHsc /std:c++17 /bigobj /W4 ^
- %entry_define% %entry_capture% /DEIEM_STATIC_RUNTIME=1 /Ideps\minhook_lib\include ^
+ %entry_define% %entry_capture% %entry_effects% /DEIEM_STATIC_RUNTIME=1 /Ideps\minhook_lib\include ^
  /Fo"%entry_folder%\eff_resource_entry.obj" ^
  /Fd"%entry_folder%\eff_compile.pdb" ^
  src\eiem_resource_entry.cpp "%entry_folder%\version.res" ^

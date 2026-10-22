@@ -326,6 +326,75 @@ void NativeResidencyRegression(){
  auto sharedCab=set.catalog[1].members.begin()->first;Require(plan.names.members.at(sharedCab)==sharedCab,"retired author dependency did not return to game identity");
  plan.roots.clear();SelectIsolatedInputs(set);Require(plan.closure.empty(),"unused empty set retained native candidates");
 }
+// Two characters can use exactly the same author model/texture bytes and the
+// same native Material template. Their native identities and ownership must
+// still remain separate through the actual shared-input merge.
+void SharedAuthorModelRegression(bool differentTemplates=false){
+ using namespace EiemCompiledMod;
+ Fixture f;f.cab="CAB-"+std::string(32,'a');
+ auto& bt=f.types[4];auto nameNode=bt.nodes.size();bt.nodes.push_back({"string","m_Name",false,{}});bt.nodes[0].children.push_back(nameNode);
+ auto bundleName=EmptyValue(bt,nameNode);SetString(bt,bundleName,"fixture-bundle");f.V(300).children.push_back(std::move(bundleName));
+ f.types[6]=Schema(21,{{"string","m_Name",{}},Ref("m_Shader"),Ref("texture")});f.objects.at(200).second=EmptyValue(f.types[6],0);
+ f.types.push_back(Schema(28,{{"string","m_Name",{}},{"StreamingInfo","m_StreamData",{{"UInt64","offset",{}},{"UInt32","size",{}},{"string","path",{}}}}}));
+ size_t textureType=f.types.size()-1;f.Add(201,textureType);f.Pointer(200,"texture",201);
+ f.types.push_back(Schema(48,{{"string","m_Name",{}}}));f.Add(202,f.types.size()-1);f.Pointer(200,"m_Shader",202);
+ if(differentTemplates){f.Add(203,6);f.Add(204,f.types.size()-1);f.Add(205,textureType);f.Pointer(203,"texture",205);f.Pointer(203,"m_Shader",204);
+  auto& slots=ArrayValue(f.T(23),Child(f.T(23),f.V(23),"m_Materials"));slots.children.clear();slots.count=0;f.List(23,"m_Materials",{203});}
+ auto before=f.BytesOf();Bytes stream{1,2,3,4};auto original=EndfieldInput::Encode(Bundle(before,f.cab),{{f.cab,0,before},{f.cab+".resS",0,stream}});
+ auto temp=std::filesystem::weakly_canonical(std::filesystem::temp_directory_path());auto folder=temp/("eff-same-author-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));
+ Require(std::filesystem::create_directory(folder),"same author fixture exists");struct Cleanup{std::filesystem::path root,path;~Cleanup(){if(path.parent_path()==root)std::filesystem::remove_all(path);}}cleanup{temp,folder};
+ auto input=folder/"input";EiemResourceReloadPlan::Save(input,original);
+ EiemCompiledModSet::Set set;EiemCompiledModSet::Catalog catalog;catalog.source={"fixture",Hash(original),input,0,original.size()};
+ {MemberProof proof;proof.before=ParseSerialized(before);catalog.members[f.cab]=EiemCompiledModSet::PristineMember(proof);}
+ set.catalog={catalog};set.contributors={{{0,0},{1,0}}};set.frames.resize(2);
+ set.manifest.plan.names.members={{f.cab,"CAB-"+std::string(32,'b')},{f.cab+".resS","CAB-"+std::string(32,'b')+".resS"}};
+ set.manifest.plan.names.bundles["fixture-bundle"]="merged--bundle";
+ std::vector<int64_t> materialIds,textureIds;
+ for(int mod=0;mod<2;++mod){Package package;package.id=mod?"CharacterB":"CharacterA";EiemDirectory::Texture texture;
+  auto material=AllocateMaterialId(f.cab,package,"MaterialShared"),tex=AllocateTextureId(f.cab,package,"TextureShared",texture);
+  materialIds.push_back(material);textureIds.push_back(tex);auto next=f;
+  next.Add(material,6)=f.V(differentTemplates&&mod?203:200);next.Add(tex,textureType)=f.V(differentTemplates&&mod?205:201);
+  next.Pointer(material,"texture",tex);auto renderer=mod?23:13;
+  auto& slots=ArrayValue(next.T(renderer),Child(next.T(renderer),next.V(renderer),"m_Materials"));slots.children.clear();slots.count=0;next.List(renderer,"m_Materials",{material});
+  SetString(next.T(material),Child(next.T(material),next.V(material),"m_Name"),"Shared__EFF_"+package.id);
+  SetString(next.T(tex),Child(next.T(tex),next.V(tex),"m_Name"),"IdenticalTexture__EFF_"+package.id);
+  auto& info=Child(next.T(tex),next.V(tex),"m_StreamData");SetInteger(next.T(tex),Child(next.T(tex),info,"offset"),4);SetInteger(next.T(tex),Child(next.T(tex),info,"size"),3);
+  SetString(next.T(tex),Child(next.T(tex),info,"path"),"archive:/"+f.cab+"/"+f.cab+".resS");
+  auto edited=next.BytesOf();Bytes pixels=stream;pixels.insert(pixels.end(),{7,8,9}); // Identical bytes in both Mods.
+  auto artifact=std::make_shared<Artifact>();auto& plan=artifact->manifest.plan;plan.rulesOnly=plan.spanRecipes=true;
+  plan.startupHashes={Hash(EndfieldInput::Encode(original,{{f.cab,0,edited},{f.cab+".resS",0,pixels}}))};plan.memberRecipes.resize(1);
+  for(const auto& member:std::vector<EndfieldInput::Member>{{f.cab,0,edited},{f.cab+".resS",0,pixels}}){EiemResourceRecipe::Member recipe;recipe.name=member.name;recipe.hash=Hash(member.bytes);recipe.size=member.bytes.size();recipe.spans={{EiemResourceRecipe::Literal,{},0,member.bytes.size(),member.bytes}};plan.memberRecipes[0].push_back(std::move(recipe));}
+  MemberProof proof;proof.before=ParseSerialized(before);proof.after=ParseSerialized(edited);auto obj=ObjectValue(edited,proof.after,tex);const auto& type=proof.after.types.at(proof.after.objects.at(tex).type);
+  proof.streams={{tex,EncodeValue(type,Child(type,obj,"m_Name")).size(),8,f.cab+".resS",4}};artifact->members[f.cab]=proof;
+  EiemLoadingGeneration::Recipe names;EiemLoadingGeneration::PrepareSerialized(edited,set.manifest.plan.names,&names);plan.namespaceRecipes={{{f.cab,Hash(edited),std::move(names.patches)}}};set.mods.push_back(artifact);
+ }
+ Require(materialIds[0]!=materialIds[1]&&textureIds[0]!=textureIds[1],"identical author names/pixels collided across Mod identities");
+ for(bool isolated:{false,true})for(bool reverse:{false,true}){
+  set.contributors[0]=reverse?std::vector<std::pair<size_t,size_t>>{{1,0},{0,0}}:std::vector<std::pair<size_t,size_t>>{{0,0},{1,0}};
+  auto merged=EndfieldInput::Decode(EiemCompiledModSet::Materialize(set,0,isolated));auto& bytes=merged.members[0].bytes;auto layout=ParseSerialized(bytes);
+  auto cab=isolated?set.manifest.plan.names.members.at(f.cab):f.cab;
+  for(int mod=0;mod<2;++mod){auto renderer=mod?23:13;auto value=ObjectValue(bytes,layout,renderer);const auto& rt=layout.types.at(layout.objects.at(renderer).type);
+   Require(Reference(rt,ArrayValue(rt,Child(rt,value,"m_Materials")).children.front(),layout,cab)==NativeReference{cab,materialIds[mod]},"same author model redirected another character's Material");
+   auto material=ObjectValue(bytes,layout,materialIds[mod]);const auto& mt=layout.types.at(layout.objects.at(materialIds[mod]).type);
+   Require(Reference(mt,Child(mt,material,"texture"),layout,cab)==NativeReference{cab,textureIds[mod]}&&Reference(mt,Child(mt,material,"m_Shader"),layout,cab)==NativeReference{cab,differentTemplates&&mod?204:202},"same author Material lost its exact Texture/Shader reference");
+   auto texture=ObjectValue(bytes,layout,textureIds[mod]);const auto& tt=layout.types.at(layout.objects.at(textureIds[mod]).type);auto& info=Child(tt,texture,"m_StreamData");auto offset=Integer(Child(tt,info,"offset"));
+   Require(offset+3<=merged.members[1].bytes.size()&&Bytes(merged.members[1].bytes.begin()+offset,merged.members[1].bytes.begin()+offset+3)==Bytes({7,8,9}),"shared identical author pixels were rebased to another payload");
+  }
+  Require(EiemCompiledModSet::ObjectBytes(bytes,layout.objects.at(200))==EiemCompiledModSet::ObjectBytes(before,ParseSerialized(before).objects.at(200)),"shared original Material was overwritten");
+ }
+ // A different character may keep using the untouched native Material while
+ // the first Mod borrows/clones a template from that same game source.
+ auto native=std::make_shared<Artifact>();native->manifest.plan.startupHashes={Hash(original)};native->manifest.plan.memberRecipes.resize(1);
+ for(const auto& member:std::vector<EndfieldInput::Member>{{f.cab,0,before},{f.cab+".resS",0,stream}}){EiemResourceRecipe::Member recipe;recipe.name=member.name;recipe.hash=Hash(member.bytes);recipe.size=member.bytes.size();recipe.spans={{EiemResourceRecipe::Literal,{},0,member.bytes.size(),member.bytes}};native->manifest.plan.memberRecipes[0].push_back(std::move(recipe));}
+ native->members[f.cab].before=native->members[f.cab].after=ParseSerialized(before);EiemLoadingGeneration::Recipe nativeNames;EiemLoadingGeneration::PrepareSerialized(before,set.manifest.plan.names,&nativeNames);native->manifest.plan.namespaceRecipes={{{f.cab,Hash(before),std::move(nativeNames.patches)}}};set.mods[1]=native;
+ for(bool isolated:{false,true}){
+  auto result=EndfieldInput::Decode(EiemCompiledModSet::Materialize(set,0,isolated));auto& bytes=result.members[0].bytes;auto layout=ParseSerialized(bytes);auto cab=isolated?set.manifest.plan.names.members.at(f.cab):f.cab;
+  auto renderer=ObjectValue(bytes,layout,23);const auto& type=layout.types.at(layout.objects.at(23).type);auto material=differentTemplates?203:200;
+  Require(Reference(type,ArrayValue(type,Child(type,renderer,"m_Materials")).children.front(),layout,cab)==NativeReference{cab,material},"custom Mod changed a different character's native Material binding");
+  Require(EiemCompiledModSet::ObjectBytes(bytes,layout.objects.at(material))==EiemCompiledModSet::ObjectBytes(before,ParseSerialized(before).objects.at(material)),"custom Mod rewrote another character's native Material payload");
+ }
+ std::cout<<"PASS two-character author resources: differentTemplates="<<int(differentTemplates)<<" distinct native IDs, exact Renderer/Material/Texture/Shader references, both contributor orders, native Material consumers, startup and isolated generations\n";
+}
 void InputRetentionRegression(){
  using EiemInputRetention::Select;
  // Prefab -> unchanged intermediate -> edited Material -> original Shader.
@@ -733,6 +802,8 @@ int main(int argc,char** argv){try{
  NativeResidencyRegression();
  InputRetentionRegression();
  SharedInputRegression();
+ SharedAuthorModelRegression();
+ SharedAuthorModelRegression(true);
  ExternalDependencyRegression();
  auto binding=OriginalBoneBinding({11,22,33},{101,202,303},{33,44,11});
  Require(binding==std::map<size_t,int64_t>{{0,303},{2,101}},"native palette correspondence lost reordered/original bones");

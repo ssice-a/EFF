@@ -48,7 +48,17 @@ def texture_section(texture):
     return section
 
 
-def texture_output_paths(root, ini, textures, materials=()):
+def _texture_payload(texture, cache):
+    # Bindings often share the very same immutable mip buffer. Validate each
+    # declaration, but encode/checksum that buffer only once in this write.
+    blocks = texture_blocks(texture)
+    key = (id(blocks['pixels']), blocks['@texture'])
+    if key not in cache:
+        cache[key] = encode_resource(PIXELS, '00' * 16, blocks)
+    return cache[key]
+
+
+def texture_output_paths(root, ini, textures, materials=(), _payloads=None):
     """Plan filenames before writes so partial staging can detach hardlinks."""
     updated = {texture_section(t) for t in textures}
     retained = {s: ini[s]['path'] for s in ini.sections() if s.startswith('Texture') and s not in updated}
@@ -61,13 +71,11 @@ def texture_output_paths(root, ini, textures, materials=()):
         ids = {t['id']: texture_section(t) for t in textures}
         used.update(ids[edit['texture']] for m in materials for edit in m['textureEdits'])
         retained = {s: path for s, path in retained.items() if s in used}
-    assigned, paths, data_cache = {}, {}, {}
+    assigned, paths = {}, {}
+    data_cache = {} if _payloads is None else _payloads
 
     def data(texture):
-        key = texture['id']
-        if key not in data_cache:
-            data_cache[key] = encode_resource(PIXELS, '00' * 16, texture_blocks(texture))
-        return data_cache[key]
+        return _texture_payload(texture, data_cache)
 
     def conflicts(relative, texture):
         return ((relative in assigned and data(assigned[relative]) != data(texture)) or
@@ -90,21 +98,24 @@ def texture_output_paths(root, ini, textures, materials=()):
 
 
 def texture_sections(root, ini, textures, paths=None):
-    paths = texture_output_paths(root, ini, textures) if paths is None else paths
+    payloads = {}
+    paths = texture_output_paths(root, ini, textures, _payloads=payloads) if paths is None else paths
     ids, sections = {}, set()
+    written = set()
     for texture in textures:
         tid = texture_section(texture)
         require(texture['id'] not in ids, 'duplicate texture ID')
         require(tid not in sections, 'duplicate texture section: ' + tid)
         sections.add(tid)
         ids[texture['id']] = tid
-        data = encode_resource(PIXELS, '00' * 16, texture_blocks(texture))
+        data = _texture_payload(texture, payloads)
         relative = paths[texture['id']]
         path = resource_path(root, relative)
         path.parent.mkdir(parents=True, exist_ok=True)
-        texture['_written'] = not (texture.get('retained') and path.is_file() and path.read_bytes() == data)
+        texture['_written'] = relative not in written and not (texture.get('retained') and path.is_file() and path.read_bytes() == data)
         if texture['_written']:
             path.write_bytes(data)
+        written.add(relative)
         values = {'path': relative}
         settings = {'linear': ('true' if texture['colorSpace'] == 0 else 'false', 'false'),
                     'filter': (str(texture['filter']), '1'), 'wrap': (str(texture['wrap']), '0'),
@@ -116,7 +127,7 @@ def texture_sections(root, ini, textures, paths=None):
     return ids
 
 
-def update_directory(root, *, parts=(), materials=(), textures=(), texture_only=False, resource_cache=None):
+def update_directory(root, *, parts=(), materials=(), textures=(), texture_only=False, resource_cache=None, material_clips=None, effects=None):
     """Update selected resource kinds in an already complete staging directory."""
     root = Path(root)
     ini = ini_document(root)
@@ -170,6 +181,9 @@ def update_directory(root, *, parts=(), materials=(), textures=(), texture_only=
         resource_path(root, relative).unlink()
     if before != {s: dict(ini[s]) for s in ini.sections()}:
         save_ini(root, ini)
+    if material_clips is not None or effects is not None:
+        from .runtime_controls import apply
+        apply(root,ini,material_clips,effects,material_ids={m['id'] for m in materials})
     from .ini_reader import read_package
     return read_package(root, resource_cache)
 
@@ -218,7 +232,7 @@ def apply_animations(root, ini, parts, partial=False):
 
 
 def export_directory(root, *, mod_id, parts, materials, textures, rules, switches, resource_cache=None,
-                     key_switch_enabled=True):
+                     key_switch_enabled=True, material_clips=None, effects=None):
     root = Path(root)
     require(root.is_dir() and not any(root.iterdir()), "publication output must be empty")
     identifier(mod_id)
@@ -322,6 +336,9 @@ def export_directory(root, *, mod_id, parts, materials, textures, rules, switche
         section("Replace" + rule["sourceAsset"], values)
 
     apply_animations(root, ini, parts)
+    if material_clips is not None or effects is not None:
+        from .runtime_controls import apply
+        apply(root,ini,material_clips,effects)
     save_ini(root, ini)
     # The reader is also the publication gate. There is no legacy JSON fallback.
     from .ini_reader import read_package

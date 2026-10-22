@@ -88,6 +88,45 @@ def fixture():
 
 
 class DirectoryTests(unittest.TestCase):
+    def test_nested_mod_has_independent_resource_scope(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)/'lx'
+            root.mkdir()
+            export_directory(root,**fixture())
+            before=read_package(root)
+            child=root/'effects'/'花瓣'
+            child.mkdir(parents=True)
+            export_directory(child,**dict(fixture(),mod_id='Petals'))
+            after=read_package(root)
+            self.assertEqual(after['_files'],before['_files'])
+            self.assertEqual(read_package(child)['modId'],'Petals')
+            (child/'unexpected.txt').write_text('child only',encoding='utf-8')
+            self.assertEqual(read_package(root)['_files'],before['_files'])
+            with self.assertRaisesRegex(ValueError,'unreferenced/source'):
+                read_package(child)
+            (root/'unexpected.txt').write_text('parent still strict',encoding='utf-8')
+            with self.assertRaisesRegex(ValueError,'unreferenced/source'):
+                read_package(root)
+
+    def test_shared_texture_bindings_encode_and_write_one_payload(self):
+        from unittest.mock import patch
+        from nativepack import ini_package
+        data=fixture();textures=data['textures'];encoded=ini_package.encode_resource
+        calls=[]
+        def encode(kind, native_type, blocks):
+            if kind==ini_package.PIXELS:calls.append(bytes(blocks['pixels']))
+            return encoded(kind,native_type,blocks)
+        with tempfile.TemporaryDirectory() as folder,patch.object(ini_package,'encode_resource',encode):
+            root=Path(folder);result=export_directory(root,**data)
+            self.assertEqual(len(calls),1)
+            self.assertEqual(len(list((root/'textures').glob('*.tex'))),1)
+            self.assertEqual(len(result['textures']),2)
+            self.assertEqual(sum(bool(t['_written']) for t in textures),1)
+            # Identical labels with different pixels remain distinct inputs.
+            textures[1]['pixels']=b'\xff\x00\x00\xff'
+            with self.assertRaisesRegex(ValueError,'same TEX filename'):
+                ini_package.texture_output_paths(root,ini_package.ini_document(root),textures)
+
     def variant_fixture(self, same_label=False):
         data = fixture()
         first = dict(data['textures'][0], id='variant-a', section='TextureVariantA',

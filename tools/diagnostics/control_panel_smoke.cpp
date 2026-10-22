@@ -12,6 +12,8 @@ using namespace RuntimeControls;
 using EiemControlPanel::Action;
 UINT physical=0;
 bool Sample(const EiemKeyChord& chord) { return physical==chord.vk; }
+size_t animationKeySamples=0;
+bool CountAnimationKey(const EiemKeyChord& chord){++animationKeySamples;return Sample(chord);}
 Package Make(const std::string& id) {
   Package p;p.id=id;p.root=std::filesystem::temp_directory_path()/"eff-panel-fixture"/id;
   p.defaults={{"$switch",0},{"$shape",0}};p.controls["$shape"]={u8"体型",0,1};
@@ -86,10 +88,27 @@ void SharedChannelAnimationChecks(){
  Install({},true);panel.open=false;physical=0;
  std::cout<<"PASS shared-channel groups: validation, keys/Ins replacement including paused clips, disjoint playback, UI state and inactive stop/manual handoff\n";
 }
+void AnimationSchedulingChecks(){
+ auto p=Make("IndexedAnim");p.bindings.clear();
+ for(size_t i=0;i<2000;++i){ShapeAnimation clip;clip.id="clip_"+std::to_string(i);clip.duration=1;clip.speedVariable="$speed_"+std::to_string(i);auto variable="$channel_"+std::to_string(i);clip.tracks[variable]={0,1};
+  p.defaults[variable]=0;p.controls[variable]={variable,0,1};p.defaults[clip.speedVariable]=1;p.persistent.insert(clip.speedVariable);if(i==0)clip.key={VK_F6,0};p.shapeAnimations.emplace(clip.id,clip);}
+ ValidateShapeAnimations(p);std::vector<Package> packages;
+ for(size_t i=0;i<64;++i){auto plain=Make("Plain_"+std::to_string(i));plain.bindings.clear();packages.push_back(std::move(plain));}packages.push_back(p);
+ physical=VK_F6;panel.open=false;auto candidate=Prepare(Graph(std::move(packages)),EiemGlobalConfig{});
+ Require(candidate.animationKeys.size()==1&&candidate.animationPackages==std::vector<size_t>{64},"prepared animation indexes scan keyless groups/plain packages");
+ MergeLive(candidate,CountAnimationKey);Require(candidate.animationKeys.size()==1&&candidate.animationPackages.size()==1,"MergeLive duplicates prepared animation indexes");Swap(candidate);
+ animationKeySamples=0;PollControls(true,0,CountAnimationKey);Require(animationKeySamples==1&&!animations.at(p.id).clips.at("clip_0").playing,"indexed keys resample keyless clips or synthesize held edge");
+ physical=0;PollControls(true,0,CountAnimationKey);physical=VK_F6;PollControls(true,0,CountAnimationKey);AdvanceAnimations(.25);
+ Require(animations.at(p.id).LastVisited()==1&&ShapeValue(p.id,"$channel_0")==.25,"indexed playback missed active group or sampled dormant groups");
+ auto copied=animations;AdvanceAnimations(.25);Require(copied.at(p.id).clips.at("clip_0").time==.25,"published player copy shares active playback state");
+ Install({},true);Require(animationKeys.empty()&&animationPackages.empty(),"removed Mod retained animation indexes");panel.open=false;physical=0;
+ std::cout<<"PASS animation scheduling: 2000 groups/64 plain packages, prepared key/package indexes, MergeLive, held-key edges, active sampling, copy and removal\n";
+}
 void Checks() {
   AnimationChecks();
   CompiledAnimationChecks();
   SharedChannelAnimationChecks();
+  AnimationSchedulingChecks();
   EiemControlPanel::Shortcut shortcut;
   EiemKeyChord insert{VK_INSERT,0};
   Require(!shortcut.Press(insert,true,true),"startup held Insert synthesized toggle");
@@ -146,8 +165,11 @@ void Checks() {
   Install({Make("B")},true);Frame();Require(selected=="B","deleting current character Mod did not select remaining Mod");
   Install({},true);Frame();Require(selected.empty()&&keys.empty()&&specs.empty()&&panel.Read()->graph->empty(),"deleting last Mod left live controls");
   Install({Make("B")},true);Frame();Require(selected=="B","readding character Mod after empty set failed default selection");
-  auto reserved=Make("reserved");reserved.bindings.front().key={VK_INSERT,MOD_CONTROL};
-  auto accepted=Prepare(Graph({reserved}),EiemGlobalConfig{});Require(accepted.keys.at(reserved.id).front().key==reserved.bindings.front().key,"user-selected overlapping shortcut was rejected");
+  for(UINT vk:{UINT(VK_INSERT),UINT(VK_F10),UINT(VK_F9)}){
+    auto reserved=Make("reserved");reserved.bindings.front().key={vk,MOD_CONTROL};bool rejected=false;
+    try{Prepare(Graph({reserved}),EiemGlobalConfig{});}catch(const std::exception&){rejected=true;}
+    Require(rejected,"Mod shortcut bypassed reserved global GUI/reload/effects key");
+  }
   auto view=panel.Read();panel.open=true;Queue(Action::Keyboard,"B",{},0,view);Frame();
   Require(!keySwitchEnabled.at("B"),"checkbox did not disable its Mod");
   Install({Make("C"),Make("D")});view=panel.Read();
@@ -166,7 +188,7 @@ void Checks() {
   while(!done) {auto s=bridge.Read();if(s) bridge.Submit({s->revision,0,Action::Select,"A"});bridge.Drain();}
   producer.join();Require(bridge.Read()->revision==1999,"cross-thread snapshot publication");
   panel.open=false;physical=0;
-  std::cout<<"PASS per-Mod INI/UI keyboard enable, simultaneous identical keys, independent checkbox queues, default/reload/removal, held edges, immutable snapshots, stale graph/scope rejection, GUI pause/buttons/sliders/hold, focus/close, persistence, overlapping user keys, concurrent publication\n";
+  std::cout<<"PASS per-Mod INI/UI keyboard enable, simultaneous identical keys, independent checkbox queues, default/reload/removal, held edges, immutable snapshots, stale graph/scope rejection, GUI pause/buttons/sliders/hold, focus/close, persistence, reserved global keys, concurrent publication\n";
 }
 LRESULT CALLBACK GameProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {return DefWindowProcW(hwnd,msg,wp,lp);}
 void CrossThreadWindowChecks(){
@@ -257,7 +279,9 @@ void KeySettingsChecks(){
   std::cout<<"PASS per-Mod checkbox INI save, comments/BOM/CRLF preservation, restart/compiled control defaults, no resource rewrite, removed Mod save refusal\n";
 }
 void WindowChecks(bool demo) {
-  Install({Make("lizhiyan"),Make("other")});
+  auto first=Make("lizhiyan"),other=Make("other");other.defaults["$fx_petals"]=0;other.controls["$fx_petals"]={u8"花瓣特效",0,1};
+  EffectAttachment effect;effect.id="petals";effect.label=u8"花瓣特效";effect.variable="$fx_petals";other.effects.emplace(effect.id,effect);
+  Install({first,other});
   WNDCLASSW wc{};wc.lpfnWndProc=GameProc;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"EFF_PanelTestOwner";
   RegisterClassW(&wc);HWND owner=CreateWindowW(wc.lpszClassName,L"EFF control panel test",WS_OVERLAPPEDWINDOW,
     CW_USEDEFAULT,CW_USEDEFAULT,800,760,nullptr,nullptr,wc.hInstance,nullptr);
@@ -270,7 +294,8 @@ void WindowChecks(bool demo) {
   for(int i=0;i<10;++i) {Pump();Sleep(20);}
   Require(IsWindowVisible(window.Handle()),"panel not shown");
   window.Tick(nullptr);Require(!IsWindowVisible(window.Handle()),"external focus did not hide panel");window.Tick(owner);
-  auto Click=[&](RECT rect){int x=(rect.left+rect.right)/2,y=(rect.top+rect.bottom)/2;window.TestMouse(x,y,false);Pump();window.TestMouse(x,y,true);Pump();window.TestMouse(x,y,false);Pump();Pump();};
+  auto ClickAt=[&](int x,int y){window.TestMouse(x,y,false);Pump();window.TestMouse(x,y,true);Pump();window.TestMouse(x,y,false);Pump();Pump();};
+  auto Click=[&](RECT rect){ClickAt((rect.left+rect.right)/2,(rect.top+rect.bottom)/2);};
   Click(window.TestRect(Action::Keyboard,"lizhiyan"));Click(window.TestRect(Action::Keyboard,"other"));
   Require(!keySwitchEnabled.at("lizhiyan")&&!keySwitchEnabled.at("other"),"ImGui checkboxes were limited by panel selection");
   Click(window.TestRect(Action::Keyboard,"lizhiyan"));Click(window.TestRect(Action::Keyboard,"other"));
@@ -281,6 +306,36 @@ void WindowChecks(bool demo) {
   Require(variables.at("other").at("$switch")==1&&variables.at("lizhiyan").at("$switch")==0,"ImGui cycle button not isolated");
   auto before=variables.at("other").at("$shape");Click(window.TestRect(Action::Value,"other","$shape"));
   auto value=variables.at("other").at("$shape");Require(value>=0&&value<=1&&value!=before,"ImGui shape slider not wired");
+  auto fx=window.TestRect(Action::Value,"other","$fx_petals");RECT fxClient{};GetClientRect(window.Handle(),&fxClient);
+  ClickAt(fxClient.right-110,(fx.top+fx.bottom)/2);Require(variables.at("other").at("$fx_petals")==0,"effect enable control still responds as a full-width slider");
+  Click(fx);Require(variables.at("other").at("$fx_petals")==1,"effect checkbox failed to enable");Click(fx);
+  Require(variables.at("other").at("$fx_petals")==0,"effect checkbox failed to disable");
+  auto handle=window.Handle();RECT initial{},client{};GetWindowRect(handle,&initial);GetClientRect(handle,&client);
+  POINT corner{client.right-5,client.bottom-5};ClientToScreen(handle,&corner);
+  Require(SendMessageW(handle,WM_NCHITTEST,0,MAKELPARAM(corner.x,corner.y))==HTBOTTOMRIGHT,"visible size grip does not start native resize");
+  MINMAXINFO limits{};SendMessageW(handle,WM_GETMINMAXINFO,0,reinterpret_cast<LPARAM>(&limits));
+  Require(limits.ptMinTrackSize.x>=420&&limits.ptMinTrackSize.y>=320,"panel can shrink below usable client size");
+  Require((GetWindowLongPtrW(handle,GWL_STYLE)&(WS_THICKFRAME|WS_MAXIMIZEBOX))==(WS_THICKFRAME|WS_MAXIMIZEBOX),"native resize/maximize style missing");
+  int frameWidth=(initial.right-initial.left)-client.right,frameHeight=(initial.bottom-initial.top)-client.bottom;
+  int widths[]={420,900,604},heights[]={320,800,640};
+  for(size_t i=0;i<3;++i){
+    SetWindowPos(handle,nullptr,0,0,widths[i]+frameWidth,heights[i]+frameHeight,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+    GetClientRect(handle,&client);window.TestCaptureBackgroundAlpha(UINT(client.right-3),4);
+    // WM_TIMER must update the D3D target inside the native drag loop, without
+    // another outer Tick. Focus is the same observation seam as the UI checks.
+    SetForegroundWindow(handle);SendMessageW(handle,WM_ENTERSIZEMOVE,0,0);SendMessageW(handle,WM_TIMER,1,0);SendMessageW(handle,WM_EXITSIZEMOVE,0,0);
+    if(GetForegroundWindow()!=handle)window.Tick(handle);
+    GetClientRect(handle,&client);
+    Require(window.TestBufferSize()==std::make_pair(UINT(client.right),UINT(client.bottom)),"native drag did not resize the compositor backbuffer");
+    Require(window.TestBackgroundAlpha()==255,"resized INS background does not cover the enlarged client area opaquely");
+    Pump();auto button=window.TestRect(Action::Invoke,"other",u8"衣装切换");
+    Require(button.right<=client.right&&button.right-button.left>client.right-90,"button failed to follow resized client width");
+    if(i==0)Require(window.TestScrollMax()>0,"small panel has no scrollable overflow");
+    auto snapshot=panel.Read();Require(snapshot->selected=="other"&&snapshot->values.at("other").at("$switch")==1,"resize changed runtime control state");
+  }
+  auto resized=window.TestRect(Action::Invoke,"other",u8"衣装切换");Click(resized);
+  Require(variables.at("other").at("$switch")==2,"resized cycle button lost its input mapping");
+  std::cout<<"PASS native corner resize hit, minimum size, small/large/restored client and D3D buffers, responsive buttons and control state\n";
   std::cout<<"Panel backdrop acrylic="<<window.TestAcrylic()<<"\n";
   if(demo) {auto until=GetTickCount64()+60000;while(GetTickCount64()<until && panel.open){Pump();Sleep(16);}}
   SendMessageW(window.Handle(),WM_CLOSE,0,0);Pump();

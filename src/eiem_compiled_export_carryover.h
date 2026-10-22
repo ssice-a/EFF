@@ -39,8 +39,14 @@ inline EiemResourceCatalogDelta::Catalog Catalog(const EiemStaticSources::Select
 }
 inline void RebindSources(Artifact& artifact,const EiemStaticSources::Selection& selection,bool allowRetired=false){
  std::map<std::string,const EiemStaticSources::Entry*> identities;for(const auto& row:selection.inputs){auto identity=row.first+'\n'+row.second.revision;identities.emplace(Hash(Bytes(identity.begin(),identity.end()))+".vfs",&row.second);}
- for(auto& source:artifact.manifest.plan.originals){auto found=identities.find(source.file);if(found==identities.end()){Require(allowRetired,"inherited source missing from current selection");continue;}const auto& entry=*found->second;Require(source.hash==entry.revision&&source.size==entry.size,"inherited source byte identity differs");source.physical=entry.physical;source.offset=entry.offset;}
- artifact.verifiedSources.clear();
+ bool retained=artifact.verifiedSources.size()==artifact.manifest.plan.originals.size();
+ for(auto& source:artifact.manifest.plan.originals){auto found=identities.find(source.file);if(found==identities.end()){Require(allowRetired,"inherited source missing from current selection");retained=false;continue;}const auto& entry=*found->second;Require(source.hash==entry.revision&&source.size==entry.size,"inherited source byte identity differs");
+  retained=retained&&source.physical==entry.physical&&source.offset==entry.offset;source.physical=entry.physical;source.offset=entry.offset;
+ }
+ // Binding an identical range must retain its verified stamp. Clearing every
+ // stamp disabled the parameter-only compiler on every ordinary author export.
+ // Selective builders still compare these stamps against the current files.
+ if(!retained)artifact.verifiedSources.clear();
 }
 inline void CopySnapshot(const std::filesystem::path& source,const std::filesystem::path& target){
  static std::atomic<uint64_t> serial{0};auto temporary=target;temporary+=L".carryover-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(serial.fetch_add(1));

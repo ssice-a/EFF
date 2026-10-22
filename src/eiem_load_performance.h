@@ -2,18 +2,30 @@
 #include <atomic>
 #include <algorithm>
 #include <psapi.h>
+#include <string>
 void Log(const char*,...);
 
 // Opt-in loading measurements. Production builds have no counters or timers.
 namespace EiemLoadPerformance {
 enum Stage { File, DependencyAll, DependencyDirect, Prefab, Controls, StreamLifetime, Reload,
  PluginFrame, ControlInput, ControlBindings, StreamRoute, ViewRead, ViewSeek, BufferRead,
- ResourcePrepare, ReloadDrain, DependencyIndex, Logging, ModelRegister, CaptureSnapshot, CaptureRetire, CaptureMatrices, ShapeAnimation, Count };
+ ResourcePrepare, ReloadDrain, DependencyIndex, Logging, ModelRegister, CaptureSnapshot, CaptureRetire, CaptureMatrices, ShapeAnimation,
+ UpdateEntry, MaterialFrame, MaterialRegister, MaterialSlot, MaterialGlobal, MaterialRead,
+ EffectFrame, EffectDisk, EffectBind, EffectMount, EffectOwners, EffectLoad, EffectCreate, EffectRetire, EffectCollect,
+ ReloadOwners, ReloadRebuild, ReloadRetire, UIRegister, WorldRegister, InstantiationRoute, DiagnosticLogging, Count };
+enum class Operation { ManagedInvoke, HandleCreate, HandleFree, ShapeRead, ShapeWrite, MaterialValueWrite, EffectVisibility, EffectCreate, EffectRetire, Count };
+enum class Workload { Mods, Parts, UIModels, PendingUI, ShapeBindings, ShapeCache, CaptureGroups, CaptureSnapshots,
+ MaterialBindings, ActiveAnimations, AnimationChannels, EffectBindings, EffectInstances, EffectGenerations, EffectRetired,
+ EffectQuarantined, EffectArchiveBytes, RetainedGenerations, Routes, Count };
 #if defined(EIEM_LOAD_PERF)
 inline constexpr uint64_t histogramUs[]={1,5,10,50,100,250,500,1000,2000,4000,8000,16000,33000,50000,100000,250000,1000000};
 inline constexpr size_t histogramBuckets=sizeof(histogramUs)/sizeof(histogramUs[0])+1;
-struct Counters {std::atomic<uint64_t> calls{0},ticks{0},longest{0},mainCalls{0},mainTicks{0},mainLongest{0},bytes{0};std::atomic<uint64_t> histogram[histogramBuckets]{};};
+struct Counters {std::atomic<uint64_t> calls{0},ticks{0},longest{0},mainCalls{0},mainTicks{0},mainLongest{0},bytes{0};std::atomic<uint64_t> histogram[histogramBuckets]{},mainHistogram[histogramBuckets]{};};
 inline Counters counters[Count][2];
+struct OperationCounters {std::atomic<uint64_t> calls{0},mainCalls{0};};
+inline OperationCounters operations[size_t(Operation::Count)];
+inline std::atomic<uint64_t> workload[size_t(Workload::Count)]{},sampleTick{0};
+inline const ULONGLONG measurementStarted=GetTickCount64();
 inline std::atomic<uint64_t> frames[6];
 inline std::atomic<uint64_t> wallFrames[6],wallFrameLongest{0},frameNumber{0};
 inline std::atomic<DWORD> mainThread{0};
@@ -21,6 +33,10 @@ inline uint64_t Frequency(){static uint64_t frequency=[](){LARGE_INTEGER value;Q
 inline uint64_t Clock(){LARGE_INTEGER value;QueryPerformanceCounter(&value);return uint64_t(value.QuadPart);}
 inline void Maximum(std::atomic<uint64_t>& value,uint64_t ticks){auto old=value.load(std::memory_order_relaxed);while(old<ticks&&!value.compare_exchange_weak(old,ticks,std::memory_order_relaxed)){}}
 inline void ObserveMainThread(){mainThread.store(GetCurrentThreadId(),std::memory_order_relaxed);}
+inline void Add(Operation op,uint64_t count=1){auto& value=operations[size_t(op)];value.calls.fetch_add(count,std::memory_order_relaxed);if(GetCurrentThreadId()==mainThread.load(std::memory_order_relaxed))value.mainCalls.fetch_add(count,std::memory_order_relaxed);}
+inline void Set(Workload field,uint64_t value){workload[size_t(field)].store(value,std::memory_order_relaxed);}
+inline bool RuntimeSampleDue(){static ULONGLONG previous=0;auto now=GetTickCount64();if(now-previous<5000)return false;previous=now;return true;}
+inline void FinishRuntimeSample(){sampleTick.store(GetTickCount64(),std::memory_order_release);}
 inline void MainFrame(unsigned frame){
  ObserveMainThread();frameNumber.store(frame,std::memory_order_relaxed);
  static thread_local uint64_t previous=0;auto now=Clock();if(previous){auto ticks=now-previous;double ms=double(ticks)*1000/Frequency();unsigned bucket=ms<=8.34?0:ms<=16.67?1:ms<=33.34?2:ms<=50?3:ms<=100?4:5;wallFrames[bucket].fetch_add(1,std::memory_order_relaxed);Maximum(wallFrameLongest,ticks);}previous=now;
@@ -28,7 +44,7 @@ inline void MainFrame(unsigned frame){
 inline void Record(Stage stage,bool hit,uint64_t ticks){
  auto& value=counters[stage][hit];value.calls.fetch_add(1,std::memory_order_relaxed);value.ticks.fetch_add(ticks,std::memory_order_relaxed);
  Maximum(value.longest,ticks);double us=double(ticks)*1000000/Frequency();size_t bucket=0;while(bucket+1<histogramBuckets&&us>histogramUs[bucket])++bucket;value.histogram[bucket].fetch_add(1,std::memory_order_relaxed);
- if(GetCurrentThreadId()==mainThread.load(std::memory_order_relaxed)){value.mainCalls.fetch_add(1,std::memory_order_relaxed);value.mainTicks.fetch_add(ticks,std::memory_order_relaxed);Maximum(value.mainLongest,ticks);}
+ if(GetCurrentThreadId()==mainThread.load(std::memory_order_relaxed)){value.mainCalls.fetch_add(1,std::memory_order_relaxed);value.mainTicks.fetch_add(ticks,std::memory_order_relaxed);Maximum(value.mainLongest,ticks);value.mainHistogram[bucket].fetch_add(1,std::memory_order_relaxed);}
 }
 inline void Bytes(Stage stage,uint64_t bytes,bool hit=true){counters[stage][hit].bytes.fetch_add(bytes,std::memory_order_relaxed);}
 struct Scope {
@@ -40,17 +56,28 @@ inline void Frame(double seconds){
  const double ms=seconds*1000;unsigned bucket=ms<=8.34?0:ms<=16.67?1:ms<=33.34?2:ms<=50?3:ms<=100?4:5;
  frames[bucket].fetch_add(1,std::memory_order_relaxed);
 }
-inline void Flush(){
- static ULONGLONG previous=0;auto now=GetTickCount64();if(now-previous<5000)return;previous=now;
+inline double Percentile(const uint64_t* histogram,double fraction){uint64_t samples=0,seen=0;for(size_t i=0;i<histogramBuckets;++i)samples+=histogram[i];if(!samples)return 0;for(size_t i=0;i<histogramBuckets;++i){seen+=histogram[i];if(double(seen)>=double(samples)*fraction)return i+1<histogramBuckets?double(histogramUs[i])/1000:-1;}return -1;}
+inline void Flush(bool force=false){
+ static ULONGLONG previous=measurementStarted;static uint64_t window=0;auto now=GetTickCount64();if(!force&&now-previous<5000)return;auto start=previous;previous=now;
+ Log("[DEBUG-loadperf] window=1 windowId=%llu startTickMs=%llu endTickMs=%llu spanMs=%llu",(unsigned long long)++window,(unsigned long long)start,(unsigned long long)now,(unsigned long long)(now-start));
  const double scale=1000.0/double(Frequency());
- const char* names[]={"file","dependency-all","dependency-direct","prefab","controls","stream-lifetime","reload","plugin-frame","control-input","control-bindings","stream-route","view-read","view-seek","backing-read","resource-prepare","reload-drain","dependency-index","logging","model-register","capture-snapshot","capture-retire","capture-matrices","shape-animation"};
+ const char* names[]={"file","dependency-all","dependency-direct","prefab","controls","stream-lifetime","reload","plugin-frame","control-input","control-bindings","stream-route","view-read","view-seek","backing-read","resource-prepare","reload-drain","dependency-index","logging","model-register","capture-snapshot","capture-retire","capture-matrices","shape-animation",
+ "update-entry","material-frame","material-register","material-slot-hook","material-global-hook","material-read-hook",
+ "effect-frame","effect-disk-prepare","effect-bind","effect-mount","effect-owners","effect-load-step","effect-create","effect-retire","effect-collect",
+ "reload-owners","reload-rebuild","reload-retire","ui-register","world-register","instantiate-route","diagnostic-logging"};
  static_assert(sizeof(names)/sizeof(names[0])==Count,"load performance stage names differ");
  for(unsigned stage=0;stage<Count;++stage)for(unsigned hit=0;hit<2;++hit){auto& value=counters[stage][hit];auto count=value.calls.exchange(0,std::memory_order_relaxed);if(!count)continue;
   auto total=value.ticks.exchange(0,std::memory_order_relaxed),longest=value.longest.exchange(0,std::memory_order_relaxed);
   auto mainCount=value.mainCalls.exchange(0,std::memory_order_relaxed),mainTotal=value.mainTicks.exchange(0,std::memory_order_relaxed),mainMax=value.mainLongest.exchange(0,std::memory_order_relaxed),bytes=value.bytes.exchange(0,std::memory_order_relaxed);
-  uint64_t histogram[histogramBuckets],samples=0;for(size_t i=0;i<histogramBuckets;++i){histogram[i]=value.histogram[i].exchange(0,std::memory_order_relaxed);samples+=histogram[i];}uint64_t seen=0;double p95=-1;for(size_t i=0;i<histogramBuckets;++i){seen+=histogram[i];if(samples&&double(seen)>=double(samples)*0.95){p95=i+1<histogramBuckets?double(histogramUs[i])/1000:-1;break;}}
-  Log("[DEBUG-loadperf] stage=%s changed=%u calls=%llu totalMs=%.6f averageUs=%.6f maxMs=%.6f mainCalls=%llu mainTotalMs=%.6f mainMaxMs=%.6f p95UpperMs=%.6f bytes=%llu inclusive=1 wallClock=1",names[stage],hit,(unsigned long long)count,double(total)*scale,double(total)*scale*1000/double(count),double(longest)*scale,(unsigned long long)mainCount,double(mainTotal)*scale,double(mainMax)*scale,p95,(unsigned long long)bytes);
+  uint64_t histogram[histogramBuckets],mainHistogram[histogramBuckets];for(size_t i=0;i<histogramBuckets;++i){histogram[i]=value.histogram[i].exchange(0,std::memory_order_relaxed);mainHistogram[i]=value.mainHistogram[i].exchange(0,std::memory_order_relaxed);}
+  Log("[DEBUG-loadperf] stage=%s changed=%u calls=%llu totalMs=%.6f averageUs=%.6f maxMs=%.6f mainCalls=%llu mainTotalMs=%.6f mainMaxMs=%.6f p95UpperMs=%.6f p99UpperMs=%.6f mainP95UpperMs=%.6f mainP99UpperMs=%.6f bytes=%llu inclusive=1 wallClock=1",names[stage],hit,(unsigned long long)count,double(total)*scale,double(total)*scale*1000/double(count),double(longest)*scale,(unsigned long long)mainCount,double(mainTotal)*scale,double(mainMax)*scale,Percentile(histogram,.95),Percentile(histogram,.99),Percentile(mainHistogram,.95),Percentile(mainHistogram,.99),(unsigned long long)bytes);
  }
+ const char* operationNames[]={"managed-invoke","gc-handle-create","gc-handle-free","shape-weight-read","shape-weight-write","material-value-write","effect-renderer-test","effect-create","effect-retire"};
+ static_assert(sizeof(operationNames)/sizeof(operationNames[0])==size_t(Operation::Count),"performance operation names differ");
+ for(size_t i=0;i<size_t(Operation::Count);++i){auto count=operations[i].calls.exchange(0,std::memory_order_relaxed),main=operations[i].mainCalls.exchange(0,std::memory_order_relaxed);if(count)Log("[DEBUG-loadperf] operation=%s calls=%llu mainCalls=%llu",operationNames[i],(unsigned long long)count,(unsigned long long)main);}
+ const char* workloadNames[]={"mods","parts","uiModels","pendingUI","shapeBindings","shapeCache","captureGroups","captureSnapshots","materialBindings","activeAnimations","animationChannels","effectBindings","effectInstances","effectGenerations","effectRetired","effectQuarantined","effectArchiveBytes","retainedGenerations","routes"};
+ static_assert(sizeof(workloadNames)/sizeof(workloadNames[0])==size_t(Workload::Count),"performance workload names differ");
+ auto sample=sampleTick.load(std::memory_order_acquire);if(sample){std::string line="[DEBUG-loadperf] runtimeWorkload=1 sampleTickMs="+std::to_string(sample)+" sampleAgeMs="+std::to_string(now>=sample?now-sample:0);for(size_t i=0;i<size_t(Workload::Count);++i)line+=" "+std::string(workloadNames[i])+"="+std::to_string(workload[i].load(std::memory_order_relaxed));Log("%s",line.c_str());}
  uint64_t values[6];bool any=false;for(unsigned i=0;i<6;++i){values[i]=frames[i].exchange(0,std::memory_order_relaxed);any=any||values[i]!=0;}
  if(any)Log("[DEBUG-loadperf] unityDeltaFrames=1 le8ms=%llu le16ms=%llu le33ms=%llu le50ms=%llu le100ms=%llu over100ms=%llu presentTrace=0",(unsigned long long)values[0],(unsigned long long)values[1],(unsigned long long)values[2],(unsigned long long)values[3],(unsigned long long)values[4],(unsigned long long)values[5]);
  any=false;for(unsigned i=0;i<6;++i){values[i]=wallFrames[i].exchange(0,std::memory_order_relaxed);any=any||values[i]!=0;}
@@ -65,9 +92,11 @@ inline void Flush(){
 #else
 struct Scope {bool hit=false;explicit Scope(Stage) {}};
 inline void ObserveMainThread(){}
+inline void Add(Operation,uint64_t=1){}
+inline void Set(Workload,uint64_t){}
 inline void MainFrame(unsigned){}
 inline void Bytes(Stage,uint64_t,bool=true){}
 inline void Frame(double){}
-inline void Flush(){}
+inline void Flush(bool=false){}
 #endif
 } // namespace EiemLoadPerformance

@@ -17,8 +17,8 @@ struct Api {
   StreamFn streamIcall=nullptr,streamAsyncIcall=nullptr;
 } api;
 std::atomic<bool> enabled{false};
-struct MemoryRequest {Ref request,stream;std::shared_ptr<const EiemNativeInput::Bytes> bytes;std::shared_ptr<EiemInputSpanView::Cursor> view;};
-struct MemoryBundle {Ref bundle,stream;std::shared_ptr<const EiemNativeInput::Bytes> bytes;std::shared_ptr<EiemInputSpanView::Cursor> view;};
+struct MemoryRequest {Ref request,stream;std::shared_ptr<const void> owner;std::shared_ptr<EiemInputSpanView::Cursor> view;std::shared_ptr<const EiemNativeInput::Bytes> bytes;};
+struct MemoryBundle {Ref bundle,stream;std::shared_ptr<const void> owner;std::shared_ptr<EiemInputSpanView::Cursor> view;std::shared_ptr<const EiemNativeInput::Bytes> bytes;};
 struct MemoryUnload {Ref request;void* bundle=nullptr;std::shared_ptr<uint32_t> identity;};
 std::mutex memoryMutex;
 std::map<void*,MemoryRequest> memoryRequests;
@@ -76,13 +76,13 @@ void* UnloadAsync(void* bundle,bool destroy){
   memoryUnloads.emplace(request,MemoryUnload{std::move(rooted),bundle,std::move(identity)});memoryWork=true;
  }return request;
 }
-void RetainMemory(void* request,const Ref& stream,std::shared_ptr<const EiemNativeInput::Bytes> bytes={},std::shared_ptr<EiemInputSpanView::Cursor> view={}){
- auto rooted=Ref::Make(request,false);std::lock_guard<std::mutex> lock(memoryMutex);memoryRequests.emplace(request,MemoryRequest{std::move(rooted),stream,std::move(bytes),std::move(view)});memoryWork=true;
+void RetainMemory(void* request,const Ref& stream,std::shared_ptr<const void> owner={},std::shared_ptr<EiemInputSpanView::Cursor> view={}){
+ auto rooted=Ref::Make(request,false);std::lock_guard<std::mutex> lock(memoryMutex);memoryRequests.emplace(request,MemoryRequest{std::move(rooted),stream,std::move(owner),std::move(view),{}});memoryWork=true;
 }
 void CompleteMemory(void* request,void* bundle){
  std::lock_guard<std::mutex> lock(memoryMutex);
  auto it=memoryRequests.find(request);if(it==memoryRequests.end())return;
- if(bundle)memoryBundles.emplace(bundle,MemoryBundle{Ref::Make(bundle,false),it->second.stream,it->second.bytes,it->second.view});
+ if(bundle)memoryBundles.emplace(bundle,MemoryBundle{Ref::Make(bundle,false),it->second.stream,it->second.owner,it->second.view,it->second.bytes});
  else Log("[ENTRY-RULE-LOAD-FAILED] request=%p archiveStream=1 nativeBundleNull=1",request);
  memoryRequests.erase(it);
  memoryWork=!memoryRequests.empty()||!memoryUnloads.empty();
@@ -111,10 +111,11 @@ void CollectMemory(){
  }
  {std::lock_guard<std::mutex> lock(memoryMutex);memoryWork=!memoryRequests.empty()||!memoryUnloads.empty();}
 }
-Ref Array(const EiemNativeInput::Bytes& bytes){
- EiemDirectory::Require(api.byteClass&&il2cpp_array_new,"rule native Byte array binding absent");auto value=Ref::Make(il2cpp_array_new(api.byteClass,bytes.size()),false);EiemDirectory::Require(value.Get(),"rule native Byte array allocation failed");
- size_t length=0;EiemDirectory::Require(Entry::ArrayLength(value.Get(),&length)&&length==bytes.size(),"rule native Byte array layout differs");if(length)memcpy((char*)value.Get()+32,bytes.data(),length);return value;
+Ref Array(const unsigned char* data,size_t size){
+ EiemDirectory::Require(api.byteClass&&il2cpp_array_new&&(!size||data),"rule native Byte array binding/data absent");auto value=Ref::Make(il2cpp_array_new(api.byteClass,size),false);EiemDirectory::Require(value.Get(),"rule native Byte array allocation failed");
+ size_t length=0;EiemDirectory::Require(Entry::ArrayLength(value.Get(),&length)&&length==size,"rule native Byte array layout differs");if(length)memcpy((char*)value.Get()+32,data,length);return value;
 }
+Ref Array(const EiemNativeInput::Bytes& bytes){return Array(bytes.data(),bytes.size());}
 void BindMemoryStream(void* bundle,void** assemblies,size_t count){
  api.streamClass=FindClass("System.IO","MemoryStream",assemblies,count);
  api.streamCtor=Exact(api.streamClass,".ctor",{"System.Byte[]","System.Boolean"},"System.Void",false);
@@ -135,7 +136,7 @@ void BindMemoryStream(void* bundle,void** assemblies,size_t count){
   if(!api.streamAsync)api.streamAsyncIcall=(Api::StreamFn)il2cpp_resolve_icall("UnityEngine.AssetBundle::LoadFromStreamAsyncInternal");
  }
 }
-void* SubmitStream(Ref stream,std::shared_ptr<const EiemNativeInput::Bytes> bytes,uint32_t crc,bool asynchronous,std::shared_ptr<EiemInputSpanView::Cursor> view={}){
+void* SubmitStream(Ref stream,std::shared_ptr<const void> owner,uint32_t crc,bool asynchronous,std::shared_ptr<EiemInputSpanView::Cursor> view={}){
  Require(stream.Get()&&
              (asynchronous?(api.streamAsync||api.streamAsyncIcall):(api.stream||api.streamIcall)),"rule archive stream bindings absent");
  uint32_t bufferSize=0;auto icall=asynchronous?api.streamAsyncIcall:api.streamIcall;
@@ -143,8 +144,8 @@ void* SubmitStream(Ref stream,std::shared_ptr<const EiemNativeInput::Bytes> byte
  // The archive stream entry preserves CAB members and external resource data.
  // LoadFromMemory eagerly decompresses through a different game reader.
  auto result=icall?icall(stream.Get(),crc,bufferSize):RuntimeShapes::Call(asynchronous?api.streamAsync:api.stream,nullptr,args);
- if(result){if(asynchronous)RetainMemory(result,stream,std::move(bytes),std::move(view));else{
-  auto rooted=Ref::Make(result,false);std::lock_guard<std::mutex> lock(memoryMutex);memoryBundles.emplace(result,MemoryBundle{std::move(rooted),std::move(stream),std::move(bytes),std::move(view)});
+ if(result){if(asynchronous)RetainMemory(result,stream,std::move(owner),std::move(view));else{
+  auto rooted=Ref::Make(result,false);std::lock_guard<std::mutex> lock(memoryMutex);memoryBundles.emplace(result,MemoryBundle{std::move(rooted),std::move(stream),std::move(owner),std::move(view),{}});
  }}return result;
 }
 void* LoadMemory(void* array,uint32_t crc,bool asynchronous){
@@ -157,7 +158,7 @@ void* LoadView(const std::shared_ptr<const EiemInputSpanView::View>& view,uint32
  Require(viewCallbacksReady&&view&&view->Size()&&api.streamClass&&api.streamCtor&&il2cpp_object_new,"compiled native view stream bindings absent");
  // The facade is an empty readable MemoryStream. A missed callback returns
  // EOF, rather than exposing fabricated native pointers or a giant allocation.
- auto empty=Array({});auto stream=Ref::Make(il2cpp_object_new(api.streamClass),false);Require(stream.Get(),"compiled view stream allocation failed");
+ auto empty=Array(nullptr,0);auto stream=Ref::Make(il2cpp_object_new(api.streamClass),false);Require(stream.Get(),"compiled view stream allocation failed");
  bool writable=false;void* args[]={empty.Get(),&writable};RuntimeShapes::Call(api.streamCtor,stream.Get(),args);
  auto cursor=std::make_shared<EiemInputSpanView::Cursor>(view);
  {std::lock_guard<std::mutex> lock(viewMutex);for(auto it=viewStreams.begin();it!=viewStreams.end();)if(it->second.expired())it=viewStreams.erase(it);else ++it;
@@ -165,19 +166,22 @@ void* LoadView(const std::shared_ptr<const EiemInputSpanView::View>& view,uint32
  }
  auto result=SubmitStream(std::move(stream),{},crc,asynchronous,std::move(cursor));return result;
 }
-void* LoadBytes(const std::shared_ptr<const EiemNativeInput::Bytes>& bytes,uint32_t crc,bool asynchronous){
- Require(bytes&&!bytes->empty()&&bytes->size()<=INT64_MAX,"rule native stream byte extent differs");
- if(!api.nativeStreamCtor){auto array=Array(*bytes);return LoadMemory(array.Get(),crc,asynchronous);}
+void* LoadBytes(const unsigned char* data,size_t size,std::shared_ptr<const void> owner,uint32_t crc,bool asynchronous){
+ Require(data&&owner&&size&&size<=INT64_MAX,"rule native stream byte extent differs");
+ if(!api.nativeStreamCtor){auto array=Array(data,size);return LoadMemory(array.Get(),crc,asynchronous);}
  auto stream=Ref::Make(il2cpp_object_new(api.nativeStreamClass),false);Require(stream.Get(),"rule native stream allocation failed");
- int64_t size=int64_t(bytes->size());
+ int64_t length=int64_t(size);
  // IL2CPP passes pointer parameters directly through the argument slot;
  // value parameters such as Int64 are dereferenced by the invoker. Passing
  // &pointer here creates a valid stream over the stack variable, not the input.
- void* constructor[]={const_cast<unsigned char*>(bytes->data()),&size};
+ void* constructor[]={const_cast<unsigned char*>(data),&length};
  RuntimeShapes::Call(api.nativeStreamCtor,stream.Get(),constructor);
  // The public two-argument constructor is read-only. The immutable backing
  // survives both async completion and subsequent Bundle seek/read operations.
- return SubmitStream(std::move(stream),bytes,crc,asynchronous);
+ return SubmitStream(std::move(stream),std::move(owner),crc,asynchronous);
+}
+void* LoadBytes(const std::shared_ptr<const EiemNativeInput::Bytes>& bytes,uint32_t crc,bool asynchronous){
+ Require(bytes!=nullptr,"rule native stream byte owner absent");auto result=LoadBytes(bytes->data(),bytes->size(),std::shared_ptr<const void>(bytes),crc,asynchronous);if(result){std::lock_guard<std::mutex> lock(memoryMutex);if(asynchronous){auto it=memoryRequests.find(result);if(it!=memoryRequests.end())it->second.bytes=bytes;}else{auto it=memoryBundles.find(result);if(it!=memoryBundles.end())it->second.bytes=bytes;}}return result;
 }
 inline uint64_t Clock() {
   LARGE_INTEGER value{};

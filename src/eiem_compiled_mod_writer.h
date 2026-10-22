@@ -99,13 +99,14 @@ inline std::vector<EiemResourceRecipe::Member> DescribeMembers(const EndfieldInp
 inline Artifact Describe(Manifest manifest){
  Artifact artifact;artifact.manifest=std::move(manifest);auto& plan=artifact.manifest.plan;Require(plan.rulesOnly&&plan.spanRecipes&&!artifact.manifest.composed,"author compiler must emit independent addressed recipes");
  EiemPrefabRules::Context replay(std::make_shared<const Plan>(plan),artifact.manifest.package);std::vector<EiemResourceRecipe::Buffer> buffers;
- for(const auto& resource:artifact.manifest.package.resources)buffers.push_back({EiemResourceRecipe::Author,resource.first,&resource.second->bytes});for(const auto& frame:replay.frameBytes)buffers.push_back({EiemResourceRecipe::ExpandedFrame,frame.first,&frame.second});EiemResourceRecipe::Dictionary dictionary(std::move(buffers));
+ for(const auto& resource:artifact.manifest.package.resources)if(resource.second->kind!=10)buffers.push_back({EiemResourceRecipe::Author,resource.first,&resource.second->bytes});for(const auto& frame:replay.frameBytes)buffers.push_back({EiemResourceRecipe::ExpandedFrame,frame.first,&frame.second});EiemResourceRecipe::Dictionary dictionary(std::move(buffers));
  artifact.views.resize(plan.originals.size());artifact.preparedFrames=replay.frameBytes;
  for(size_t i=0;i<plan.originals.size();++i){auto input=ReadSource({},plan.originals[i]);auto source=EndfieldInput::Decode(input);auto edited=EndfieldInput::Decode(replay.Materialize(i,false));MergeProof(artifact,DescribeInput(i,plan,artifact.manifest.rootAssembly,source,edited));artifact.views[i]=EiemCompiledInputViewWriter::Build(i,artifact,input,source,edited,dictionary);}
  Require(artifact.pristine.size()==plan.roots.size(),"compiled pristine roots missing");return artifact;
 }
 } // namespace EiemCompiledModWriter
 #include "eiem_incremental_material_compile.h"
+#include "eiem_incremental_mesh_compile.h"
 namespace EiemCompiledModWriter {
 inline Artifact Compile(const Package& author,const EiemStaticSources::Selection& selected,const std::filesystem::path& game,
  std::function<void(const char*,double)> cost={},const Artifact* previousArtifact=nullptr,const EiemStaticSources::Discovery* preparedDiscovery=nullptr){
@@ -170,9 +171,11 @@ inline void Export(const std::filesystem::path& mod,const std::filesystem::path&
     auto bytes=EiemCompiledMod::Encode(*cached,std::filesystem::weakly_canonical(game));if(!std::filesystem::is_regular_file(mod/"compiled.bin")||bytes!=EiemNativeInput::Read(mod/"compiled.bin"))EiemOfflineCompile::AtomicSave(mod/"compiled.bin",bytes);return;}
   }
  }
- if(!store&&sameDiscovery&&cached&&SharedInputsPruned(*cached)&&cached->manifest.rootAssembly&&Measure(cost,"incremental-material-wall",[&]{return RecompileMaterialParameters(*cached,author,selected,cost);})){
+ if(!store&&sameDiscovery&&cached&&SharedInputsPruned(*cached)&&cached->manifest.rootAssembly&&
+  (Measure(cost,"incremental-material-wall",[&]{return RecompileMaterialParameters(*cached,author,selected,cost);})||
+   Measure(cost,"incremental-mesh-wall",[&]{return RecompileMeshResources(*cached,author,selected,cost);}))) {
   auto bytes=Measure(cost,"compiled-encode",[&]{return EiemCompiledMod::Encode(*cached,std::filesystem::weakly_canonical(game),cost);});
-  auto decoded=Measure(cost,"compiled-roundtrip",[&]{return EiemCompiledMod::Decode(bytes,mod,game,{},&author);});Require(decoded.manifest.plan.contract==InputContractDigest(author),"incremental material author roundtrip differs");
+  auto decoded=Measure(cost,"compiled-roundtrip",[&]{return EiemCompiledMod::Decode(bytes,mod,game,{},&author);});Require(decoded.manifest.plan.contract==InputContractDigest(author),"incremental author roundtrip differs");
   Measure(cost,"compiled-publish",[&]{EiemOfflineCompile::AtomicSave(mod/"compiled.bin",bytes);return 0;});return;
  }
  std::optional<EiemStaticSources::Discovery> discovered;

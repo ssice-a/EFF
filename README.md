@@ -4,7 +4,7 @@
 
 EFF 在《明日方舟：终末地》创建资源和实例前应用 Mod。AnimeStudio 导出来源，Blender 制作并编译独立 Mod，EFF DLL 读取结果并完成游戏内加载与热重载。
 
-配套发布：**EFF v1.7.0、EFF Blender v0.44.0、AnimeStudio v1.6.0**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
+配套发布：**EFF v1.9.0、EFF Blender v0.47.0、AnimeStudio v1.8.0**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
 
 首次制作 Mod 可先阅读带截图的简易教程：[中文](Mod%20Tutorial.md) · [English](Mod%20Tutorial_EN.md)。
 
@@ -15,11 +15,13 @@ EFF 在《明日方舟：终末地》创建资源和实例前应用 Mod。AnimeS
 - 一个原 Renderer 可对应多个作者部件；未声明替换的目标保留原内容。材质和贴图可以借用游戏资源或由作者新建。
 - 按键切换、形态键与玩家数值持久化；Ins 面板独立勾选各 Mod 是否接收按键，默认全部启用，可同时启用多个 Mod。
 - Shape Keys 动画支持多网格同步播放、多个组共享频道；冲突组切换播放，Ins 支持暂停和实时倍率，调速保持进度。
+- 特效可作为独立 Mod 或挂载角色 Mesh 骨骼；支持按键显隐、F9 热重载和覆盖全部 LOD，并随所属模型的生命周期加载。
+- 材质动态参数和特效资源参与同一 Mod 导出与热重载流程；支持递归发现 `plugin/mods` 下的独立 Mod 目录。
 - F10 读取整个 mods 目录，统一处理增删改和空集合；沿已适配的游戏世界/展示模型生命周期重载，重新绑定动画、武器和角色音频。准备或提交失败保留当前代际。
 
 ## 安装
 
-从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v1.7.0_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。当前代理转发支持 Windows 系统目录为 `C:\Windows` 的安装；其他系统目录尚不支持。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和各 Mod 的 `state.ini`。
+从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v1.9.0_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。当前代理转发支持 Windows 系统目录为 `C:\Windows` 的安装；其他系统目录尚不支持。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和各 Mod 的 `state.ini`。
 
 ```text
 d3dcompiler_47.dll
@@ -40,14 +42,14 @@ plugin/
 
 正式 DLL 与代理静态链接自身的 C/C++ 运行实现，不依赖游戏目录中较旧的 MSVCP/VCRUNTIME；无需修改游戏运行库。DLL 包不包含编译器、AnimeStudio 运行库或来源工具。已有安装的 `plugin/tools/eff_resource_pack.exe` 和 `plugin/tools/static-sources/` 可删除；新版 DLL 不调用它们。若已有同名代理加载器，请先确认使用的图形后端与插件加载方式。
 
-把包含 `mod.ini` 的完整 Mod 文件夹直接放入 `plugin/mods/`。`compiled.bin` 必须随作者资源一起分发。文件夹可移动到其他安装，来源路径相对游戏目录。游戏更新后，玩家可使用同一 Release 的 `EFF-Repair-v0.1.0-win-x64.zip`：选择游戏与 Mod 目录，在工具内下载匹配的完整索引，退出游戏后修复；原包会备份。工具需要 .NET 9 Windows Desktop Runtime，不要求 Blender 或自行解包。
+把包含 `mod.ini` 的完整 Mod 文件夹直接放入 `plugin/mods/`。`compiled.bin` 必须随作者资源一起分发。文件夹可移动到其他安装，来源路径相对游戏目录。游戏更新后，玩家可使用同一 Release 的 `EFF-Repair-v0.2.0-win-x64.zip`：选择游戏与 Mod 目录，在工具内下载匹配的完整索引，退出游戏后修复；原包会备份。工具需要 .NET 9 Windows Desktop Runtime，不要求 Blender 或自行解包。
 
 作者也可用 AnimeStudio 更新原解包资源，再从原 Blender 工程重新导出，无需使用修复工具。修复使用当前游戏的来源和消费者；资产删除、来源歧义或不受支持的结构会报告失败，保留原包。
 
 ## 游戏内使用
 
 1. 放入完整 Mod 后启动游戏，资源请求使用当前替换规则。
-2. 按 **Ins** 勾选需要响应按键的 Mod，关闭面板后使用按键切换款式或形态。同一个键会触发所有已启用且绑定该键的 Mod；下拉选择只决定面板中手动调整哪个 Mod。
+2. 按 **Ins** 勾选需要响应按键的 Mod，关闭面板后使用按键切换款式或形态。同一个键会触发所有已启用且绑定该键的 Mod；下拉选择只决定面板中手动调整哪个 Mod。面板可拖动窗口边缘或右下角手柄调整大小，也可最大化；内容超出时滚动查看。
 3. 从 Blender 导出修改、添加或删除 Mod 后，按 **F10** 提交当前完整集合。空集合恢复原版；模型尚在异步加载时请待加载完成后重试。
 
 同一 Mod 的 UI 与大世界模型共用切换值。UI 原地刷新通过游戏加载器和页面项的模型绑定流程完成，保留旧人物直到候选校验、页面绑定和控制发布完成；无法确认页面归属的实例会在修改前拒绝刷新。

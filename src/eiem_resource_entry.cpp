@@ -35,6 +35,9 @@
 #include "eiem_camera_fade_core.h"
 #include "eiem_package_protocol.h"
 #include "eiem_control_panel_win32.h"
+#if defined(EIEM_EFFECTS_DEBUG)
+#include "eiem_effect_debug_packet.h"
+#endif
 #if defined(EIEM_SHAPE_CAPTURE_GFXTRACE)
 #include "../deps/renderdoc/renderdoc_app.h"
 #endif
@@ -93,6 +96,7 @@ FILE *logFile = nullptr;
 FILE *logMirror = nullptr;
 std::filesystem::path gameDirectory, sessionDirectory;
 std::atomic_bool active{true}, reload{false};
+std::atomic_bool effectsReload{false};
 std::atomic<uint64_t> reloadClock{0};
 std::atomic<unsigned> generation{0};
 EiemEntrySettings settings;
@@ -458,7 +462,7 @@ void LoadInitialPackages() {
   }
   if(!next)next=std::make_shared<const std::vector<Package>>();
   for(const auto& p:*next) for(const auto& key:p.bindings)
-    Require(key.key.vk!=config.reload.vk && key.key.vk!=config.gui.vk,"Mod key overlaps reserved global shortcut: "+p.id+"/"+key.id);
+    Require(key.key.vk!=config.reload.vk && key.key.vk!=config.gui.vk&&key.key.vk!=config.effectsReload.vk,"Mod key overlaps reserved global shortcut: "+p.id+"/"+key.id);
   settings.Publish(config);
   std::atomic_store(&published,next);
   ++generation;
@@ -1081,6 +1085,10 @@ void* LoadRuleInput(void* path,uint32_t callerCrc,uint64_t offset,bool asynchron
 #if defined(EIEM_PREFAB_ADAPTATION_PROBE)
 #include "eiem_entry_prefab_adaptation_probe.h"
 #endif
+#include "eiem_effect_debug.h"
+#include "eiem_entry_material_animation.h"
+#include "eiem_standalone_effect_mods.h"
+#include "eiem_entry_effect_attachments.h"
 #include "eiem_entry_reload.h"
 
 void InstallHooks(void **assemblies, size_t count) {
@@ -1234,6 +1242,8 @@ void InstallHooks(void **assemblies, size_t count) {
   LoadingObservation::InstallOptional(assemblies,count);
 #endif
   FullResourceReload::Install(assemblies,count);
+  EffectDebug::Install(assemblies,count);
+  RuntimeMaterials::Install(assemblies,count);
 #if defined(EIEM_PREFAB_ADAPTATION_PROBE)
   PrefabAdaptationProbe::InstallOptional(assemblies,count);
 #endif
@@ -1261,9 +1271,10 @@ void InstallHooks(void **assemblies, size_t count) {
 DWORD WINAPI ProcessJobs(void *) {
   for (;;) {
     WaitForSingleObject(queueEvent, 1000);
+    if(effectsReload.exchange(false))RuntimeAttachments::PrepareDiskReload(true);
     if (reload.exchange(false)) {
       if(FullResourceReload::configured) {
-        if(FullResourceReload::enabled) FullResourceReload::Prepare();
+        if(FullResourceReload::enabled) {auto current=std::atomic_load(&published);if(current&&current->empty()&&DiscoverModRoots().empty())EntryReload::Prepare();else FullResourceReload::Prepare();RuntimeAttachments::PrepareDiskReload(false);}
         else Log("[FULL-RELOAD-REJECT] phase=trigger reason=requiredNativeBindingsUnavailable configurationFallbackRefused=1");
       } else {Log("[FULL-RELOAD-REJECT] phase=trigger reason=nativeReloadNotConfigured");}
     }
@@ -1445,7 +1456,8 @@ DWORD StartImpl() {
     CloseHandle(worker);
   else
     Log("[ENTRY-FATAL] evidence worker failed err=%lu", GetLastError());
-  EiemControlPanel::Shortcut reloadKey, guiKey;
+  RuntimeAttachments::PrepareDiskReload(false);
+  EiemControlPanel::Shortcut reloadKey, guiKey,effectsKey;
 #if defined(EIEM_DIAGNOSTICS)
   ULONGLONG report = GetTickCount64();
 #endif
@@ -1467,6 +1479,8 @@ DWORD StartImpl() {
     }
     if(!active) RuntimeControls::panel.open=false;
     auto shortcut=settings.Get().reload;
+    auto effectShortcut=settings.Get().effectsReload;
+    if(effectsKey.Press(effectShortcut,RuntimeControls::Down(effectShortcut),active&&process==GetCurrentProcessId())){effectsReload=true;SetEvent(queueEvent);Log("[EFFECT-RELOAD] requested vk=%u modifiers=%u",effectShortcut.vk,effectShortcut.modifiers);}
     bool physical=RuntimeControls::Down(shortcut);
     if (reloadKey.Press(shortcut,physical,active && process==GetCurrentProcessId())) {
       reloadClock.store(NativeBundle::Clock());
@@ -1523,6 +1537,11 @@ void Log(const char *format, ...) {
   va_start(args, format);
   vsnprintf(line, sizeof(line), format, args);
   va_end(args);
+#if defined(EIEM_LOAD_PERF)
+  // Separate the measurement report's own synchronous writes from game/event
+  // logging, including reports passed through Log("%s", ...).
+  if(!strncmp(line,"[DEBUG-loadperf]",16))performance.stage=EiemLoadPerformance::DiagnosticLogging;
+#endif
   std::lock_guard<std::mutex> lock(Entry::logMutex);
   if (Entry::logFile) {
     SYSTEMTIME now;
@@ -1548,6 +1567,14 @@ APPLEPIE_PLUGIN_EXPORT bool AP_PluginEnable() {
 }
 APPLEPIE_PLUGIN_EXPORT bool AP_PluginDisable() {
   Entry::active = false;
+#if defined(EIEM_EFFECTS_DEBUG)
+  // Exported controls may be invoked from the host's worker thread. Native
+  // effect retirement still belongs to the next Unity frame.
+  if(Entry::EffectDebug::enabled)try{
+    Entry::EffectDebug::Command command;command.op=Entry::EffectDebug::Op::Clear;
+    Entry::EffectDebug::mailbox.Submit(std::move(command));
+  }catch(const std::exception& e){Log("[EFFECT-DEBUG-CLEANUP-GAP] disableQueue=%s",e.what());}
+#endif
   Entry::RuntimeControls::panel.open=false;
   Log("[ENTRY] disabled");
   Entry::EntryCameraFade::Report();
@@ -1564,6 +1591,7 @@ APPLEPIE_PLUGIN_EXPORT int AP_GetHotkeys(AP_HotkeyInfo *output, int maximum) {
     output[0] = {"Reload Mod configuration", "reload", int(Entry::settings.Get().reload.vk)};
     if(maximum>1) {
       output[1]={"Open Mod controls", "gui", int(Entry::settings.Get().gui.vk)};
+      if(maximum>2){output[2]={"Reload effects", "effects_reload",int(Entry::settings.Get().effectsReload.vk)};return 3;}
       return 2;
     }
     return 1;

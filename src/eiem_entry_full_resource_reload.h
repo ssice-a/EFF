@@ -4,6 +4,7 @@
 // Resource reload transaction: offline manifest -> preloaded isolated graph ->
 // native graph -> exact prefab content/owner preflight -> game-owned rebuild.
 // No Renderer Mesh setters or private native/job memory writes are used.
+namespace EffectDebug { void OwnerReleasing(void*) noexcept; }
 namespace FullResourceReload {
 using RuntimeShapes::Ref;
 using Plan=EiemResourceReloadPlan::Plan;
@@ -80,6 +81,7 @@ struct Api {
  void *animationIdlePreload=nullptr,*animationDashPreload=nullptr;
  void *weaponCom=nullptr,*weaponUnload=nullptr,*weaponReload=nullptr,*weaponMounts=nullptr,*weaponValid=nullptr,*componentLookup=nullptr,*audioInvalidate=nullptr;
  void *instanceId=nullptr,*parent=nullptr,*isChild=nullptr,*goTransform=nullptr;
+ void *helperInited=nullptr;
  void *childCount=nullptr,*getChild=nullptr,*componentGo=nullptr,*directComponents=nullptr;
  void *partRelease=nullptr,*partLoad=nullptr,*partSetup=nullptr;
  void *uiLoad=nullptr,*uiAsyncLoad=nullptr,*uiUnload=nullptr,*uiDictionaryContains=nullptr,*uiCallbackInvoke=nullptr,*uiUntrackedGet=nullptr,*uiActiveHierarchy=nullptr;
@@ -145,14 +147,16 @@ InstantiateFn originalInstantiate=nullptr;InstantiateParentFn originalInstantiat
 CloneParentFn originalInstantiateImmediate=nullptr;InstantiateAsyncFn originalInstantiateAsync=nullptr;
 thread_local Attempt* rebuilding=nullptr;
 void* Routed(void* source,const char* entry="clone") noexcept {
+ EiemLoadPerformance::Scope performance(EiemLoadPerformance::InstantiationRoute);
  try{
   if(proxyContext&&source==proxySource&&RuntimeShapes::Alive(proxyUIOverride.Get())){
+   performance.hit=true;
    if(rebuilding)++rebuilding->cloneCount;
    Log("[FULL-RELOAD-UI-ROUTE] entry=%s sourceId=%d candidateId=%d exactRequestProxy=1",entry,RuntimeShapes::Scalar<int>(api.instanceId,source),RuntimeShapes::Scalar<int>(api.instanceId,proxyUIOverride.Get()));return proxyUIOverride.Get();
   }
   auto current=std::atomic_load(&routes);for(const auto& r:*current){
    if(rebuilding&&r.candidate.Get()==source&&RuntimeShapes::Alive(source)&&RuntimeShapes::Scalar<int>(api.instanceId,source)==r.candidateId){++rebuilding->cloneCount;return source;}
-   if(r.source.Get()!=source)continue;
+   if(r.source.Get()!=source)continue;performance.hit=true;
    if(!RuntimeShapes::Alive(source)||RuntimeShapes::Scalar<int>(api.instanceId,source)!=r.sourceId||
       !RuntimeShapes::Alive(r.candidate.Get())||RuntimeShapes::Scalar<int>(api.instanceId,r.candidate.Get())!=r.candidateId)return source;
    if(rebuilding){++rebuilding->cloneCount;Log("[FULL-RELOAD-ROUTE] entry=%s sourceId=%d candidateId=%d",entry,r.sourceId,r.candidateId);}return r.candidate.Get();
@@ -211,6 +215,34 @@ using PartAddedFn=void(*)(void*,void*,void*);
 PartAddedFn originalPartAdded=nullptr;
 struct LivePart {Ref part,root;std::string path;bool persistent=false;Ref model;std::string ownershipError;bool ownerRecorded=false;};
 std::map<void*,LivePart> liveParts;
+// Some NPC models complete through EntityRenderHelper, without a view-part or
+// UIModelLoader callback. Keep that real owner event in the common registry.
+struct LiveHelperModel {Ref helper,root;};
+std::map<void*,LiveHelperModel> liveHelperModels;
+PartFinishedFn originalHelperRelease=nullptr;
+void ForgetHelperModels(void* root);
+void ReleaseHelperRoot(void* root);
+void HelperReady(void* helper){
+ if(!enabled||!api.componentGo||!RuntimeShapes::Main())return;
+ auto root=Ref::Make(Call(api.componentGo,helper),true);Require(RuntimeShapes::Alive(root.Get()),"helper completed without a live model root");
+ auto old=liveHelperModels.find(helper);
+ Ref retired;if(old!=liveHelperModels.end()&&old->second.root.Get()!=root.Get())retired=old->second.root;
+ bool changed=old==liveHelperModels.end()||old->second.root.Get()!=root.Get();
+ liveHelperModels[helper]={Ref::Make(helper,true),root};if(changed)++ownerRevision;
+ RuntimeAttachments::QueueOwnerReady(root.Get());
+ if(retired.handle)ReleaseHelperRoot(retired.Get());
+ // Frame resolves this helper against completed part/UI owners after the
+ // native completion stack has returned. Do not create duplicate bindings
+ // while the surrounding model has not registered its root yet.
+}
+void HelperReleased(void* helper,void* info){
+ try{if(RuntimeShapes::Main()){auto it=liveHelperModels.find(helper);if(it!=liveHelperModels.end()){auto root=it->second.root.Get();
+   // A part/UI lifecycle will own its own release. A helper-only NPC must
+   // detach before the game clears/reuses its hierarchy.
+   liveHelperModels.erase(it);++ownerRevision;ReleaseHelperRoot(root);}}
+ }catch(const std::exception& e){Log("[FULL-RELOAD-HELPER-GAP] release=%s",e.what());}
+ originalHelperRelease(helper,info);
+}
 std::vector<void*> ReferenceArray(void* array,size_t expected=SIZE_MAX) {
  size_t count=0;Require(ArrayLength(array,&count)&&(expected==SIZE_MAX||count==expected),"reload native reference array coverage/limit");
  std::vector<void*> values(count);Require(!count||CopyRaw((char*)array+32,values.data(),count*sizeof(void*)),"reload native reference array read");return values;
@@ -337,6 +369,7 @@ void MainModelInternal(void* self,bool isSyncLoadSlow,void* callback,void* info)
 void ProbeModelMaterials(void* root,const char* phase);
 #endif
 void RecordPartFinished(void* self){
+ EiemLoadPerformance::Scope performance(EiemLoadPerformance::WorldRegister);
  try{if(!RuntimeShapes::Main())return;auto root=ReadObject(self,"m_model","UnityEngine.GameObject");if(!RuntimeShapes::Alive(root)){liveParts.erase(self);return;}
   auto cfg=PartConfig(self);auto path=String(ReadObject(cfg.Get(),"modelPath","System.String"));
   unsigned char persistent=0;il2cpp_field_get_value(cfg.Get(),Field(il2cpp_object_get_class(cfg.Get()),"usePersistentPool","System.Boolean"),&persistent);
@@ -368,6 +401,10 @@ void PartReleased(void* self,void* info){
  try{if(RuntimeShapes::Main()&&!RuntimeShapes::bound.empty()){
   auto root=ReadObject(self,"m_model","UnityEngine.GameObject");if(RuntimeShapes::Alive(root))renderers=Components(root);
  }}catch(const std::exception& e){Log("[FULL-RELOAD-PART-GAP] releaseControlRegistration=%s",e.what());}
+ try {if(RuntimeShapes::Main())EffectDebug::OwnerReleasing(ReadObject(self,"m_model","UnityEngine.GameObject"));}
+ catch(const std::exception& e){Log("[EFFECT-NATIVE-CLEANUP-GAP] partRelease=%s",e.what());}
+ auto releasedRoot=ReadObject(self,"m_model","UnityEngine.GameObject");
+ RuntimeAttachments::OwnerReleasing(releasedRoot);if(RuntimeShapes::Main())ForgetHelperModels(releasedRoot);
  originalPartReleased(self,info);
  if(!RuntimeShapes::Main())return;
  // ReleaseModel can return a still-alive root to the game's path pool.
@@ -384,6 +421,23 @@ void PartReleased(void* self,void* info){
 }
 std::vector<Ref> Components(void* root);
 #include "eiem_entry_ui_models.h"
+bool RootContains(void* parentRoot,void* childRoot){
+ if(parentRoot==childRoot)return true;if(!RuntimeShapes::Alive(parentRoot)||!RuntimeShapes::Alive(childRoot))return false;
+ auto parent=Ref::Make(Call(api.goTransform,parentRoot),false),child=Ref::Make(Call(api.goTransform,childRoot),false);
+ void* args[]={parent.Get()};return RuntimeShapes::Scalar<unsigned char>(api.isChild,child.Get(),args)!=0;
+}
+void ForgetHelperModels(void* root){
+ if(!root||liveHelperModels.empty())return;
+ for(auto it=liveHelperModels.begin();it!=liveHelperModels.end();)if(!RuntimeShapes::Alive(it->second.root.Get())||RootContains(root,it->second.root.Get()))it=liveHelperModels.erase(it);else ++it;
+}
+void ReleaseHelperRoot(void* root){
+ for(const auto& p:liveParts)if(p.second.root.Get()&&RootContains(p.second.root.Get(),root))return;
+ for(const auto& p:liveUIModels)if(RootContains(p.second.root.Get(),root))return;
+ for(const auto& p:liveHelperModels)if(p.second.root.Get()==root)return;
+ EffectDebug::OwnerReleasing(root);RuntimeAttachments::OwnerReleasing(root);
+ if(RuntimeShapes::Alive(root)&&!RuntimeShapes::bound.empty())for(const auto& r:Components(root))RuntimeShapes::bound.erase(r.Get());
+ RuntimeShapes::boundCount.store(unsigned(RuntimeShapes::bound.size()));
+}
 void* CurrentRoot(const Owner& owner){return owner.uiModel?owner.uiLoadedRoot.Get():owner.viewPart?ReadObject(owner.component.Get(),"m_model","UnityEngine.GameObject"):Call(api.getModel,owner.component.Get());}
 void RemoveOwner(const Owner& owner){if(owner.uiModel){auto root=CurrentRoot(owner);if(root&&UIOwns(owner.component.Get(),root)){void* args[]={root};Call(api.uiUnload,owner.component.Get(),args);}owner.uiLoadedRoot={};return;}
  auto component=owner.component.Get();auto method=owner.viewPart?il2cpp_object_get_virtual_method(component,api.partRelease):api.remove;
@@ -694,10 +748,11 @@ std::map<std::filesystem::path,InputFileStamp> AuthorFiles(const std::vector<Pac
 }
 bool AuthorFilesUnchanged(const std::map<std::filesystem::path,InputFileStamp>& files){for(const auto& file:files)if(!std::filesystem::is_regular_file(file.first)||!SameStamp(FileStamp(file.first),file.second))return false;return true;}
 bool AuthorFilesUnchanged(const Prepared& p){return (!p.graph||InstalledAuthorsMatch(*p.graph))&&AuthorFilesUnchanged(p.authorFiles);}
-RuntimeControls::State CompiledControls(const std::shared_ptr<const std::vector<Package>>& graph,const Plan& plan,const EiemGlobalConfig&){
+RuntimeControls::State CompiledControls(const std::shared_ptr<const std::vector<Package>>& graph,const Plan& plan,const EiemGlobalConfig& config){
  Require(bool(graph),"offline control graph unavailable");RuntimeControls::State state;state.graph=graph;
  std::map<std::string,std::pair<const Package*,std::string>> owners;
  for(const auto& package:*graph){
+  auto validateKey=[&](const EiemKeyChord& key){Require(!key.vk||(key.vk!=config.reload.vk&&key.vk!=config.gui.vk&&key.vk!=config.effectsReload.vk),"Mod shortcut overlaps a global shortcut: "+package.id);};for(const auto& key:package.bindings)validateKey(key.key);for(const auto& clip:package.shapeAnimations)validateKey(clip.second.key);
   state.variables[package.id]=package.defaults;state.keys[package.id]=package.bindings;
   state.keySwitchEnabled[package.id]=RuntimeControls::keySettings.Preview(package);
   RuntimeControls::PrepareAnimations(state,package);
@@ -708,9 +763,23 @@ RuntimeControls::State CompiledControls(const std::shared_ptr<const std::vector<
  for(const auto& row:plan.parts){const auto& expected=row.second;auto owner=owners.at(expected.id);const auto& package=*owner.first;const auto& part=package.parts.at(owner.second);const auto& mesh=package.meshes.at(part.mesh);
   Require(expected.marker==row.first&&expected.vertices==mesh.vertices&&expected.bones==mesh.bones&&expected.shapes==mesh.shapes&&(plan.composed||expected.material==part.material),"offline controls/part descriptor differs");
   RuntimeControls::Spec spec{package.id,owner.second,expected.marker,mesh.vertices,mesh.shapes,part.shapes,part.visible};
-  Require(state.specs.emplace(spec.marker,std::move(spec)).second,"offline control provenance collision");
+  spec.material=part.material;Require(state.specs.emplace(spec.marker,std::move(spec)).second,"offline control provenance collision");
  }RuntimeControls::PreviewPreferences(state);RuntimeControls::PreparePanel(state);return state;
 }
+struct PackagePayload {
+ std::map<const Resource*,uint64_t> resources;
+ uint64_t effectArchiveViews=0;
+};
+PackagePayload Payload(const std::vector<Package>& graph){
+ PackagePayload result;
+ for(const auto& package:graph){
+  for(const auto& row:package.resources)result.resources.emplace(row.second.get(),uint64_t(row.second->bytes.size()));
+  for(const auto& row:package.effects)if(row.second.native)for(const auto& bundle:row.second.native->bundles)result.effectArchiveViews+=bundle.Size();
+ }
+ return result;
+}
+uint64_t PayloadBytes(const PackagePayload& payload){uint64_t total=0;for(const auto& row:payload.resources)total+=row.second;return total;}
+uint64_t SharedPayloadBytes(const PackagePayload& a,const PackagePayload& b){uint64_t total=0;for(const auto& row:a.resources)if(b.resources.count(row.first))total+=row.second;return total;}
 bool SameAuthorSnapshot(const Prepared& prepared,const EiemCompiledModSet::Set& set){
  if(prepared.authorFiles.size()!=set.files.size())return false;
  for(const auto& file:set.files){auto old=prepared.authorFiles.find(file.first);if(old==prepared.authorFiles.end()||!SameStamp(old->second,file.second))return false;}return true;
@@ -730,7 +799,12 @@ void PollCompiled(bool trigger){
    if(refresh)p->rules=diskPrepared->rules;else p->rules=EiemCompiledModSet::Context(preparedCompiledSet);p->ruleInputs=std::move(preparedCompiledSet->isolated);p->ruleViews=preparedCompiledSet->views;
    if(retry)for(auto index:p->plan->closure)if(!p->ruleInputs.count(index)&&!p->ruleViews.count(index))p->ruleInputs.emplace(index,std::make_shared<const Bytes>(p->rules->Materialize(index,true)));
    auto config=EiemEntrySettings::Read(gameDirectory);p->controls=CompiledControls(p->graph,*p->plan,config);p->config=EiemEntrySettings::Prepare(config);Require(AuthorFilesUnchanged(*p),"Mod changed during compiled rule validation");
-   {std::lock_guard<std::mutex> lock(mutex);pending=p;}lastPrepared=pointer;diskPrepared=p;Log("[FULL-RELOAD-PREPARED] key=%s workerMs=%.6f compiledPerMod=1 authorCompilation=0 nativeSubmission=pendingUnityFrame",pointer.key.c_str(),NativeBundle::Ms(clock));
+   {std::lock_guard<std::mutex> lock(mutex);pending=p;}lastPrepared=pointer;diskPrepared=p;
+   auto publishedGraph=std::atomic_load(&published);auto oldPayload=publishedGraph?Payload(*publishedGraph):PackagePayload{};auto nextPayload=Payload(*p->graph);
+   auto oldBytes=PayloadBytes(oldPayload),nextBytes=PayloadBytes(nextPayload),sharedBytes=SharedPayloadBytes(oldPayload,nextPayload);
+   Log("[FULL-RELOAD-MEMORY] stage=prepared packageResourceBytes=%llu candidateResourceBytes=%llu sharedResourceBytes=%llu addedResourceBytes=%llu resources=%zu effectArchiveViewBytes=%llu cpuPayloadOnly=1",
+       (unsigned long long)oldBytes,(unsigned long long)nextBytes,(unsigned long long)sharedBytes,(unsigned long long)(nextBytes-sharedBytes),nextPayload.resources.size(),(unsigned long long)nextPayload.effectArchiveViews);
+   Log("[FULL-RELOAD-PREPARED] key=%s workerMs=%.6f compiledPerMod=1 authorCompilation=0 nativeSubmission=pendingUnityFrame",pointer.key.c_str(),NativeBundle::Ms(clock));
   }
   std::atomic_store(&latest,std::make_shared<const EiemOfflinePackage::Pointer>(pointer));
   if(trigger){auto ticket=std::make_shared<Ticket>();ticket->pointer=pointer;ticket->clock=clock;auto config=EiemEntrySettings::Read(gameDirectory);ticket->controls=CompiledControls(diskPrepared->graph,*diskPrepared->plan,config);ticket->config=EiemEntrySettings::Prepare(config);std::atomic_store(&requested,std::shared_ptr<const Ticket>(ticket));Log("[FULL-RELOAD-REQUEST] key=%s compiledPerMod=1 authorCompilation=0",pointer.key.c_str());}
@@ -872,6 +946,9 @@ void Install(void** assemblies,size_t count){
           LoadingObservation::Hook("UnityEngine.Object::Internal_InstantiateAsyncImmediatelyWithParent(UnityEngine.Object,UnityEngine.Transform,System.Boolean)",(void*)InstantiateImmediate,(void**)&originalInstantiateImmediate)&&
           LoadingObservation::Hook("UnityEngine.Object::Internal_InstantiateAsyncWithParent(UnityEngine.Object,System.Int32,UnityEngine.Transform,System.IntPtr,System.IntPtr)",(void*)InstantiateAsync,(void**)&originalInstantiateAsync),"reload registered prefab Instantiate bindings absent");
   InstallUIModels(assemblies,count);
+  auto helper=FindClass("Beyond.Gameplay.View","EntityRenderHelper",assemblies,count);
+  api.helperInited=Method(helper,"get_inited",{},"System.Boolean",false);
+  Require(Entry::Install(helper,"OnRelease",{},"System.Void",false,(void*)HelperReleased,(void**)&originalHelperRelease),"render helper release lifecycle hook unavailable");
   enabled=true;Log("[FULL-RELOAD-READY] shortcut=reloadCurrentMod nativePrepareBeforeShortcut=1 unusedRootsLazy=1 nativeMainPartOwners=1 resources=Mesh-Material-Texture-Prefab privateNativeWrites=0");
  }catch(const std::exception& e){Log("[FULL-RELOAD-REJECT] phase=install reason=%s configurationFallbackRefused=1",e.what());}
 }
@@ -923,6 +1000,7 @@ void RetireGeneration(Attempt& a){
  Log("[FULL-RELOAD-RETIRED] bundleContainersUnloadedFalse=1 strongGenerationRefsReleased=1 sharedSourceLeases=%zu captureObjectsOwnedByNativeRelease=1",sourceLeases.size());
 }
 void RetireSuperseded(){
+ EiemLoadPerformance::Scope performance(EiemLoadPerformance::ReloadRetire);performance.hit=!retained.empty();
  auto currentRoutes=std::atomic_load(&routes);
  for(auto it=retained.begin();it!=retained.end();){auto& old=**it;
   bool used=std::atomic_load(&activeNative).get()==&old;for(const auto& asset:old.assets)for(const auto& route:*currentRoutes)used=used||(asset.prefab.Get()&&route.candidate.Get()==asset.prefab.Get());
@@ -1128,6 +1206,7 @@ std::string RendererOwnershipError(const RuntimeShapes::Bound& binding,const Att
  return reason;
 }
 void DiscoverOwners(Attempt& a){
+ EiemLoadPerformance::Scope performance(EiemLoadPerformance::ReloadOwners);performance.hit=true;
  std::set<void*> seen,coveredRoots;
  auto world=[&](void* model,void* entity,void* expectedRoot=nullptr,void* expectedPart=nullptr){
   Require(model&&entity&&Call(api.modelEntity,model)==entity&&Call(api.modelCom,entity)==model,"reload component/entity owner differs");
@@ -1211,10 +1290,12 @@ void CheckUIOwners(const Attempt& a){
  for(const auto& request:pendingUIModels)if(!uiReloadRequests.count(request.first))Require(!FindRoot(*a.prepared->plan,request.second),"matching UI page began loading while reload was pending");
 }
 void Rebuild(Attempt& a){
+ EiemLoadPerformance::Scope performance(EiemLoadPerformance::ReloadRebuild);performance.hit=true;
+ auto rebuildStarted=NativeBundle::Clock();double ownerReleaseMs=0,discardPoolsMs=0,ownerLoadMs=0,publicationMs=0;
  if(a.uiStaged)try{
   CheckUIOwners(a);bool waiting=false;
   for(const auto& owner:a.owners)if(owner.uiModel){Require(owner.uiRequest&&!owner.uiRequest->cancelled,"game cancelled the UI reload request");Require(owner.uiRequest->error.empty(),owner.uiRequest->error);waiting=waiting||!owner.uiRequest->completed;}
-  if(waiting){a.phase=Phase::UIWait;return;}
+  if(waiting){a.phase=Phase::UIWait;Log("[FULL-RELOAD-REBUILD-COST] stage=ui-wait owners=%zu totalMs=%.6f",a.owners.size(),NativeBundle::Ms(rebuildStarted));return;}
  }catch(...){AbortUIStaging(a);throw;}
  Require(a.prepared->base==generation.load(),"reload publication generation is stale");
  // Only directory membership/file metadata is inspected here; native input
@@ -1267,8 +1348,9 @@ void Rebuild(Attempt& a){
   // Release every live owner before invalidating any shared path pool. Also
   // discard matched idle-only paths, so opening the UI later cannot reuse an
   // old pooled root that escaped the currently visible owner enumeration.
-  for(size_t i=0;i<a.owners.size();++i){const auto& owner=a.owners[i];if(owner.uiModel)continue;a.mutated=i+1;ReleaseConsumers(owner);RemoveOwner(owner);}
-  for(const auto& path:poolPaths)DiscardPool(manager.Get(),path);
+  auto stage=NativeBundle::Clock();for(size_t i=0;i<a.owners.size();++i){const auto& owner=a.owners[i];if(owner.uiModel)continue;a.mutated=i+1;ReleaseConsumers(owner);RemoveOwner(owner);}ownerReleaseMs=NativeBundle::Ms(stage);
+  stage=NativeBundle::Clock();for(const auto& path:poolPaths)DiscardPool(manager.Get(),path);discardPoolsMs=NativeBundle::Ms(stage);
+  stage=NativeBundle::Clock();
   for(auto& owner:a.owners){
    if(owner.uiModel)continue;
    // This pair and follow-effect refresh are the audited game's own same-ID
@@ -1287,6 +1369,7 @@ void Rebuild(Attempt& a){
    LoadOwner(owner);
    Log("[FULL-RELOAD-MIGRATED] path=%s oldRootId=%d newRootId=%d verifiedAsyncCandidate=1 gameOwnsInstance=1",owner.path.c_str(),owner.oldRootId,Id(CurrentRoot(owner)));
   }
+  ownerLoadMs=NativeBundle::Ms(stage);
  }catch(...){
   std::atomic_store(&routes,previous);bool restored=true;
   CancelUIModels(a);a.uiStaged=false;
@@ -1305,7 +1388,7 @@ void Rebuild(Attempt& a){
   for(size_t i=0;i<a.mutated;++i)try{RuntimeShapes::RegisterModel(CurrentRoot(a.owners[i]));}catch(const std::exception& e){restored=false;Log("[FULL-RELOAD-ROLLBACK-GAP] controlRegistration=%s",e.what());}
   Log("[FULL-RELOAD-ROLLBACK] previousRoutesRestored=1 previousControlsRetained=1 ownersRestored=%d",int(restored));throw;
  }
- auto graph=a.prepared->controls.graph;RuntimeControls::Swap(a.prepared->controls);std::atomic_store(&published,graph);settings.PublishPrepared(a.prepared->config);
+ auto stage=NativeBundle::Clock();auto graph=a.prepared->controls.graph;RuntimeControls::Swap(a.prepared->controls);std::atomic_store(&published,graph);settings.PublishPrepared(a.prepared->config);
  RuntimeShapes::bound.clear();RuntimeShapes::cached.clear();RuntimeShapes::boundCount=0;
  // Installed original-namespace substitutions stay frozen. Future instances
  // receive generation prefabs through the exact native source route.
@@ -1321,8 +1404,11 @@ void Rebuild(Attempt& a){
  if(a.prepared->testAuthor)testAuthorCommitted=true;
  if(a.prepared->rules)std::atomic_store(&resourceRules,a.prepared->rules);
  if(attempt.get()==&a)std::atomic_store(&activeNative,attempt);
+ publicationMs=NativeBundle::Ms(stage);
  auto loadedRoots=std::count_if(a.assets.begin(),a.assets.end(),[](const auto& asset){return bool(asset.prefab.Get());});
- a.phase=Phase::Passed;Log("[FULL-RELOAD-COMMIT] generation=%u key=%s nativeRoots=%zu offlineRoots=%zu migrated=%zu meshParts=%zu rendererParts=%zu textures=%zu originalDependenciesLeased=1 nativeShapesPreserved=1 oldCaptureConsumersRetained=%zu gfx=0",current,a.prepared->plan->key.c_str(),size_t(loadedRoots),a.assets.size(),a.owners.size(),a.prepared->plan->meshParts,a.prepared->plan->rendererParts,a.prepared->plan->textures,RuntimeShapes::groups.size());
+ a.phase=Phase::Passed;Log("[FULL-RELOAD-REBUILD-COST] stage=committed owners=%zu poolPaths=%zu ownerReleaseMs=%.6f discardPoolMs=%.6f ownerLoadVerifyMs=%.6f publicationMs=%.6f totalMs=%.6f",
+  a.owners.size(),poolPaths.size(),ownerReleaseMs,discardPoolsMs,ownerLoadMs,publicationMs,NativeBundle::Ms(rebuildStarted));
+ Log("[FULL-RELOAD-COMMIT] generation=%u key=%s nativeRoots=%zu offlineRoots=%zu migrated=%zu meshParts=%zu rendererParts=%zu textures=%zu originalDependenciesLeased=1 nativeShapesPreserved=1 oldCaptureConsumersRetained=%zu gfx=0",current,a.prepared->plan->key.c_str(),size_t(loadedRoots),a.assets.size(),a.owners.size(),a.prepared->plan->meshParts,a.prepared->plan->rendererParts,a.prepared->plan->textures,RuntimeShapes::groups.size());
 }
 bool SelectObservedRoots(Attempt& a){
  if(a.selectionRevision==ownerRevision)return false;a.selectionRevision=ownerRevision;bool added=false;const auto& plan=*a.prepared->plan;

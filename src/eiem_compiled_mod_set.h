@@ -10,6 +10,7 @@
 // resource queries or author-side executables are called by this path.
 namespace EiemCompiledModSet {
 using namespace EiemCompiledMod;
+inline bool StandaloneEffectRoot(const std::filesystem::path& root){auto sections=EiemDirectory::ParseIni(EiemDirectory::Read(root/"mod.ini"));for(const auto& s:sections)if(s.id=="Mod")return s.values.count("type")&&s.values.at("type")=="effect";return false;}
 struct Catalog {EiemResourceReloadPlan::Source source;Input input;std::map<std::string,std::shared_ptr<const MemberProof>> members;std::vector<std::shared_ptr<const Root>> pristine;
  std::shared_ptr<const Artifact> proofArtifact;size_t proofInput=0;std::set<std::string> dependencyFiles;
 };
@@ -50,11 +51,11 @@ inline void EnsureCatalogProof(Catalog& catalog,bool retire=false){
  if(retire)catalog.proofArtifact.reset();
 }
 inline std::map<std::filesystem::path,InputFileStamp> AuthorStamps(const std::filesystem::path& root){
- std::map<std::filesystem::path,InputFileStamp> result;for(const auto& file:std::filesystem::recursive_directory_iterator(root))if(file.is_regular_file()){
- auto name=file.path().filename().u8string(),extension=file.path().extension().u8string();auto relative=file.path().lexically_relative(root).generic_u8string();if(name=="mod.ini"||name=="compiled.bin"||name=="source-inputs.bin"||extension==".mesh"||extension==".mat"||extension==".tex"||Begins(relative,"resources/"))result.emplace(file.path(),FileStamp(file.path()));}return result;
+ std::map<std::filesystem::path,InputFileStamp> result;for(const auto& file:EiemModDirectory::Files(root)){
+ auto name=file.filename().u8string(),extension=file.extension().u8string();auto relative=file.lexically_relative(root).generic_u8string();if(name=="mod.ini"||name=="compiled.bin"||name=="source-inputs.bin"||extension==".mesh"||extension==".mat"||extension==".tex"||Begins(relative,"resources/"))result.emplace(file,FileStamp(file));}return result;
 }
 inline std::string DirectoryStamp(const std::filesystem::path& directory){
- Writer w;for(const auto& root:EiemComposedPackage::Roots(directory)){w.S(root.filename().u8string());for(const auto& file:AuthorStamps(root)){w.S(file.first.lexically_relative(root).u8string());w.N(file.second.bytes);w.N(file.second.written);}}return Hash(w.b);
+ Writer w;for(const auto& root:EiemComposedPackage::Roots(directory)){w.S(root.lexically_relative(std::filesystem::canonical(directory)).generic_u8string());for(const auto& file:AuthorStamps(root)){w.S(file.first.lexically_relative(root).u8string());w.N(file.second.bytes);w.N(file.second.written);}}return Hash(w.b);
 }
 inline bool Unchanged(const Set& set,const std::filesystem::path& directory){
  if(!EiemComposedPackage::Matches(directory,set.manifest.packages))return false;
@@ -247,20 +248,20 @@ inline std::shared_ptr<Set> RefreshKeySwitches(const std::shared_ptr<const Set>&
 }
 inline std::shared_ptr<Set> Read(const std::filesystem::path& game,const std::shared_ptr<const Set>& previous={},const std::filesystem::path& modsDirectory={},const std::function<void(const char*,double)>& cost={}){
  auto started=std::chrono::steady_clock::now();auto report=[&](const char* stage,std::chrono::steady_clock::time_point begin){if(cost)cost(stage,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count());};
- auto directory=modsDirectory.empty()?game/"plugin/mods":modsDirectory;auto roots=EiemComposedPackage::Roots(directory);if(roots.empty()&&!previous)return {};
+ auto directory=modsDirectory.empty()?game/"plugin/mods":modsDirectory;auto roots=EiemComposedPackage::Roots(directory);roots.erase(std::remove_if(roots.begin(),roots.end(),StandaloneEffectRoot),roots.end());if(roots.empty()&&!previous)return {};
  if(auto refreshed=RefreshKeySwitches(previous,directory))return refreshed;
  auto set=std::make_shared<Set>();if(previous)set->logicalSources=previous->logicalSources;std::string identity=structure;std::vector<Package> authors;
  // Independent Mod indexes and payloads can be verified concurrently. Source
  // identity/composition publication remains ordered and transactional.
  std::vector<std::shared_ptr<Artifact>> decoded(roots.size());
  std::vector<std::map<std::filesystem::path,InputFileStamp>> decodedStamps(roots.size());
- EiemOfflineCompile::ParallelInputs(roots.size(),[&](size_t index){const auto& root=roots[index];decodedStamps[index]=AuthorStamps(root);bool reuse=false;if(previous)for(const auto& mod:previous->mods)if(mod->manifest.package.root==root){const auto& stamps=decodedStamps[index];size_t prior=0;for(const auto& row:previous->files){auto relative=row.first.lexically_relative(root);if(!relative.empty()&&!relative.is_absolute()&&relative.u8string().rfind("..",0)!=0)++prior;}reuse=prior==stamps.size();for(const auto& row:stamps){auto old=previous->files.find(row.first);reuse=reuse&&old!=previous->files.end()&&SameStamp(row.second,old->second);}break;}
+ EiemOfflineCompile::ParallelInputs(roots.size(),[&](size_t index){const auto& root=roots[index];decodedStamps[index]=AuthorStamps(root);bool reuse=false;if(previous)for(const auto& mod:previous->mods)if(mod->manifest.package.root==root){const auto& stamps=decodedStamps[index];size_t prior=0;for(const auto& row:previous->files){if(EiemModDirectory::Owns(root,row.first))++prior;}reuse=prior==stamps.size();for(const auto& row:stamps){auto old=previous->files.find(row.first);reuse=reuse&&old!=previous->files.end()&&SameStamp(row.second,old->second);}break;}
   if(!reuse){Require(std::filesystem::is_regular_file(root/"compiled.bin"),"Mod lacks compiled.bin; export this Mod with Blender: "+root.filename().u8string());auto begin=std::chrono::steady_clock::now();decoded[index]=std::make_shared<Artifact>(EiemCompiledMod::ReadRuntime(root,game,cost));report("artifact",begin);}
  },4);
  size_t rootIndex=0;for(const auto& root:roots){Require(std::filesystem::is_regular_file(root/"compiled.bin"),"Mod lacks compiled.bin; export this Mod with the Blender plug-in: "+root.filename().u8string());auto stamps=AuthorStamps(root);Require(stamps.size()==decodedStamps[rootIndex].size(),"Mod changed during parallel index read");for(const auto& row:stamps){auto old=decodedStamps[rootIndex].find(row.first);Require(old!=decodedStamps[rootIndex].end()&&SameStamp(old->second,row.second),"Mod changed during parallel index read");}
   size_t reuse=SIZE_MAX;
   if(previous)for(size_t m=0;m<previous->mods.size();++m)if(previous->mods[m]->manifest.package.root==root){
-   size_t oldCount=0;for(const auto& row:previous->files){auto relative=row.first.lexically_relative(root);if(!relative.empty()&&!relative.is_absolute()&&relative.u8string().rfind("..",0)!=0)++oldCount;}
+   size_t oldCount=0;for(const auto& row:previous->files){if(EiemModDirectory::Owns(root,row.first))++oldCount;}
    bool same=oldCount==stamps.size();for(const auto& row:stamps){auto old=previous->files.find(row.first);same=same&&old!=previous->files.end()&&SameStamp(old->second,row.second);}if(same)reuse=m;break;
   }
   std::shared_ptr<const Artifact> a;std::shared_ptr<const Frames> frames;Package current;

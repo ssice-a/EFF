@@ -518,7 +518,7 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
   if(cost)workerCost=[&](const char* name,double elapsed){std::lock_guard<std::mutex> lock(publishCostMutex);cost(name,elapsed);};
   std::map<std::string,Bytes> frameBytes;std::unique_ptr<EiemResourceRecipe::Dictionary> authorSpans;
   if(rulesOnly){plan.spanRecipes=true;plan.frameRecipes=EiemResourceRecipe::DescribeFrames(package,schemas);plan.memberRecipes.resize(sources.size());std::vector<EiemResourceRecipe::Buffer> buffers;
-   for(const auto& resource:package.resources)buffers.push_back({EiemResourceRecipe::Author,resource.first,&resource.second->bytes});
+   for(const auto& resource:package.resources)if(resource.second->kind!=10)buffers.push_back({EiemResourceRecipe::Author,resource.first,&resource.second->bytes});
    for(const auto& frame:plan.frameRecipes){auto inserted=frameBytes.emplace(frame.resource,EiemResourceRecipe::ExpandFrame(frame,package.resources.at(frame.resource)->bytes));Require(inserted.second,"duplicate recipe frame source");buffers.push_back({EiemResourceRecipe::ExpandedFrame,frame.resource,&inserted.first->second});}
    authorSpans=std::make_unique<EiemResourceRecipe::Dictionary>(std::move(buffers));
   }

@@ -47,7 +47,8 @@ def read_package(root, resource_cache=None):
         return [dict(row, file=relative) for row in resource["descriptors"] if not row["name"].startswith("@")]
 
     require("Mod" in ini and "Constants" in ini, "Mod/Constants sections are required")
-    mod = keys("Mod", ("format", "id"), ("key_switch_enabled",))
+    mod = keys("Mod", ("format", "id"), ("key_switch_enabled","type"))
+    require(mod.get('type','') in ('','effect'),'unknown Mod type')
     identifier(mod["id"])
     known = {"Mod", "Constants"}
     states, persistence = {}, set()
@@ -60,7 +61,7 @@ def read_package(root, resource_cache=None):
             persistence.add(variable)
 
     mesh_rows, materials, textures, parts, controls, bindings, rules = {}, [], [], [], [], [], []
-    animations=[]
+    animations=[];material_animations=[];effects=[];runtime_variables=set()
     for name in ini.sections():
         if name in known:
             continue
@@ -71,9 +72,16 @@ def read_package(root, resource_cache=None):
             values=keys(name,('path',));clip=decode(load(values['path'],KIND))
             require(clip['owner']==mod['id'] and name=='ShapeAnimation'+clip['id'],'animation owner/id mismatch')
             animations.append(clip)
+        elif name.startswith(('MaterialAnimation','EffectAttachment')):
+            from .runtime_controls import material_decode, effect_decode
+            kind=9 if name.startswith('MaterialAnimation') else 10
+            values=keys(name,('path',));value=(material_decode if kind==9 else effect_decode)(load(values['path'],kind))
+            require(value['owner']==mod['id'] and name==('MaterialAnimation' if kind==9 else 'EffectAttachment')+value['id'],'runtime control owner/id mismatch')
+            if kind==9:material_animations.append(value);animations.append(value);runtime_variables.update(value['tracks'])
+            else:effects.append(value);runtime_variables.add(value['variable'])
         elif name.startswith("Resource"):
             values = keys(name, ("path",))
-            require(load(values['path'], 0)['kind'] != 8, 'shape animation requires a ShapeAnimation declaration')
+            require(load(values['path'], 0)['kind'] not in (8,9,10), 'runtime controls require a typed declaration; shape animation requires a ShapeAnimation declaration')
         elif name.startswith("Mesh"):
             values = keys(name, ("path",))
             resource = load(values["path"], MESH)
@@ -173,10 +181,18 @@ def read_package(root, resource_cache=None):
 
     by_material, by_texture, by_part = ({m["id"]: m for m in materials}, {t["id"]: t for t in textures},
                                        {p["partId"]: p for p in parts})
-    require(parts and rules, "Mod requires parts and replacement declarations")
+    require((parts and rules) or (mod.get('type')=='effect' and effects and not parts and not rules), "Mod requires parts/replacements or standalone effects")
     require(len({c["variable"] for c in controls}) == len(controls), "duplicate shape controls")
     shape_controls = {c["variable"]: c for c in controls}
     used_meshes, used_materials, used_textures, used_shapes, used_parts, target_ids = set(), set(), set(), set(), set(), set()
+    used_shapes.update(runtime_variables)
+    material_bindings=set()
+    for clip in material_animations:
+        require(all(t['material'] in by_material for t in clip['targets']),'material animation missing material')
+        for target in clip['targets']:
+            key=(target['material'],target['property'],target['component']);require(key not in material_bindings,'duplicate material animation target across groups');material_bindings.add(key)
+    for effect in effects:
+        require((effect['part'] in by_part or effect.get('targetPrefab')) and effect['variable'] in shape_controls,'effect attachment missing target/control')
     for part in parts:
         require(part["mesh"] in mesh_rows and part["material"] in by_material, "unresolved part resource")
         part.update(mesh_rows[part["mesh"]])
@@ -223,13 +239,14 @@ def read_package(root, resource_cache=None):
     for generated in ("source-inputs.bin", "compiled.bin"):
         if (root / generated).is_file():
             allowed.add(generated)
-    actual = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()
-              and not re.fullmatch(r"state\.ini(?:\.tmp-[0-9]+)?", p.relative_to(root).as_posix())
+    from .mod_directory import package_files
+    actual = {p.relative_to(root).as_posix() for p in package_files(root)
+              if not re.fullmatch(r"state\.ini(?:\.tmp-[0-9]+)?", p.relative_to(root).as_posix())
               and p.suffix.lower() not in (".png", ".psd") and p.name.lower() != "eff_texture_convert.exe"}
     require(actual == allowed, "unreferenced/source files in Mod directory: " + str(sorted(actual ^ allowed)))
     return dict(format="EFF_NATIVE_MOD_DIRECTORY", version=2, modId=mod["id"], keySwitchEnabled=key_switch_enabled(mod.get("key_switch_enabled", "1")), parts=parts, materials=materials,
                 textures=textures, rules=rules, states=states, persistentStates=persistence, keyBindings=bindings,
-                shapeControls=controls, shapeAnimations=animations, _resources=resources, _files=allowed)
+                shapeControls=controls, shapeAnimations=animations, materialAnimations=material_animations, effects=effects, _resources=resources, _files=allowed)
 
 
 def key_switch_enabled(value="1"):

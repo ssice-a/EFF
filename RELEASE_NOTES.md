@@ -1,23 +1,24 @@
-# EFF v1.8.1
+# EFF v1.9.0
 
-配套：[EFF Blender v0.45.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.45.0)、[AnimeStudio v1.7.0](https://github.com/ssice-a/AnimeStudio/releases/tag/v1.7.0)。
+配套版本：[EFF Blender v0.47.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.47.0)、[AnimeStudio v1.8.0](https://github.com/ssice-a/AnimeStudio/releases/tag/v1.8.0)。
 
-- 减少重复资源加载：编译结果保留实际修改、Prefab 根和必要消费者，未改的末端依赖继续由游戏加载；多个 Mod 仍按同一事务组合，不减少 PFB 命中覆盖。
-- 修复 F10 的 `reload model part load ownership was not recorded`：观察游戏内部主模型加载流程，正确保留组件与部件归属。覆盖加载中释放及新建部件，原函数只调用一次。实机同一会话七次提交成功、无拒绝；未覆盖场景仍需反馈。
-- 来源按逻辑 Bundle 路径和实际内容重新定位，不再把旧 CHK 文件名、偏移当作内容身份。相同内容移动位置可继续使用；真实内容/结构变化仍需安全离线适配。
-- Blender 全部资源重复导出减少未改 Mesh、材质及贴图重复处理。游戏小更新后自动增量刷新工作区索引并继续导出，无需打开 AnimeStudio；不在游戏内后台编译或回写 Mod。
-- EFF Repair v0.2.0 按逻辑内容复用索引及修复记录，位置或索引时间变化不重复修复。附当前完整公共索引，支持跨机器下载导入。
+- 接入 ParticleSystem 特效 Mod：可独立安装，也可挂载角色 Mesh 骨骼；默认随模型生命周期加载，支持快捷键显隐及 F9 热重载。
+- 特效挂载覆盖全部角色 LOD，并与多 Mod 资源准备、提交、回滚和场景更新共用现有运行时流程；不增加独立特效 DLL。
+- 支持独立特效包和角色包同时导出；Mod 目录递归扫描，允许在现有 Mod 文件夹内再放置含独立 `mod.ini` 的子包。
+- 增加材质动态参数播放控制，并保留现有 Shape Keys 动画组与玩家按键控制。
+- 收紧热重载资源所有权和代际事务处理，保留已验证的末端依赖裁剪、增量 Mesh 编译和多 Mod 事务组合。
 
 ## 下载与安装
 
-- `EFF_v1.8.1_dll.zip`：退出游戏后解压到游戏根目录，保留个人 `plugin/eff.ini`、Mods 和 `state.ini`。只含生产 DLL、代理和默认配置，不含作者工具或诊断探针；静态链接 C/C++ 运行实现，当前代理支持 `C:\Windows`。
-- `EFF-Repair-v0.2.0-win-x64.zip`：独立游戏外修复工具，需要 .NET 9 Windows Desktop Runtime。退出游戏后修复，保留原包备份。
-- `EFF-Endfield-Index-20261017.effindex.gz`：修复工具自动下载的完整索引；不含 Mesh/贴图或作者 Mod，解压约 831 MB。旧内容对应索引仍可从先前版本取得。
+- `EFF_v1.9.0_dll.zip`：退出游戏后解压到游戏根目录，保留个人 `plugin/eff.ini`、Mods 和 `state.ini`。只含生产 DLL、代理、协议声明和默认配置。
+- `EFF-Repair-v0.2.0-win-x64.zip`：独立游戏外修复工具，需要 .NET 9 Windows Desktop Runtime；修复前会备份原 Mod。
+- `EFF-Endfield-Index-20261022.effindex.gz` 与 `eff-index-catalog.json`：当前游戏内容的完整索引及 Repair 下载目录。索引压缩包 97,429,663 字节；工具会按游戏 Bundle 内容摘要选择并校验下载。
+- `EFF_Blender_Native_v0.47.0.zip`：配套 Blender Release 使用的完整固定原生基础包，包含本次编译器、来源索引器、作者核心及插件 Python 文件。普通 DLL 用户不需要安装它。
 
-无需仅为升级 DLL 重新导出全部 Mod。若具体来源内容发生变化，作者可用新版 Blender 导出，玩家可使用修复工具。游戏小更新不等于所有旧资源失效，也不代表可以跳过实际内容校验。
-
-本机固定十网格 ALL 导出：单顶点修改 11.32 → 10.23 秒，不变重导 5.76 → 5.08 秒，输出逐文件一致。这是本机样本，不承诺固定提速比例。只读依赖裁剪没有证明持续掉帧或峰值内存问题全部解决；几何变更仍走完整离线编译。
+旧 Mod 不需要仅为升级 DLL 重新导出。若来源内容发生变化，作者可用配套 Blender 更新原工程并重新导出；玩家可使用修复工具。游戏内表现仍取决于来源 Prefab、Renderer 和材质配置，离线预览不等同于游戏渲染。
 
 ## English
 
-Reduces duplicated native inputs while retaining edited resources, consumers and Prefab coverage. Fixes F10 ownership tracking across the game's internal main-model load/release sequence. Logical Bundle identity and content proofs tolerate CHK relocation without accepting changed bytes. Blender can refresh stale indexes incrementally and resume the same export. EFF Repair v0.2.0 and a current portable full index are included. No background in-game compilation is introduced. Preserve personal configuration and Mods; close the game before installing or repairing.
+Adds ParticleSystem effect Mods that can run independently or attach to a character Mesh bone. Effects follow the model lifecycle, cover every character LOD, support key toggles and F9 reload, and use the existing Mod transaction path without a separate DLL. Mod discovery now recurses through nested package folders. Adds animated material-property controls and retains the existing Shape Keys playback groups.
+
+Install `EFF_v1.9.0_dll.zip` beside `Endfield.exe` after closing the game. Preserve personal configuration and Mods. The optional Repair tool downloads a content-matched full index from the release catalog. `EFF_Blender_Native_v0.47.0.zip` is a pinned build base for the paired Blender package, not a game installation component.

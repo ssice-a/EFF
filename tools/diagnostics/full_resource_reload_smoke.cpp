@@ -1367,7 +1367,8 @@ void UnrelatedPrefabAllocationRegression(){
 }
 void NativeByteStreamRegression(){
  using namespace FullResourceReload;Reset();auto saved=NativeBundle::api;auto allocate=il2cpp_object_new;
- struct Cleanup {NativeBundle::Api api;decltype(il2cpp_object_new) allocate;~Cleanup(){NativeBundle::memoryRequests.clear();NativeBundle::memoryBundles.clear();nativeStreams.clear();NativeBundle::api=api;il2cpp_object_new=allocate;Reset();}}cleanup{saved,allocate};
+ auto unloadAsync=NativeBundle::originalUnloadAsync;
+ struct Cleanup {NativeBundle::Api api;decltype(il2cpp_object_new) allocate;NativeBundle::UnloadAsyncFn unloadAsync;~Cleanup(){NativeBundle::memoryRequests.clear();NativeBundle::memoryBundles.clear();NativeBundle::memoryUnloads.clear();nativeStreams.clear();NativeBundle::api=api;NativeBundle::originalUnloadAsync=unloadAsync;il2cpp_object_new=allocate;Reset();}}cleanup{saved,allocate,unloadAsync};
  NativeBundle::api.nativeStreamClass=(void*)0xAB01;NativeBundle::api.nativeStreamCtor=(void*)170;
  NativeBundle::api.streamAsync=(void*)87;NativeBundle::api.streamAsyncIcall=nullptr;
  il2cpp_object_new=[](void* klass)->void*{Require(klass==NativeBundle::api.nativeStreamClass,"native archive stream class differs");auto bytes=std::make_unique<Bytes>(8);auto result=bytes->data();storage.push_back(std::move(bytes));return result;};
@@ -1381,6 +1382,33 @@ void NativeByteStreamRegression(){
  bytes=std::make_shared<const Bytes>(Bytes{1,2,3,4});weak=bytes;
  NativeBundle::api.streamAsyncIcall=[](void*,uint32_t,uint32_t)->void*{return nullptr;};
  Require(!NativeBundle::LoadBytes(bytes,0,true),"null native request accepted");bytes.reset();Require(weak.expired(),"null request retained byte backing");
+
+ // Effect archives are slices into an immutable Resource, not standalone byte
+ // vectors. The async request and loaded Bundle must keep that Resource alive.
+ NativeBundle::api.streamAsyncIcall=nullptr;
+ auto resource=std::make_shared<EiemDirectory::Resource>();resource->bytes={9,1,2,3,4,9};
+ std::weak_ptr<const EiemDirectory::Resource> resourceWeak=resource;
+ EiemEffectNative::Bundle archive;archive.backing=resource;archive.data=resource->bytes.data()+1;archive.size=4;
+ auto owner=archive.Owner();auto effectRequest=NativeBundle::LoadBytes(archive.Data(),archive.Size(),owner,0,true);
+ archive.backing.reset();owner.reset();resource.reset();
+ Require(effectRequest&&NativeBundle::memoryRequests.count(effectRequest),"async effect archive request was not retained");
+ Require(!resourceWeak.expired(),"async effect archive request released its shared Resource backing");
+ auto retainedResource=resourceWeak.lock();
+ Require(NativeBundle::memoryRequests.at(effectRequest).owner.get()==retainedResource.get(),"async effect archive request retained the wrong Resource owner");
+ retainedResource.reset();
+ auto effectBundle=(void*)0xAB20;NativeBundle::CompleteMemory(effectRequest,effectBundle);
+ Require(NativeBundle::memoryRequests.empty()&&!resourceWeak.expired(),"loaded effect Bundle released its shared Resource backing");
+ retainedResource=resourceWeak.lock();
+ Require(NativeBundle::memoryBundles.at(effectBundle).owner.get()==retainedResource.get(),"loaded effect Bundle retained the wrong Resource owner");
+ retainedResource.reset();
+ auto unloadRequest=(void*)0xAB21;
+ NativeBundle::originalUnloadAsync=[](void* value,bool destroy)->void*{Require(value==(void*)0xAB20&&!destroy,"effect Bundle unload arguments changed");return (void*)0xAB21;};
+ scheduleDone[unloadRequest]=false;NativeBundle::UnloadAsync(effectBundle,false);
+ NativeBundle::CollectMemory();Require(!resourceWeak.expired()&&NativeBundle::memoryBundles.count(effectBundle),
+         "in-flight effect Bundle unload released its shared Resource backing");
+ scheduleDone[unloadRequest]=true;NativeBundle::CollectMemory();
+ Require(resourceWeak.expired()&&!NativeBundle::memoryBundles.count(effectBundle)&&!NativeBundle::memoryUnloads.count(unloadRequest),
+         "completed effect Bundle unload retained its shared Resource backing");
 }
 void StreamLifetimeReentryRegression(){
  Reset();auto object=(void*)0xB020;NativeBundle::memoryBundles.emplace(object,NativeBundle::MemoryBundle{RuntimeShapes::Ref::Make(object,false),RuntimeShapes::Ref::Make(source,false)});
@@ -1560,7 +1588,7 @@ void FullFrameRegression(bool display,bool vanilla=false,bool pristine=false,boo
  auto file=std::filesystem::temp_directory_path()/("eff-frame-"+std::to_string(GetCurrentProcessId()));EiemResourceReloadPlan::Save(file,{1,2,3,4});
  auto previousGame=gameDirectory,fixtureGame=file.parent_path()/(file.filename().u8string()+"-game");
  struct RestoreGame{std::filesystem::path previous,folder,parent;bool used;~RestoreGame(){gameDirectory=previous;if(used&&folder.parent_path()==parent)std::filesystem::remove_all(folder);}}restoreGame{previousGame,fixtureGame,file.parent_path(),generic};
- if(generic){Require(std::filesystem::create_directory(fixtureGame),"generic game fixture exists");std::filesystem::create_directories(fixtureGame/"plugin/mods/Generic");EiemResourceReloadPlan::Save(fixtureGame/"plugin/mods/Generic/mod.ini",{1});gameDirectory=fixtureGame;}
+ if(generic){Require(std::filesystem::create_directory(fixtureGame),"generic game fixture exists");auto root=fixtureGame/"plugin/mods/Generic";std::filesystem::create_directories(root);std::ofstream ini(root/"mod.ini",std::ios::binary);ini<<"[Mod]\nformat=2\nid=Generic\n[Constants]\n";Require(bool(ini),"generic Mod INI fixture could not be written");ini.close();gameDirectory=fixtureGame;}
  {
   auto prepared=Prepare();auto plan=std::make_shared<EiemResourceReloadPlan::Plan>(*prepared->plan);
   if(pristine){plan->composed=true;plan->parts.clear();plan->materials.clear();plan->roots.front().markers.clear();

@@ -2,6 +2,9 @@
 #include "eiem_shape_snapshot.h"
 #include "eiem_runtime_shape_identity.h"
 #include "eiem_entry_controls.h"
+namespace RuntimeMaterials {void Register(void*,void*,const RuntimeControls::Spec&);void Frame();void Forget(void*);void Install(void**,size_t);}
+namespace RuntimeAttachments {void ModelReady(void*);void QueueOwnerReady(void*);void OwnerReleasing(void*) noexcept;void Frame();}
+namespace FullResourceReload {void HelperReady(void*);}
 
 // Main Meshes retain native blend shapes. Only the capture consumer receives
 // a local-space, immutable, shape-evaluated copy through its Mesh getter.
@@ -18,8 +21,9 @@ struct Ref {
     if (!object) return r;
     auto h = weak ? weakHandle(object, false) : il2cpp_gchandle_new(object, false);
     Require(h != 0, "runtime shape GC handle failed");
+    EiemLoadPerformance::Add(EiemLoadPerformance::Operation::HandleCreate);
     r.handle = std::shared_ptr<uint32_t>(new uint32_t(h), [](uint32_t* p) {
-      if (managedAlive && il2cpp_gchandle_free) il2cpp_gchandle_free(*p);
+      if (managedAlive && il2cpp_gchandle_free) {il2cpp_gchandle_free(*p);EiemLoadPerformance::Add(EiemLoadPerformance::Operation::HandleFree);}
       delete p;
     });
     return r;
@@ -163,6 +167,11 @@ struct ObservationGuard {
 
 void* Call(void* method, void* self = nullptr, void** arguments = nullptr) {
   Require(method && il2cpp_runtime_invoke, "runtime shape method missing");
+  EiemLoadPerformance::Add(EiemLoadPerformance::Operation::ManagedInvoke);
+#if defined(EIEM_LOAD_PERF)
+  if(method==api.getWeight)EiemLoadPerformance::Add(EiemLoadPerformance::Operation::ShapeRead);
+  if(method==api.setWeight)EiemLoadPerformance::Add(EiemLoadPerformance::Operation::ShapeWrite);
+#endif
   void* exception = nullptr;
   auto value = il2cpp_runtime_invoke(method,self,arguments,&exception);
   Require(!exception, "runtime shape managed call failed");
@@ -622,6 +631,7 @@ void RegisterRenderer(void* renderer,void* mesh,bool modelReady=true) {
       binding.modelReady=true;
     }
     ApplyVisibility(renderer,binding,*spec);
+    if(modelReady)RuntimeMaterials::Register(renderer,mesh,*spec);
   }
 }
 bool CurrentGeneration() {
@@ -659,7 +669,7 @@ size_t RegisterModel(void* root) {
       if(binding!=bound.end()&&binding->second.renderer.Get()==renderer&&binding->second.mesh.Get()==mesh&&binding->second.modelReady)++ready;
     }
   }
-  performance.hit=ready!=0;return ready;
+  RuntimeAttachments::ModelReady(root);performance.hit=ready!=0;return ready;
 }
 size_t RegisterRendererList(void* renderers,bool modelReady) {
   EiemLoadPerformance::Scope performance(EiemLoadPerformance::ModelRegister);
@@ -705,14 +715,17 @@ void HelperInitialized(void* self,void* info) {
     void* list=nullptr;il2cpp_field_get_value(self,helperRenderersField,&list);
     if(!list)return;
     auto renderers=Ref::Make(list,false);auto ready=RegisterRendererList(renderers.Get(),true);
+    FullResourceReload::HelperReady(self);
     if(ready)Log("[CONTROL-RUNTIME-HELPER] helper=%p ready=%zu cachedRendererList=1 sceneDiscovery=0",self,ready);
   }catch(const std::exception& e){Log("[CONTROL-RUNTIME-GAP] helperCompletion=%s",e.what());}
 }
 void Update() {
+  EiemLoadPerformance::Scope entry(EiemLoadPerformance::UpdateEntry);
   if (!enabled || !Main()) return;
   int frame = Scalar<int>(api.frame);
   if (frame == lastFrame) return;
   lastFrame = frame;
+  entry.hit=true;
   EiemLoadPerformance::MainFrame(unsigned(frame));
   EiemLoadPerformance::Scope performance(EiemLoadPerformance::PluginFrame);
 #if defined(EIEM_DIAGNOSTICS)
@@ -734,6 +747,7 @@ void Update() {
   bool focused = active.load() && pid == GetCurrentProcessId();
   {EiemLoadPerformance::Scope input(EiemLoadPerformance::ControlInput);PanelCommands(focused);PollControls(focused,elapsed);}
   {EiemLoadPerformance::Scope animation(EiemLoadPerformance::ShapeAnimation);AdvanceAnimations(elapsed);}
+  RuntimeMaterials::Frame();
 #if defined(EIEM_DIAGNOSTICS)
   if (traceBoundaries && frame%300==0)
     Log("[DEBUG-shape-v24-INPUT] frame=%d focusPid=%lu focused=%d packages=%zu bound=%zu delta=%.9g",

@@ -9,6 +9,7 @@
 struct EiemGlobalConfig {
   EiemKeyChord reload{VK_F10, 0};
   EiemKeyChord gui{VK_INSERT, 0};
+  EiemKeyChord effectsReload{VK_F9,0};
   bool disableCameraFade = true;
 };
 
@@ -19,6 +20,7 @@ static constexpr const char *kEiemDefaultGlobalConfig =
     "[Hotkeys]\n"
     "reload=F10\n"
     "gui=INSERT\n"
+    "effects_reload=F9\n"
     "\n[Graphics]\n"
     "; Disable CameraMono camera fade; Mod mesh/skip state is unchanged.\n"
     "disable_camera_fade=true\n";
@@ -64,10 +66,12 @@ static bool EiemParseGlobalConfig(std::istream &input, EiemGlobalConfig *out,
     if (!EiemParseKeyChord(value, &chord)) return fail("Invalid shortcut: " + value);
     if (key == "reload") next.reload = chord;
     else if (key == "gui") next.gui = chord;
+    else if (key == "effects_reload") next.effectsReload = chord;
     else return fail("Unknown setting: " + key);
   }
   if (input.bad()) return fail("Read failed");
   if (next.reload.vk == next.gui.vk) return fail("reload and gui must use different shortcuts");
+  if(next.effectsReload.vk==next.reload.vk||next.effectsReload.vk==next.gui.vk)return fail("effects_reload overlaps another global shortcut");
   *out = next;
   return true;
 }

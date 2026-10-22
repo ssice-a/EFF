@@ -36,9 +36,9 @@ inline bool LockBuild(Handle& single,const Handle& parent){
  }
 }
 inline std::string SourceStamp(const Options& o){std::map<std::string,InputFileStamp> files;auto roots=o.set?EiemComposedPackage::Roots(o.mod):std::vector<std::filesystem::path>{o.mod};std::string text;
- for(const auto& root:roots){text+=root.filename().u8string()+"\n";for(const auto& entry:std::filesystem::recursive_directory_iterator(root))if(entry.is_regular_file()){
- auto name=entry.path().filename().u8string();if(name=="state.ini"||name.rfind("state.ini.tmp-",0)==0||AuthorAuxiliary(entry.path()))continue;
- auto relative=entry.path().lexically_relative(o.mod).u8string();files.emplace(relative,FileStamp(entry.path()));
+ for(const auto& root:roots){text+=root.lexically_relative(o.mod).generic_u8string()+"\n";for(const auto& file:EiemModDirectory::Files(root)){
+ auto name=file.filename().u8string();if(name=="state.ini"||name.rfind("state.ini.tmp-",0)==0||AuthorAuxiliary(file))continue;
+ auto relative=file.lexically_relative(o.mod).u8string();files.emplace(relative,FileStamp(file));
  }}for(const auto& row:files)text+=row.first+":"+std::to_string(row.second.bytes)+":"+std::to_string(row.second.written)+"\n";auto hash=Sha((const unsigned char*)text.data(),text.size());return Hex(hash.data(),hash.size());}
 inline Pointer Compile(const Options& o){
  auto started=std::chrono::steady_clock::now();auto ms=[&]{return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();};

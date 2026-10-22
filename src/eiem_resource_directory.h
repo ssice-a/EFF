@@ -23,6 +23,8 @@
 
 #include "eiem_expression.h"
 #include "eiem_keys.h"
+#include "eiem_effect_native_types.h"
+#include "eiem_mod_directory.h"
 #pragma comment(lib, "bcrypt.lib")
 
 namespace EiemDirectory {
@@ -344,6 +346,7 @@ struct Binding {
   std::vector<double> values;
   double speed = 1;
 };
+#include "eiem_runtime_control_types.h"
 struct Package {
   std::filesystem::path root;
   std::string id;
@@ -360,14 +363,30 @@ struct Package {
   std::map<std::string, Control> controls;
   std::vector<Binding> bindings;
   std::map<std::string,ShapeAnimation> shapeAnimations;
+  std::set<std::string> materialAnimationIds;
+  std::map<std::string,MaterialTrack> materialTracks;
+  std::map<std::string,EffectAttachment> effects;
   bool keySwitchEnabled=true;
   // Compiler-only ownership metadata, reconstructed from the original authors
   // when a composed manifest is decoded. Never authored in mod.ini.
   bool composed=false;
   std::map<std::string,std::pair<std::string,std::string>> partOwners;
 };
+inline void RestoreRuntimeControls(Package& p){
+ for(const auto& row:p.resources){const auto& resource=*row.second;
+  if(resource.kind==9){std::string owner;std::map<std::string,MaterialTrack> tracks;auto clip=DecodeMaterialAnimation(resource,owner,tracks);if(owner!=p.id)continue;
+   Require(p.materialAnimationIds.insert(clip.id).second&&p.shapeAnimations.emplace(clip.id,clip).second,"duplicate material animation");
+   for(const auto& target:tracks)Require(p.materials.count(target.second.material)&&p.materialTracks.emplace(target).second,"material animation missing material/duplicate variable");
+  }else if(resource.kind==10){auto decoded=DecodeEffectAttachment(resource,row.second);if(decoded.first!=p.id)continue;auto& e=decoded.second;
+   Require((p.parts.count(e.part)||!e.targetPrefab.empty())&&p.controls.count(e.variable)&&p.defaults.count(e.variable)&&p.effects.emplace(e.id,std::move(e)).second,"effect attachment target/control absent or duplicate");}
+ }
+ std::map<std::tuple<std::string,std::string,unsigned>,std::string> channels;
+ for(const auto& row:p.materialTracks){const auto& t=row.second;Require(p.controls.count(row.first)&&p.defaults.count(row.first)&&channels.emplace(std::make_tuple(t.material,t.property,t.component),row.first).second,"material animation channel absent/duplicate target");}
+ for(const auto& row:p.effects){const auto& e=row.second;const auto& c=p.controls.at(e.variable);Require(EiemVariableName(e.variable)&&c.minimum==0&&c.maximum==1&&(p.defaults.at(e.variable)==0||p.defaults.at(e.variable)==1),"effect enable control domain differs");}
+}
 inline void RestoreShapeAnimations(Package& p){
  for(const auto& row:p.resources)if(row.second->kind==8){auto decoded=DecodeShapeAnimation(*row.second);if(decoded.first==p.id)Require(p.shapeAnimations.emplace(decoded.second.id,std::move(decoded.second)).second,"duplicate animation resource");}
+ RestoreRuntimeControls(p);
 }
 inline void ValidateShapeAnimations(const Package& p){
  std::set<std::string> speeds;
@@ -398,10 +417,12 @@ inline Package Load(const std::filesystem::path& directory,const Package* verifi
   auto sections = ParseIni(ini);
   p.iniHash = Sha(ini.data(), ini.size());
   std::set<std::string> allowed{"mod.ini"};
-  bool mod = false, constants = false;
+  bool mod = false, constants = false, effectOnly=false;
   for (const auto& s : sections) {
     if (s.id == "Mod") {
-      Keys(s, {"format", "id"}, {"key_switch_enabled"});
+      Keys(s, {"format", "id"}, {"key_switch_enabled","type"});
+      if(s.values.count("type"))Require(s.values.at("type")=="effect","unknown Mod type");
+      effectOnly=s.values.count("type")!=0;
       Require(Identifier(s.values.at("id")),
               "unsupported Mod format/id");
       p.id = s.values.at("id");
@@ -459,10 +480,14 @@ inline Package Load(const std::filesystem::path& directory,const Package* verifi
     if (Begins(s.id, "ShapeAnimation")) {
       Keys(s,{"path"});auto decoded=DecodeShapeAnimation(load(v.at("path"),8));
       Require(decoded.first==p.id&&s.id=="ShapeAnimation"+decoded.second.id&&p.shapeAnimations.emplace(decoded.second.id,std::move(decoded.second)).second,"shape animation owner/id mismatch");
+    } else if (Begins(s.id, "MaterialAnimation")||Begins(s.id,"EffectAttachment")) {
+      Keys(s,{"path"});auto kind=Begins(s.id,"MaterialAnimation")?9u:10u;const auto& resource=load(v.at("path"),kind);
+      if(kind==9){std::string owner;std::map<std::string,MaterialTrack> targets;auto clip=DecodeMaterialAnimation(resource,owner,targets);Require(owner==p.id&&s.id=="MaterialAnimation"+clip.id,"material animation declaration identity");}
+      else {auto decoded=DecodeEffectAttachment(resource,p.resources.at(v.at("path")));Require(decoded.first==p.id&&s.id=="EffectAttachment"+decoded.second.id,"effect attachment declaration identity");}
     } else if (Begins(s.id, "Resource")) {
       Keys(s, {"path"});
       Require(Begins(v.at("path"), "resources/"), "generic resource folder mismatch");
-      Require(load(v.at("path"), 0).kind!=8,"shape animation requires a ShapeAnimation declaration");
+      auto kind=load(v.at("path"),0).kind;Require(kind!=8&&kind!=9&&kind!=10,"runtime controls require their typed declaration");
       genericResources=true;
     } else if (Begins(s.id, "Mesh")) {
       Keys(s, {"path"});
@@ -623,8 +648,11 @@ inline Package Load(const std::filesystem::path& directory,const Package* verifi
     } else
       throw std::runtime_error("unknown INI section: " + s.id);
   }
-  Require(genericResources || (!p.parts.empty() && !p.rules.empty()), "Mod requires compiled resources or parts and replacement rules");
+  RestoreRuntimeControls(p);
+  Require(effectOnly?(!p.effects.empty()&&p.parts.empty()&&p.rules.empty()&&p.meshes.empty()&&p.materials.empty()&&p.textures.empty()&&p.materialTracks.empty()):(genericResources||(!p.parts.empty()&&!p.rules.empty())),"Mod requires valid character resources or standalone effect declarations");
   std::set<std::string> usedMesh, usedMaterial, usedTexture, usedControl, usedPart;
+  for(const auto& row:p.materialTracks)usedControl.insert(row.first);
+  for(const auto& row:p.effects)usedControl.insert(row.second.variable);
   for (const auto& row : p.parts) {
     const auto& part = row.second;
     Require(p.meshes.count(part.mesh) && p.materials.count(part.material),
@@ -681,16 +709,13 @@ inline Package Load(const std::filesystem::path& directory,const Package* verifi
   if(std::filesystem::is_regular_file(p.root/"source-inputs.bin"))allowed.insert("source-inputs.bin");
   if(std::filesystem::is_regular_file(p.root/"compiled.bin"))allowed.insert("compiled.bin");
   std::set<std::string> actual;
-  for (const auto& entry : std::filesystem::recursive_directory_iterator(p.root)) {
-    Require(!entry.is_symlink(), "symlink/reparse resources forbidden");
-    if (entry.is_regular_file()) {
-      auto relative=entry.path().lexically_relative(p.root).generic_u8string();
+  for (const auto& file : EiemModDirectory::Files(p.root)) {
+      auto relative=file.lexically_relative(p.root).generic_u8string();
       // Player preferences are not author resources and are excluded from the
       // package digest. A concurrent atomic save can expose its temporary file.
       if (relative=="state.ini" || std::regex_match(relative,std::regex("state\\.ini\\.tmp-[0-9]+"))) continue;
-      if (AuthorAuxiliary(entry.path())) continue;
+      if (AuthorAuxiliary(file)) continue;
       actual.insert(std::move(relative));
-    }
   }
   Require(actual == allowed, "unreferenced/source files in Mod directory");
   return p;

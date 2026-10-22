@@ -66,8 +66,9 @@ bool UIOwns(void* loader,void* root){
  void* args[]={root};return RuntimeShapes::Scalar<unsigned char>(api.uiDictionaryContains,dictionary.Get(),args)!=0;
 }
 void RecordUIModel(void* loader,void* root,const std::string& path,void* parent,void* callback){
+ EiemLoadPerformance::Scope performance(EiemLoadPerformance::UIRegister);
  if(!uiLifecycleReady||!RuntimeShapes::Main()||!RuntimeShapes::Alive(root)||!UIOwns(loader,root))return;
- LiveUIModel live{Ref::Make(loader,true),Ref::Make(root,true),Ref::Make(parent,true),Ref::Make(callback,false),path};
+ performance.hit=true;LiveUIModel live{Ref::Make(loader,true),Ref::Make(root,true),Ref::Make(parent,true),Ref::Make(callback,false),path};
  liveUIModels[root]=std::move(live);++ownerRevision;auto controlsReady=RuntimeShapes::RegisterModel(root);
 #if defined(EIEM_DIAGNOSTICS)
  ProbeModelMaterials(root,"ui-complete");
@@ -158,6 +159,9 @@ void CancelUIModels(Attempt& a){
 
 void ForgetUIModel(void* root){
  if(!liveUIModels.count(root))return;
+ EffectDebug::OwnerReleasing(root);
+ RuntimeAttachments::OwnerReleasing(root);
+ ForgetHelperModels(root);
  if(RuntimeShapes::Alive(root)&&!RuntimeShapes::bound.empty())for(const auto& renderer:Components(root))RuntimeShapes::bound.erase(renderer.Get());
  RuntimeShapes::boundCount.store(unsigned(RuntimeShapes::bound.size()));liveUIModels.erase(root);++ownerRevision;
 }

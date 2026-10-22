@@ -32,10 +32,14 @@ class Window {
   Ptr<IDCompositionTarget> compositionTarget;Ptr<IDCompositionVisual> visual;
   std::shared_ptr<const Snapshot> view;
   UINT width=604,height=640;
+  static constexpr UINT_PTR resizeTimer=1;
   std::string holdPackage,holdName;
 #ifdef EIEM_PANEL_TEST
   std::map<std::tuple<Action,std::string,std::string>,RECT> testItems;
   std::vector<std::tuple<int,int,bool>> testMouse;
+  float testScrollMax=0;
+  bool testCaptureBackground=false;
+  UINT testBackgroundX=0,testBackgroundY=0,testBackgroundAlpha=0;
 #endif
   void Item(Action action,const std::string& package,const std::string& name={}) {
 #ifdef EIEM_PANEL_TEST
@@ -60,10 +64,31 @@ class Window {
     acrylic=SUCCEEDED(DwmSetWindowAttribute(hwnd,DWMWA_SYSTEMBACKDROP_TYPE,&type,sizeof(type)));
     MARGINS glass{-1,-1,-1,-1};DwmExtendFrameIntoClientArea(hwnd,&glass);
   }
+  int GripSize() const {return MulDiv(20,int(GetDpiForWindow(hwnd)),96);}
   static LRESULT CALLBACK Procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
     auto* self=reinterpret_cast<Window*>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));
     if(msg==WM_NCCREATE){self=static_cast<Window*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams);self->hwnd=hwnd;SetWindowLongPtrW(hwnd,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(self));}
     if(!self)return DefWindowProcW(hwnd,msg,wp,lp);
+    if(msg==WM_GETMINMAXINFO){
+      RECT minimum{0,0,420,320};
+      AdjustWindowRectExForDpi(&minimum,DWORD(GetWindowLongPtrW(hwnd,GWL_STYLE)),FALSE,DWORD(GetWindowLongPtrW(hwnd,GWL_EXSTYLE)),GetDpiForWindow(hwnd));
+      auto info=reinterpret_cast<MINMAXINFO*>(lp);info->ptMinTrackSize={minimum.right-minimum.left,minimum.bottom-minimum.top};return 0;
+    }
+    if(msg==WM_NCHITTEST){
+      auto hit=DefWindowProcW(hwnd,msg,wp,lp);if(hit!=HTCLIENT||IsZoomed(hwnd))return hit;
+      POINT p{static_cast<short>(LOWORD(lp)),static_cast<short>(HIWORD(lp))};ScreenToClient(hwnd,&p);RECT client{};GetClientRect(hwnd,&client);
+      if(p.x>=client.right-self->GripSize()&&p.y>=client.bottom-self->GripSize())return HTBOTTOMRIGHT;
+      return hit;
+    }
+    // The native move/resize loop owns message dispatch until the drag ends.
+    // Keep rendering here on the UI thread, including swap-chain resizing.
+    if(msg==WM_ENTERSIZEMOVE){self->StopHold();SetTimer(hwnd,resizeTimer,16,nullptr);return 0;}
+    if(msg==WM_EXITSIZEMOVE){KillTimer(hwnd,resizeTimer);return 0;}
+    if(msg==WM_TIMER&&wp==resizeTimer){
+      try{if(self->rendererReady)self->Tick();}catch(const std::exception&){self->store.open=false;self->store.failed=true;KillTimer(hwnd,resizeTimer);}
+      return 0;
+    }
+    if(msg==WM_DESTROY)KillTimer(hwnd,resizeTimer);
     if(self->gui){ImGui::SetCurrentContext(self->gui);if(ImGui_ImplWin32_WndProcHandler(hwnd,msg,wp,lp))return 1;}
     if(msg==WM_CLOSE){self->store.open=false;self->StopHold();self->Visible(false);return 0;}
     if(msg==WM_SIZE&&wp!=SIZE_MINIMIZED){self->width=LOWORD(lp);self->height=HIWORD(lp);return 0;}
@@ -92,15 +117,18 @@ class Window {
     return true;
   }
   static std::string Label(const EiemDirectory::Package& p){return p.root.filename().u8string()+"  ("+p.id+")";}
+  static bool EffectToggle(const EiemDirectory::Package& p,const std::string& variable){
+    return std::any_of(p.effects.begin(),p.effects.end(),[&](const auto& row){return row.second.variable==variable;});
+  }
   void Draw() {
 #ifdef EIEM_PANEL_TEST
     testItems.clear();
 #endif
     ImGui::SetNextWindowPos({0,0});ImGui::SetNextWindowSize({float(width),float(height)});
-    ImGui::SetNextWindowBgAlpha(acrylic?.66f:1.f);
-    ImGui::Begin("EFF controls",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings);
+    ImGui::SetNextWindowBgAlpha(1.f);
+    ImGui::Begin("EFF controls",nullptr,ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings);
     ImGui::TextUnformatted(u8"MOD 按键控制");ImGui::Spacing();
-    ImGui::TextDisabled("%s",u8"勾选响应按键的 Mod，同一个键可以同时控制多个 Mod。");
+    ImGui::PushTextWrapPos(0);ImGui::TextDisabled("%s",u8"勾选响应按键的 Mod，同一个键可以同时控制多个 Mod。");ImGui::PopTextWrapPos();
     ImGui::Separator();ImGui::Spacing();
     if(view&&view->graph)for(const auto& p:*view->graph)if(!p.bindings.empty()||std::any_of(p.shapeAnimations.begin(),p.shapeAnimations.end(),[](const auto& c){return c.second.key.vk!=0;})){
       ImGui::PushID(p.id.c_str());bool active=view->keySwitchEnabled.at(p.id);
@@ -110,13 +138,14 @@ class Window {
     ImGui::Spacing();ImGui::SeparatorText(u8"手动调整");
     const EiemDirectory::Package* selected=nullptr;
     if(view&&view->graph)for(const auto& p:*view->graph)if(p.id==view->selected)selected=&p;
-    bool opened=ImGui::BeginCombo(u8"Mod",selected?Label(*selected).c_str():u8"无可控制的 Mod");
+    ImGui::TextUnformatted("Mod");ImGui::SetNextItemWidth(-1);
+    bool opened=ImGui::BeginCombo("##Mod",selected?Label(*selected).c_str():u8"无可控制的 Mod");
     Item(Action::Select,"");
     if(opened){if(view&&view->graph)for(const auto& p:*view->graph)if(!p.bindings.empty()||!p.controls.empty()||!p.shapeAnimations.empty()){
       if(ImGui::Selectable(Label(p).c_str(),p.id==view->selected)){StopHold();Send(Action::Select,p.id);}
       Item(Action::Select,p.id);
     }ImGui::EndCombo();}
-    ImGui::TextDisabled("%s",u8"面板打开时暂停物理按键，按钮和滑块仍可使用。");
+    ImGui::PushTextWrapPos(0);ImGui::TextDisabled("%s",u8"面板打开时暂停物理按键，按钮和滑块仍可使用。");ImGui::PopTextWrapPos();
     std::string nextHold;
     if(selected){
       const auto& p=*selected;
@@ -131,13 +160,18 @@ class Window {
         ImGui::PopID();
       }
       for(const auto& row:p.controls){
+        if(p.materialTracks.count(row.first))continue;
         ImGui::PushID(row.first.c_str());double value=view->values.at(p.id).at(row.first);const auto& c=row.second;
-        if(c.minimum==c.maximum)ImGui::Text("%s = %.3f",c.label.c_str(),value);
-        else{ImGui::SetNextItemWidth(-1);if(ImGui::SliderScalar(c.label.c_str(),ImGuiDataType_Double,&value,&c.minimum,&c.maximum,"%.3f"))Send(Action::Value,p.id,row.first,value);Item(Action::Value,p.id,row.first);}
+        if(EffectToggle(p,row.first)){bool enabled=value>=.5;if(ImGui::Checkbox(c.label.c_str(),&enabled))Send(Action::Value,p.id,row.first,enabled?1:0);Item(Action::Value,p.id,row.first);}
+        else if(c.minimum==c.maximum)ImGui::Text("%s = %.3f",c.label.c_str(),value);
+        else{ImGui::TextWrapped("%s",c.label.c_str());ImGui::SetNextItemWidth(-1);if(ImGui::SliderScalar("##value",ImGuiDataType_Double,&value,&c.minimum,&c.maximum,"%.3f"))Send(Action::Value,p.id,row.first,value);Item(Action::Value,p.id,row.first);}
         ImGui::PopID();
       }
-      if(!p.shapeAnimations.empty())ImGui::SeparatorText(u8"形态动画");
-      for(const auto& row:p.shapeAnimations){const auto& clip=row.second;ImGui::PushID(clip.id.c_str());const auto& playback=view->animations.at(p.id).at(clip.id);
+      for(bool material:{false,true}){
+      bool heading=false;
+      for(const auto& row:p.shapeAnimations){if(bool(p.materialAnimationIds.count(row.first))!=material)continue;
+        if(!heading){ImGui::SeparatorText(material?u8"材质参数动画":u8"形态动画");heading=true;}
+        const auto& clip=row.second;ImGui::PushID(clip.id.c_str());const auto& playback=view->animations.at(p.id).at(clip.id);
         ImGui::Text("%s  [%s]",clip.label.c_str(),playback.playing?(playback.paused?u8"暂停":u8"播放中"):u8"停止");
         if(ImGui::Button(playback.paused?u8"继续":u8"播放"))Send(Action::AnimationPlay,p.id,clip.id);Item(Action::AnimationPlay,p.id,clip.id);ImGui::SameLine();
         if(ImGui::Button(u8"暂停"))Send(Action::AnimationPause,p.id,clip.id);Item(Action::AnimationPause,p.id,clip.id);ImGui::SameLine();
@@ -147,12 +181,20 @@ class Window {
         if(ImGui::InputDouble(u8"输入倍率",&speed,.1,1,"%.3f")&&std::isfinite(speed)&&speed>0)Send(Action::AnimationSpeed,p.id,clip.id,speed);
         if(ImGui::Button(u8"恢复作者默认"))Send(Action::AnimationReset,p.id,clip.id);Item(Action::AnimationReset,p.id,clip.id);ImGui::PopID();
       }
+      }
       if(ImGui::CollapsingHeader(u8"资源来源"))for(const auto& row:p.targetIndex)ImGui::TextWrapped("%s",row.first.path.c_str());
       if(nextHold!=holdName){StopHold();if(!nextHold.empty()&&Send(Action::Hold,p.id,nextHold,1)){holdPackage=p.id;holdName=nextHold;}}
     }else StopHold();
     ImGui::Spacing();ImGui::Separator();
     ImGui::TextWrapped("%s",u8"按键开关自动保存到 mod.ini。手改 key_switch_enabled 后按 F10 生效。");
+#ifdef EIEM_PANEL_TEST
+    testScrollMax=ImGui::GetScrollMaxY();
+#endif
     ImGui::End();
+    if(!IsZoomed(hwnd)){
+      auto draw=ImGui::GetForegroundDrawList();float size=float(GripSize());auto color=ImGui::GetColorU32(ImGuiCol_TextDisabled);
+      for(float inset:{4.f,9.f,14.f})draw->AddLine({float(width)-size+inset,float(height)-3},{float(width)-3,float(height)-size+inset},color);
+    }
   }
   void Visible(bool visible) {
     if(shown==visible)return;shown=visible;
@@ -166,12 +208,16 @@ public:
 #ifdef EIEM_PANEL_TEST
   RECT TestRect(Action action,const std::string& package,const std::string& name={})const{return testItems.at({action,package,name});}
   bool TestAcrylic()const{return acrylic;}
+  std::pair<UINT,UINT> TestBufferSize()const{DXGI_SWAP_CHAIN_DESC1 desc{};if(FAILED(swap->GetDesc1(&desc)))throw std::runtime_error("test swap-chain unavailable");return {desc.Width,desc.Height};}
+  void TestCaptureBackgroundAlpha(UINT x,UINT y){testBackgroundX=x;testBackgroundY=y;testCaptureBackground=true;}
+  UINT TestBackgroundAlpha()const{return testBackgroundAlpha;}
+  float TestScrollMax()const{return testScrollMax;}
   void TestMouse(int x,int y,bool down){testMouse.emplace_back(x,y,down);}
 #endif
   bool Create() {
     WNDCLASSW wc{};wc.lpfnWndProc=Procedure;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"EFF_ResourceControls";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);
     if(!RegisterClassW(&wc)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)return false;
-    RECT r{0,0,LONG(width),LONG(height)};DWORD style=WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME;
+    RECT r{0,0,LONG(width),LONG(height)};DWORD style=WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME|WS_MAXIMIZEBOX;
     AdjustWindowRectEx(&r,style,FALSE,WS_EX_TOOLWINDOW|WS_EX_TOPMOST);
     // Cross-thread owned windows share activation/hide work with their owner.
     // Keep the panel independent so closing it never waits for Unity's HWND.
@@ -181,7 +227,7 @@ public:
     char windows[MAX_PATH]{};GetWindowsDirectoryA(windows,MAX_PATH);auto font=std::string(windows)+"/Fonts/msyh.ttc";
     if(std::filesystem::is_regular_file(std::filesystem::u8path(font)))io.Fonts->AddFontFromFileTTF(font.c_str(),17.f,nullptr,io.Fonts->GetGlyphRangesChineseFull());
     ImGui::StyleColorsDark();auto& styleSettings=ImGui::GetStyle();styleSettings.WindowPadding={18,18};styleSettings.ItemSpacing={10,10};styleSettings.FramePadding={9,6};styleSettings.FrameRounding=5;styleSettings.PopupRounding=8;styleSettings.GrabRounding=4;styleSettings.WindowBorderSize=0;
-    styleSettings.Colors[ImGuiCol_WindowBg]={.045f,.055f,.075f,.8f};styleSettings.Colors[ImGuiCol_CheckMark]={.40f,.72f,1.f,1.f};
+    styleSettings.Colors[ImGuiCol_WindowBg]={.045f,.055f,.075f,1.f};styleSettings.Colors[ImGuiCol_CheckMark]={.40f,.72f,1.f,1.f};
     styleSettings.Colors[ImGuiCol_Button]={.16f,.26f,.38f,.9f};styleSettings.Colors[ImGuiCol_ButtonHovered]={.22f,.37f,.54f,1.f};styleSettings.Colors[ImGuiCol_FrameBg]={.12f,.16f,.23f,.85f};
     win32Ready=ImGui_ImplWin32_Init(hwnd);rendererReady=win32Ready&&ImGui_ImplDX11_Init(device.Get(),context.Get());
     if(!rendererReady)return false;store.window=hwnd;return true;
@@ -199,7 +245,19 @@ public:
     ImGui::NewFrame();Draw();
     if(ImGui::IsKeyPressed(ImGuiKey_Escape)){store.open=false;StopHold();}
     ImGui::Render();const float clear[4]={0,0,0,0};auto rt=target.Get();context->OMSetRenderTargets(1,&rt,nullptr);context->ClearRenderTargetView(rt,clear);
-    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());if(FAILED(swap->Present(1,0)))throw std::runtime_error("control panel present failed");
+    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+#ifdef EIEM_PANEL_TEST
+    if(testCaptureBackground){
+      context->OMSetRenderTargets(0,nullptr,nullptr);Ptr<ID3D11Texture2D> buffer,staging;
+      if(FAILED(swap->GetBuffer(0,IID_PPV_ARGS(&buffer))))throw std::runtime_error("test backbuffer unavailable");
+      D3D11_TEXTURE2D_DESC desc{};buffer->GetDesc(&desc);desc.Width=desc.Height=1;desc.MipLevels=desc.ArraySize=1;desc.Usage=D3D11_USAGE_STAGING;desc.BindFlags=0;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;desc.MiscFlags=0;
+      if(FAILED(device->CreateTexture2D(&desc,nullptr,&staging)))throw std::runtime_error("test staging texture unavailable");
+      D3D11_BOX box{testBackgroundX,testBackgroundY,0,testBackgroundX+1,testBackgroundY+1,1};context->CopySubresourceRegion(staging.Get(),0,0,0,0,buffer.Get(),0,&box);
+      D3D11_MAPPED_SUBRESOURCE mapped{};if(FAILED(context->Map(staging.Get(),0,D3D11_MAP_READ,0,&mapped)))throw std::runtime_error("test staging texture map failed");
+      testBackgroundAlpha=static_cast<const unsigned char*>(mapped.pData)[3];context->Unmap(staging.Get(),0);testCaptureBackground=false;
+    }
+#endif
+    if(FAILED(swap->Present(1,0)))throw std::runtime_error("control panel present failed");
   }
   static DWORD WINAPI Run(void* arg) {
     auto& store=*static_cast<Store*>(arg);

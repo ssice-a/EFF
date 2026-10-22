@@ -1,5 +1,53 @@
 # EFF 领域模型
 
+2026-10-22 00:28 UI 花瓣消失根因已定位：PID 39412 日志显示 UIModelLoader 登记成功、精确命中花瓣挂点，但 inactive UI 克隆上的 `ParticleSystemRenderer.set_renderInUI(true)` 立即读回 false，原实现因此拒绝整个特效；UI 激活后仍需重试。现将该标志设为 best-effort，并在根对象激活后、粒子 Play 前重试，逐阶段写 accepted/rejected 日志。故障注入覆盖首次拒绝、激活后接受，特效挂载全回归、v35 普通 DLL、PE/静态 CRT 和宿主运行库隔离加载通过。已在 Endfield 退出后只替换 `plugin/eff.dll`，337 个受检 Mod/配置/协议/代理文件摘要保持；新 SHA256 `5c18d7f78975611101feb5f1499b3c7480519d676e450d29b171bc9ae7766c61`。当前需重启游戏验收 UI 实际画面；部署和日志标记见[UI 特效跟进](docs/effect-recovery-20261021.md#2026-10-22-ui-特效渲染恢复) 与 `bin/effect-ui-render-20261022/deployment.json`。
+
+2026-10-21 15:48 根据新游戏日志定位特效再次消失：运行时找不到精确的 `EntityRenderHelper.GetTransform()->UnityEngine.Transform` 签名，FullResourceReload 与特效 owner 生命周期因此拒绝启动。Blender 花瓣工程仍正常预览（frame 88 有38个粒子），未保存。Helper root 改从已验证的 `Component.get_gameObject()` 获取；effects-debug 生命周期 1401 项、v35 测量 DLL 构建/隔离加载通过。游戏退出后 DLL-only 部署，336 个受检 Mod/配置/协议/代理文件保持；新 DLL SHA256 `3838d2207fe61d38e1a340e9f9ef86fa44ef0381f4e89b5a721d089c8d7a6aff`。回退和部署见 `bin/effect-recovery-20261021/helper-signature-fix/deployment.json`，实机需重启后验收。见[特效跟进](docs/effect-recovery-20261021.md)。
+
+2026-10-21 15:20 后续 PID10208 实测：F9后玩家52～56粒子正常发射，网格登记有两套78 Renderer的lx实例，但特效owner只有玩家；EntityRenderHelper.InitAll完成登记未接入part/UI owner是明确缺口。已增加弱引用helper owner，沿原初始化/OnRelease事件登记与回收，并对part/UI/嵌套helper合并去重，生产入口回归先失败后通过。UI部分实例playing/emitting=1但time/count持续0，cullingMode=Pause；只对隔离all-LOD运行副本改AlwaysSimulate，源作者数据保持，两个粒子其余字段及Mesh/材质/贴图/挂载不变，实际TypeTree/source/all与56项构建检查通过。15:20游戏退出后备份部署测量DLL及lx两个生成文件，334受检文件保持，当前DLL SHA256 `fcb513e52d3d745cd4b51d2e364f99c597c730c6b6c6c8b4fb2e47181a9687b9`。当前部署记录`bin/effect-recovery-20261021/npc-ui-followup/deployment.json`，普通/测量、材质特效、形态回归及PE/app-local真实加载通过。未启动/终止游戏或操作Blender。NPC/UI画面尚未验收；敌人matched=0不能代表用户眼前NPC已被识别，UI样本也不能证明F9是直接触发原因。见[跟进记录](docs/effect-recovery-20261021.md)。下方14:35状态为历史。
+
+2026-10-21 14:35 已分析 S01～S07 部分实测，见[首轮报告](docs/dll-performance-results-20261021.md)：6 Mod 恒定，NPC 窗口 plugin-frame 平均1.479ms/最大50.819ms，420次骨架挂点核验累计1289.926ms，仅2次创建尝试；动态材质/动画未覆盖。未实施调度/缓存优化。用户同时确认NPC一直无花瓣、大世界先有后消失，曾按F9。旧安装包仍启用特效距离LOD且最远档关闭子节点，本轮从安装包生成只改EffectSetting的副本，粒子/网格/材质/贴图/挂载保持；修复裁剪optional getter关闭全部观测，F9增加有限快照与owner/Part匹配记录。普通/测量回归、PE/静态CRT/真实隔离加载通过；游戏退出后只部署测量DLL及lx两个生成文件，334个受检文件保持。DLL SHA256 `15ae0c5a7e4d1fe2c36eefa169c0c41d75520eefc2ba498e354181fd452f5417`；备份清单`bin/effect-recovery-20261021/deployment.json`，见[特效跟进](docs/effect-recovery-20261021.md)。未启动/终止游戏或操作/保存Blender。NPC缺失和消失完整根因待新日志/画面，未宣称已修复，当前仍测量版。
+
+2026-10-21 用户准备 DLL 生产发布前性能测试。本轮完成 [DLL 性能审计与实机场景矩阵](docs/dll-performance-audit-20261021.md)，记录 16 个待验证候选及 10 类场景，区分安装 Mod 数、实际实例数、加载尖峰、长期回收与引擎/GPU 内容成本。仅补充 EIEM_LOAD_PERF 测量：形态入口/世界UI登记/材质/特效磁盘与实例/路由/迁移等阶段、主线程 P95/P99 桶上界、调用与负载计数、uptime 窗口；没有实施调度/缓存/释放优化。新增 Start-EFFPerformanceTest.cmd 场景标记和日志备份，分析器按完整窗口归属场景，旧日志兼容。普通/测量 DLL、静态 CRT/PE/真实隔离加载、统计器、材质/特效回归和分析/记录工具检查通过。05:36 已备份部署测量 eff.dll，SHA256 `9855504a09c1de5faa0ac2ebaf3b75e32938d1dd97c331fcae981d076271a5ba`，336 个 Mod/配置/代理受检文件保持；普通版回退文件见 `bin/dll-performance-audit-20261021/deployment.json` 的 ordinaryBackup。未启动/终止游戏或操作 Blender。本轮实机基线尚未采集，不能将源码候选称为已证实瓶颈；正式发布应回到无测量计数构建并复核。
+
+2026-10-21 特效新增根对象“覆盖全部 LOD”（默认开启）：沿用人物 Replace/Part 的所有精确 target 标记，同骨架共用一次播放；晚登记/移除 LOD Renderer 只更新显隐来源，不重启粒子。离线导出对本特效层级的原生 EffectSetting 解除距离/画质/guard 降级，保留作者数据和平台层掩码，策略纳入原生命名空间。真实花瓣 source/all 构建、原生样本 444 项、Blender RNA/导出、LOD0～3/仅LOD3/多实例/F9/回收回归与普通 DLL 隔离验证通过。05:01 已备份部署普通 eff.dll，336 个 Mod/配置/代理受检文件保持；配套 AnimeStudio 与当前 Blender UI 已更新，未保存 blend。当前工程暂存导出的花瓣主图 RGB 与已装包不同，因此未覆盖游戏特效包；需主动重导特效并 F9 才应用其原生 LOD 策略。独立包若没有角色 Replace 映射仍限已导出 Renderer 来源证明，不猜测未声明原版低 LOD。见[实现与边界](docs/effect-all-lods-20261021.md)及 `bin/effect-all-lods-20261021/runtime-deployment.json`；游戏画面、NPC/UI 原问题、碰撞及 TAA 仍未因此完成实机验收。
+
+2026-10-21 用户确认花瓣开启碰撞后仍穿地。本轮核对其最新原生输出，主发射器World/3D碰撞确实开启；实机原因未定位，不能宣称已修复。检查现有12,424个特效候选、12,420包中61,704个普通粒子，仅三个包启用碰撞且分别有默认停用节点或空平面引用。原生枫叶堆实际使用HGGPUParticleSystem + V2/FallenLeaves计算模拟，提供场景深度/HGTerrain/平面碰撞、摩擦、落地静止和躺平参数；当前普通粒子编辑/导出尚未接通此GPU路线。只读提取记录见[地面碰撞调查](docs/effect-ground-collision-research-20261021.md)，本轮未改游戏/DLL/作者参数。
+
+2026-10-21 03:51 花瓣材质与地面碰撞已配置并备份部署到 lx：新帧 55162 的真实花瓣绘制输出 RGBA 全零，原因是 VFXBaseV2 开启 Mask 却未启用实际 `_SAMPLE_TEX0` 采样变体。现绑定作者 flower_M.png 到 SampleTex0、R 作透明度、Mask 权重 1、UV0 静止，改正常 Alpha 混合并关闭近镜头渐隐。当前 Blender 作者材质也迁移到含真实 Shader 快照的独立来源副本，继续导出不会恢复 Dither；本机特效编译入口已配置。目标发射器开启 World 3D 高质量静态碰撞，阻尼 1、反弹 0、寿命损失 0，其他粒子作者值保持。原生解析、依赖验证、重复导出文件一致及部署哈希通过，仅更新两个生成文件，其余 333 个受检文件、生产 DLL 和代理保持；未保存 blend，游戏显示/落地及 TAA 改善待 F9 实机确认。见[配置与验证](docs/petal-material-collision-configuration-20261021.md)。
+
+2026-10-21 03:20 用户要求直接更换材质对照，已备份部署原生光点 `M_fxmap_map02_lv008_lightspot_2501` 的完整透明材质配方，使用其自身参数与普通透明设置，不再沿用 Dither 的同名参数；仅绑定作者花瓣主图/遮罩并开启遮罩、双面。新材质仍使用 VFXBaseV2，Responsive 保持原材质 0，仅更新 lx 两个生成文件，333 个其他文件保持。19 个原生对象仅两个 Material 改变，Shader/主图/遮罩跨 CAB 引用验证与角色编译通过，粒子参数和 Blender 工程保持；需 F9 观察显示，不承诺残影已修复。部署与回退见 `bin/petal-taa-capture-20261021/donor-deployment.json`、`restore_donor.py` 及[帧分析记录](docs/petal-taa-frame-analysis-20261021.md)。
+
+2026-10-21 大世界花瓣 TAA 帧已分析：真实绘制 6077 的 212 个顶点未输出粒子自身历史位移，当前/上一帧投影几乎相同，Renderer PerObject 单项修改不足。03:06 部署的原生 VFXBaseV2 + ResponsiveTransparent 材质对照实机反馈特效消失，**对照失败，已于 03:14 回退磁盘上的 lx 特效资源与 compiled.bin，并复核旧版 SHA256**；游戏内恢复显示仍需 F9 后确认，原残影未解决。粒子/网格/贴图/挂载及 DLL 保持，Blender 作者材质未修改。失败日志、回退清单与帧证据见 [花瓣 TAA 帧分析](docs/petal-taa-frame-analysis-20261021.md)。
+
+2026-10-21 实机花瓣已显示，继续修正数量与预览差异。原 Prefab 的 VFXAutoEmissiveRate 改写发射率上界，当前单位缩放使随机 10～18 变为 10～4，不改寿命。新导入/持续发射默认禁用该规则，发射数量模块直接生效；高级块可重新启用并编辑。当前花瓣已关闭此规则，更新 lx 特效资源及 compiled.bin，其余粒子参数和挂载保持。预览修复骨骼坐标、速度倍率、世界运动/缩放、圆弧范围与容量处理；普通 DLL 增加三次只读数量/寿命采样并已备份安装。Noise、轨道及抖动透明仍有差异，寿命/提前不可见待实机采样，见[修复与证据](docs/effect-preview-parity-20261021.md)。
+
+2026-10-20 实机花瓣不出现已定位为明确 Part 仍按同源规则兜底，错用兄弟部件 145 项骨骼校验 `.002` 的 147 项。已限制明确 Part 的匹配，并增加具体骨骼/实例日志；特效克隆注册前继承可见挂载网格层，跟随 UI 后续层切换，缓存本克隆子树且层不变不写。世界/NPC/UI 三实例通过真实模型部件与 UI 加卸载边界验证独立骨架、播放、显隐、回收及共享资源；普通生产 DLL 的构建/隔离验证/安装状态见 [挂载修复记录](docs/effect-owner-binding-20261020.md) 与 `bin/effect-binding-fix-20261020/deployment.json`。原有花瓣包无需重导出；游戏画面仍待重启实测。
+
+2026-10-20 仅选特效现可直接更新已有角色包 `mods/lx/mod.ini`，按特效 ID 追加/替换并保留未选特效、角色资源、控制、玩家状态与子包。匹配已导出的挂载 Part，继续跟随网格显隐；共享发布锁与回滚事务。作者编译器仅更新特效作者索引，不重编译角色原生输入；旧包偶然引用特效字节时冻结为原样字节，新编译字典排除特效载荷。真实 `lx`/混合包、32/17 份原生输出及旧包重放、启动/F10/F9 读取验证通过；无需新 DLL/格式。操作与验证见[角色包特效更新](docs/effect-character-update-20261020.md)。这覆盖后文“纯特效不能导出到角色包”的旧限制。
+
+2026-10-20 Mod 发现已改为递归：角色 `mods/lx/mod.ini` 下可有独立特效 `mods/lx/petals/mod.ini`；启动、F10 与 F9 共享目录发现。父包资源校验/作者指纹不包含子包，Blender 父包导出保留子包，分组目录允许继续遍历；点号目录与目录链接不扫描，Mod id 仍全局唯一。真实包读取、集合复用、F9 磁盘准备和 Blender 父包原生再导出保留子包均已隔离验证；普通 v35 DLL、作者编译器与当前 Blender 回调已本地更新，原工程未保存，玩家 Mod 和配置未改。目录支持不表示花瓣画面已实机验收；记录见 [递归目录验证](docs/recursive-mod-discovery-20261020.md)。
+
+2026-10-20 特效曲线进一步统一为每个发射器一个 Graph Editor 窗口/Action，顶部“编辑全部曲线”收集已启用曲线，速度/大小/旋转等按模块分组。右侧 EFF 曲线可搜索添加真实 schema 数值属性、加入已有曲线、只看选中、移出列表及改为常量；类型可切换曲线/随机双曲线。添加常量/随机范围保持实际值并启用模块/必要分轴；移出或删除整个 Blender 通道只整理列表，不清空来源曲线。编辑列表随 blend 保存，关键点沿用原生编辑/撤销，原参数页不再暴露含混的“原生曲线编辑器/XYZ”双按钮。各属性进度/单位分别标注，颜色仍用渐变控件。联合编辑、属性操作、保存重开及原生构建/独立解码验证通过。
+
+2026-10-20 特效数值曲线改用 Blender 原生 Graph Editor / F-Curve，移除自制绘图、缩略图和鼠标交互。使用临时隐藏对象与独立 Action 映射来源 AnimationCurve，不动画化发射器参数；随机双曲线、XYZ 分轴可共同编辑，横轴 0–100% 进度，旋转纵轴换算角度。原生移动/手柄/增删点/撤销重做自动同步，打开不重算旧键，保存和导出主动同步；关闭窗口保留编辑并清理临时数据。独立权重精确映射，不能表示的修改器/插值明确拒绝。拖动按间隔更新单发射器预览；加权 Bezier 采样与精确积分共用原生数据。真实 Blender 窗口与事件、保存重开、原生离线构建/解码通过；不扩展未还原模块的离线模拟，不改 DLL。操作见[特效参数](tools/Blender/docs/effects-parameters.md)。
+
+2026-10-20 特效出生旋转改为 °、角速度改为 °/s，保持原生弧度及旧工程数值不变；来源形状角度不二次转换。Empty 数据页提供模板式新增/删除完整原生发射器，模块和 Transform 独立、Mesh/材质初始共享；删光后来源模板仍可重新添加，支持撤销/重做与保存重开。原生构建重建层级和 EffectSetting 的 LOD 登记，删除记录脱离层级并停用以保留未知引用，不新增 DLL 协议。发射页提供显式确认的持续发射设置，也可分别编辑循环、速率模式、爆发列表和容量。粉花瓣新增/删除结合自定义 Mesh/材质/贴图的原生重建、确定性及失败保留检查已通过，游戏画面未验收；当前会话更新不保存用户工程。完整参数入口见[特效参数](tools/Blender/docs/effects-parameters.md)。
+
+2026-10-20 特效材质实际复用普通 EFF 材质的编辑器、Material 数据块上的 `eiem_*` 作者属性、RNA 控件、选图操作与 `material_fields` 原生写入器。网格材质属性和材质 Empty 快捷入口调用同一 `eiem_material_editor.draw`，不再分流到 Empty 原生字段/图片对象选择器。来源真实 Shader 决定功能分组；粉花瓣 `HGRP/Effect/VFXDitherAlpha` 提供主图/第二主图、遮罩、法线、扰动、溶解与菲涅耳，开关联动实际关键字。贴图保留游戏来源路径，文件夹按钮仅记录替换文件路径，预览/构建时再读取图片。旧原生字段及已选图片只保留为工程迁移兼容。普通材质与特效的发布路径仍分别遵循模型导出和特效构建。见[材质编辑](tools/Blender/docs/material-effects.md)。
+
+2026-10-20 特效导入现直接展开来源 Mesh 并自动绑定，粉花瓣两发射器保留共享 `Plane001`；网格的实际 EFF 面材质槽映射回原生 ParticleSystemRenderer。网格材质属性新增同一份原生参数/贴图编辑入口，原材质 Empty 保留。贴图按用户要求沿用来源引用与现有替换流程，不批量导入；Blender 节点仅预览。旧工程可补齐资源并保留自定义绑定。支持将自制几何合并进粒子网格，当前仍限一个面材质；未改网格不重建，修改后的共享网格只克隆一次。说明与验证见[特效编辑](tools/Blender/docs/effects-editor.md)。
+
+2026-10-20 Ins 控制面板已增加可见右下角缩放手柄、420×320 客户区最小尺寸和最大化按钮；边框/手柄拖动时 UI 线程定时刷新 D3D 缓冲，内容溢出显示滚动条，下拉/按钮/滑块随宽度调整。同次游戏会话隐藏再打开保留大小，不跨重启保存。真实独立 Windows/D3D 面板缩放/交互与跨线程关闭、v35 构建、PE 和游戏运行库隔离加载通过；已备份替换本机普通 eff.dll，297 个 Mod/配置/代理文件哈希保持，游戏内显示尚待验收。安装记录位于 `bin/panel-resize-20261020/backup-20261020-102838-281032/install-receipt.json`，说明见[控制面板](docs/resource-input-key-controls.md#ins-control-panel)。
+
+2026-10-20 修复特效关闭模块后入口消失：来源已有模块标题与开关始终显示，关闭仅禁用参数区并保留设置，可在原处重启或使用“启用模块…”。Empty 数据页新增真实 Prefab 节点/材质导航、当前编辑对象提示和花瓣参数速查。根负责挂载/导出，发射器含固定粒子模块与独立渲染设置，渲染器分别引用 Mesh 与材质，材质引用贴图；使用说明见[特效编辑](tools/Blender/docs/effects-editor.md)。
+
+2026-10-20 特效作者新增自定义粒子 Mesh 与二维图片：发射器渲染块选择 Blender 网格/提取来源网格，显示实际材质并跳转材质 Empty；逐槽替换图片、UV 变换、采样及原生材质参数。原生构建克隆 Mesh/Texture2D/Material，保留来源对象和依赖表；支持当前静态修改器和单材质网格，不导出 Blender 节点 Shader。真实 Blender 保存/重开与原生资源解码/Bundle 确定性/失败保留检查通过，游戏画面未验收；普通 eff.dll 无需更换。操作与编译器要求见[特效作者说明](tools/Blender/docs/effects-editor.md)。
+
+2026-10-17 Blender v0.46.0 已发布。更新默认跟踪 main 的已测试完整包：GitHub 自动复用 native-base.json 固定大小／SHA256 的完整原生基础包，校验当前 Python 所需编译器协议，并通过 101 项作者／更新回归后发布持续更新目录。按源码提交 SHA 比较，无需 Python 修改逐次升版本／手工发 Release；正式 Release 独立保留。用户下载校验后，Windows 自带 Python 助手等待全部 Blender 退出，再事务替换并备份；不保存／关闭工程、不修改 Mod／游戏 DLL，源码链接安装使用 Git。公开匿名下载、文件校验、隔离安装／备份／自定义文件保留及再次检查同提交跳过已验证。旧版需先手动升级一次取得更新器，说明见[插件安装与更新](tools/Blender/README.md)。
+
+2026-10-17 Blender 材质功能视图已实现：按来源已声明的 CharacterNPR／CharacterNPR_VFX 字段组合识别，中文开关同步功能参数与关键字；表面模式同步透明／裁剪配方和队列，保留现有深度写入与双面。禁用功能隐藏细节但不删除设置；所有已绑定贴图集中顶部，开启功能的已声明空槽自动加入顶部，虚拟空槽不写作者覆盖。呼吸联动自发光与角色 VFX，独立特效使用自己的 Blend／Mask 等开关。保留原始参数入口与未知 Shader 原始编辑，不在打开面板时改写旧工程；格式与 DLL 不变。验证和本地部署状态见本轮交付记录，说明见[材质编辑](tools/Blender/docs/material-effects.md)。
+
 2026-10-17 已修复游戏小更新后 Blender 直接因全局 VFS 指纹变化拒绝导出：编译器返回明确 stale-index 状态，插件仅在此状态调用自身的 `eff_source_index.exe`，共享 AnimeStudio 的逐 Bundle 增量索引实现，成功后继续同一作者暂存编译，最多重试一次。正常基线不启动工具，不更新作者源包、工程或游戏 Mod；完整索引留在工作区，不随插件分发。实际本次仅变化 2／273608 包，自动更新后当前十二网格 ALL 导出成功，后续不重复刷新。配套编译器/工具和当前会话已更新；DLL 保持。见[自动刷新实现与验证](docs/blender-auto-index-refresh-20261017.md)。
 
 2026-10-17 Blender 全资源重复导出已本地更新：Mesh 快照按实际本地几何/静态骨架依赖失效、每对象仅保留最新版本，批量读取形态与面槽位，按来源内容复用材质字段和按文件字节复用磁盘图片解码；编译器加入保持原 span 语义的快速排除与块比较。固定十网格单顶点 ALL 对照约 11.32 → 10.23 秒，不变重导约 5.76 → 5.08 秒，两种导出全部文件逐文件相同；实时工程第二次十份 Mesh 快照全命中，但仍约 7.59 秒。几何变更仍完整离线编译，未实现逐 Mesh 增量路径。当前会话已加载、编译器已备份安装，游戏 DLL/正式 Mod 未写。见[本轮性能证据与限制](docs/blender-export-performance-20261017.md)。
@@ -86,6 +134,8 @@
 - 各 Mesh 独立保存有序骨骼槽、bindpose 和权重，Renderer 必须使用当前实例的正确骨骼引用。不能按 Mod 名、Mesh 名、骨骼名或缺省索引掩盖不明确的来源。
 - 保留游戏源锚点、骨架与动画关系。完整装配要求迁移 LOD/helper/VFX/控制及池关系；不能通过销毁原 Renderer 整个 GameObject 清理 Mod 部件。
 - 按键与形态共享同一 Mod 的数值状态，各 Renderer 保持独立绑定。`state.ini` 只保存仍声明且合法的玩家数值，不保存动作、Unity 对象或模拟状态。
+- 形态动画使用不持有原生对象的共用时间/采样内核，逐帧仅调度播放且未暂停的组；快捷键组和含动画包的索引随控制候选准备/交换。原生形态权重读回/写入保留，见[形态动画设计](docs/shape-animation-design.md)。
+- 2026-10-19 后续开发候选已接入动态材质轨道（kind=9）与独立特效挂载（kind=10），沿用共用采样/控制和编译资源容器。材质使用精确作者 Renderer 槽参数块，保留并隔离游戏读写基线；特效按作者 Mesh 证明模型归属、完整骨架定位挂点，每个模型独立副本，持有资源到延迟销毁。Blender 提供材质关键帧面板、特效挂载与本机管道试播/单独更新；普通 DLL 读 Mod 声明，只有 effects-debug 候选启动管道。自动/隔离回归不代替实机画面、原生签名绑定与性能验收；未发布 Release。使用范围见[测试说明](docs/dynamic-material-effects-testing.md)。
 - `[Mod] key_switch_enabled` 控制该 Mod 的物理按键，缺省启用。Ins 为各 Mod 独立勾选并保存同一 INI 字段，可同时启用多个 Mod；同键允许共存，由用户决定。面板下拉选择只影响手动按钮与滑块，停用按键保留资源与当前数值。
 - Ins 下拉选择只确定手动调整的 Mod；物理按键向全部已启用的 Mod 分发，面板打开时通过按钮/滑块调整。UI 线程只收取不可变快照并排队指令，Unity 帧按控制图与选择版本校验。当前实现已部署 v35，离线测试不能替代实机验收。
 - Blender 只导出显式选择的网格。部分资源导出以已有完整 Mod 为前提，仍发布该 Mod 的完整独立编译结果；PNG 由作者端转换，DLL 不解码图片。
@@ -98,3 +148,29 @@
 完整资源事务目标见[渲染装配契约](docs/full-render-assembly-reload.md)，当前单项实机证据与下一轮步骤见[热重载测试](docs/hot-reload-testing.md)。后续 Skeleton/Physics 的三端目标见[物理设计契约](docs/physics-authoring-design.md)。
 
 生产 DLL/代理/ImGui 使用静态 C/C++ 运行库，避免宿主预加载旧 MSVCP 的 mutex ABI 变化；发布必须核验 PE 导入表并在隔离宿主加载真实 DLL。见 [宿主运行库兼容](docs/production-runtime-compatibility.md)。
+
+## 特效重做现行约束（2026-10-19）
+
+2026-10-20 特效加载失败的后续证据：精确骨骼绑定通过后，游戏拒绝了此前导出的通用 UnityFS 封包。运行时输入已改由 AnimeStudio 离线生成 Endfield 原生 VFS，且以实际花瓣包交叉核验 C# / C++ 写出结果和全部成员数据；旧作者输入只为迁移读取，不交给游戏，也不在帧内转换。F9 相同内容失败重试先排空旧原生请求与容器。配套部署及实际画面验收边界见[特效原生封包修正](docs/effect-native-archive-20261020.md)。
+
+以下约束覆盖后文历史阶段记录：特效由根 Empty 持有，在对象属性直接展开全部节点/模块/数组/曲线，保留原生名称和数值类型。未知名称为 unknown，64 位整数为精确十进制文本。添加块目前启用已有 schema 槽，完整新增发射器/外部依赖未开放。子 Transform 与 TRS 同步，根 TRS 为挂载偏移。
+
+普通 eff.dll 支持人物附加与独立 [Mod] type=effect 包。独立包不需要人物 Mod/compiled.bin；精确 Mesh/Renderer 来源与完整骨骼 palette 证明目标，骨骼必填，默认跟随 Mesh enabled/activeInHierarchy。F9 读取特效完整磁盘快照，不重建人物，增删/改挂点有效，失败保留旧实例。配置为 [Hotkeys] effects_reload，改键后 F10 重读。Blender 不承担 PID/实例或游戏重载，事件触发暂不支持。
+
+实际 Mesh/UV/PNG 可预览基本发射/运动/大小/颜色/透明度、图集与世界/局部跟随，以及简单形状范围线框。Noise/Shader 近似，未还原模块显式提示。已准备小光点/粉花瓣/梨花瓣示例，见 tools/Blender/docs/effects-editor.md。协议新增 effectTarget/standaloneEffect 能力，DLL、能力清单与作者编译器必须配套。自动测试/部署不等于实机画面验收；游戏脚本/音频/长期生命周期与性能仍需确认。
+
+2026-10-20 完整导出提速与特效快速发布：相同来源重绑保留有效证明，修复材质增量失效；结构不变的 Mesh 改动局部重建原生 Mesh/Renderer 包围盒，其他输入复用，物理/结构/混合资源改动退回完整编译。共享像素的 TEX 编码和写入去重，同次同步导出共用骨架指纹。当前场景交替对照单顶点全部资源导出约 13.19→9.00 秒（编译准备 7.22→3.05 秒），仍有 Blender 整理约 5.3 秒。32 份原生输入与完整重建逐字节一致，见[导出热点与验证](docs/blender-export-performance-20261020.md)。特效根提供“导出独立特效… / 快速更新特效”，自动构建当前 Mesh/材质/参数，缓存校验真实来源及 Bundle，失败保留已发布 Mod；改参数约 0.92 秒、未改资源约 0.29 秒，不含游戏重载。人物完整导出也自动构建最新特效，手动构建收在高级区。
+
+2026-10-20 按用户修正统一导出：物体不再持有 Mod 导出入口。文件→导出→EFF Mod 包按选择接收人物 Mesh、一个或多个特效根/发射器；子节点映射所属完整特效并去重，粒子资源 Mesh 不作为人物部件。仅选特效不导出挂载人物、不走人物编译；混合选择全部资源时一起打包，原有随 Mesh 自动带出的启用特效保留。快速更新也为统一操作，上次目录由 Scene 持有。纯特效/人物包跨类型覆盖拒绝，批量成功后才发布，失败、取消、构建中改参保留上一包。真实两特效/子节点去重/选择范围/快速更新/混合原生编译及失败保留验证见 `bin/unified-export-20261020/extended-validation/report.json`；操作见 `tools/Blender/docs/effects-editor.md`。该记录覆盖上一段单物体导出入口的描述。
+
+## 特效解析第一阶段（历史记录）
+
+2026-10-19 AnimeStudio 新增独立 `.efffx` 来源导出，纯粒子 PFB 无需 Mesh；使用实际 TypeTree 严格解析节点、组件、粒子模块与资源引用，保留完整依赖原生快照和未知数据。managed registry v2 按实际引用类型表解析，禁止将未知动态字段伪造成空数据。116 个实际对象往返与 12 个 PFB 来源导出通过。
+
+第二阶段已增加 Blender 独立特效面板、既有字段/模块/曲线/发射列表编辑，作者状态随 `.blend` 保存；`EFF_EFFECT_EDIT` 由 AnimeStudio `--build-eff-effects` 做严格来源/引用/结构验证及离线 SerializedFile/UnityFS 重建，10 个样本通过确定性构建和拒绝测试。产物 `.efffxbuild` 尚未接入 Mod 协议或游戏加载路由；未实现新增完整发射器、外部依赖、播放挂载和独立热重载，F10 不读取该产物。见 [特效研究与实现范围](docs/effects-authoring-research-20261019.md)、`tools/AnimeStudio/docs/endfield-effects-source.md` 和 `tools/Blender/docs/effects-editor.md`。
+
+2026-10-19 DLL 特效接入推进过程中，用户追加外部多 Mod 故障反馈：同一作者模型用于不同角色时偶发发紫/同场一方原皮；两方材质不同，另一方可能保留 Si 原材质。当前未取得受影响两包与异常日志，本机未复现画面。不同材质/Shader、同/不同模板和原生材质消费者的共享合并测试通过，本机六 Mod 实际集合检查通过；不能据此宣称故障排除或根因已修复。已准备双击只读采集工具，见 [多 Mod 调查](docs/multi-mod-resource-diagnosis.md)。特效 DLL 运行时接入仍待继续；本轮未替换游戏 DLL。
+
+同日继续 DLL 侧：新增仅 `effects-debug` 构建启用的独立命名管道和主线程调试状态机，消费离线隔离的 `runtime.bin`/UnityFS；支持准备、精确实例/Transform 地址挂载、原生 unmanaged 登记、播放、停止与清理。来源 ResourceManager lease 持有未改依赖，异步取消保留到完成、owner 进入池前脱离/清理、延迟 Destroy 后才退休容器；失败保留旧测试实例。默认生产构建不含调试线程/路径，F10 不读取该产物，游戏安装未变。真实离线输出回归 191 项断言通过；生产状态机隔离生命周期与真实 Windows 管道/Python 客户端通过。尚未实机绑定/画面验收，不能承诺毫秒级端到端性能；战斗/动画触发池、完整发射器新增、实时参数 setter、Blender 调试 UI 与正式发布协议仍未接入。见 [DLL 特效调试范围](docs/effects-runtime-debug.md)。
+
+2026-10-19 收到外部 `eff_log.txt`（PID 36316，994 行）：确认重复 ID `si_yijyu` 导致启动整套 Mod 被拒绝（mods=0）；10:09 出现有效集合并提交 generation=2。jsspsi UI 同路径在 10:09 controlsReady=14、10:28 新实例 controlsReady=0，期间无新提交/错误；12 次 F10 均为 unchanged，没有重建模型。日志不能确定发紫的 Shader/依赖退出原因，也不能仅凭 0 计数断言整个人物原皮。仍缺实际两包、对应 Player.log/复现时间；未做猜测性 DLL 修改、部署或发布。具体行号与证据边界见 [多 Mod 调查](docs/multi-mod-resource-diagnosis.md#2026-10-19-收到的外部日志)。

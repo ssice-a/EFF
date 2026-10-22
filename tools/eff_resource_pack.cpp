@@ -3,6 +3,7 @@
 #include "../src/eiem_prepared_prefab_compiler.h"
 #include "../src/eiem_prepared_export_carryover.h"
 #include "../src/eiem_compiled_object_merge.h"
+#include "../src/eiem_effect_author_update.h"
 #include "eff_author_sources.h"
 #include <iostream>
 #include <thread>
@@ -57,6 +58,7 @@ void AuditPhysics(const std::filesystem::path& resource,const std::filesystem::p
  std::cout<<"{\"prefabs\":"<<found.roots.size()<<",\"changedMembers\":"<<changed<<",\"addedObjects\":"<<added<<",\"clothComponents\":"<<cloth<<",\"colliderComponents\":"<<colliders<<",\"originalObjectsPreserved\":"<<preserved<<",\"sharedSkeletonDedupChecks\":"<<deduplicated<<"}"<<std::endl;
 }
 int wmain(int argc,wchar_t** argv){try{
+ if(argc==5&&std::wstring(argv[1])==L"--update-effects"){auto start=std::chrono::steady_clock::now();EiemEffectAuthorUpdate::Update(std::filesystem::canonical(argv[2]),std::filesystem::canonical(argv[3]),std::filesystem::canonical(argv[4]));std::cout<<"EFFECT-AUTHOR-UPDATED milliseconds="<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<<std::endl;return 0;}
  if(argc==5&&std::wstring(argv[1])==L"--audit-physics"){AuditPhysics(std::filesystem::canonical(argv[2]),std::filesystem::canonical(argv[3]),std::filesystem::canonical(argv[4]));return 0;}
  if((argc==4||argc==5)&&std::wstring(argv[1])==L"--describe-targets"){DescribeTargets(std::filesystem::canonical(argv[2]),std::filesystem::canonical(argv[3]),argc==5?std::filesystem::path(argv[4]).u8string():std::string{});return 0;}
  if(argc>=4&&std::wstring(argv[1])==L"--export-mod"){
@@ -73,7 +75,7 @@ int wmain(int argc,wchar_t** argv){try{
  if(argc==3&&std::wstring(argv[1])==L"--source-request"){SourceRequest(Load(argv[2]));return 0;}
  if(argc==2&&std::wstring(argv[1])==L"--protocol") {
   std::cout<<"{\"format\":\"EFF_OFFLINE_PACKAGE_PROTOCOL\",\"version\":1,\"abi\":"<<EiemPackageProtocol::abi
-           <<",\"sourcePreparation\":\"in-process/index-vfs+author-declarations\",\"compiledMod\":\""<<EiemCompiledMod::structure<<"\",\"compiledCacheInputs\":\"validated-previous-mod\",\"compiledExportCarryover\":\"validated-source-selection+published-discoveries\",\"compiler\":\""<<compiler<<"\",\"authorFormat\":"<<EiemPackageProtocol::authorFormat
+           <<",\"effectAuthorUpdate\":\"effects-only/validated-character-inputs/1\",\"sourcePreparation\":\"in-process/index-vfs+author-declarations\",\"compiledMod\":\""<<EiemCompiledMod::structure<<"\",\"compiledCacheInputs\":\"validated-previous-mod\",\"compiledExportCarryover\":\"validated-source-selection+published-discoveries\",\"compiler\":\""<<compiler<<"\",\"authorFormat\":"<<EiemPackageProtocol::authorFormat
            <<",\"resourceVersion\":"<<EiemPackageProtocol::resourceVersion<<",\"modSetVersion\":1,\"staticSourceInputs\":\""<<EiemPackageProtocol::staticSourceInputs<<"\",\"arguments\":[\"author\",\"baseline\",\"cache\"],\"structures\":{"
            <<"\"manifest\":\""<<EiemPackageProtocol::manifestStructure<<"\",\"author\":\""<<EiemPackageProtocol::authorStructure
            <<"\",\"resource\":\""<<EiemPackageProtocol::resourceStructure<<"\",\"current\":\""<<EiemPackageProtocol::currentStructure
@@ -83,6 +85,10 @@ int wmain(int argc,wchar_t** argv){try{
            <<"\",\"compiledRuntimeIndex\":\""<<EiemPackageProtocol::compiledRuntimeIndex
            <<"\",\"shapeAnimation\":\""<<EiemPackageProtocol::shapeAnimation
            <<"\",\"shapeAnimationPlayback\":\""<<EiemPackageProtocol::shapeAnimationPlayback
+           <<"\",\"materialAnimation\":\""<<EiemPackageProtocol::materialAnimation
+           <<"\",\"effectAttachment\":\""<<EiemPackageProtocol::effectAttachment
+           <<"\",\"effectTarget\":\""<<EiemPackageProtocol::effectTarget
+           <<"\",\"standaloneEffect\":\""<<EiemPackageProtocol::standaloneEffect
            <<"\",\"manifestEncoding\":\""<<EiemPackageProtocol::ruleEncoding<<"\",\"manifestInputs\":[\""<<EiemPackageProtocol::ruleEncoding
            <<"\",\"self-described-roots/le64\",\"legacy-root-markers/le64\",\"legacy-root-addresses/le64\"]}}"<<std::endl;
   return 0;

@@ -1,0 +1,349 @@
+[
+  {
+    "name": "rgba-opaque-skin",
+    "shader": "lx22standardcharacterskin.shader",
+    "floats": {
+      "_Mode": 0,
+      "_Cutoff": 0.5
+    },
+    "keywords": "USE_BENT_NORMAL",
+    "renderQueue": -1,
+    "expected": {
+      "cutout": false,
+      "blend": false,
+      "silkCoverage": false,
+      "resolved": true,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "opaque-graph-with-threshold",
+    "shader": "ch_cloth_silk_specular4_periodic2_opaque.shadergraph",
+    "floats": {
+      "_AlphaClipThreshold": 0.5
+    },
+    "expected": {
+      "cutout": false,
+      "blend": false,
+      "silkCoverage": false,
+      "resolved": true,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "opaque-graph-with-stale-flags",
+    "shader": "ch_cloth_silk_specular4_periodic2_opaque.shadergraph",
+    "floats": {
+      "_AlphaClipThreshold": 0.5,
+      "_Surface": 1,
+      "_SrcBlend": 5,
+      "_DstBlend": 10
+    },
+    "keywords": "_ALPHATEST_ON _ALPHABLEND_ON",
+    "renderQueue": 3100,
+    "expected": {
+      "cutout": false,
+      "blend": false,
+      "silkCoverage": false,
+      "resolved": true,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "unknown-hair-does-not-imply-opacity",
+    "shader": "unknown_hair.shader",
+    "floats": {
+      "_Mode": 3,
+      "_Cutoff": 0.5,
+      "_ZWrite": 0,
+      "_DstBlend": 10
+    },
+    "renderQueue": 3100,
+    "expected": {
+      "cutout": false,
+      "blend": false,
+      "silkCoverage": false,
+      "resolved": false,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "unknown-transparent-does-not-imply-opacity",
+    "shader": "unknown_transparent.shader",
+    "expected": {
+      "cutout": false,
+      "blend": false,
+      "resolved": false,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "unknown-uber-does-not-imply-opacity",
+    "shader": "unknown_uber.shader",
+    "floats": {
+      "_AlphaClipThreshold": 0.7
+    },
+    "expected": {
+      "cutout": false,
+      "blend": false,
+      "resolved": false,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "keyword-tokens-must-match",
+    "shader": "unknown.shader",
+    "keywords": "_USE_CUTOUT_DISABLED _ALPHATEST_ON_EXTRA",
+    "expected": {
+      "cutout": false,
+      "blend": false,
+      "resolved": false,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "same-rgba-cutout",
+    "shader": "lx22standardcharactercloth.shader",
+    "floats": {
+      "_Mode": 0,
+      "_Cutoff": 0.5
+    },
+    "keywords": "_USE_CUTOUT",
+    "expected": {
+      "cutout": true,
+      "blend": false,
+      "silkCoverage": false,
+      "resolved": true,
+      "useBaseAlpha": true
+    }
+  },
+  {
+    "name": "alpha-test-keyword",
+    "shader": "unknown.shader",
+    "keywords": "FOO\t_ALPHATEST_ON\nBAR",
+    "expected": {
+      "cutout": true,
+      "blend": false,
+      "resolved": false,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "explicit-clip-switch",
+    "shader": "unknown.shader",
+    "floats": {
+      "_AlphaClip": 1,
+      "_AlphaClipThreshold": 0.25
+    },
+    "expected": {
+      "cutout": true,
+      "blend": false,
+      "cutoff": 0.25,
+      "resolved": false,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "disabled-clip-switch",
+    "shader": "unknown.shader",
+    "floats": {
+      "_AlphaClip": 0,
+      "_AlphaTest": 0,
+      "_Cutoff": 0.5
+    },
+    "expected": {
+      "cutout": false,
+      "blend": false,
+      "resolved": false,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "blend-state-with-unknown-alpha-source",
+    "shader": "unknown.shader",
+    "floats": {
+      "_SrcBlend": 5,
+      "_DstBlend": 10
+    },
+    "expected": {
+      "cutout": false,
+      "blend": true,
+      "silkCoverage": false,
+      "resolved": false,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "opaque-blend-pair",
+    "shader": "unknown.shader",
+    "floats": {
+      "_SrcBlend": 1,
+      "_DstBlend": 0
+    },
+    "expected": {
+      "cutout": false,
+      "blend": false,
+      "resolved": false,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "explicit-surface-opaque-overrides-stale-blend",
+    "shader": "unknown.shader",
+    "floats": {
+      "_Surface": 0,
+      "_SrcBlend": 5,
+      "_DstBlend": 10
+    },
+    "keywords": "_ALPHABLEND_ON",
+    "renderQueue": 3000,
+    "expected": {
+      "cutout": false,
+      "blend": false,
+      "resolved": false,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "explicit-surface-blend",
+    "shader": "unknown.shader",
+    "floats": {
+      "_Surface": 1
+    },
+    "expected": {
+      "cutout": false,
+      "blend": true,
+      "resolved": false,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "blend-keyword",
+    "shader": "unknown.shader",
+    "keywords": "_ALPHABLEND_ON",
+    "expected": {
+      "cutout": false,
+      "blend": true,
+      "resolved": false,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "periodic2-silk",
+    "shader": "assets/shaders/ch_cloth_silk_specular4_periodic2.shadergraph",
+    "floats": {
+      "_AlphaClipThreshold": 0.93,
+      "_ZWrite": 0
+    },
+    "expected": {
+      "cutout": false,
+      "blend": true,
+      "silkCoverage": true,
+      "cutoff": 0.93,
+      "resolved": true,
+      "useBaseAlpha": true
+    }
+  },
+  {
+    "name": "similar-name-is-not-a-profile",
+    "shader": "custom_ch_cloth_silk_specular4_periodic2.shadergraph",
+    "floats": {
+      "_AlphaClipThreshold": 0.93
+    },
+    "expected": {
+      "cutout": false,
+      "blend": false,
+      "silkCoverage": false,
+      "resolved": false,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "legacy-silk",
+    "shader": "assets/shaders/lx22standardcharacterclothsilk.shader",
+    "floats": {
+      "_ClothMaterialSrcBlend": 5,
+      "_SilkZWrite": 1,
+      "_Cutoff": 0.91,
+      "_Culling": 0
+    },
+    "expected": {
+      "cutout": false,
+      "blend": true,
+      "silkCoverage": true,
+      "cutoff": 0.91,
+      "cull": 0,
+      "resolved": true,
+      "useBaseAlpha": true
+    }
+  },
+  {
+    "name": "dedicated-depth",
+    "shader": "lx22transparentanimdepth.shader",
+    "floats": {
+      "_Cutoff": 0
+    },
+    "expected": {
+      "cutout": false,
+      "blend": false,
+      "depthOnly": true,
+      "resolved": true,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "legacy-cull-front",
+    "shader": "unknown.shader",
+    "floats": {
+      "_Culling": 1
+    },
+    "expected": {
+      "cull": 1,
+      "resolved": false,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "generic-additive-is-unresolved",
+    "shader": "unknown_particle.shader",
+    "floats": {
+      "_SrcBlend": 1,
+      "_DstBlend": 1
+    },
+    "expected": {
+      "cutout": false,
+      "blend": false,
+      "resolved": false,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "opaque-skin-with-stale-blend-state",
+    "shader": "lx22standardcharacterskin.shader",
+    "floats": {
+      "_SrcBlend": 5,
+      "_DstBlend": 10,
+      "_Surface": 1
+    },
+    "expected": {
+      "blend": false,
+      "cutout": false,
+      "resolved": true,
+      "useBaseAlpha": false
+    }
+  },
+  {
+    "name": "known-cutout-with-fully-packed-image",
+    "shader": "lx22standardcharacter.shader",
+    "keywords": "_USE_CUTOUT",
+    "floats": {
+      "_Cutoff": 0.5
+    },
+    "expected": {
+      "blend": false,
+      "cutout": true,
+      "resolved": true,
+      "useBaseAlpha": true
+    }
+  }
+]
