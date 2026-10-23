@@ -4,7 +4,7 @@
 
 EFF 在《明日方舟：终末地》创建资源和实例前应用 Mod。AnimeStudio 导出来源，Blender 制作并编译独立 Mod，EFF DLL 读取结果并完成游戏内加载与热重载。
 
-配套发布：**EFF v1.9.0、EFF Blender v0.47.0、AnimeStudio v1.8.0**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
+配套发布：**EFF v1.9.0、EFF Blender v0.48.0、AnimeStudio v1.8.1**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
 
 首次制作 Mod 可先阅读带截图的简易教程：[中文](Mod%20Tutorial.md) · [English](Mod%20Tutorial_EN.md)。
 
@@ -42,7 +42,7 @@ plugin/
 
 正式 DLL 与代理静态链接自身的 C/C++ 运行实现，不依赖游戏目录中较旧的 MSVCP/VCRUNTIME；无需修改游戏运行库。DLL 包不包含编译器、AnimeStudio 运行库或来源工具。已有安装的 `plugin/tools/eff_resource_pack.exe` 和 `plugin/tools/static-sources/` 可删除；新版 DLL 不调用它们。若已有同名代理加载器，请先确认使用的图形后端与插件加载方式。
 
-把包含 `mod.ini` 的完整 Mod 文件夹直接放入 `plugin/mods/`。`compiled.bin` 必须随作者资源一起分发。文件夹可移动到其他安装，来源路径相对游戏目录。游戏更新后，玩家可使用同一 Release 的 `EFF-Repair-v0.2.0-win-x64.zip`：选择游戏与 Mod 目录，在工具内下载匹配的完整索引，退出游戏后修复；原包会备份。工具需要 .NET 9 Windows Desktop Runtime，不要求 Blender 或自行解包。
+把包含 `mod.ini` 的完整 Mod 文件夹直接放入 `plugin/mods/`。`compiled.bin` 必须随作者资源一起分发。文件夹可移动到其他安装，来源路径相对游戏目录。游戏更新后，玩家可使用同一 Release 的 `EFF-Repair-v0.3.0-win-x64.zip`：选择游戏与 Mod 目录，在工具内下载匹配的完整索引，退出游戏后修复；原包会备份。工具需要 .NET 9 Windows Desktop Runtime，不要求 Blender 或自行解包。
 
 作者也可用 AnimeStudio 更新原解包资源，再从原 Blender 工程重新导出，无需使用修复工具。修复使用当前游戏的来源和消费者；资产删除、来源歧义或不受支持的结构会报告失败，保留原包。
 

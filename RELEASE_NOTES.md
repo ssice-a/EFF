@@ -1,6 +1,6 @@
 # EFF v1.9.0
 
-配套版本：[EFF Blender v0.47.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.47.0)、[AnimeStudio v1.8.0](https://github.com/ssice-a/AnimeStudio/releases/tag/v1.8.0)。
+配套版本：[EFF Blender v0.48.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.48.0)、[AnimeStudio v1.8.1](https://github.com/ssice-a/AnimeStudio/releases/tag/v1.8.1)。
 
 - 接入 ParticleSystem 特效 Mod：可独立安装，也可挂载角色 Mesh 骨骼；默认随模型生命周期加载，支持快捷键显隐及 F9 热重载。
 - 特效挂载覆盖全部角色 LOD，并与多 Mod 资源准备、提交、回滚和场景更新共用现有运行时流程；不增加独立特效 DLL。
@@ -11,7 +11,7 @@
 ## 下载与安装
 
 - `EFF_v1.9.0_dll.zip`：退出游戏后解压到游戏根目录，保留个人 `plugin/eff.ini`、Mods 和 `state.ini`。只含生产 DLL、代理、协议声明和默认配置。
-- `EFF-Repair-v0.2.0-win-x64.zip`：独立游戏外修复工具，需要 .NET 9 Windows Desktop Runtime；修复前会备份原 Mod。
+- `EFF-Repair-v0.3.0-win-x64.zip`：独立游戏外修复工具，需要 .NET 9 Windows Desktop Runtime；修复前会备份原 Mod。
 - `EFF-Endfield-Index-20261022.effindex.gz` 与 `eff-index-catalog.json`：当前游戏内容的完整索引及 Repair 下载目录。索引压缩包 97,429,663 字节；工具会按游戏 Bundle 内容摘要选择并校验下载。
 - `EFF_Blender_Native_v0.47.0.zip`：配套 Blender Release 使用的完整固定原生基础包，包含本次编译器、来源索引器、作者核心及插件 Python 文件。普通 DLL 用户不需要安装它。
 
@@ -22,3 +22,7 @@
 Adds ParticleSystem effect Mods that can run independently or attach to a character Mesh bone. Effects follow the model lifecycle, cover every character LOD, support key toggles and F9 reload, and use the existing Mod transaction path without a separate DLL. Mod discovery now recurses through nested package folders. Adds animated material-property controls and retains the existing Shape Keys playback groups.
 
 Install `EFF_v1.9.0_dll.zip` beside `Endfield.exe` after closing the game. Preserve personal configuration and Mods. The optional Repair tool downloads a content-matched full index from the release catalog. `EFF_Blender_Native_v0.47.0.zip` is a pinned build base for the paired Blender package, not a game installation component.
+
+## 2026-10-23 工具更新
+
+DLL 继续使用 v1.9.0，本次未修改或重新发布 DLL。新增 EFF Repair v0.3.0，配合 AnimeStudio v1.8.1 与 Blender v0.48.0 共享本机完整索引位置和下载缓存，避免为每个工程复制全量索引；完整索引包内容保持不变。旧源包不会仅因全局指纹、应用版本或索引路径变化而自动重解包；缺少可靠逐 Bundle 记录时保留原文件，仍可显式刷新。

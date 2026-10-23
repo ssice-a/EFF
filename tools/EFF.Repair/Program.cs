@@ -28,6 +28,7 @@ internal static class Program
                 {
                     var archive = EndfieldVfsArchive.Open(args[2]);
                     if (!EndfieldVfsAssetIndexBuilder.TryGetOrRebindCurrentIndex(archive, args[3], out var index)) throw new IOException("工作区索引无法按当前逻辑 Bundle 内容复用，请导入匹配当前内容的完整索引。");
+                    EndfieldSharedIndexes.TryRemember(archive, args[3]);
                     var result = RepairService.Repair(args[1], args[2], index, EndfieldPortableIndex.ContentIdentity(archive), null, CancellationToken.None).GetAwaiter().GetResult();
                     File.WriteAllText(args[4], result);return 0;
                 }

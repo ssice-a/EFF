@@ -4,7 +4,7 @@
 
 AnimeStudio exports source assets and templates. Blender creates and compiles each independent Mod. EFF applies the compiled rules before the game creates resources and uses the game's model lifecycle for reloads.
 
-Paired releases: **EFF v1.9.0, EFF Blender v0.47.0, AnimeStudio v1.8.0**. There is one production DLL package. Compatibility follows byte structures, fields, source hashes and references.
+Paired releases: **EFF v1.9.0, EFF Blender v0.48.0, AnimeStudio v1.8.1**. There is one production DLL package. Compatibility follows byte structures, fields, source hashes and references.
 
 See the illustrated quick tutorial for installation, extraction, Blender editing and export: [English](Mod%20Tutorial_EN.md) · [中文](Mod%20Tutorial.md).
 
@@ -29,7 +29,7 @@ plugin/
       textures/
 ```
 
-The production DLL and proxies statically link their own C/C++ runtime implementation and do not depend on the game's older MSVCP/VCRUNTIME files. Do not replace the game's runtime files. The DLL distribution has no compiler, source tools or AnimeStudio libraries. Previous `plugin/tools/eff_resource_pack.exe` and `plugin/tools/static-sources/` are unused and can be removed. Move complete Mod folders directly into `plugin/mods/`. Re-export older Mods with the paired Blender add-on to produce `compiled.bin`. Relative game source paths make the output portable. After game updates, players can use the optional EFF-Repair-v0.2.0-win-x64.zip from the same Release to download the matching full index and repair Mods with backups. It needs .NET 9 Windows Desktop Runtime, not Blender or manual extraction. Authors can instead refresh extracted sources in AnimeStudio and export their original projects again.
+The production DLL and proxies statically link their own C/C++ runtime implementation and do not depend on the game's older MSVCP/VCRUNTIME files. Do not replace the game's runtime files. The DLL distribution has no compiler, source tools or AnimeStudio libraries. Previous `plugin/tools/eff_resource_pack.exe` and `plugin/tools/static-sources/` are unused and can be removed. Move complete Mod folders directly into `plugin/mods/`. Re-export older Mods with the paired Blender add-on to produce `compiled.bin`. Relative game source paths make the output portable. After game updates, players can use the optional EFF-Repair-v0.3.0-win-x64.zip from the same Release to download the matching full index and repair Mods with backups. It needs .NET 9 Windows Desktop Runtime, not Blender or manual extraction. Authors can instead refresh extracted sources in AnimeStudio and export their original projects again.
 
 ## Features and controls
 

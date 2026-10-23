@@ -16,7 +16,8 @@ internal sealed class RepairForm : Form
     private RepairCatalog? catalog;
     private EndfieldVfsArchive? archive;
     private string[] paths = [];
-    private string Workspace => Path.Combine(data, "workspace");
+    private string? workspace;
+    private string Workspace => workspace ?? throw new IOException("请先选择游戏");
     internal RepairForm(bool autoCheck = true)
     {
         Text = "EFF Mod 修复工具 " + Program.ToolVersion.ToString(3);Width = 920;Height = 660;MinimumSize = new Size(920, 560);StartPosition = FormStartPosition.CenterScreen;
@@ -35,7 +36,7 @@ internal sealed class RepairForm : Form
         var cancel = new Button { Text = "取消", AutoSize = true };cancel.Click += (_, _) => cancellation?.Cancel();buttons.Controls.Add(cancel);
         layout.Controls.Add(buttons);layout.Controls.Add(status);layout.Controls.Add(list);layout.Controls.Add(new Label { Text = "任务记录（原 Mod 备份保存在目录旁的 .eff-repair-backups）", AutoSize = true });layout.Controls.Add(log);Controls.Add(layout);
         actions.AddRange([game, mods, source, list]);
-        game.TextChanged += (_, _) => archive = null;
+        game.TextChanged += (_, _) => { archive = null;workspace = null; };
         DragEnter += (_, e) => { if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true) e.Effect = DragDropEffects.Copy; };
         DragDrop += (_, e) => { if (cancellation is not null) return;var files = (string[]?)e.Data?.GetData(DataFormats.FileDrop);if (files?.Length == 1 && Directory.Exists(files[0])) { mods.Text = files[0];Scan(); } };
         FormClosing += (_, e) => { if (cancellation is not null) { cancellation.Cancel();e.Cancel = true;status.Text = "正在停止任务，完成后可关闭。"; } };
@@ -68,9 +69,23 @@ internal sealed class RepairForm : Form
         if (!GameDiscovery.Valid(game.Text) && found.Count == 1) game.Text = found[0];
         if (!GameDiscovery.Valid(game.Text)) { Report(found.Count > 1 ? "发现多个安装，请选择具体游戏目录：\n" + string.Join("\n", found) : "未找到游戏，请手动选择安装目录。");return; }
         var selected = game.Text;archive = await Task.Run(() => EndfieldVfsArchive.Open(selected));
+        await ResolveWorkspace();
         if (string.IsNullOrWhiteSpace(mods.Text)) mods.Text = Path.Combine(game.Text, "plugin", "mods");Scan();Report("已识别游戏：" + game.Text);
     }
     private void Scan() { paths = RepairService.Mods(mods.Text).ToArray();list.Items.Clear();foreach (var path in paths) list.Items.Add(Path.GetFileName(path), true); }
+    private async Task ResolveWorkspace()
+    {
+        var current = archive!;var token = cancellation!.Token;
+        var shared = await Task.Run(() => EndfieldSharedIndexes.FindCurrent(current, token,
+            Path.Combine(data, "workspace"), EndfieldSharedIndexes.DefaultWorkspace(EndfieldSharedIndexes.Game(current))), token);
+        workspace = shared ?? EndfieldSharedIndexes.Workspaces(EndfieldSharedIndexes.Game(current)).FirstOrDefault(Directory.Exists)
+            ?? EndfieldSharedIndexes.DefaultWorkspace(EndfieldSharedIndexes.Game(current));
+        if (shared != null)
+        {
+            if (!await Task.Run(() => EndfieldSharedIndexes.TryRemember(current, shared, token), token)) Report("索引可用，但共享位置登记失败。");
+            Report("复用已有资源索引：" + shared);
+        }
+    }
     private async Task Check()
     {
         Report("正在检查工具及索引更新…");
@@ -85,34 +100,41 @@ internal sealed class RepairForm : Form
                 Process.Start(new ProcessStartInfo(UpdateService.Https(catalog.ToolUrl).AbsoluteUri) { UseShellExecute = true });
         }
         if (archive is null) { Report("已取得更新目录，请先选择游戏以匹配索引。");return; }
-        var content = EndfieldPortableIndex.ContentIdentity(archive);var matches = catalog.Indexes.Where(i => i.Release.GameContent == content).ToArray();
+        var content = await Task.Run(() => EndfieldPortableIndex.ContentIdentity(archive));var matches = catalog.Indexes.Where(i => i.Release.GameContent == content).ToArray();
         Report(matches.Length == 0 ? "游戏资源对应的完整索引尚未发布，请等待维护者更新。" : "对应索引可用：" + matches.Last().Release.Version + $"（{matches.Last().Release.Bytes / 1048576.0:F1} MB）");
     }
     private async Task Download()
     {
-        if (archive is null) await Detect();if (archive is null) throw new IOException("请先选择有效游戏目录");if (catalog is null) await Check();
-        var content = EndfieldPortableIndex.ContentIdentity(archive);var item = catalog?.Indexes.LastOrDefault(i => i.Release.GameContent == content) ?? throw new IOException("尚无匹配当前游戏资源的已发布索引");
-        Directory.CreateDirectory(data);var package = Path.Combine(data, "current.effindex.gz");
+        if (archive is null) await Detect();if (archive is null) throw new IOException("请先选择有效游戏目录");
+        if (await Task.Run(() => EndfieldVfsAssetIndexBuilder.TryGetCurrentIndex(archive, Workspace, out _)))
+        { Report("已有可用索引，无需重复下载。");return; }
+        if (catalog is null) await Check();
+        var content = await Task.Run(() => EndfieldPortableIndex.ContentIdentity(archive));var item = catalog?.Indexes.LastOrDefault(i => i.Release.GameContent == content) ?? throw new IOException("尚无匹配当前游戏资源的已发布索引");
+        var package = EndfieldIndexUpdates.CachedPackage(item);
         await UpdateService.Download(item, package, new Progress<string>(Report), cancellation!.Token);await Bind(package);
     }
     private async Task Import() { using var dialog = new OpenFileDialog { Filter = "完整 EFF 索引|*.effindex.gz|所有文件|*.*" };if (dialog.ShowDialog(this) == DialogResult.OK) await Bind(dialog.FileName); }
     private async Task Bind(string package)
     {
         if (archive is null) await Detect();if (archive is null) throw new IOException("请先选择游戏");Report("正在校验并导入完整索引…");
-        await Task.Run(() => EndfieldPortableIndex.Import(archive, Workspace, package, cancellation!.Token));Report("索引已就绪；勾选 Mod 后点击修复。");
+        await Task.Run(() => EndfieldPortableIndex.Import(archive, Workspace, package, cancellation!.Token));
+        if (!await Task.Run(() => EndfieldSharedIndexes.TryRemember(archive, Workspace, cancellation!.Token))) Report("索引可用，但共享位置登记失败。");
+        Report("索引已就绪；勾选 Mod 后点击修复。");
     }
     private async Task Repair()
     {
         if (!GameDiscovery.Valid(game.Text)) throw new IOException("请选择有效游戏目录");
         var selectedGame = game.Text;archive = await Task.Run(() => EndfieldVfsArchive.Open(selectedGame));
-        if (!EndfieldVfsAssetIndexBuilder.TryGetCurrentIndex(archive, Workspace, out var index))
+        await ResolveWorkspace();
+        var index = EndfieldVfsAssetIndexBuilder.GetIndexPath(Workspace);
+        if (!await Task.Run(() => EndfieldVfsAssetIndexBuilder.TryGetCurrentIndex(archive, Workspace, out _)))
         {
             Report("正在按逻辑路径核对 Bundle 内容并重新绑定索引位置…");
             if (!await Task.Run(() => EndfieldVfsAssetIndexBuilder.TryRebindUnchangedContent(archive, Workspace, cancellation!.Token)))
                 throw new IOException("索引无法按当前 Bundle 内容安全复用，请先下载或导入匹配当前内容的完整索引。");
         }
         var selected = list.CheckedIndices.Cast<int>().Select(i => paths[i]).ToArray();if (selected.Length == 0) throw new IOException("请先勾选需要修复的 Mod");
-        var progress = new Progress<string>(Report);var content = EndfieldPortableIndex.ContentIdentity(archive);int completed = 0, failed = 0;
+        var progress = new Progress<string>(Report);var content = await Task.Run(() => EndfieldPortableIndex.ContentIdentity(archive), cancellation!.Token);int completed = 0, failed = 0;
         foreach (var mod in selected)
         {
             cancellation!.Token.ThrowIfCancellationRequested();

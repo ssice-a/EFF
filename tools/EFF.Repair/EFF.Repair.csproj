@@ -4,7 +4,7 @@
     <TargetFramework>net9.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <Nullable>annotations</Nullable>
     <DefineConstants>$(DefineConstants);EFF_SOURCE_READER</DefineConstants>
     <NativeCompilerPath Condition="'$(NativeCompilerPath)' == ''">$(MSBuildThisFileDirectory)../Blender/nativepack/eff_resource_pack.exe</NativeCompilerPath>
@@ -12,6 +12,8 @@
   <ItemGroup>
     <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldVfsArchive.cs" Link="Sources/EndfieldVfsArchive.cs" />
     <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldIndexWorkspace.cs" Link="Sources/EndfieldIndexWorkspace.cs" />
+    <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldSharedIndexes.cs" Link="Sources/EndfieldSharedIndexes.cs" />
+    <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldIndexUpdates.cs" Link="Sources/EndfieldIndexUpdates.cs" />
     <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldPortableIndex.cs" Link="Sources/EndfieldPortableIndex.cs" />
     <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldBundleIndexCache.cs" Link="Sources/EndfieldBundleIndexCache.cs" />
     <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldIndexStore.cs" Link="Sources/EndfieldIndexStore.cs" />
