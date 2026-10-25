@@ -15,6 +15,11 @@ on:
         required: false
         type: string
         default: ''
+      native_base_artifact_tag:
+        description: Release tag used in the validated native base artifact name
+        required: false
+        type: string
+        default: ''
       native_base_sha256:
         description: Required SHA256 when reusing a Blender native base artifact
         required: false
@@ -24,6 +29,7 @@ on:
 env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
   NATIVE_BASE_RUN_ID: ${{ inputs.native_base_run_id || '' }}
+  NATIVE_BASE_ARTIFACT_TAG: ${{ inputs.native_base_artifact_tag || inputs.tag || github.ref_name }}
   NATIVE_BASE_SHA256: ${{ inputs.native_base_sha256 || '' }}
 
 jobs:
@@ -89,7 +95,7 @@ jobs:
       if: env.NATIVE_BASE_RUN_ID != ''
       uses: actions/download-artifact@v4
       with:
-        name: eff-blender-native-base-diagnostic-${{ env.RELEASE_TAG }}
+        name: eff-blender-native-base-diagnostic-${{ env.NATIVE_BASE_ARTIFACT_TAG }}
         path: bin/release-artifacts
         repository: ${{ github.repository }}
         run-id: ${{ env.NATIVE_BASE_RUN_ID }}

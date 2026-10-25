@@ -127,15 +127,16 @@ inline Description Build(const Graph& before,const Graph& after,const std::strin
  Description d;std::set<int64_t> native,claimed;
  for(auto id:before.Renderers())native.insert(id);
  for(auto id:native){Source source{cab,id,before.At(id),{}};Require(source.renderer==after.At(id),"assembly native anchor address changed");
- auto ref=before.Mesh(id);bool skip=false;const Rule* rule=nullptr;
-  for(const auto& selected:package.targetIndex){auto a=assets.find(selected.first);if(a!=assets.end()&&ref==NativeReference{a->second.cab,a->second.pathId}){rule=&package.rules.at(selected.second);skip=rule->skip;break;}}
+ auto ref=before.Mesh(id);bool skip=false;const Rule* rule=nullptr;const Identity* targetIdentity=nullptr;
+  for(const auto& selected:package.targetIndex){auto a=assets.find(selected.first);if(a!=assets.end()&&ref==NativeReference{a->second.cab,a->second.pathId}){targetIdentity=&selected.first;rule=&package.rules.at(selected.second);skip=rule->skip;break;}}
   if(!skip){auto target=after.ReadTarget(id,false);auto marker=markers.find(after.Mesh(id));if(marker!=markers.end())target.marker=marker->second;source.targets.push_back(std::move(target));}
   if(rule&&!skip)for(size_t i=1;i<rule->parts.size();++i){const auto& children=after.RendererChildren(id);auto extra=RendererObjectId(cab,package,"renderer",id,rule->parts[i]);
    Require(std::find(children.begin(),children.end(),extra)!=children.end()&&!native.count(extra)&&claimed.insert(extra).second,"assembly extension source ownership differs");
    after.RequirePure(extra);
    auto target=after.ReadTarget(extra,true);auto marker=markers.find(after.Mesh(extra));Require(marker!=markers.end(),"assembly unowned extra Renderer");target.marker=marker->second;
    // The compiler creates pure visual nodes only; native bones/scripts survive.
-   Require(after.Name(after.Pointer(extra,"m_GameObject")).find("__EFF_"+package.id+"_")!=std::string::npos,"assembly extension provenance absent");source.targets.push_back(std::move(target));
+   auto provenance=RendererPartMarker(after.Name(after.Pointer(extra,"m_GameObject")));
+   Require(targetIdentity&&provenance==RuntimePartName(package,rule->parts[i],*targetIdentity),"assembly extension provenance differs from its author part");source.targets.push_back(std::move(target));
   }d.sources.push_back(std::move(source));
  }
  for(auto id:after.Renderers())Require(native.count(id)||claimed.count(id),"assembly unowned extra Renderer");

@@ -1,21 +1,20 @@
-# EFF v1.10.0
+# EFF v1.10.1
 
 配套版本：[EFF Blender v0.49.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.49.0)、[AnimeStudio v1.8.1](https://github.com/ssice-a/AnimeStudio/releases/tag/v1.8.1)。
 
-- 将资源更新从已编译 Mod 结构中分离，资源内容变化时只更新命中的资源块；规则与来源命中保持独立，避免因增删 Mesh 重建无关结构。
-- 更新编译包和运行时协议以记录按键切换组名称，并保留既有 Mod 格式兼容读取。
-- EFF Release 工作流现在同时构建并上传配套 Blender native base；Blender 插件包会校验基础包摘要与 DLL/编译器共同协议。
+- 修复多部件静态 Mesh 装配的 provenance 校验，使额外 Renderer 与对应作者部件的稳定资源标识一致。
+- 延续 v1.10.0 的资源增量更新和命名按键切换组协议；保留既有 Mod 格式兼容读取。
+- EFF Release 工作流构建并上传配套 Blender native base；Blender 插件包校验基础包摘要与 DLL/编译器共同协议。
 - DLL 仍须在目标游戏版本进行冷启动、F10、UI、NPC、多 Mod 与特效实机回归后再从 draft 发布。
 
 ## 下载与安装
 
-- `EFF_v1.10.0_dll.zip`：退出游戏后解压到游戏根目录，保留个人配置和 Mods。
-- `EFF-Repair-v0.3.0-win-x64.zip`：独立游戏外修复工具，需要 .NET 9 Windows Desktop Runtime。
+- `EFF_v1.10.1_dll.zip`：退出游戏后解压到游戏根目录，保留个人配置和 Mods。
 - `EFF_Blender_Native_v0.49.0.zip`：Blender Release 工作流使用的配套基础包，不需要单独安装。
 
 ## English
 
-Separates resource payload updates from compiled Mod structure, adds named key-switch labels to the shared protocol, and keeps legacy package readers. The EFF release workflow now builds and uploads the paired Blender native base. Validate the DLL in the target game before publishing the draft.
+Fixes static multi-part Mesh provenance validation while retaining the v1.10.0 resource update and named key-switch protocols. The release workflow builds and uploads the paired Blender native base. Mod repair is distributed through EFF Mod Manager. Validate the DLL in the target game before publishing the draft.
 
 ## Previous release
 
