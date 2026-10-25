@@ -16,6 +16,9 @@ struct Recipe {
  size_t size=0;
  std::string sourceHash;
  std::string startupHash;
+ // Runtime version identity is derived from this immutable template proof.
+ // Re-publishing a source must never hash an already-derived identity again.
+ std::string templateHash;
 };
 inline std::string Remap(const std::string& before,const EiemLoadingGeneration::Names& names){
  auto member=names.members.find(before);if(member!=names.members.end())return member->second;

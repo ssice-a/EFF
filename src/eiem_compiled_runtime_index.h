@@ -5,6 +5,24 @@
 // native views; TypeTrees/member rebuilds are decoded only for actual writers
 // sharing an input, or for a retired Mod's pristine candidate.
 namespace EiemCompiledMod {
+inline constexpr const char* sharedProofStructure="EFF_SHARED_SOURCE_PROOF/delta-layout/le64";
+inline void WriteLayoutDeltaValue(Writer& w,size_t before,size_t after){
+ auto distance=before>after?before-after:after-before;Require(distance<=UINT64_MAX/2,"compiled layout delta overflow");w.N(before>after?uint64_t(distance)*2-1:uint64_t(distance)*2);
+}
+inline size_t ReadLayoutDeltaValue(EiemOfflinePackage::Reader& r,size_t before){
+ auto encoded=r.N();auto distance=encoded/2;if(encoded&1){Require(distance<SIZE_MAX&&distance+1<=before,"compiled layout negative delta underflow");return before-size_t(distance+1);}Require(distance<=SIZE_MAX,"compiled layout delta extent invalid");return AddSize(before,size_t(distance));
+}
+inline SerializedLayout ReadDeltaLayout(EiemOfflinePackage::Reader& r,const SerializedLayout& before,const SchemaReader& schemas){
+ SerializedLayout after;after.metadataSize=ReadLayoutDeltaValue(r,before.metadataSize);after.dataOffset=ReadLayoutDeltaValue(r,before.dataOffset);after.countOffset=ReadLayoutDeltaValue(r,before.countOffset);after.tableStart=ReadLayoutDeltaValue(r,before.tableStart);after.tableEnd=ReadLayoutDeltaValue(r,before.tableEnd);
+ Require(after.countOffset>=48&&after.tableStart>=after.countOffset+4&&after.tableEnd<=AddSize(48,after.metadataSize)&&after.dataOffset>=AddSize(48,after.metadataSize),"compiled delta object metadata extent differs");
+ auto prefix=r.Size();Require(prefix<=before.types.size(),"compiled delta schema prefix invalid");after.types.assign(before.types.begin(),before.types.begin()+prefix);auto n=r.Count();for(size_t i=0;i<n;++i)after.types.push_back(schemas.types.at(r.Size()));
+ auto count=r.Count();for(size_t i=0;i<count;++i){Object object;auto original=r.N();
+  if(original){Require(original<=before.order.size(),"compiled delta original object ordinal absent");object.id=before.order[size_t(original-1)];const auto& old=before.objects.at(object.id);object.offset=ReadLayoutDeltaValue(r,old.offset);object.size=ReadLayoutDeltaValue(r,old.size);object.type=ReadLayoutDeltaValue(r,old.type);}
+  else {object.id=int64_t(r.N());object.offset=r.Size();object.size=r.Size();object.type=r.Size();Require(!before.objects.count(object.id),"compiled delta new object reuses an original ID");}
+  Require(object.id&&object.type<after.types.size()&&object.offset>=after.dataOffset&&after.objects.emplace(object.id,object).second,"compiled delta object identity/type differs");after.order.push_back(object.id);
+ }
+ Require(MultiplySize(count,24)==after.tableEnd-after.tableStart,"compiled delta object table extent differs");after.externals=before.externals;n=r.Count();for(size_t i=0;i<n;++i)after.externals.push_back(r.S());return after;
+}
 inline void WriteCompiledMember(Writer& w,const EiemResourceRecipe::Member& member){
  w.S(member.name);w.S(member.hash);w.N(member.flags);w.N(member.size);w.N(member.spans.size());
  for(const auto& span:member.spans){w.N(span.kind);w.S(span.source);w.N(span.offset);w.N(span.size);if(span.kind==EiemResourceRecipe::Literal)w.Blob(span.literal);}
@@ -29,8 +47,9 @@ inline void HydrateInput(const Artifact& a,size_t input){
  // A source merged into a lazily loaded artifact can have its own retained
  // block while the callback still addresses the older store's directory.
  // Prefer that explicit block; its index may not exist in the old reader.
- auto plain=Unpack(retained!=a.retainedProofBlocks.end()?retained->second:(a.proofBlocks?a.proofBlocks->at(input):a.proofReader(input)));EiemOfflinePackage::Reader r{plain};SchemaReader schemas;
- std::map<std::string,MemberProof> proofs;auto n=r.Count();for(size_t i=0;i<n;++i){auto name=r.S();MemberProof p;p.before=ReadLayout(r,schemas);p.after=ReadLayout(r,schemas);
+ auto plain=Unpack(retained!=a.retainedProofBlocks.end()?retained->second:(a.proofBlocks?a.proofBlocks->at(input):a.proofReader(input)));EiemOfflinePackage::Reader r{plain};SchemaReader schemas;schemas.types=a.sharedSchemas;
+ auto markerBytes=std::strlen(sharedProofStructure);bool delta=!a.sharedSchemas.empty()&&plain.size()>=8+markerBytes&&Le(plain,0,8)==markerBytes&&std::memcmp(plain.data()+8,sharedProofStructure,markerBytes)==0;if(delta)r.S();
+ std::map<std::string,MemberProof> proofs;auto n=r.Count();for(size_t i=0;i<n;++i){auto name=r.S();MemberProof p;p.before=ReadLayout(r,schemas);p.after=delta?ReadDeltaLayout(r,p.before,schemas):ReadLayout(r,schemas);
   Require(ExternalPrefix(p.before.externals,p.after.externals),"compiled deferred external order differs");auto count=r.Count();for(size_t j=0;j<count;++j){StreamSite site;site.object=int64_t(r.N());site.offset=r.Size();site.width=r.Size();site.member=r.S();site.value=r.N();auto object=p.after.objects.find(site.object);
    Require(object!=p.after.objects.end()&&site.width&&site.width<=8&&site.offset<=object->second.size&&site.width<=object->second.size-site.offset,"compiled deferred stream extent differs");p.streams.push_back(std::move(site));}
   count=r.Count();for(size_t j=0;j<count;++j){EiemLoadingGeneration::Patch patch;patch.offset=r.Size();patch.before=r.S();Require(!patch.before.empty(),"compiled deferred pristine name empty");p.pristineNamespace.push_back(std::move(patch));}
@@ -43,18 +62,18 @@ inline void HydrateInput(const Artifact& a,size_t input){
  a.manifest.plan.namespaceRecipes.at(input)=std::move(names);a.manifest.plan.memberRecipes.at(input)=std::move(members);a.hydrated.insert(input);
 }
 inline void WriteNativeViews(Writer& w,const Artifact& a){
- w.N(a.views.size());for(size_t i=0;i<a.views.size();++i){const auto& view=a.views[i];auto hash=view.startupHash;
+ w.N(a.views.size());for(size_t i=0;i<a.views.size();++i){const auto& view=a.views[i];auto hash=view.templateHash.empty()?view.startupHash:view.templateHash;
   Require(DigestText(hash),"compiled view offline digest absent");
   w.S(view.sourceHash);w.S(hash);w.N(view.size);w.N(view.spans.size());for(const auto& span:view.spans){w.N(span.kind);w.S(span.source);w.N(span.offset);w.N(span.size);if(span.kind==EiemResourceRecipe::Literal)w.Blob(span.literal);}w.N(view.names.size());for(const auto& site:view.names){w.N(site.span);w.N(site.offset);w.S(site.before);w.B(site.directory);}}
  w.N(a.preparedFrames.size());for(const auto& frame:a.preparedFrames){w.S(frame.first);w.Blob(frame.second);}
 }
-inline void ReadNativeViews(EiemOfflinePackage::Reader& r,Artifact& a){
- const auto& plan=a.manifest.plan;auto n=r.Count();Require(n==plan.originals.size(),"compiled index native view source coverage differs");
+inline void ReadNativeViews(EiemOfflinePackage::Reader& r,Artifact& a,const Package* declarations=nullptr){
+ const auto& plan=a.manifest.plan;const auto& author=declarations?*declarations:a.manifest.package;auto n=r.Count();Require(n==plan.originals.size(),"compiled index native view source coverage differs");
  for(size_t i=0;i<n;++i){EiemCompiledInputView::Recipe view;view.sourceHash=r.S();view.startupHash=r.S();view.size=r.Size();Require(view.sourceHash==plan.originals[i].hash&&DigestText(view.startupHash)&&view.size&&view.size<=INT64_MAX,"compiled index view identity/size differs");auto count=r.Count();size_t extent=0;
   for(size_t j=0;j<count;++j){EiemResourceRecipe::Span span;auto kind=r.U();Require(kind<=EiemResourceRecipe::Literal,"compiled index view source kind differs");span.kind=EiemResourceRecipe::Kind(kind);span.source=r.S();span.offset=r.Size();span.size=r.Size();Require(span.size,"compiled index view span empty");extent=AddSize(extent,span.size);
    if(span.kind==EiemResourceRecipe::Literal){span.literal=r.Blob();Require(span.source.empty()&&!span.offset&&span.literal.size()==span.size,"compiled index view literal extent differs");}
    else if(span.kind==EiemResourceRecipe::Original)Require(span.source.empty()&&span.offset<=plan.originals[i].size&&span.size<=plan.originals[i].size-span.offset,"compiled index original extent differs");
-   else Require(a.manifest.package.resources.count(span.source),"compiled index author source absent");view.spans.push_back(std::move(span));
+   else Require(author.resources.count(span.source)||(span.kind==EiemResourceRecipe::ExpandedFrame&&(span.source.rfind("@bounds:",0)==0||span.source.rfind("@literal:",0)==0)),"compiled index author source absent");view.spans.push_back(std::move(span));
   }Require(extent==view.size,"compiled index view coverage differs");count=r.Count();for(size_t j=0;j<count;++j){EiemCompiledInputView::Site site;site.span=r.Size();site.offset=r.Size();site.before=r.S();site.directory=r.B();
    Require(!site.before.empty()&&site.span<view.spans.size()&&view.spans[site.span].kind==EiemResourceRecipe::Literal&&site.offset<=view.spans[site.span].size&&site.before.size()<=view.spans[site.span].size-site.offset,"compiled index namespace extent differs");view.names.push_back(std::move(site));}a.views.push_back(std::move(view));
  }
@@ -64,6 +83,7 @@ inline void ReadNativeViews(EiemOfflinePackage::Reader& r,Artifact& a){
 inline Bytes Encode(const Artifact& a,const std::filesystem::path& game,const std::function<void(const char*,double)>& cost={}){
  auto checkpoint=std::chrono::steady_clock::now();auto report=[&](const char* name){auto now=std::chrono::steady_clock::now();if(cost)cost(name,std::chrono::duration<double,std::milli>(now-checkpoint).count());checkpoint=now;};
  Require(!a.views.empty(),"compiled native views absent; re-export this Mod");
+ if(!a.sharedSchemas.empty())for(size_t i=0;i<a.manifest.plan.inputs.size();++i)HydrateInput(a,i);
  auto portable=a.manifest;auto& plan=portable.plan;Require(a.views.size()==plan.inputs.size(),"compiled index view source coverage differs");
  for(auto& source:plan.originals){source.physical=source.physical.lexically_relative(game);Require(!source.physical.empty()&&!source.physical.is_absolute()&&source.physical.u8string().find("..")==std::string::npos,"compiled source escapes game");}
  plan.spanRecipes=false;plan.memberRecipes.clear();plan.namespaceRecipes.clear();plan.frameRecipes.clear();
@@ -74,7 +94,7 @@ inline Bytes Encode(const Artifact& a,const std::filesystem::path& game,const st
  w.N(a.manifest.plan.originals.size());for(size_t i=0;i<a.manifest.plan.originals.size();++i){const auto& source=a.manifest.plan.originals[i];auto stamp=FileStamp(source.physical);if(a.verifiedSources.size()!=a.manifest.plan.originals.size()||!SameStamp(stamp,a.verifiedSources.at(i))){ReadSource({},source);Require(SameStamp(stamp,FileStamp(source.physical)),"compiled source changed while recording offline stamp");}w.N(stamp.bytes);w.N(stamp.written);}
  const auto& own=a.manifest.plan;w.N(own.frameRecipes.size());for(const auto& frame:own.frameRecipes){w.S(frame.resource);w.S(frame.hash);w.N(frame.offset);w.N(frame.size);w.N(frame.count);for(auto n:frame.stride)w.N(n);for(auto n:frame.start)w.N(n);}
  std::map<std::string,size_t> memberInputs;for(size_t i=0;i<own.inputs.size();++i){auto retained=a.retainedInputDirectories.find(i);
-  if(retained!=a.retainedInputDirectories.end()){Require(a.retainedProofBlocks.count(i)||a.proofReader,"retained input directory lacks compressed proof");for(const auto& name:retained->second.members)Require(memberInputs.emplace(name,i).second,"retained member has multiple inputs");}
+  if(retained!=a.retainedInputDirectories.end()&&a.sharedSchemas.empty()){Require(a.retainedProofBlocks.count(i)||a.proofReader,"retained input directory lacks compressed proof");for(const auto& name:retained->second.members)Require(memberInputs.emplace(name,i).second,"retained member has multiple inputs");}
   else {HydrateInput(a,i);for(const auto& member:own.memberRecipes.at(i))Require(memberInputs.emplace(member.name,i).second,"compiled member has multiple inputs");}}
  report("compiled-encode-source-directory");
  // Each source has its own schema/compression dictionary. Encode independently
@@ -82,11 +102,11 @@ inline Bytes Encode(const Artifact& a,const std::filesystem::path& game,const st
  // Hydration above finishes before workers read the immutable member map.
  std::vector<Bytes> directories(own.inputs.size());proofBlocks.resize(own.inputs.size());
  EiemOfflineCompile::ParallelInputs(own.inputs.size(),[&](size_t i){Writer directoryBytes;auto directory=a.retainedInputDirectories.find(i);
-  if(directory!=a.retainedInputDirectories.end()){const auto& record=directory->second;directoryBytes.Set(record.members);std::set<size_t> unique;
+  if(directory!=a.retainedInputDirectories.end()&&a.sharedSchemas.empty()){const auto& record=directory->second;directoryBytes.Set(record.members);std::set<size_t> unique;
    directoryBytes.N(record.dependencies.size());for(auto dependency:record.dependencies){Require(dependency<own.inputs.size()&&dependency!=i&&unique.insert(dependency).second,"retained input dependency invalid");directoryBytes.N(dependency);}directoryBytes.Set(record.addedBundles);proofBlocks[i]=a.retainedProofBlocks.count(i)?a.retainedProofBlocks.at(i):a.proofReader(i);directories[i]=std::move(directoryBytes.b);return;}
   Writer proof;SchemaWriter schemas;std::set<std::string> members;for(const auto& recipe:own.memberRecipes.at(i))if(a.members.count(recipe.name))members.insert(recipe.name);directoryBytes.Set(members);proof.N(members.size());
   bool provenEdges=a.addedBundles.size()==own.inputs.size();std::set<std::string> added=provenEdges?a.addedBundles.at(i):std::set<std::string>{};std::set<size_t> dependencies;auto add=[&](const std::string& member){auto found=memberInputs.find(member);if(found!=memberInputs.end()&&found->second!=i)dependencies.insert(found->second);};for(const auto& external:own.inputs[i].externals)add(external);
-  bool retained=a.retainedProofBlocks.count(i)!=0;
+  bool retained=a.retainedProofBlocks.count(i)!=0&&a.sharedSchemas.empty();
   for(const auto& name:members){const auto& p=a.members.at(name);if(!retained){proof.S(name);WriteLayout(proof,p.before,schemas);WriteLayout(proof,p.after,schemas);proof.N(p.streams.size());for(const auto& site:p.streams){proof.N(uint64_t(site.object));proof.N(site.offset);proof.N(site.width);proof.S(site.member);proof.N(site.value);}proof.N(p.pristineNamespace.size());for(const auto& patch:p.pristineNamespace){proof.N(patch.offset);proof.S(patch.before);}}
    Require(ExternalPrefix(p.before.externals,p.after.externals),"compiled index external prefix differs");for(const auto& external:p.after.externals)add(external);
    if(!provenEdges)for(size_t n=p.before.externals.size();n<p.after.externals.size();++n){const auto& external=p.after.externals[n];auto found=memberInputs.find(external);if(found==memberInputs.end()){auto shared=own.sharedBundles.find(external);Require(shared!=own.sharedBundles.end(),"compiled index new dependency input absent: "+external);added.insert(shared->second);}else if(found->second!=i){const auto& bundle=own.inputs[found->second].bundle;Require(!bundle.empty(),"compiled index new dependency Bundle absent");added.insert(bundle);}}

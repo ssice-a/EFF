@@ -337,6 +337,7 @@ void *Exact(void *klass, const char *name,
   }
   return found;
 }
+void *Address(void *method) { return method ? ((MInfo *)method)->mp : nullptr; }
 bool HashAbi(void *klass) {
   if (!klass || !il2cpp_class_value_size || !il2cpp_class_get_type ||
       !il2cpp_type_get_type || !il2cpp_class_get_fields ||

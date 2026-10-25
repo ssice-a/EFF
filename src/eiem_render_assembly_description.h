@@ -31,7 +31,7 @@ struct GraphData {
  size_t reusedObjects=0,decodedObjects=0,sourceExtent=0;
  // previousBytes is the immutable input used to construct previous, retained
  // by the calling compiler for this slice's lifetime.
- GraphData(const Bytes& bytes,const std::string& c,const GraphData* previous=nullptr,const Bytes* previousBytes=nullptr):cab(c),layout(ParseSerialized(bytes)),sourceExtent(bytes.size()){
+ GraphData(const Bytes& bytes,const std::string& c,SerializedLayout parsed,const GraphData* previous=nullptr,const Bytes* previousBytes=nullptr):cab(c),layout(std::move(parsed)),sourceExtent(bytes.size()){
   Require(!previous||(previousBytes&&previous->cab==cab&&previousBytes->size()==previous->sourceExtent),"assembly reuse requires matching original member");
   std::vector<bool> sameTypes(layout.types.size(),false);
   if(previous)for(size_t i=0;i<layout.types.size()&&i<previous->layout.types.size();++i){const auto& a=layout.types[i];const auto& b=previous->layout.types[i];
@@ -57,6 +57,8 @@ struct GraphData {
    Require(owner.first==cab&&transforms.emplace(owner.second,row.first).second,"assembly duplicate/nonlocal Transform");
   }
  }
+ GraphData(const Bytes& bytes,const std::string& c,const GraphData* previous=nullptr,const Bytes* previousBytes=nullptr)
+  :GraphData(bytes,c,ParseSerialized(bytes),previous,previousBytes){}
 };
 class Graph {
  std::shared_ptr<const GraphData> data;const std::string& cab;const SerializedLayout& layout;

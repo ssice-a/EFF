@@ -26,6 +26,7 @@ inline void SetFloat(const Type& type, Value& value, double number) {
   uint32_t bits;
   memcpy(&bits, &data, 4);
   value.raw.resize(4);
+  value.rawOrigins.clear();
   WriteInteger(value.raw, 0, bits, 4);
 }
 inline std::pair<std::string, int64_t> PointerIdentity(const Type& type, const Value& pointer,
@@ -115,7 +116,7 @@ inline Value ApplyMaterial(const Type& type, Value value, const Resource& resour
     auto& field = Child(type, value, block.first);
     Bytes bytes(resource.bytes.begin() + block.second.offset,
                 resource.bytes.begin() + block.second.offset + block.second.size);
-    field = DecodeValue(type, field.node, bytes);
+    field = DecodeAuthorValue(type, field.node, bytes, material.resource, resource.bytes, block.second.offset);
     Require(EncodeValue(type, field) == bytes, "Material field representation changed on decode");
   }
   auto& saved = Child(type, value, "m_SavedProperties");
@@ -191,6 +192,7 @@ inline Value ApplyTexture(const Type& type, Value value, const Texture& texture,
   member->bytes.resize(offset);
   member->bytes.insert(member->bytes.end(), resource.bytes.begin() + pixels.offset,
                        resource.bytes.begin() + pixels.offset + pixels.size);
+  EiemAuthorBytes::Append(member->origins, EiemAuthorBytes::MakeRange(texture.resource, resource.bytes, pixels.offset, pixels.size, offset));
   const std::pair<const char*, uint64_t> fields[] = {
       {"m_Width", texture.width}, {"m_Height", texture.height}, {"m_CompleteImageSize", pixels.size},
       {"m_MipsStripped", 0}, {"m_TextureFormat", 4}, {"m_MipCount", texture.mips},
@@ -296,6 +298,7 @@ inline TextureInputBuild BuildTextureInput(EndfieldInput::Bundle& bundle, const 
     auto layout = ParseSerialized(member.bytes);
     auto assets = SerializedAssets(member.bytes, member.name, layout);
     std::map<int64_t, Bytes> changes;
+    std::map<int64_t, AuthorByteSpans> origins;
     std::vector<AddedObject> added;
     std::set<TextureReference> requiredPreloads, referencedPreloads;
     std::set<int64_t> matched;
@@ -308,7 +311,7 @@ inline TextureInputBuild BuildTextureInput(EndfieldInput::Bundle& bundle, const 
               "ambiguous/nonlocal Material/Texture target in current input");
       const auto& object = layout.objects.at(asset.pathId);
       const auto& type = layout.types.at(object.type);
-      auto value = ObjectValue(member.bytes, layout, asset.pathId);
+      auto value = ObjectValue(member.bytes, layout, asset.pathId, &member.origins);
       if (material != materials.end()) {
         for (const auto& authored : material->second) {
         ++result.materialMatches;
@@ -317,10 +320,10 @@ inline TextureInputBuild BuildTextureInput(EndfieldInput::Bundle& bundle, const 
           const auto& target = index.at(package.textures.at(edit.second).source);
           requiredPreloads.insert({target.cab, target.pathId});
         }
+        auto id=AllocateMaterialId(member.name,package,authored.first);
         auto bytes = EncodeValue(type, ApplyMaterial(type, value,
             *package.resources.at(selected.resource), selected, package, index,
-            layout, member.name, result.textureBindings));
-        auto id=AllocateMaterialId(member.name,package,authored.first);
+            layout, member.name, result.textureBindings), &origins[id]);
         Require(!layout.objects.count(id)&&std::none_of(added.begin(),added.end(),[&](const AddedObject& row){return row.id==id;}),"additional Material PathID collision");
         added.push_back({id,object.type,std::move(bytes)});++result.changedMaterials;
         requiredPreloads.insert({member.name,asset.pathId});
@@ -339,7 +342,7 @@ inline TextureInputBuild BuildTextureInput(EndfieldInput::Bundle& bundle, const 
               sourceStreams, record);
           SetString(type, Child(type, clone, "m_Name"),
               selected.source.asset + "__EFF_" + package.id + "_" + authored.first);
-          auto bytes = EncodeValue(type, clone);
+          auto bytes = EncodeValue(type, clone, &origins[id]);
           Require(EncodeValue(type, DecodeValue(type, 0, bytes)) == bytes,
                   "rebuilt Texture TypeTree roundtrip differs");
           added.push_back({id, object.type, std::move(bytes)});
@@ -350,14 +353,16 @@ inline TextureInputBuild BuildTextureInput(EndfieldInput::Bundle& bundle, const 
     }
     for (const auto& row : layout.objects) if (layout.types.at(row.second.type).classId == 142) {
       const auto& type = layout.types.at(row.second.type);
-      auto value = ObjectValue(member.bytes, layout, row.first);
+      auto value = ObjectValue(member.bytes, layout, row.first, &member.origins);
       if (ExpandTexturePreloads(type, value, layout, member.name, expansion, referencedPreloads)) {
-        changes.emplace(row.first, EncodeValue(type, value)); result.changedPreloads = true;
+        changes.emplace(row.first, EncodeValue(type, value, &origins[row.first])); result.changedPreloads = true;
       }
     }
     for (const auto& required : requiredPreloads)
       Require(referencedPreloads.count(required), "authored Texture absent from AssetBundle preload closure");
-    member.bytes = BuildSerialized(member.bytes, layout, changes, added);
+    AuthorByteSpans outputOrigins;
+    member.bytes = BuildSerialized(member.bytes, layout, changes, added, {}, {}, {}, &member.origins, &origins, &outputOrigins);
+    member.origins = std::move(outputOrigins);
   }
   return result;
 }

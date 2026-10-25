@@ -288,6 +288,7 @@ void Setup(){
  FullResourceReload::originalPartFinished=[](void*,void*){Require(RuntimeShapes::nativeVisibilityReadDepth!=0,"complex model completion did not protect the game's initial Renderer snapshot");};
  FullResourceReload::originalBasePartFinished=[](void*,void*){Require(RuntimeShapes::nativeVisibilityReadDepth!=0,"base model completion did not protect the game's initial Renderer snapshot");};
  FullResourceReload::originalPartReleased=[](void*,void*){currentRoot=nullptr;};
+ FullResourceReload::originalComplexPartReleased=[](void* self,void* info){FullResourceReload::PartReleased(self,info);};
  FullResourceReload::originalPartLoading=[](void*,void*,void*,void*){if(completePartLoading){currentRoot=NativeCreate(source);FullResourceReload::PartFinished(mainPart,nullptr);}};
  FullResourceReload::originalPartConfigured=[](void*,void*,void*){};
  FullResourceReload::originalPartAdded=[](void*,void*,void*){};
@@ -365,6 +366,31 @@ void IdlePoolRegression(){
  using namespace FullResourceReload;Reset();auto a=MakeAttempt();a.owners.clear();currentRoot=nullptr;
  Rebuild(a);Require(a.phase==Phase::Passed&&discardCalls==1&&!removeCalls&&!loadCalls,"F10 did not discard a matched prefab's idle pool without a live owner");
  Require(Clone(source)==newRoot,"a character first loaded after F10 did not receive the committed prefab");Reset();
+}
+void CachedPrefabGenerationRegression(){
+ using namespace FullResourceReload;Reset();
+ auto first=MakeAttempt();first.owners.clear();currentRoot=nullptr;Rebuild(first);
+ // The game may obtain another AssetProxy for the same exact path and cache
+ // either that source or the candidate returned by a prior resource get.
+ RouteObserved(first,0,unrelatedRoot);
+ Require(Routed(unrelatedRoot)==candidate,"initial same-path alias was not routed");
+ auto next=MakeAttempt();next.prepared->base=generation.load();next.owners.clear();
+ next.assets.front().prefab=Ref::Make(lazyCandidate,false);Rebuild(next);
+ Require(Routed(unrelatedRoot)==lazyCandidate,"next F10 left a previously observed source alias on the old prefab");
+ Require(Routed(candidate)==lazyCandidate,"next F10 left a cached prior-generation prefab on old resources");
+ Require(Routed(lazyCandidate)==lazyCandidate,"current-generation prefab must preserve its identity");
+ Require(CandidateForObserved(next,0,lazyCandidate)==lazyCandidate,"a cached current-generation handle was treated as a source alias error");
+ auto stable=std::atomic_load(&routes);auto handleCount=handles.size();
+ for(unsigned repeat=0;repeat<100;++repeat)RouteObserved(next,0,source);
+ Require(std::atomic_load(&routes)==stable&&handles.size()==handleCount,"repeated prefab reads copied the route table or allocated new GC handles");
+ auto selection=MakeAttempt();selection.selectedRoots.clear();selection.selectionRevision=~ownerRevision;
+ Require(liveParts.empty()&&liveUIModels.empty()&&observedPrefabs.empty(),"cached-only regression unexpectedly has visible owners");
+ Require(SelectObservedRoots(selection)&&selection.selectedRoots.count(0),"a cached-only prefab was omitted from the next generation's native preparation");
+ auto committed=std::atomic_load(&routes);auto third=MakeAttempt();third.prepared->base=generation.load();
+ currentRoot=oldRoot;rejectVertex=true;bool rejected=false;try{Rebuild(third);}catch(const std::exception&){rejected=true;}
+ Require(rejected&&std::atomic_load(&routes)==committed&&Routed(unrelatedRoot)==lazyCandidate&&Routed(candidate)==lazyCandidate,
+         "failed F10 did not restore all cached prefab aliases to the previous generation");
+ Reset();
 }
 void RootPathRegression(){
  using namespace FullResourceReload;auto prepared=Prepare();
@@ -1115,6 +1141,39 @@ void UILateProxyRoutingRegression(){
   "later UI proxy instantiation used old resources after the submission route ended");
  Reset();
 }
+void UIWaitCachedAliasRegression(){
+ using namespace FullResourceReload;
+ for(bool cancel:{false,true}){
+  Reset();auto previous=MakeAttempt();previous.assets.front().prefab=Ref::Make(lazyCandidate,false);RouteObserved(previous,0,source);
+  UIAsync(uiLoader,StringValue(modelPath),factoryParent,uiCallback,nullptr);UIComplete(uiClosure,uiProxy,nullptr);
+  currentRoot=nullptr;auto next=MakeAttempt();next.owners.clear();DiscoverOwners(next);uiDelayed=true;Rebuild(next);
+  Require(next.phase==Phase::UIWait,"UI alias regression did not reach asynchronous staging");
+  RouteObserved(previous,0,unrelatedRoot);
+  if(cancel){
+   AbortUIStaging(next);
+   Require(Routed(unrelatedRoot)==lazyCandidate,"cancelling staged UI discarded a source alias observed during the wait");
+   UIComplete(uiClosure,uiProxy,nullptr);
+  }else{
+   UIComplete(uiClosure,uiProxy,nullptr);Rebuild(next);
+   Require(next.phase==Phase::Passed&&Routed(unrelatedRoot)==candidate,"UI commit lost a source alias observed during asynchronous staging");
+  }
+ }
+ Reset();
+}
+void UIWaitNewCachedRootRegression(){
+ using namespace FullResourceReload;Reset();
+ UIAsync(uiLoader,StringValue(modelPath),factoryParent,uiCallback,nullptr);UIComplete(uiClosure,uiProxy,nullptr);
+ currentRoot=nullptr;auto next=MakeAttempt();auto plan=std::make_shared<Plan>(*next.prepared->plan);
+ plan->roots.push_back(plan->roots.front());plan->roots.back().path="assets/other.prefab";next.prepared->plan=plan;
+ next.assets.resize(2);next.leases.resize(2);next.owners.clear();DiscoverOwners(next);uiDelayed=true;Rebuild(next);
+ auto previous=MakeAttempt();auto oldPlan=std::make_shared<Plan>(*previous.prepared->plan);oldPlan->roots.front().path="assets/other.prefab";previous.prepared->plan=oldPlan;
+ previous.assets.front().prefab=Ref::Make(lazyCandidate,false);RouteObserved(previous,0,unrelatedRoot);
+ auto oldRoutes=std::atomic_load(&routes);UIComplete(uiClosure,uiProxy,nullptr);bool refused=false;
+ try{Rebuild(next);}catch(const std::exception&){AbortUIStaging(next);refused=true;}
+ Require(refused&&generation==2&&uiRoot==oldRoot&&std::atomic_load(&routes)==oldRoutes&&Routed(unrelatedRoot)==lazyCandidate,
+         "UI wait published an unprepared late cached root or lost the previous generation's route");
+ Reset();
+}
 void UIDelayedFrameRegression(){
  using namespace FullResourceReload;
  struct Cleanup {~Cleanup(){attempt.reset();pending.reset();std::atomic_store(&requested,std::shared_ptr<const Ticket>{});std::atomic_store(&latest,std::shared_ptr<const EiemOfflinePackage::Pointer>{});std::atomic_store(&failedKey,std::shared_ptr<const std::string>{});enabled=false;RuntimeShapes::enabled=false;Reset();}}cleanup;
@@ -1316,6 +1375,24 @@ void ReleasedPoolRegression(){
  Require(a.owners.empty(),"released pooled model still counted as a live owner");
  currentRoot=oldRoot;PartConfigured(mainPart,configBox,nullptr);BasePartFinished(mainPart,nullptr);a.owners.clear();DiscoverOwners(a);
  Require(a.owners.size()==1&&a.owners.front().viewPart,"base display completion did not record the game's reused view part");Reset();
+}
+void ComplexReleasedPoolRegression(){
+ using namespace FullResourceReload;Reset();RecordPart();BindWorld();
+ auto snapshots=RuntimeShapes::groups.size();ComplexPartReleased(mainPart,nullptr);
+ Require(!liveParts.count(mainPart)&&!RuntimeShapes::bound.count(oldRenderer)&&RuntimeShapes::Alive(oldRenderer)&&RuntimeShapes::groups.size()==snapshots,
+         "ComplexModelViewPart virtual release left its pooled Renderer registered");
+ auto a=MakeAttempt();a.owners.clear();DiscoverOwners(a);
+ Require(a.owners.empty(),"ComplexModelViewPart pooled model still counted as a live owner");Reset();
+}
+void NestedComplexReleaseRegression(){
+ using namespace FullResourceReload;Reset();RecordPart();BindWorld();static unsigned baseCalls=0;baseCalls=0;
+ auto saved=originalPartReleased;auto savedComplex=originalComplexPartReleased;
+ originalPartReleased=[](void*,void*){++baseCalls;currentRoot=nullptr;};
+ originalComplexPartReleased=[](void* self,void* info){PartReleased(self,info);};
+ ComplexPartReleased(mainPart,nullptr);
+ Require(baseCalls==1&&!liveParts.count(mainPart)&&!RuntimeShapes::bound.count(oldRenderer)&&RuntimeShapes::Alive(oldRenderer),
+         "nested virtual/base release did not retire exactly one pooled owner");
+ originalPartReleased=saved;originalComplexPartReleased=savedComplex;Reset();
 }
 void DisplayOverrideRegression(){
  using namespace FullResourceReload;Reset();auto a=MakeAttempt();auto& owner=a.owners.front();owner.viewPart=true;
@@ -1924,6 +2001,8 @@ int main(int argc,char** argv){
   check("UI model completion visibility",UIControlCompletionRegression);
   check("UI delayed completion keeps displayed model",UIDelayedCompletionRegression);
   check("UI asynchronous proxy retains candidate route",UILateProxyRoutingRegression);
+  check("UI wait retains newly cached prefab aliases",UIWaitCachedAliasRegression);
+  check("UI wait rejects a newly cached unprepared root",UIWaitNewCachedRootRegression);
   check("UI delayed completion through Frame",UIDelayedFrameRegression);
   check("UI model lifecycle reload",UIModelReloadRegression);
   check("synchronous world owner",SynchronousOwnerRegression);
@@ -1946,7 +2025,7 @@ int main(int argc,char** argv){
 #if defined(EIEM_DIAGNOSTICS)
   check("animation attachment probe contract",AnimationAttachmentProbeRegression);check("unmodified skin probe contract",UnmodifiedSkinProbeRegression);check("actual performance attachment probe",PerformanceProbeRegression);check("native resource release probe",PerformanceReleaseProbeRegression);
 #endif
-  check("native lifecycle",NativeLifecycleRegression);check("typed character audio",[]{typedAudioOnly=true;NativeLifecycleRegression();typedAudioOnly=false;});check("texture identity",TextureIdentityRegression);check("shared material identity",SharedMaterialIdentityRegression);check("load scheduling",PrewarmScheduleRegression);check("committed retry",CommittedRetryRegression);check("released pool",ReleasedPoolRegression);check("display virtual override",DisplayOverrideRegression);check("rule memory loads",RuleMemoryRegression);check("native byte stream ownership",NativeByteStreamRegression);
+  check("native lifecycle",NativeLifecycleRegression);check("typed character audio",[]{typedAudioOnly=true;NativeLifecycleRegression();typedAudioOnly=false;});check("texture identity",TextureIdentityRegression);check("shared material identity",SharedMaterialIdentityRegression);check("load scheduling",PrewarmScheduleRegression);check("committed retry",CommittedRetryRegression);check("released pool",ReleasedPoolRegression);check("complex released pool",ComplexReleasedPoolRegression);check("nested complex release",NestedComplexReleaseRegression);check("display virtual override",DisplayOverrideRegression);check("rule memory loads",RuleMemoryRegression);check("native byte stream ownership",NativeByteStreamRegression);
   check("selected Bundle closure",SelectedBundleClosureRegression);
   check("consecutive F10 Bundle reuse and ownership",RepeatedBundleReloadRegression);
   check("latest publication",LatestPublicationRegression);check("offline failure cancellation",OfflineRejectionRegression);check("startup",StartupNoWorldRegression);check("Mesh gate",ChangedMeshGateRegression);check("retirement",RetirementRegression);
@@ -1962,6 +2041,7 @@ int main(int argc,char** argv){
   check("add first/current vanilla character",[]{FullFrameRegression(false,true);});check("delete last world Mod",[]{FullFrameRegression(false,true,true);});
   check("delete last display Mod",[]{FullFrameRegression(true,true,true);});check("membership preflight",MembershipPreflightRegression);
   check("pristine identity",PristineIdentityRegression);check("Mod set native commit",ModSetCommitRegression);check("idle pools",IdlePoolRegression);
+  check("cached prefab generation",CachedPrefabGenerationRegression);
   auto graph=std::make_shared<const std::vector<Package>>();std::atomic_store(&published,graph);
   // Fail AFTER a new native instance exists. Restore routes and rebuild through
   // the game lifecycle, then verify the old native Mesh identities.

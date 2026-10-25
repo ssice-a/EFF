@@ -12,7 +12,7 @@ inline EiemStaticSources::Selection Merge(const EiemStaticSources::Selection& cu
  EiemStaticSources::Validate(current);EiemStaticSources::Validate(previous);EiemCompiledModStore::VerifySourceSelection(published,previous);
  // Only a complete index verified against today's installed VFS can retire
  // or supersede old discoveries. A partial selection still cannot resolve it.
- if(currentSelectionComplete&&RevisionsChanged(current,previous))return current;
+ if(currentSelectionComplete)return current;
  auto result=current;
  for(const auto& row:previous.inputs){auto found=result.inputs.find(row.first);
   if(found==result.inputs.end())result.inputs.emplace(row);

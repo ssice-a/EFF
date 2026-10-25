@@ -78,7 +78,21 @@ inline void ReadAuthorReference(Reader& r,const Package& package,const std::stri
 }
 inline Package ReadAuthor(Reader& r,const std::filesystem::path& modRoot,bool references=false,const std::filesystem::path& exactRoot={}){
  Package p;p.id=r.S();auto folder=r.S();Require(Identifier(p.id)&&Identifier(folder)&&folder!="."&&folder!="..", "offline Mod identity/folder");p.root=exactRoot.empty()?modRoot/std::filesystem::u8path(folder):exactRoot;r.Raw(p.iniHash.data(),32);
- auto n=r.Count();for(size_t i=0;i<n;++i){auto key=r.S();auto v=std::make_shared<Resource>();v->kind=r.U();Require(v->kind!=0,"offline resource kind");r.Raw(v->type.data(),16);if(references){auto hash=r.S();ReadAuthorReference(r,p,key,hash,*v);}else {v->bytes=r.Blob();v->contentHash=Hash(v->bytes);}auto blocks=r.Count();for(size_t j=0;j<blocks;++j){auto name=r.S();Block b;b.offset=r.Size();b.size=r.Size();r.Raw(b.digest.data(),32);Require(b.offset<=v->bytes.size()&&b.size<=v->bytes.size()-b.offset&&v->blocks.emplace(name,b).second,"offline resource block range/duplicate");}Require(p.resources.emplace(key,v).second,"offline duplicate resource");}
+ auto n=r.Count();for(size_t i=0;i<n;++i){
+  auto key=r.S();auto v=std::make_shared<Resource>();std::shared_ptr<const Resource> shared;
+  v->kind=r.U();Require(v->kind!=0,"offline resource kind");r.Raw(v->type.data(),16);
+  if(references){auto hash=r.S();
+   if(r.verifiedAuthor&&r.verifiedAuthor->id==p.id){auto found=r.verifiedAuthor->resources.find(key);
+    if(found!=r.verifiedAuthor->resources.end()&&found->second->kind==v->kind&&found->second->type==v->type&&ResourceContentHash(*found->second)==hash)shared=found->second;}
+   if(!shared)ReadAuthorReference(r,p,key,hash,*v);
+  }else {v->bytes=r.Blob();v->contentHash=Hash(v->bytes);}
+  auto blocks=r.Count();auto size=shared?shared->bytes.size():v->bytes.size();
+  for(size_t j=0;j<blocks;++j){auto name=r.S();Block b;b.offset=r.Size();b.size=r.Size();r.Raw(b.digest.data(),32);
+   Require(b.offset<=size&&b.size<=size-b.offset&&v->blocks.emplace(name,b).second,"offline resource block range/duplicate");}
+  if(shared){Require(v->blocks.size()==shared->blocks.size(),"offline shared resource block coverage differs");
+   for(const auto& block:v->blocks){auto found=shared->blocks.find(block.first);Require(found!=shared->blocks.end()&&block.second.offset==found->second.offset&&block.second.size==found->second.size&&block.second.digest==found->second.digest,"offline shared resource block directory differs");}}
+  Require(p.resources.emplace(key,shared?shared:std::shared_ptr<const Resource>(v)).second,"offline duplicate resource");
+ }
  n=r.Count();for(size_t i=0;i<n;++i){auto k=r.S();Mesh v;v.resource=r.S();v.vertices=r.U();v.indices=r.U();v.bones=r.Strings();v.shapes=r.Strings();Require(v.vertices&&p.resources.count(v.resource)&&p.resources.at(v.resource)->kind==1&&p.meshes.emplace(k,std::move(v)).second,"offline Mesh descriptor");}
  n=r.Count();for(size_t i=0;i<n;++i){auto k=r.S();EiemDirectory::Material v;v.resource=r.S();v.source=r.Id();v.textures=r.StringsMap();Require(p.resources.count(v.resource)&&p.resources.at(v.resource)->kind==2&&p.materials.emplace(k,std::move(v)).second,"offline Material descriptor");}
  n=r.Count();for(size_t i=0;i<n;++i){auto k=r.S();EiemDirectory::Texture v;v.resource=r.S();v.source=r.Id(true);v.width=r.U();v.height=r.U();v.mips=r.U();v.filter=r.U();v.wrap=r.U();v.aniso=r.U();v.linear=r.B();v.bias=r.D();Require(v.width&&v.height&&v.mips&&p.resources.count(v.resource)&&p.resources.at(v.resource)->kind==4&&p.textures.emplace(k,std::move(v)).second,"offline Texture descriptor");}

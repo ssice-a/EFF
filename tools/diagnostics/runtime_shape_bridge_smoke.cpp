@@ -21,7 +21,7 @@ std::map<uint32_t,void*> handles;
 uint32_t nextHandle=0;
 int frame=7;float elapsed=.25f,weight=0;unsigned weightWrites=0;
 void* controlledMesh=nullptr;
-struct MeshFacts {int vertices=0,shapes=0;std::vector<unsigned char> name;};
+struct MeshFacts {int vertices=0,shapes=0;std::vector<unsigned char> name;std::vector<std::vector<unsigned char>> channels;};
 std::map<void*,MeshFacts> meshes;
 std::map<void*,void*> renderMeshes;
 std::map<void*,unsigned char> renderEnabled;
@@ -42,6 +42,7 @@ void MakeMesh(void* mesh,const RuntimeShapes::Spec& spec) {
   facts.name.resize(20+spec.marker.size()*2);int length=int(spec.marker.size());
   std::memcpy(facts.name.data()+16,&length,4);
   for(size_t i=0;i<spec.marker.size();++i) {wchar_t c=spec.marker[i];std::memcpy(facts.name.data()+20+i*2,&c,2);}
+  for(const auto& channel:spec.channels){std::vector<unsigned char> text(20+channel.size()*2);int count=int(channel.size());std::memcpy(text.data()+16,&count,4);for(size_t i=0;i<channel.size();++i){wchar_t c=channel[i];std::memcpy(text.data()+20+i*2,&c,2);}facts.channels.push_back(std::move(text));}
   meshes[mesh]=std::move(facts);
 }
 void* Invoke(void* method,void* self,void** args,void** exception) {
@@ -62,6 +63,7 @@ void* Invoke(void* method,void* self,void** args,void** exception) {
   if (method==(void*)0x307) return &meshes.at(self).vertices;
   if (method==(void*)0x308) {++enabledReads;enabledReadResult=RuntimeShapes::originalEnabledGetter?RuntimeShapes::GetEnabled(self):renderEnabled.at(self);return &enabledReadResult;}
   if (method==(void*)0x309) return &meshes.at(self).shapes;
+  if (method==(void*)0x318) return meshes.at(self).channels.at(*(int*)args[0]).data();
   if (method==(void*)0x310) {++modelReads;Require((self==(void*)0x312||self==(void*)0x313)&&args&&args[0]==(void*)0x311&&*(unsigned char*)args[1]==1,"controls queried outside the completed model or omitted inactive children");return &modelRenderers[self==(void*)0x313?1:0];}
   if (method==(void*)0x304) return &weight;
   if (method==(void*)0x305) {weight=*(float*)args[1];++weightWrites;return nullptr;}
@@ -385,10 +387,17 @@ int main(int argc,char** argv) {
       const auto savedHeld=RuntimeShapes::held;const auto savedGraph=RuntimeShapes::controlGraph;
       const auto savedSetter=RuntimeShapes::originalEnabledSetter;
       RuntimeShapes::LoadControls(graph);
+      for(const auto& rule:package.rules)if(!rule.second.skip)for(const auto& target:rule.second.targets)for(const auto& part:rule.second.parts){
+        const auto& stable=RuntimeControls::specs.at(RuntimePartName(package,part,target.second));
+        const auto& legacy=RuntimeControls::specs.at(LegacyRuntimePartName(package,part,target.second));
+        Require(stable.package==legacy.package&&stable.part==legacy.part&&stable.channels==legacy.channels&&stable.controls==legacy.controls&&stable.material==legacy.material,"legacy and stable Mesh controls differ");
+      }
       Require(RuntimeShapes::keys.at(package.id).size()==package.bindings.size(),"non-shape package bindings omitted");
       RuntimeShapes::api.name=(void*)0x306;RuntimeShapes::api.mesh=(void*)0x303;
       RuntimeShapes::api.vertexCount=(void*)0x307;RuntimeShapes::api.getEnabled=(void*)0x308;
       RuntimeShapes::api.shapeCount=(void*)0x309;RuntimeShapes::api.modelRenderers=(void*)0x310;
+      RuntimeShapes::api.shapeName=(void*)0x318;
+      RuntimeShapes::api.getWeight=(void*)0x304;RuntimeShapes::api.setWeight=(void*)0x305;
       RuntimeShapes::api.rendererType=(void*)0x311;RuntimeShapes::api.alive=(void*)1;
       RuntimeShapes::originalEnabledSetter=Test::Enabled;
       std::set<std::string> parts;std::map<std::string,void*> firstRenderer;

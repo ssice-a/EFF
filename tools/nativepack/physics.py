@@ -24,6 +24,69 @@ class Writer:
         self.data.extend(struct.pack('<' + str(len(values)) + 'd', *values))
 
 
+class Reader:
+    def __init__(self, data): self.data, self.pos = data, 0
+    def take(self, size):
+        require(0 <= size <= len(self.data) - self.pos, 'truncated Physics resource')
+        value = self.data[self.pos:self.pos + size]; self.pos += size
+        return value
+    def n(self): return struct.unpack('<Q', self.take(8))[0]
+    def count(self):
+        value = self.n()
+        require(value <= len(self.data), 'invalid Physics resource count')
+        return value
+    def text(self):
+        size = self.count()
+        try: return self.take(size).decode('utf-8')
+        except UnicodeDecodeError as error: raise ValueError('invalid Physics resource string') from error
+    def blob(self): return self.take(self.count())
+    def numbers(self, count): return struct.unpack('<' + str(count) + 'd', self.take(count * 8))
+
+
+def read_resource_layout(data):
+    """Read stable target/topology metadata from a previously exported resource."""
+    reader = Reader(data)
+    require(reader.text() == STRUCTURE, 'unsupported Physics resource structure')
+    resource_id = reader.text()
+    require(bool(resource_id), 'empty Physics resource identity')
+    skeleton = []
+    for _ in range(reader.count()):
+        path, parent = reader.text(), reader.text()
+        is_source, has_parent = reader.n(), reader.n()
+        require(is_source in (0, 1) and has_parent in (0, 1), 'invalid Physics skeleton flags')
+        require(all(row[0] != path for row in skeleton), 'duplicate Physics skeleton path')
+        require((has_parent and any(row[0] == parent for row in skeleton)) or
+                (not has_parent and not skeleton), 'unknown/inconsistent Physics skeleton parent')
+        skeleton.append((path, parent, bool(is_source), bool(has_parent), reader.numbers(10)))
+    for _ in range(reader.count()):
+        reader.text(); reader.blob()
+    collider_ids = set()
+    for _ in range(reader.count()):
+        collider_id, name, bone, cab = (reader.text() for _ in range(4))
+        reader.n(); reader.numbers(7)
+        require(bool(collider_id) and collider_id not in collider_ids, 'duplicate Physics collider identity')
+        collider_ids.add(collider_id)
+    groups = {}
+    for _ in range(reader.count()):
+        group_id, name, cab = (reader.text() for _ in range(3))
+        reader.n()
+        targets = [(reader.text(), reader.text()) for _ in range(reader.count())]
+        nodes = []
+        for _ in range(reader.count()):
+            path, role = reader.text(), reader.n()
+            require(role in (0, 1), 'invalid Physics group node')
+            nodes.append((path, bool(role)))
+        colliders = [reader.text() for _ in range(reader.count())]
+        require(group_id and targets and group_id not in groups and
+                len(targets) == len(set(targets)) and len(nodes) == len(set(nodes)) and
+                len(colliders) == len(set(colliders)) and set(colliders) <= collider_ids,
+                'invalid Physics group identity/targets/topology')
+        groups[group_id] = dict(name=name, targets=targets, nodes=nodes,
+                                colliders=colliders)
+    require(reader.pos == len(reader.data), 'unreferenced Physics resource bytes')
+    return dict(identity=resource_id, skeleton=skeleton, groups=groups)
+
+
 def empty(schema):
     if schema.type == 'Array': return Value(schema, [])
     if schema.type in ('string', 'TypelessData'): return from_data(schema, '' if schema.type == 'string' else b'')

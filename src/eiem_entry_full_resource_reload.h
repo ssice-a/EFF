@@ -16,7 +16,7 @@ struct Bundle {Ref path,request,object,bytes;std::shared_ptr<NativeBundle::FileH
 // generations hold the lease; the index never extends native lifetime.
 std::map<std::pair<std::string,std::string>,std::weak_ptr<SharedBundle>> bundleCache;
 struct Asset {Ref label,request,prefab;bool done=false;};
-struct Route {Ref source,candidate;int sourceId=0,candidateId=0;};
+struct Route {Ref source,candidate;int sourceId=0,candidateId=0;std::string path;};
 using Routes=std::vector<Route>;
 struct UIModelRequest {Ref loader,callback,closure,proxy,root,instantiateProxy,candidatePrefab;std::string path,error;uint64_t pathHash=0;void* completionInfo=nullptr;int id=0;bool submitted=false,completed=false,cancelled=false,delivered=false;};
 struct Owner {Ref entity,component,root,pathHash;std::string path;int oldRootId=0;std::map<std::string,std::pair<unsigned,int>> originalMeshes;bool viewPart=false;Ref config;
@@ -192,7 +192,7 @@ Ref Type(void* klass){Require(klass,"reload type absent");return Ref::Make(il2cp
 Ref prefabType,rendererType,characterAudioType;
 using PartFinishedFn=void(*)(void*,void*);
 PartFinishedFn originalPartFinished=nullptr;
-PartFinishedFn originalBasePartFinished=nullptr,originalPartReleased=nullptr;
+PartFinishedFn originalBasePartFinished=nullptr,originalPartReleased=nullptr,originalComplexPartReleased=nullptr;
 using PartLoadingFn=void(*)(void*,void*,void*,void*);
 PartLoadingFn originalPartLoading=nullptr;
 // BaseModelComponent._LoadMainModelInternal performs the same release/configure/load
@@ -392,21 +392,26 @@ void BasePartFinished(void* self,void* info){
  if(!Inherits(self,"Beyond.Gameplay.View","ComplexModelViewPart"))RecordPartFinished(self);
 }
 std::vector<Ref> Components(void* root);
-void PartReleased(void* self,void* info){
+thread_local unsigned partReleaseDepth=0;
+void ObservePartReleased(void* self,void* info,PartFinishedFn original){
+ if(!RuntimeShapes::Main()){original(self,info);return;}
+ bool outer=partReleaseDepth++==0;
+ struct ReleaseDepthScope{~ReleaseDepthScope(){--partReleaseDepth;}} releaseDepth;
+ if(!outer){original(self,info);return;}
  std::vector<Ref> renderers;
  bool incoming=PartLoadScope::Contains(self);
  try{if(RuntimeShapes::Main())if(auto model=MainModelLoadScope::Owner(self)){
   RecordMainPartOwner(model,self);incoming=true;
  }}catch(const std::exception& e){Log("[FULL-RELOAD-PART-GAP] internalMainPartRelease=%s",e.what());}
- try{if(RuntimeShapes::Main()&&!RuntimeShapes::bound.empty()){
-  auto root=ReadObject(self,"m_model","UnityEngine.GameObject");if(RuntimeShapes::Alive(root))renderers=Components(root);
- }}catch(const std::exception& e){Log("[FULL-RELOAD-PART-GAP] releaseControlRegistration=%s",e.what());}
- try {if(RuntimeShapes::Main())EffectDebug::OwnerReleasing(ReadObject(self,"m_model","UnityEngine.GameObject"));}
+ void* releasedRoot=nullptr;
+ try{
+  releasedRoot=ReadObject(self,"m_model","UnityEngine.GameObject");
+  if(RuntimeShapes::Alive(releasedRoot)&&!RuntimeShapes::bound.empty())renderers=Components(releasedRoot);
+ }catch(const std::exception& e){Log("[FULL-RELOAD-PART-GAP] releaseControlRegistration=%s",e.what());}
+ try{if(releasedRoot)EffectDebug::OwnerReleasing(releasedRoot);}
  catch(const std::exception& e){Log("[EFFECT-NATIVE-CLEANUP-GAP] partRelease=%s",e.what());}
- auto releasedRoot=ReadObject(self,"m_model","UnityEngine.GameObject");
- RuntimeAttachments::OwnerReleasing(releasedRoot);if(RuntimeShapes::Main())ForgetHelperModels(releasedRoot);
- originalPartReleased(self,info);
- if(!RuntimeShapes::Main())return;
+ if(releasedRoot){RuntimeAttachments::OwnerReleasing(releasedRoot);ForgetHelperModels(releasedRoot);}
+ original(self,info);
  // ReleaseModel can return a still-alive root to the game's path pool.
  // It is no longer a live owner; native captures retain their own snapshots.
  for(const auto& renderer:renderers)RuntimeShapes::bound.erase(renderer.Get());
@@ -419,6 +424,8 @@ void PartReleased(void* self,void* info){
  }else liveParts.erase(self);
  ++ownerRevision;
 }
+void PartReleased(void* self,void* info){ObservePartReleased(self,info,originalPartReleased);}
+void ComplexPartReleased(void* self,void* info){ObservePartReleased(self,info,originalComplexPartReleased);}
 std::vector<Ref> Components(void* root);
 #include "eiem_entry_ui_models.h"
 bool RootContains(void* parentRoot,void* childRoot){
@@ -660,11 +667,36 @@ Lease LeaseObserved(const std::string& path,void* source){
  l.handle=Ref::Make(Call(api.load,nullptr,args),false);Require(l.handle.Get(),"observed prefab dependency lease null");
  l.done=RuntimeShapes::Scalar<unsigned char>(api.done,Self(l.handle,api.handleClass))!=0;l.source=Ref::Make(source,false);l.shared=true;sourceLeases[path]=l;return l;
 }
+void PruneRoutes(Routes& next){
+ next.erase(std::remove_if(next.begin(),next.end(),[](const auto& r){return !RuntimeShapes::Alive(r.source.Get())||Id(r.source.Get())!=r.sourceId;}),next.end());
+}
+void RetargetRoutes(Routes& next,const std::string& assetPath,void* source,const Ref& candidate){
+ auto path=NormalizeAssetPath(assetPath);auto candidateId=Id(candidate.Get());std::map<void*,Ref> cached;
+ for(auto& route:next)if(route.path==path){
+  // A game cache can retain either an original AssetProxy or a prefab we
+  // returned in an earlier generation. Both must follow this exact root.
+  if(route.candidate.Get()!=candidate.Get()&&RuntimeShapes::Alive(route.candidate.Get())&&Id(route.candidate.Get())==route.candidateId)cached.emplace(route.candidate.Get(),route.candidate);
+  route.candidate=candidate;route.candidateId=candidateId;
+ }
+ auto add=[&](void* object){
+  if(object==candidate.Get())return;
+  auto id=Id(object);auto found=std::find_if(next.begin(),next.end(),[&](const auto& r){return r.source.Get()==object;});
+  Require(found==next.end()||found->path==path,"one prefab source is registered for different resource paths");
+  // Historical sources are weak: routing must not keep every old Mesh and
+  // Texture alive. The game/source leases own sources; this generation owns
+  // only the current candidate.
+  Route route{Ref::Make(object,true),candidate,id,candidateId,path};
+  if(found==next.end())next.push_back(std::move(route));else *found=std::move(route);
+ };
+ add(source);for(const auto& old:cached)add(old.first);
+}
 void RouteObserved(Attempt& a,size_t index,void* source){
- auto& asset=a.assets.at(index);Require(RuntimeShapes::Alive(source)&&RuntimeShapes::Alive(asset.prefab.Get())&&Id(source)!=Id(asset.prefab.Get()),"observed prefab candidate aliases source");
- auto next=std::make_shared<Routes>(*std::atomic_load(&routes));auto it=std::find_if(next->begin(),next->end(),[&](const auto& r){return r.source.Get()==source;});
- Route route{Ref::Make(source,false),asset.prefab,Id(source),Id(asset.prefab.Get())};if(it==next->end())next->push_back(std::move(route));else *it=std::move(route);
- std::atomic_store(&routes,std::shared_ptr<const Routes>(next));
+ auto& asset=a.assets.at(index);Require(RuntimeShapes::Alive(source)&&RuntimeShapes::Alive(asset.prefab.Get()),"observed prefab source/candidate retired");
+ if(source==asset.prefab.Get())return;
+ auto current=std::atomic_load(&routes);auto found=std::find_if(current->begin(),current->end(),[&](const auto& r){return r.source.Get()==source;});
+ if(found!=current->end()&&found->sourceId==Id(source)&&found->candidate.Get()==asset.prefab.Get()&&found->candidateId==Id(asset.prefab.Get()))return;
+ auto next=std::make_shared<Routes>(*current);PruneRoutes(*next);RetargetRoutes(*next,a.prepared->plan->roots.at(index).path,source,asset.prefab);
+ std::atomic_store(&routes,std::shared_ptr<const Routes>(next));++ownerRevision;
 }
 void EnsureObservedBundles(Attempt& a,size_t root);
 void* CandidateForObserved(Attempt& a,size_t index,void* source){
@@ -914,6 +946,12 @@ void Install(void** assemblies,size_t count){
   Require(Entry::Install(basePart,"SetupData",{"Beyond.Gameplay.View.BaseModelViewPartData"},"System.Void",false,(void*)PartConfigured,(void**)&originalPartConfigured),"model part configuration lifecycle hook unavailable");
   Require(Entry::Install(basePart,"PostDealLoadedModel",{},"System.Void",false,(void*)BasePartFinished,(void**)&originalBasePartFinished),"base view part completion lifecycle hook unavailable");
   Require(Entry::Install(basePart,"ReleaseModel",{},"System.Void",false,(void*)PartReleased,(void**)&originalPartReleased),"model part release lifecycle hook unavailable");
+  auto complexRelease=Entry::Exact(complexPart,"ReleaseModel",{},"System.Void",false);
+  Require(complexRelease,"complex model part ReleaseModel override unavailable");
+  if(Entry::Address(complexRelease)==Entry::Address(api.partRelease)){
+   originalComplexPartReleased=originalPartReleased;
+   Log("[ENTRY-HOOK] ComplexModelViewPart.ReleaseModel shares base native entry");
+  }else Require(Entry::Install(complexPart,"ReleaseModel",{},"System.Void",false,(void*)ComplexPartReleased,(void**)&originalComplexPartReleased),"complex model part release lifecycle hook unavailable");
   auto callbackType=PartCallbackType(basePart);
   Require(Entry::Install(basePart,"LoadModel",{"Beyond.Gameplay.View.BaseModelViewPartData",callbackType.c_str()},"System.Void",false,(void*)PartLoading,(void**)&originalPartLoading),"model part owner lifecycle hook unavailable");
   Require(Entry::Install(model,"_LoadMainModelInternal",{"System.Boolean","System.Action"},"System.Void",false,(void*)MainModelInternal,(void**)&originalMainModelInternal),"internal main-model lifecycle hook unavailable");
@@ -1275,7 +1313,9 @@ void* ModelManager(){return ReadManager(api.modelManager);}
 void Follow(const Owner& owner){if(owner.viewPart)return;auto effects=Ref::Make(ReadManager(api.effectManager),false);Require(effects.Get(),"reload EffectManager unavailable");void* args[]={owner.entity.Get()};Call(api.follow,effects.Get(),args);}
 void AbortUIStaging(Attempt& a){
  if(!a.uiStaged)return;
- if(a.previousRoutes)std::atomic_store(&routes,a.previousRoutes);
+ // During the asynchronous wait public routes already belong to the old
+ // generation. Preserve any additional game sources observed in that time.
+ if(a.previousRoutes&&std::atomic_load(&routes)==a.nextRoutes)std::atomic_store(&routes,a.previousRoutes);
  CancelUIModels(a);a.uiStaged=false;
 }
 void CheckUIOwners(const Attempt& a){
@@ -1302,10 +1342,13 @@ void Rebuild(Attempt& a){
  // parsing and hashing remain on the disk worker. Never publish a set whose
  // authors were added/removed after F10's offline preflight.
  Require(AuthorFilesUnchanged(*a.prepared),"reload author set/files changed after preflight");
- auto previous=a.uiStaged?a.previousRoutes:std::atomic_load(&routes);auto next=std::make_shared<Routes>(*previous);
+ auto previous=std::atomic_load(&routes);auto next=std::make_shared<Routes>(*previous);PruneRoutes(*next);
+ for(const auto& route:*next)if(auto expected=FindRoot(*a.prepared->plan,route.path)){
+  auto index=size_t(expected-a.prepared->plan->roots.data());
+  Require(RuntimeShapes::Alive(a.assets.at(index).prefab.Get()),"matching cached prefab appeared after native preparation");
+ }
  for(size_t i=0;i<a.assets.size();++i){auto source=a.leases[i].source.Get(),candidate=a.assets[i].prefab.Get();if(!candidate)continue;Require(Id(source)!=Id(candidate),"reload native prefab aliases original");
-  auto it=std::find_if(next->begin(),next->end(),[&](const auto& r){return r.source.Get()==source;});Route route{Ref::Make(source,false),Ref::Make(candidate,false),Id(source),Id(candidate)};
-  if(it==next->end())next->push_back(std::move(route));else *it=std::move(route);
+  RetargetRoutes(*next,a.prepared->plan->roots.at(i).path,source,a.assets[i].prefab);
  }
  // Preallocate everything used after publication, and preserve live controls.
  RuntimeControls::MergeLive(a.prepared->controls);auto manager=Ref::Make(ModelManager(),false);Require(manager.Get(),"reload ModelManager unavailable");
@@ -1313,8 +1356,9 @@ void Rebuild(Attempt& a){
  Require(effectManager.Get(),"reload EffectManager unavailable");
  std::vector<Ref> poolPaths;for(const auto& root:a.prepared->plan->roots)poolPaths.push_back(Path(root.path));
  for(const auto& owner:a.owners){Require(CurrentRoot(owner)==owner.root.Get()&&Id(owner.root.Get())==owner.oldRootId&&(owner.viewPart||!RuntimeShapes::Scalar<unsigned char>(api.released,owner.entity.Get())),"reload owner changed after preflight");}
+ a.previousRoutes=previous;a.nextRoutes=next;
  if(!a.uiStaged){
-  a.previousRoutes=previous;a.nextRoutes=next;a.uiStaged=true;
+  a.uiStaged=true;
   // Source leases are already complete. Submit UI instantiation through the
   // candidate route, then restore public routes while Unity finishes its job.
   // The old UI instance and page callback are untouched during this wait.
@@ -1412,8 +1456,9 @@ void Rebuild(Attempt& a){
 }
 bool SelectObservedRoots(Attempt& a){
  if(a.selectionRevision==ownerRevision)return false;a.selectionRevision=ownerRevision;bool added=false;const auto& plan=*a.prepared->plan;
+ std::set<std::string> routedPaths;for(const auto& route:*std::atomic_load(&routes))if(RuntimeShapes::Alive(route.source.Get())&&Id(route.source.Get())==route.sourceId)routedPaths.insert(route.path);
  for(size_t i=0;i<plan.roots.size();++i){auto observed=observedPrefabs.find(NormalizeAssetPath(plan.roots[i].path));
-  bool needed=observed!=observedPrefabs.end()&&RuntimeShapes::Alive(observed->second.Get());
+  bool needed=routedPaths.count(NormalizeAssetPath(plan.roots[i].path))||(observed!=observedPrefabs.end()&&RuntimeShapes::Alive(observed->second.Get()));
   for(const auto& part:liveParts)needed=needed||(RuntimeShapes::Alive(part.second.root.Get())&&SameAssetPath(part.second.path,plan.roots[i].path));
   for(const auto& model:liveUIModels)needed=needed||(RuntimeShapes::Alive(model.second.root.Get())&&SameAssetPath(model.second.path,plan.roots[i].path));
   if(needed&&a.selectedRoots.insert(i).second){a.leases[i].done=false;a.assets[i].done=false;added=true;}

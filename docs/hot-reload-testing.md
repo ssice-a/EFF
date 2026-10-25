@@ -1,3 +1,23 @@
+## 2026-10-24 五类统一资源快照
+
+Mesh、Material、Texture、Physics、Effects 和混合修改已统一采用结构模板与资源版本分离；新 `EFF_MOD_BLOCKS/2` 保留旧 packet、`/1` 读取，多 Mod 混用与删除恢复回归通过。作者参数更新不逐 Prefab 重建，DLL 不运行作者编译器，不新增逐帧规则扫描。Blender 配套发布使用小索引和不可变侧车，分发须保留整个 `compiled.blocks/`。
+
+真实私有样本逐输入 View/MemberRecipe 字节差分覆盖 Chen 122、gly 166、lx 36 个来源；顶点、材质、贴图、物理、特效挂载及混合修改与完整冷编一致，资源快路未改写来源/证明块。旧包标记、动态新增来源、旧证明延迟读取、完整索引删除与无变动导出早退均单独回归。测试和完整限制见[实现记录](resource-update-separation-20261024.md)。
+
+最终 v35/v36 DLL 构建、两份 PE 检查、游戏附带运行库的隔离加载及 v35 完整事务模拟通过；96 项 Blender Python 和 29 项目录回归通过。DLL consumer 仅长期固定延迟证明，作者读取保留跨进程锁兼容。新格式读取峰值内存下降，初测读取中位仍比旧 packet 增加约 6%～15%，不将导出加速说成冷加载必然更快。
+
+没有部署游戏或重导出覆盖用户 Mod。原生创建、世界/UI/NPC 画面、场景切换、连续 F10 与实际帧率仍未因此完成验收。同内容 F10 继续控制刷新，不表示无条件强制重建。
+
+## 2026-10-24 缓存来源引用与 UI 异步等待
+
+新自动回归在旧实现失败：同一路径除了原始 source，还可能有其他 AssetProxy source 或此前返回给游戏缓存的候选 Prefab。下一次 F10 只替换主要 source 的路由，另外的 source 仍命中旧候选；这些路由也会阻止旧 Bundle 容器退休。单次世界模型提交成功不能证明后续 UI/NPC 创建使用新代际。
+
+现为路由记录精确规范化路径，提交时同步更新同路径来源并纳入仍被缓存的历史候选；历史 source 使用弱引用，失效来源在更新时清理。即使没有可见 owner，仅有来源缓存的路径也进入原生准备。相同 source/candidate 重复读取直接复用路由，回归验证连续 100 次不替换表、不新增 GC handle。
+
+第二个回归也在修复前失败：UI 异步创建期间新增的旧代际 source，在提交或取消时会被等待前的快照丢掉。提交现在以最新公共路由构建完整候选；取消只撤销本事务尚在暴露的候选表，保留等待期间的旧代际登记。等待期间首次出现且尚未准备的匹配路径拒绝提交，保持旧页面和旧路由。
+
+缓存来源、历史候选、当前候选 identity、仅缓存路径、失败回滚、UI 等待成功/取消和晚出现未准备路径均通过完整事务模拟回归；v35 生产 DLL 构建通过。未部署游戏 DLL、未改用户 Mod/协议，尚无实机 UI/NPC 画面验收。同内容 F10 的控制刷新分支仍保留，本轮没有把它改造成强制重建命令。后续资源/命中分离建议见[架构记录](resource-update-separation-20261024.md)。
+
 ## 2026-10-14 连续 F10 的 Bundle 重复加载与控制状态
 
 实机 PID 26632 在 10:34:33 提交 generation=2，随后从 10:35:29 起的新候选均被原生加载拒绝，10:38:39、10:38:45 和 10:39:54 的 F10 重试保持第 2 代。游戏 Player.log 同时记录 `The AssetBundle 'IO.Stream' can't be loaded because another AssetBundle with the same files is already loaded.`，不能把作者包已更新或此前 COMMIT 当成后续材质更新成功。作者包回读确认内衣亮度 50、V 速度 -0.04 及最新紫色 Tint 已编译；用户确认游戏画面没有同步这些修改。
@@ -804,3 +824,13 @@ BUILD 到 ENTRY-PACKAGE 相隔 12.916 秒，包含游戏模块等待、固定 3 
 Ins 关闭复现使用真实 Win32/D3D 面板，游戏窗口位于另一个线程，并暂停该线程消息处理。旧版跨线程 HWND owner 在 ShowWindow(SW_HIDE) 阻塞，等待链显示 SendMessage，关闭耗时 876.53 ms，直到测试恢复游戏窗口线程才返回。解除 owner（包括首次创建和 Tick 中动态赋值）后同一测试测得 13.06/5.51 ms，游戏窗口未处理消息也能关闭。保留焦点/最小化联动、返回游戏焦点、半透明背景、按键和保存语义；没有改 Unity 线程或 Mod 文件。
 
 跨线程关闭回归先红后绿，完整按键/保存/真实 ImGui 窗口测试及编译集合回归通过，v35 正式构建成功。已部署 eff.dll SHA256 93D156997A6BBB5136D1B72D89AC1285B538986751CBE9857303589CB75F14DA，92 个 Mod、配置、结构声明及代理文件部署前后摘要未变。需重启游戏载入新 DLL；真实 Ins 关闭是否恢复和下一次启动的独立计时仍待用户确认，未宣称 F10 达到毫秒级。
+
+## 2026-10-24 Jsspsi stale Renderer 阻挡 F10
+
+重启后的 `plugin/eff_log.txt` 在 05:12:14 记录一次重载：compiled-mod 首次读取因 `chen/compiled.bin` 无法打开而拒绝；再次 F9 后候选成功准备并完成 562 ms 原生加载，但在提交前以 `live Renderer has no recorded game model-part lifecycle` 拒绝。拒绝对象是 Jsspsi `S_actor_jsspsi_cloth_02_lod0`，`modelReady=1`，祖先仍为 `chr_0036_jsspsi_postmodel`，本次只捕获一个 owner。该日志证明旧模型树仍有存活的控制绑定，不表示它属于用户当前编队或仍可见。
+
+代码只在 `BaseModelViewPart.ReleaseModel` 清理池化 Renderer；`ComplexModelViewPart` 自己定义虚 `ReleaseModel`，其派生实现可绕过基类入口。现给派生重载也安装清理观察，并用线程局部重入深度避免派生实现回调基类时重复注销。回归覆盖派生释放后 Unity Renderer 仍存活，以及派生/基类嵌套释放。完整 v36 `full_resource_reload_smoke` 通过，正式 `build.bat v36` 与 `verify_production_dll.py` 通过。
+
+游戏退出后部署 `eff.dll` 与两个代理。旧文件备份在 `bin/deployments/20261024-hot-reload-physics-export/backup-20261024-152434-217/`。安装结果：`eff.dll` SHA256 `29A0C69810BB60BCEDBB342BEE14D99AD6216360F4DF1D287E0DDF544397383D`；`d3dcompiler_47.dll` SHA256 `C0E9CA64913C6AF563F30AA31169A4A5A546E4E05AD980729687F119F7168AAD`；`vulkan-1.dll` SHA256 `1C22DD814A0CCBABE677B1E031A2A099548E0477A2627FB12B9C058EC7934B42`。`package-protocol.json` 保持 SHA256 `7F0C239C5BFB4CA16AE36C4C69456CFF41531600D5A3BBCD4752EA18EEB9EBF8`。需启动新游戏进程后重试 F9；本轮尚无新日志确认实机恢复。
+
+Blender 导出新增 `PHYSICS` 增量范围：仅选物理组会切到该范围，沿用已有 Mod 中的目标 Mesh 列表；参数/碰撞数据更新保留 Mesh、材质、贴图和其他 Rig。解析器校验既有 Physics 组身份、链拓扑与 Rig 骨架；新增/删除组或修改拓扑时要求完整导出。Blender 插件目录是工作区 junction，文件哈希一致；当前 Blender 会话已重新注册并确认 RNA 有 `PHYSICS` 选项。34 项导出核心测试、4 项物理资源/拓扑测试通过。实机 Mod 的 Physics-only 发布尚未执行。

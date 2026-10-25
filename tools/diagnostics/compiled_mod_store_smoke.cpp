@@ -1,4 +1,4 @@
-#include "../../src/eiem_compiled_mod_store.h"
+#include "../../src/eiem_published_compiled_mod.h"
 #include <iostream>
 using namespace EiemCompiledMod;
 void AssemblyDictionaryRegression(){
@@ -25,7 +25,7 @@ void AssemblyDictionaryRegression(){
 }
 int wmain(int argc,wchar_t** argv){try{
  AssemblyDictionaryRegression();
- Require(argc==3,"compiled_mod_store_smoke <game> <Mod>");auto game=std::filesystem::canonical(argv[1]),mod=std::filesystem::canonical(argv[2]);auto artifact=Read(mod,game);auto expected=Encode(artifact,game);
+ Require(argc==3,"compiled_mod_store_smoke <game> <Mod>");auto game=std::filesystem::canonical(argv[1]),mod=std::filesystem::canonical(argv[2]);auto published=EiemPublishedCompiledMod::Read(mod,game,false);auto artifact=std::move(published.artifact);auto expected=Encode(artifact,game);
  auto root=std::filesystem::temp_directory_path()/("eff-compiled-store-"+std::to_string(GetCurrentProcessId()));Require(std::filesystem::create_directory(root),"compiled store fixture exists");
  struct Cleanup{std::filesystem::path path;~Cleanup(){std::error_code error;std::filesystem::remove_all(path,error);}}cleanup{root};auto path=root/"compiled.bin";
  EiemResourceCatalogDelta::Catalog catalog;catalog.domain="verified-current-selection";for(const auto& source:artifact.manifest.plan.originals)catalog.entries.emplace(source.file,EiemResourceCatalogDelta::Entry{source.hash,source.physical.u8string()+":"+std::to_string(source.offset),{}});

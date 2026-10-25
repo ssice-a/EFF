@@ -21,6 +21,7 @@ constexpr const char* compiledObjects = "serialized-records/add+edit+delete+nati
 constexpr const char* resourcePayloads = "mod-ini/resource+block-directory/opaque-kind";
 constexpr const char* compiledInputView = "native-encoded-block-spans+literal-name-sites/le64";
 constexpr const char* compiledRuntimeIndex = "native-view-index+assembly-dictionary+verified-source-stamps+per-input-proofs/le64/sha256";
+constexpr const char* compiledModStore = "EFF_MOD_BLOCKS/2";
 constexpr unsigned authorFormat = 2;
 constexpr unsigned resourceVersion = 2;
 constexpr bool rootAssembly = true;

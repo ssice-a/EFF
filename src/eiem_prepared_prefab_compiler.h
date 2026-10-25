@@ -22,7 +22,7 @@ struct Prepared {
 inline Prepared Prepare(std::shared_ptr<const Artifact> baseline,const EiemStaticSources::Selection& current){
  Require(bool(baseline),"prepared PFB compiler lacks offline author snapshot");Prepared prepared;prepared.baseline=std::move(baseline);prepared.current=current;
  const auto& a=*prepared.baseline;const auto& author=a.manifest.package;prepared.resolved=author;
- for(const auto& resource:author.resources)Require(!Begins(resource.first,"resources/")&&!resource.second->blocks.count("@physics"),"prepared PFB slice requires separate generic/Physics adaptation");
+ for(const auto& resource:author.resources)Require(resource.second->kind==10||(!Begins(resource.first,"resources/")&&!resource.second->blocks.count("@physics")),"prepared PFB slice requires separate generic/Physics adaptation");
  std::set<std::string> sources;auto add=[&](const std::string& path){if(!path.empty())sources.insert(current.assets.at(EiemStaticSources::Logical(path)));};
  for(const auto& target:author.targetIndex)add(target.first.path);for(const auto& material:author.materials)add(material.second.source.path);for(const auto& texture:author.textures)add(texture.second.source.path);
  std::optional<EiemStaticSources::Selection> sourceSnapshot;
@@ -42,7 +42,10 @@ inline Prepared Prepare(std::shared_ptr<const Artifact> baseline,const EiemStati
   const auto& rule=author.rules.at(target.second);if(rule.skip)continue;
   for(size_t i=0;i<rule.parts.size();++i){const auto& id=rule.parts[i];const auto& mesh=author.meshes.at(author.parts.at(id).mesh);auto pathId=i?AllocateMeshId(asset.cab,author,target.first,id):asset.pathId;
    prepared.meshes.push_back({target.first,target.second,id,asset.cab,asset.pathId,pathId,mesh.vertices,mesh.indices,prepared.palettes.at({asset.cab,asset.pathId})});
-   prepared.markers.emplace(NativeReference{asset.cab,pathId},RuntimePartName(author,id,target.first));}}
+   auto marker=RuntimePartName(author,id,target.first);
+   if(!a.manifest.plan.parts.count(marker))marker=LegacyRuntimePartName(author,id,target.first);
+   Require(a.manifest.plan.parts.count(marker),"prepared author Mesh marker absent from its compiled template");
+   prepared.markers.emplace(NativeReference{asset.cab,pathId},std::move(marker));}}
  for(const auto& material:author.materials)prepared.resourceCabs.insert(prepared.assets.at(material.second.source).cab);
  for(const auto& texture:prepared.resolved.textures)prepared.resourceCabs.insert(prepared.assets.at(texture.second.source).cab);
  return prepared;
@@ -92,12 +95,15 @@ inline EiemSourceAdaptationJobs::Result Compile(const Prepared& prepared,const E
  }
  stage("pfb-match");if(result.decision.roots.empty())return result;
  auto artifact=std::make_shared<Artifact>();auto& m=artifact->manifest;auto& p=m.plan;const auto& prior=baseline.manifest.plan;
+ std::vector<EiemAddressedResources::Bindings> bindings(1);p.resourceAddressed=baseline.explicitResources;
  m.package=author;m.rootAssembly=true;p.rulesOnly=p.spanRecipes=true;p.author=prior.author;p.contract=prior.contract;p.parts=prior.parts;p.materials=prior.materials;p.materialMatches=prior.materialMatches;p.textures=prior.textures;p.frameRecipes=prior.frameRecipes;p.names=prior.names;p.shared=prior.shared;p.sharedBundles=prepared.sharedBundles;
  auto identity=request.source+'\n'+entry.revision;auto file=Hash(Bytes(identity.begin(),identity.end()))+".vfs";p.key=Hash(Bytes(identity.begin(),identity.end()));m.baseline=p.key;
  p.originals={{file,entry.revision,entry.physical,entry.offset,entry.size}};p.closure={0};p.inputDependencies.resize(1);p.namespaceRecipes.resize(1);p.memberRecipes.resize(1);p.rendererRules.resize(1);
  for(const auto& row:matchedMeshes)p.rendererRules[0].push_back({row.first.first,row.first.second,row.second});
  stage("pfb-descriptors");auto edited=original;auto renderers=BuildRendererInput(edited,prepared.resolved,prepared.assets,prepared.meshes,prepared.schemas,nullptr,&prepared.preloads,cost);p.rendererParts=renderers.parts.size();stage("pfb-renderers");
  auto appearance=BuildTextureInput(edited,prepared.resolved,prepared.assets);Require(appearance.textures.empty()&&!appearance.changedMaterials,"prepared PFB slice unexpectedly rebuilds author core assets");
+ if(baseline.explicitResources)EiemAddressedResources::Capture(bindings.front(),edited);
+ else for(auto& member:edited.members)member.origins.clear();
  stage("pfb-texture-preloads");
  Input record;record.file=file;for(const auto& member:edited.members)if(Serialized(member.bytes)){
   auto layout=ParseSerialized(member.bytes);p.names.members.emplace(member.name,"CAB-"+EiemLoadingGeneration::Token(p.key,member.name,32));for(const auto& external:EiemLoadingGraphAudit::ReadExternals(member.bytes,layout))record.externals.insert(external.member);
@@ -128,6 +134,11 @@ inline EiemSourceAdaptationJobs::Result Compile(const Prepared& prepared,const E
  EiemResourceRecipe::Dictionary originalSpans({}),literalEdits({});for(const auto& member:original.members)originalSpans.buffers.push_back({EiemResourceRecipe::Original,member.name,&member.bytes});
  p.memberRecipes[0]=EiemCompiledModWriter::DescribeMembers(edited,artifact->members,originalSpans,literalEdits);stage("pfb-member-recipes");
  artifact->views={EiemCompiledInputViewWriter::Build(0,p,artifact->members,input,original,edited,literalEdits)};
+ if(baseline.explicitResources){
+  EiemAddressedResources::PoolMetadata(artifact->views.front(),artifact->members,edited,bindings.front());
+  EiemAddressedResources::Finalize(*artifact,bindings);
+  EiemCompiledSourceRecords::FinalizeSchemas(*artifact);
+ }
  stage("pfb-native-view");
  Require(artifact->pristine.size()==p.roots.size(),"prepared PFB pristine coverage differs");result.input=0;result.view=std::shared_ptr<const EiemCompiledInputView::Recipe>(artifact,&artifact->views.at(0));result.artifact=std::move(artifact);return result;
 }

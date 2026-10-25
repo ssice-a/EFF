@@ -84,6 +84,34 @@ inline double FloatValue(const Type& type, const Value& value) {
 using Vector3 = std::array<double, 3>;
 using AffineMatrix = std::array<double,16>;
 inline AffineMatrix AffineIdentity(){return {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};}
+inline std::string BoundsOriginName(size_t rootSlot,const AffineMatrix& boneToRoot,const std::string& resource){
+  Require(!resource.empty(),"Renderer bounds author resource absent");
+  static_assert(sizeof(AffineMatrix)==128,"Renderer bounds context encoding differs");
+  const auto* bytes=reinterpret_cast<const unsigned char*>(boneToRoot.data());
+  std::string name="@bounds:"+std::to_string(rootSlot)+":";constexpr char digits[]="0123456789abcdef";
+  for(size_t i=0;i<sizeof(AffineMatrix);++i){name.push_back(digits[bytes[i]>>4]);name.push_back(digits[bytes[i]&15]);}
+  return name+":"+resource;
+}
+inline bool DecodeBoundsOrigin(const std::string& name,size_t& rootSlot,AffineMatrix& boneToRoot,std::string& resource){
+  constexpr size_t prefix=8;if(name.compare(0,prefix,"@bounds:"))return false;
+  auto separator=name.find(':',prefix);if(separator==std::string::npos||separator==prefix)return false;
+  size_t slot=0;for(size_t i=prefix;i<separator;++i){auto c=name[i];if(c<'0'||c>'9'||slot>(SIZE_MAX-size_t(c-'0'))/10)return false;slot=slot*10+size_t(c-'0');}
+  auto begin=separator+1;if(name.size()-begin<=257||name[begin+256]!=':')return false;
+  auto hex=[](char c)->int{return c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:-1;};
+  AffineMatrix matrix{};auto* bytes=reinterpret_cast<unsigned char*>(matrix.data());
+  for(size_t i=0;i<sizeof(AffineMatrix);++i){auto hi=hex(name[begin+i*2]),lo=hex(name[begin+i*2+1]);if(hi<0||lo<0)return false;bytes[i]=static_cast<unsigned char>((hi<<4)|lo);}
+  for(auto value:matrix)if(!std::isfinite(value))return false;
+  rootSlot=slot;boneToRoot=matrix;resource=name.substr(begin+257);return true;
+}
+inline void BindBoundsOrigins(const Type& type,Value& aabb,const std::string& resource){
+  Bytes bytes;bytes.reserve(24);for(const char* field:{"m_Center","m_Extent"})for(char axis:std::string("xyz")){
+    const auto& value=Child(type,Child(type,aabb,field),std::string(1,axis));Require(value.raw.size()==4,"Renderer bounds float width differs");bytes.insert(bytes.end(),value.raw.begin(),value.raw.end());
+  }
+  auto owned=std::make_shared<const Bytes>(std::move(bytes));size_t offset=0;
+  for(const char* field:{"m_Center","m_Extent"})for(char axis:std::string("xyz")){
+    auto& value=Child(type,Child(type,aabb,field),std::string(1,axis));value.rawOrigins=EiemAuthorBytes::MakeRange(resource,owned,offset,4);offset+=4;
+  }
+}
 inline AffineMatrix AffineMultiply(const AffineMatrix& a,const AffineMatrix& b){
   AffineMatrix result{};for(size_t r=0;r<4;++r)for(size_t c=0;c<4;++c)for(size_t k=0;k<4;++k)result[r*4+c]+=a[r*4+k]*b[k*4+c];return result;
 }
@@ -256,6 +284,9 @@ class RendererMemberBuilder {
   const Package& package;
   const AssetIndex& assets;
   const std::vector<BuiltMeshPart>& meshes;
+  const AuthorByteSpans* sourceOrigins = nullptr;
+  bool trackOrigins = false;
+  std::map<int64_t, AuthorByteSpans> objectOrigins;
   SerializedLayout layout;
   std::map<int64_t, Value> values;
   std::map<int64_t, Value> hierarchyValues;
@@ -282,7 +313,7 @@ class RendererMemberBuilder {
     auto found = values.find(id);
     if (found == values.end()) {
       auto start=std::chrono::steady_clock::now();
-      found = values.emplace(id, ObjectValue(source, layout, id)).first;
+      found = values.emplace(id, ObjectValue(source, layout, id, sourceOrigins)).first;
       Cost("renderer-object-decode",start);
     }
     return found->second;
@@ -307,7 +338,7 @@ class RendererMemberBuilder {
     return id;
   }
   void Add(int64_t id, int64_t donor, const Value& value) {
-    added.push_back({id, layout.objects.at(donor).type, EncodeValue(Schema(donor), value)});
+    added.push_back({id, layout.objects.at(donor).type, EncodeValue(Schema(donor), value, trackOrigins?&objectOrigins[id]:nullptr)});
   }
   std::vector<int64_t> ResolveBones(int64_t ownerTransform, int64_t rootBone,
       const Mesh& mesh,const std::vector<uint32_t>& sourceHashes,const std::vector<int64_t>& nativeBones) const {
@@ -444,7 +475,8 @@ public:
   RendererMemberBuilder(const Bytes& bytes, const std::string& name, const Package& mod,
                           const AssetIndex& graph, const std::vector<BuiltMeshPart>& meshParts)
       : source(bytes), cab(name), package(mod), assets(graph), meshes(meshParts), layout(ParseSerialized(bytes)) {}
-  RendererInputBuild Build() {
+  RendererInputBuild Build(const AuthorByteSpans* inputOrigins=nullptr,AuthorByteSpans* outputOrigins=nullptr) {
+    sourceOrigins=inputOrigins;trackOrigins=outputOrigins!=nullptr;
     auto start=std::chrono::steady_clock::now();
     std::map<NativeReference, Identity> selected;
     for (const auto& target : package.targetIndex) {
@@ -457,7 +489,7 @@ public:
     std::set<NativeReference> references;for(const auto& row:selected)references.insert(row.first);
     auto matches=MeshConsumers(source,layout,cab,references);
     Cost("renderer-consumers",start);
-    if (matches.empty()) { result.bytes = source; return result; }
+    if (matches.empty()) { result.bytes = source;if(outputOrigins)*outputOrigins=inputOrigins?*inputOrigins:AuthorByteSpans{};return result; }
     start=std::chrono::steady_clock::now();
     Hierarchy();
     Cost("renderer-hierarchy",start);start=std::chrono::steady_clock::now();
@@ -597,7 +629,7 @@ public:
         palette.count = bones.size();
         auto& weights = ArrayValue(type, Child(type, renderer, "m_BlendShapeWeights"));
         Require(Primitive(type.nodes[type.nodes[weights.node].children[1]].type) == 4, "Renderer shape weight schema");
-        weights.children.clear(); weights.raw.clear(); weights.count = mesh.shapes.size();
+        weights.children.clear(); weights.raw.clear(); weights.rawOrigins.clear(); weights.count = mesh.shapes.size();
         for (size_t shape=0;shape<mesh.shapes.size();++shape) {
           auto weight = ArrayElement(type, weights);
           SetFloat(type, weight, 0); // Runtime applies author state after registration.
@@ -619,6 +651,7 @@ public:
         auto& aabb = Child(type, renderer, "m_AABB");
         SetVector(type, Child(type, aabb, "m_Center"), bounds.first);
         SetVector(type, Child(type, aabb, "m_Extent"), bounds.second);
+        if(trackOrigins)BindBoundsOrigins(type,aabb,BoundsOriginName(rootSlot,boneToRoot,mesh.resource));
         }
         if (i) Add(newRid, rid, renderer);
         else { Tree(rid) = std::move(renderer); changed.insert(rid); }
@@ -680,9 +713,9 @@ public:
     }
     Cost("renderer-preloads",start);start=std::chrono::steady_clock::now();
     std::map<int64_t, Bytes> replacements;
-    for (auto id : changed) replacements.emplace(id, EncodeValue(Schema(id), Tree(id)));
+    for (auto id : changed) replacements.emplace(id, EncodeValue(Schema(id), Tree(id),trackOrigins?&objectOrigins[id]:nullptr));
     result.changedObjects = replacements.size(); result.addedObjects = added.size();
-    result.bytes = BuildSerialized(source, layout, replacements, added);
+    result.bytes = BuildSerialized(source, layout, replacements, added,{},{},{},inputOrigins,&objectOrigins,outputOrigins);
     Cost("renderer-serialize",start);
     return result;
   }
@@ -779,7 +812,7 @@ inline RendererInputBuild BuildRendererInput(EndfieldInput::Bundle& bundle, cons
     builder.SetMeshSchemas(schemas);
     builder.SetBoundsCache(bounds);
     if(materialPreloads)builder.SetMaterialPreloads(*materialPreloads);
-    auto rebuilt = builder.Build();
+    auto rebuilt = builder.Build(&member.origins,&member.origins);
     result.matches += rebuilt.matches; result.skipped += rebuilt.skipped;
     result.changedObjects += rebuilt.changedObjects; result.addedObjects += rebuilt.addedObjects;
     result.lodGroups += rebuilt.lodGroups; result.preloadReferences += rebuilt.preloadReferences;

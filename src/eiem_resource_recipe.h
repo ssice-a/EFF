@@ -78,7 +78,7 @@ struct Dictionary {
 // untouched object bodies and original stream prefixes without byte searching.
 struct OriginalSpan {size_t output=0,buffer=0,offset=0,size=0;};
 inline Member Describe(const EndfieldInput::Member& output,const Dictionary& original,const Dictionary& author,
-                       const std::vector<OriginalSpan>& known={}){
+                       const std::vector<OriginalSpan>& known={},bool explicitOrigins=false){
  size_t end=0;
  for(const auto& span:known){
   Require(span.buffer<original.buffers.size(),"recipe original provenance buffer absent");const auto& bytes=*original.buffers[span.buffer].bytes;
@@ -87,27 +87,35 @@ inline Member Describe(const EndfieldInput::Member& output,const Dictionary& ori
  }
  Member member;member.name=output.name;member.flags=output.flags;member.size=output.bytes.size();member.hash=Digest(output.bytes);
  auto literal=[&](unsigned char byte){if(member.spans.empty()||member.spans.back().kind!=Literal)member.spans.push_back({});auto& span=member.spans.back();span.literal.push_back(byte);++span.size;};
- size_t provenance=0;
+ if(explicitOrigins)EiemAuthorBytes::Validate(output.bytes,output.origins);
+ size_t provenance=0,authored=0;
  for(size_t p=0;p<output.bytes.size();){size_t length=0;Location old,edit;const Dictionary* dictionary=nullptr;Location location;
-  if(provenance<known.size()&&known[provenance].output==p){const auto& span=known[provenance++];dictionary=&original;location={span.buffer,span.offset};length=span.size;}
-  else if(output.bytes.size()-p>=32){auto bytes=output.bytes.data()+p;auto maybeOld=original.MayMatch(bytes),maybeEdit=author.MayMatch(bytes);
+  while(provenance<known.size()&&known[provenance].output+known[provenance].size<=p)++provenance;
+  if(explicitOrigins&&authored<output.origins.size()&&output.origins[authored].output==p){
+   const auto& span=output.origins[authored++];auto kind=Author;auto source=span.resource;
+   if(source.rfind("@frame:",0)==0){kind=ExpandedFrame;source=source.substr(7);}else if(source.rfind("@bounds:",0)==0)kind=ExpandedFrame;
+   member.spans.push_back({kind,std::move(source),span.offset,span.size,{}});p+=span.size;continue;
+  }
+  if(provenance<known.size()&&known[provenance].output<=p){const auto& span=known[provenance];dictionary=&original;location={span.buffer,span.offset+p-span.output};length=span.output+span.size-p;}
+  else if(output.bytes.size()-p>=32){auto bytes=output.bytes.data()+p;auto maybeOld=original.MayMatch(bytes),maybeEdit=!explicitOrigins&&author.MayMatch(bytes);
    if(maybeOld||maybeEdit){auto hash=Anchor(bytes);auto a=maybeOld?original.Match(output.bytes,p,hash,old):0,b=maybeEdit?author.Match(output.bytes,p,hash,edit):0;if(a||b){dictionary=a>=b?&original:&author;location=a>=b?old:edit;length=std::max(a,b);if(provenance<known.size())length=std::min(length,known[provenance].output-p);}}
   }
+  if(explicitOrigins&&authored<output.origins.size()&&length)length=std::min(length,output.origins[authored].output-p);
   if(!length){literal(output.bytes[p++]);continue;}const auto& source=dictionary->buffers[location.buffer];
   if(!member.spans.empty()&&member.spans.back().kind==source.kind&&member.spans.back().source==source.name&&AddSize(member.spans.back().offset,member.spans.back().size)==location.offset)member.spans.back().size=AddSize(member.spans.back().size,length);
   else member.spans.push_back({source.kind,source.name,location.offset,length,{}});p+=length;
  }return member;
 }
-inline Bytes Apply(const Member& member,const std::map<std::string,const Bytes*>& originals,const Package& package,const std::map<std::string,Bytes>& frames){
+inline Bytes Apply(const Member& member,const std::map<std::string,const Bytes*>& originals,const Package& package,const std::map<std::string,Bytes>& frames,bool verify=true,const std::map<std::string,const Bytes*>* generated=nullptr){
  Bytes output;Require(member.size<=output.max_size(),"recipe output size cannot be represented");output.reserve(member.size);
  for(const auto& span:member.spans){Require(span.size&&span.size<=member.size-output.size(),"recipe output span extent differs");const Bytes* source=nullptr;
   switch(span.kind){case Original:Require(originals.count(span.source),"recipe original member absent");source=originals.at(span.source);break;
    case Author:Require(package.resources.count(span.source),"recipe author resource absent");source=&package.resources.at(span.source)->bytes;break;
-   case ExpandedFrame:Require(frames.count(span.source),"recipe expanded frame absent");source=&frames.at(span.source);break;
+   case ExpandedFrame:if(generated&&generated->count(span.source))source=generated->at(span.source);else{Require(frames.count(span.source),"recipe expanded frame absent");source=&frames.at(span.source);}break;
    case Literal:Require(span.offset==0&&span.source.empty()&&span.literal.size()==span.size,"recipe literal extent differs");source=&span.literal;break;
    default:Require(false,"recipe source kind differs");}
   Require(span.offset<=source->size()&&span.size<=source->size()-span.offset,"recipe source span extent differs");output.insert(output.end(),source->begin()+span.offset,source->begin()+span.offset+span.size);
  }
- Require(output.size()==member.size&&Digest(output)==member.hash,"recipe reconstructed member digest differs");return output;
+ Require(output.size()==member.size&&(!verify||Digest(output)==member.hash),"recipe reconstructed member digest differs");return output;
 }
 } // namespace EiemResourceRecipe

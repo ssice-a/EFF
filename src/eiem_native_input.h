@@ -1,5 +1,6 @@
 #pragma once
 #include "eiem_resource_directory.h"
+#include "eiem_author_byte_origins.h"
 // Serialized loading-input parsing. No native Unity pointers, object setters
 // or resource identity derived from a buffer fingerprint.
 namespace EiemNativeInput {

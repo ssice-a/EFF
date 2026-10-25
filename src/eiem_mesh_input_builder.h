@@ -13,6 +13,7 @@ struct BuiltMeshPart {
 };
 struct MeshInputBuild {
   Bytes bytes;
+  AuthorByteSpans origins;
   size_t matches = 0, skipped = 0, changedObjects = 0, addedObjects = 0;
   std::vector<BuiltMeshPart> parts;
 };
@@ -48,7 +49,7 @@ inline Value ApplyMesh(const Type& type, const Value& source, const Resource& re
     auto& field = Child(type, result, block.first);
     Bytes bytes(resource.bytes.begin() + block.second.offset,
                 resource.bytes.begin() + block.second.offset + block.second.size);
-    field = DecodeValue(type, field.node, bytes);
+    field = DecodeAuthorValue(type, field.node, bytes, mesh.resource, resource.bytes, block.second.offset);
     Require(EncodeValue(type, field) == bytes, "Mesh field representation changed on decode");
   }
   auto& vertex = Child(type, result, "m_VertexData");
@@ -98,7 +99,11 @@ inline Value ApplyMesh(const Type& type, const Value& source, const Resource& re
     Require(Text(shapeName.raw.data(), shapeName.raw.size()) == mesh.shapes[i],
             "Mesh shape binding name differs from native field");
   }
-  ExpandShapedMeshFrames(type, result);
+  if (ExpandShapedMeshFrames(type, result)) {
+    auto& data = Child(type, Child(type, result, "m_VertexData"), "m_DataSize");
+    auto owned = std::make_shared<const Bytes>(data.raw);
+    data.rawOrigins = EiemAuthorBytes::MakeRange("@frame:" + mesh.resource, owned, 0, owned->size());
+  }
   // Shape capture snapshots use public CPU readback. Keep authored channels
   // intact; readability does not change shape count or the skinning layout.
   if (runtimeShapes) SetInteger(type, Child(type, result, "m_IsReadable"), 1);
@@ -155,11 +160,12 @@ inline bool ExpandMeshPreloads(const Type& type, Value& bundle,
   return true;
 }
 inline MeshInputBuild BuildMeshMember(const Bytes& source, const std::string& cab,
-                                       const Package& package) {
+                                       const Package& package, const AuthorByteSpans* sourceOrigins = nullptr) {
   auto layout = ParseSerialized(source);
   auto assets = SerializedAssets(source, cab, layout);
   MeshInputBuild result;
   std::map<int64_t, Bytes> changes;
+  std::map<int64_t, AuthorByteSpans> origins;
   std::vector<AddedObject> added;
   std::map<int64_t, std::vector<int64_t>> expansion;
   std::set<int64_t> matched, allocated;
@@ -177,7 +183,7 @@ inline MeshInputBuild BuildMeshMember(const Bytes& source, const std::string& ca
     }
     const auto& object = layout.objects.at(asset.pathId);
     const auto& type = layout.types.at(object.type);
-    auto templateValue = ObjectValue(source, layout, asset.pathId);
+    auto templateValue = ObjectValue(source, layout, asset.pathId, sourceOrigins);
     for (size_t i = 0; i < rule.parts.size(); ++i) {
       const auto& partId = rule.parts[i];
       const auto& part = package.parts.at(partId);
@@ -190,7 +196,7 @@ inline MeshInputBuild BuildMeshMember(const Bytes& source, const std::string& ca
       const bool runtimeShapes = !mesh.shapes.empty();
       name = RuntimePartName(package, partId, identity);
       auto value = ApplyMesh(type, templateValue, resource, mesh, name, runtimeShapes);
-      auto bytes = EncodeValue(type, value);
+      auto bytes = EncodeValue(type, value, &origins[id]);
       Require(EncodeValue(type, DecodeValue(type, 0, bytes)) == bytes,
               "rebuilt Mesh TypeTree roundtrip differs");
       if (i == 0) changes.emplace(id, std::move(bytes));
@@ -209,28 +215,29 @@ inline MeshInputBuild BuildMeshMember(const Bytes& source, const std::string& ca
       const auto& type = layout.types.at(object.type);
       if (type.classId != 142) continue;
       ++bundles;
-      auto value = ObjectValue(source, layout, id);
+      auto value = ObjectValue(source, layout, id, sourceOrigins);
       if (ExpandMeshPreloads(type, value, expansion))
-        changes.emplace(id, EncodeValue(type, value));
+        changes.emplace(id, EncodeValue(type, value, &origins[id]));
     }
     Require(bundles == 1, "Mesh expansion requires one current AssetBundle object");
   }
   result.changedObjects = changes.size();
   result.addedObjects = added.size();
-  result.bytes = BuildSerialized(source, layout, changes, added);
+  result.bytes = BuildSerialized(source, layout, changes, added, {}, {}, {}, sourceOrigins, &origins, &result.origins);
   return result;
 }
 inline MeshInputBuild BuildMeshInput(EndfieldInput::Bundle& bundle, const Package& package) {
   MeshInputBuild result;
   for (auto& member : bundle.members) {
     if (!SerializedHeader(member.bytes)) continue;
-    auto rebuilt = BuildMeshMember(member.bytes, member.name, package);
+    auto rebuilt = BuildMeshMember(member.bytes, member.name, package, &member.origins);
     result.matches += rebuilt.matches;
     result.skipped += rebuilt.skipped;
     result.changedObjects += rebuilt.changedObjects;
     result.addedObjects += rebuilt.addedObjects;
     result.parts.insert(result.parts.end(), rebuilt.parts.begin(), rebuilt.parts.end());
     member.bytes = std::move(rebuilt.bytes);
+    member.origins = std::move(rebuilt.origins);
   }
   return result;
 }

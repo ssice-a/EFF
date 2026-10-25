@@ -32,5 +32,43 @@ int main(){try{
  std::thread left(writer,"writer-a"),right(writer,"writer-b");left.join();right.join();Require(committed==1&&rejected==1,"concurrent writers lost an update or committed a stale index");
  {File file(path,true);file.WriteAt(compact.blocks.at("compiled/input-a").offset,Bytes{0});file.Flush();}Reject([&]{File file(path,false);Get(file,Read(file),"compiled/input-a");});
  auto corrupt=folder/"corrupt.bin";Commit(corrupt,0,{{"a",Bytes{1}}});{File file(corrupt,true);file.WriteAt(16+slotBytes,Bytes(8,0));file.Flush();}Reject([&]{EiemModUpdateStore::Read(corrupt);});
- std::cout<<"PASS one-file incremental blocks, unchanged block reuse, completed positive/negative records, source/dependency invalidation, same-Bundle multi-root identities, torn commit recovery, stale writer rejection, compaction and payload integrity\n";return 0;
+ std::cout<<"PASS one-file incremental blocks, unchanged block reuse, completed positive/negative records, source/dependency invalidation, same-Bundle multi-root identities, torn commit recovery, stale writer rejection, compaction and payload integrity\n";
+ auto legacy=folder/"legacy"/"compiled.bin";std::filesystem::create_directory(legacy.parent_path());auto legacyIndex=Commit(legacy,0,{{"large",compiled},{"removed",Bytes{7}},{"small",Bytes{1}}});
+ auto firstPath=folder/"first"/"compiled.bin";std::filesystem::create_directory(firstPath.parent_path());auto external=Fork(legacy,firstPath,legacyIndex.generation,{});
+ Require(external.external&&std::filesystem::file_size(firstPath)<4096,"external fork retained the large packet payload");
+ {File file(firstPath,false);Require(Get(file,external,"large")==compiled,"v1 to v2 migration changed payload");}
+ auto secondPath=folder/"second"/"compiled.bin";std::filesystem::create_directory(secondPath.parent_path());auto edited=Fork(firstPath,secondPath,external.generation,{{"small",Bytes{2}},{"removed",std::nullopt}});
+ Require(edited.external&&edited.generation==external.generation+1&&!edited.blocks.count("removed")&&std::filesystem::file_size(secondPath)<4096,"external delta generation/removal differs");
+ auto oldBlob=firstPath.parent_path()/std::filesystem::u8path(external.blocks.at("large").external),newBlob=secondPath.parent_path()/std::filesystem::u8path(edited.blocks.at("large").external);
+ Require(std::filesystem::equivalent(oldBlob,newBlob),"unchanged same-volume block was copied instead of hard-linked");
+ {File before(firstPath,false),after(secondPath,false);Require(Get(before,external,"small")==Bytes{1}&&Get(after,edited,"small")==Bytes{2},"external publication modified old generation");}
+ auto thirdPath=folder/"third"/"compiled.bin";std::filesystem::create_directory(thirdPath.parent_path());auto same=Fork(secondPath,thirdPath,edited.generation,{{"small",Bytes{2}}});
+ Require(same.generation==edited.generation&&std::filesystem::equivalent(newBlob,thirdPath.parent_path()/std::filesystem::u8path(same.blocks.at("large").external)),"unchanged external snapshot rewrote content or advanced generation");
+ auto crossRoot=std::filesystem::absolute(std::filesystem::current_path()/(".eiem-cross-volume-"+std::to_string(GetCurrentProcessId()))).lexically_normal();
+ if(crossRoot.root_name()!=folder.root_name()){
+  Require(std::filesystem::create_directory(crossRoot),"cross-volume fixture exists");Cleanup crossCleanup{crossRoot};auto crossPath=crossRoot/"compiled.bin";auto copied=Fork(firstPath,crossPath,external.generation,{});
+  File file(crossPath,false);Require(Get(file,copied,"large")==compiled&&!std::filesystem::equivalent(oldBlob,crossRoot/std::filesystem::u8path(copied.blocks.at("large").external)),"cross-volume external block copy changed content");
+  std::cout<<"PASS v2 cross-volume external content copy\n";
+ }
+ Reject([&]{Fork(secondPath,thirdPath,edited.generation-1,{});});
+ auto changedExternal=Commit(secondPath,edited.generation,{{"small",Bytes{3}}});Require(changedExternal.generation==edited.generation+1,"external append did not commit");
+ {File file(secondPath,true);file.WriteAt(16+(changedExternal.generation%2)*slotBytes,Bytes(8,0));file.Flush();}
+ auto recoveredExternal=EiemModUpdateStore::Read(secondPath);{File file(secondPath,false);Require(recoveredExternal.generation==edited.generation&&Get(file,recoveredExternal,"small")==Bytes{2},"external torn commit did not restore prior content");}
+ auto compactExternal=Compact(secondPath,recoveredExternal.generation);{File file(secondPath,false);Require(compactExternal.external&&Get(file,compactExternal,"large")==compiled,"external compaction lost immutable content");}
+ auto freshPath=folder/"fresh"/"compiled.bin";std::filesystem::create_directory(freshPath.parent_path());auto fresh=Fork({},freshPath,0,{{"a",Bytes{4}}});Require(fresh.external&&fresh.generation==1,"fresh external snapshot generation differs");
+ auto reapPath=folder/"reap"/"compiled.bin";std::filesystem::create_directory(reapPath.parent_path());Bytes retiredBytes(4096,0x31),liveBytes(8192,0x72);
+ auto reapFirst=Fork({},reapPath,0,{{"mutable",retiredBytes}});auto retiredBlob=reapPath.parent_path()/std::filesystem::u8path(reapFirst.blocks.at("mutable").external);File retiredReader(retiredBlob,false);
+ auto reapNext=Commit(reapPath,reapFirst.generation,{{"mutable",liveBytes}});Require(reapNext.generation==reapFirst.generation+1,"reaper fixture update did not commit");
+ Require(ReapOrphanBlobs(reapPath,1)==retiredBytes.size()&&!std::filesystem::exists(retiredBlob),"orphan external block was not reaped");
+ Require(retiredReader.ReadAt(0,retiredBytes.size())==retiredBytes,"reaping invalidated a pinned old-generation reader");
+ {File current(reapPath,false);auto snapshot=Read(current);auto liveBlob=reapPath.parent_path()/std::filesystem::u8path(snapshot.blocks.at("mutable").external);Require(std::filesystem::exists(liveBlob)&&Get(current,snapshot,"mutable")==liveBytes,"reaping removed or changed the live block");}
+ auto autoReapPath=folder/"auto-reap"/"compiled.bin";std::filesystem::create_directory(autoReapPath.parent_path());Bytes autoRetired(1024*1024,0x19),autoLive(1024*1024,0x91);
+ auto autoFirst=Fork({},autoReapPath,0,{{"mutable",autoRetired}});auto autoRetiredBlob=autoReapPath.parent_path()/std::filesystem::u8path(autoFirst.blocks.at("mutable").external);File autoReader(autoRetiredBlob,false);
+ auto autoNext=Commit(autoReapPath,autoFirst.generation,{{"mutable",autoLive}});Require(autoNext.generation==autoFirst.generation+1&&!std::filesystem::exists(autoRetiredBlob),"external commit did not reap threshold-sized orphan blocks");
+ Require(autoReader.ReadAt(0,autoRetired.size())==autoRetired,"automatic orphan reaping invalidated a pinned reader");
+ {File pinned(firstPath,false);auto inPlace=Fork(firstPath,firstPath,external.generation,{{"small",Bytes{9}}});File current(firstPath,false);
+  Require(inPlace.generation==external.generation+1&&Get(pinned,external,"small")==Bytes{1}&&Get(current,inPlace,"small")==Bytes{9},"in-place external root replacement invalidated the old snapshot");}
+ {File blob(freshPath.parent_path()/std::filesystem::u8path(fresh.blocks.at("a").external),true);blob.WriteAt(0,Bytes{5});blob.Flush();}
+ Reject([&]{File file(freshPath,false);Get(file,Read(file),"a");});
+ std::cout<<"PASS v2 external roots: v1 migration, fresh snapshot, same-volume hardlink reuse, independent generations, removal, unchanged publication, torn commit recovery, compaction, payload integrity\n";return 0;
 }catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}}

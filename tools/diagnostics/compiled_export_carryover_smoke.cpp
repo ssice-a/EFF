@@ -12,7 +12,14 @@ void ChangeMeshBounds(const std::filesystem::path& mod){
 }
 int wmain(int argc,wchar_t** argv){try{
  if(argc==3&&std::wstring(argv[1])==L"--commit-fixture"){auto path=std::filesystem::absolute(argv[2]);auto previous=std::filesystem::exists(path)?EiemModUpdateStore::Read(path).generation:0;auto result=EiemModUpdateStore::Commit(path,previous,{{"discovery/test",Bytes{static_cast<unsigned char>(previous+1)}}});std::cout<<"COMMITTED "<<result.generation<<'\n';return 0;}
- Require(argc==3||argc==4,"compiled_export_carryover_smoke <game> <Mod> [compiler]");auto game=std::filesystem::canonical(argv[1]),mod=std::filesystem::canonical(argv[2]);auto original=Read(mod,game);auto selection=EiemStaticSources::LoadMod(mod,game);
+ if(argc==3&&std::wstring(argv[1])==L"--author-read-fixture"){auto path=std::filesystem::absolute(argv[2]);
+  // The small storage fixture lacks runtime/common. Enter the real default
+  // author Load/pin path under a Python-held publication mutex and return its
+  // expected missing-record failure, rather than waiting on the parent's lock.
+  try{auto snapshot=EiemCompiledModStore::Load(path,path.parent_path(),path.parent_path());}
+  catch(const std::out_of_range&){std::cout<<"AUTHOR-READER-RETURNED\n";return 0;}
+  Require(false,"author reader fixture unexpectedly accepted a storage-only index");}
+ Require(argc==3||argc==4,"compiled_export_carryover_smoke <game> <Mod> [compiler]");auto game=std::filesystem::canonical(argv[1]),mod=std::filesystem::canonical(argv[2]);auto original=EiemCompiledModStore::Load(mod/"compiled.bin",mod,game,false).artifact;auto selection=EiemStaticSources::LoadMod(mod,game);
  auto compilerPath=argc==4?std::filesystem::canonical(argv[3]):std::filesystem::path{};
  auto exportStage=[&](const std::filesystem::path& stage,const std::filesystem::path& previous){
   if(!compilerPath.empty()){auto stageArg=L"\""+stage.wstring()+L"\"",gameArg=L"\""+game.wstring()+L"\"",previousArg=L"\""+previous.wstring()+L"\"";auto result=_wspawnl(_P_WAIT,compilerPath.c_str(),compilerPath.c_str(),L"--export-mod",stageArg.c_str(),gameArg.c_str(),L"--previous-mod",previousArg.c_str(),static_cast<const wchar_t*>(nullptr));Require(result==0,"installed compiler carryover command failed");}
@@ -44,7 +51,7 @@ int wmain(int argc,wchar_t** argv){try{
  auto before=Hash(EiemNativeInput::Read(published/"compiled.bin"));
  std::filesystem::copy(published,stage,std::filesystem::copy_options::recursive);std::filesystem::remove(stage/"compiled.bin");std::filesystem::create_hard_link(published/"compiled.bin",stage/"compiled.bin");ChangeMeshBounds(stage);
  std::filesystem::copy(stage,cold,std::filesystem::copy_options::recursive);std::filesystem::remove(cold/"compiled.bin");EiemOfflineCompile::AtomicSave(cold/"source-inputs.bin",EiemCompiledModStore::SourceSelection(selection,game));
- EiemCompiledModWriter::Export(cold,game);auto expected=Read(cold,game);
+ EiemCompiledModWriter::Export(cold,game);auto expected=EiemCompiledModStore::Load(cold/"compiled.bin",cold,game,false).artifact;
  exportStage(stage,published);
  auto actual=EiemCompiledModStore::Load(stage/"compiled.bin",stage,game,true);Require(actual.selection&&actual.selection->candidates.count(logical)&&actual.decisions.count(logical),"export lost a runtime-discovered candidate or completed decision");
  auto caughtUp=EiemCompiledModStore::Load(concurrentStage/"compiled.bin",concurrentStage,game,true);Require(caughtUp.artifact.views.size()==expected.views.size(),"concurrent export catchup lost sources");for(size_t i=0;i<caughtUp.artifact.views.size();++i){auto source=caughtUp.artifact.manifest.plan.originals.at(i).file;auto at=std::find_if(expected.manifest.plan.originals.begin(),expected.manifest.plan.originals.end(),[&](const auto& row){return row.file==source;});Require(at!=expected.manifest.plan.originals.end()&&caughtUp.artifact.views.at(i).startupHash==expected.views.at(size_t(at-expected.manifest.plan.originals.begin())).startupHash,"concurrent export catchup kept the old author result");}
@@ -56,5 +63,41 @@ int wmain(int argc,wchar_t** argv){try{
  auto repeated=temporary/"repeated";std::filesystem::copy(stage,repeated,std::filesystem::copy_options::recursive);EiemCompiledModWriter::Export(repeated,game,{},stage);auto again=EiemCompiledModStore::Load(repeated/"compiled.bin",repeated,game,true);Require(again.artifact.views.size()==actual.artifact.views.size()&&again.decisions.count(logical),"unchanged repeated export lost discoveries");
  auto unsafe=selection;unsafe.inputs.at(logical).revision=Hash(Bytes{4,5,6});bool rejected=false;try{EiemCompiledExportCarryover::Merge(unsafe,selection,full);}catch(const std::exception&){rejected=true;}Require(rejected,"conflicting source version silently replaced a verified runtime source");
  rejected=false;try{EiemCompiledExportCarryover::Merge(oldSelection,oldSelection,full);}catch(const std::exception&){rejected=true;}Require(rejected,"export silently dropped a compiled source missing logical provenance");
- std::cout<<"PASS export carryover: runtimeAddedPfb=1 roots="<<completed.decisions.at(logical).roots.size()<<" nativeViews="<<actual.artifact.views.size()<<" changedViews="<<changed<<" newMeshMatchesColdCompile=1 logicalRoutingAndDecisionsRetained=1 repeatedExportRetained=1 concurrentCatchupNoOldSourceRewrite=1 catchupPfbMs="<<catchupCosts["export-catchup-pfb"]<<" originalModModified=0 runtimeGeneration="<<appended.generation<<'\n';return 0;
+ auto structureStage=temporary/"structure-stage",structureCold=temporary/"structure-cold";std::filesystem::copy(mod,structureStage,std::filesystem::copy_options::recursive);std::filesystem::copy(structureStage,structureCold,std::filesystem::copy_options::recursive);
+ auto structureAuthor=EiemDirectory::Load(structureStage);auto rule=std::find_if(structureAuthor.rules.begin(),structureAuthor.rules.end(),[](const auto& row){return !row.second.skip&&!row.second.parts.empty();});Require(rule!=structureAuthor.rules.end(),"structure fixture has no authored part");
+ auto newPart=std::string("zz_structure_regression");while(structureAuthor.parts.count(newPart))newPart+="_x";structureAuthor.parts.emplace(newPart,structureAuthor.parts.at(rule->second.parts.front()));rule->second.parts.push_back(newPart);
+ auto previousStore=EiemCompiledModStore::Load(mod/"compiled.bin",mod,game,true);Require(previousStore.selection.has_value(),"structure fixture source selection absent");auto structureSelection=*previousStore.selection;
+ auto structureDelta=EiemCompiledModWriter::MeshStructureChanges(structureAuthor,original.manifest.package);Require(structureDelta&&!structureDelta->targets.empty(),"Part addition was not classified as a Mesh structure change");
+ std::set<std::string> replaced;EiemStaticSources::Discovery structureDiscovery;Require(EiemCompiledModWriter::MeshStructureSources(original,structureSelection,structureDelta->targets,replaced,structureDiscovery),"structure fixture sources cannot be isolated");
+ auto prepareStructure=[](std::shared_ptr<const Artifact> baseline,const EiemStaticSources::Selection& current){return EiemPreparedPrefabCompiler::Encode(EiemPreparedPrefabCompiler::Prepare(std::move(baseline),current));};
+ auto compileStructure=[](std::shared_ptr<const Artifact> baseline,const EiemStaticSources::Selection& current,const std::set<std::string>& sources,const std::function<void(const char*,double)>& cost)->std::optional<EiemCompiledModWriter::MeshStructureCompilation>{
+  auto prepared=EiemPreparedPrefabCompiler::Prepare(baseline,current);std::optional<Artifact> combined;EiemConsumerUpdateRecords::Decisions decisions;
+  for(const auto& source:sources){EiemSourceAdaptationJobs::Request request{source,EiemSourceAdaptationCompiler::StampFor(baseline->manifest.package,current,source)};auto compiled=EiemPreparedPrefabCompiler::Compile(prepared,request,cost);
+   if(!compiled.artifact)return std::nullopt;Require(decisions.emplace(source,compiled.decision).second,"structure fixture source repeated");if(!combined)combined=*compiled.artifact;else combined=EiemCompiledArtifactAppend::Merge(*combined,*compiled.artifact);}
+  if(!combined)return std::nullopt;auto& plan=combined->manifest.plan;const auto& currentPlan=baseline->manifest.plan;plan.parts=currentPlan.parts;plan.materials=currentPlan.materials;
+  plan.meshParts=currentPlan.meshParts;plan.materialMatches=currentPlan.materialMatches;plan.textures=currentPlan.textures;plan.opaque=currentPlan.opaque;
+  plan.rendererBoundsHits=currentPlan.rendererBoundsHits;plan.rendererBoundsMisses=currentPlan.rendererBoundsMisses;plan.frameRecipes=currentPlan.frameRecipes;
+  return EiemCompiledModWriter::MeshStructureCompilation{std::move(*combined),std::move(decisions),std::move(prepared.schemas)};
+ };
+ std::map<std::string,double> structureCosts;auto structureCost=[&](const char* name,double ms){structureCosts[name]+=ms;};
+ EiemCompiledModWriter::Export(structureStage,game,structureCost,mod,&structureAuthor,&structureSelection,nullptr,prepareStructure,false,compileStructure);
+ if(structureCosts["mesh-structure-incremental"]!=1){std::string detail;for(const auto& row:structureCosts)detail+=" "+row.first+"="+std::to_string(row.second);Require(false,"Part addition fell back to full compilation; costs:"+detail);}
+ EiemCompiledModWriter::Export(structureCold,game,{}, {},&structureAuthor,&structureSelection,nullptr,prepareStructure,false);auto structureActual=EiemCompiledModStore::Load(structureStage/"compiled.bin",structureStage,game,true);
+ auto structureExpected=EiemCompiledModStore::Load(structureCold/"compiled.bin",structureCold,game,true);Require(structureActual.artifact.manifest.plan.author==PackageDigest(structureAuthor)&&
+  structureActual.artifact.views.size()==structureExpected.artifact.views.size(),"incremental Mesh structure snapshot differs from cold compile coverage");
+ auto markers=[](const Artifact& artifact){std::map<std::string,size_t> counts;for(const auto& root:artifact.manifest.plan.roots)for(const auto& source:root.Assembly().sources)for(const auto& target:source.targets)if(!target.marker.empty())++counts[target.marker];return counts;};
+ Require(markers(structureActual.artifact)==markers(structureExpected.artifact),"incremental Mesh structure root markers differ from cold compile");
+ auto oldStore=EiemModUpdateStore::Read(mod/"compiled.bin"),newStore=EiemModUpdateStore::Read(structureStage/"compiled.bin");size_t reusedSources=0,rewrittenSources=0;
+ for(const auto& row:oldStore.blocks)if(row.first.rfind("runtime/source/",0)==0||row.first.rfind("runtime/proof/",0)==0){auto key=row.first.substr(row.first.find("/",8)+1);
+  if(replaced.count(key)){Require(newStore.blocks.at(row.first).digest!=row.second.digest,"affected structure source retained its stale immutable block");++rewrittenSources;}
+  else{Require(newStore.blocks.at(row.first).digest==row.second.digest,"unaffected structure source was re-encoded");++reusedSources;}}
+ Require(rewrittenSources>0&&reusedSources>0,"structure regression did not exercise selective source replacement");
+ auto legacyStage=temporary/"legacy-cache";std::filesystem::copy(mod,legacyStage,std::filesystem::copy_options::recursive);std::filesystem::remove_all(legacyStage/"compiled.blocks");
+ Writer legacyPacket;legacyPacket.S("EFF_COMPILED_MOD_LEGACY_PACKET");EiemOfflineCompile::AtomicSave(legacyStage/"compiled.bin",legacyPacket.b);auto legacyAuthor=EiemDirectory::Load(legacyStage);
+ std::map<std::string,double> legacyCosts;auto legacyCost=[&](const char* name,double ms){legacyCosts[name]+=ms;};
+ EiemCompiledModWriter::Export(legacyStage,game,legacyCost,{},&legacyAuthor,&selection,nullptr,
+  [](std::shared_ptr<const Artifact> baseline,const EiemStaticSources::Selection& current){return EiemPreparedPrefabCompiler::Encode(EiemPreparedPrefabCompiler::Prepare(std::move(baseline),current));});
+ Require(legacyCosts["legacy-compiled-cache-ignored"]==1&&EiemCompiledModStore::IsStore(legacyStage/"compiled.bin"),"legacy packet cache was not ignored and rewritten as a v2 block store");
+ auto legacyResult=EiemCompiledModStore::Load(legacyStage/"compiled.bin",legacyStage,game,false);Require(legacyResult.artifact.manifest.plan.author==PackageDigest(legacyAuthor),"legacy cache cold export produced a different author snapshot");
+ std::cout<<"PASS export carryover+Mesh structure: runtimeAddedPfb=1 roots="<<completed.decisions.at(logical).roots.size()<<" nativeViews="<<actual.artifact.views.size()<<" changedViews="<<changed<<" newMeshMatchesColdCompile=1 structureAffected="<<rewrittenSources<<" structureReused="<<reusedSources<<" legacyCacheIgnoredColdV2=1 logicalRoutingAndDecisionsRetained=1 repeatedExportRetained=1 concurrentCatchupNoOldSourceRewrite=1 catchupPfbMs="<<catchupCosts["export-catchup-pfb"]<<" originalModModified=0 runtimeGeneration="<<appended.generation<<'\n';return 0;
 }catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';return 1;}}

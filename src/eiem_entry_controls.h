@@ -102,8 +102,10 @@ State Prepare(const std::shared_ptr<const std::vector<Package>>& graph,const Eie
     for(const auto& rule:package.rules) if(!rule.second.skip)
       for(const auto& target:rule.second.targets) for(const auto& partId:rule.second.parts) {
         const auto& part=package.parts.at(partId);const auto& mesh=package.meshes.at(part.mesh);
-        Spec spec{package.id,partId,RuntimePartName(package,partId,target.second),mesh.vertices,mesh.shapes,part.shapes,part.visible};
-        spec.material=part.material;Require(state.specs.emplace(spec.marker,std::move(spec)).second,"runtime part provenance collision");
+        for(const auto& marker:{RuntimePartName(package,partId,target.second),LegacyRuntimePartName(package,partId,target.second)}) {
+          Spec spec{package.id,partId,marker,mesh.vertices,mesh.shapes,part.shapes,part.visible};
+          spec.material=part.material;Require(state.specs.emplace(marker,std::move(spec)).second,"runtime part provenance collision");
+        }
       }
   }
   PreviewPreferences(state);PreparePanel(state);return state;

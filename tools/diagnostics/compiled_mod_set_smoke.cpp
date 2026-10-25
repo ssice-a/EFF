@@ -141,7 +141,7 @@ void NativeRegistrationRegression(){
  Rejected([&]{VerifyObjectReferences(empty,result,ParseSerialized(empty),merged);});
 }
 
-void GenericObjectRegression(){
+void GenericObjectRegression(unsigned storeFormat=0){
  using namespace EiemCompiledMod;
  Fixture f;f.cab="CAB-"+std::string(32,'a');f.Add(700,5);
  auto& bundleType=f.types[4];auto nameNode=bundleType.nodes.size();bundleType.nodes.push_back({"string","m_Name",false,{}});bundleType.nodes[0].children.push_back(nameNode);auto bundleName=EmptyValue(bundleType,nameNode);SetString(bundleType,bundleName,"fixture-bundle");f.V(300).children.push_back(std::move(bundleName));
@@ -200,7 +200,25 @@ void GenericObjectRegression(){
   Rejected([&]{EiemCompiledMod::DecodeRuntime({1,2,3},mod,folder);});auto packet=Encode(a,folder);auto corrupt=packet;corrupt.back()^=1;Rejected([&]{EiemCompiledMod::DecodeRuntime(corrupt,mod,folder);});auto roundtrip=EiemCompiledMod::Decode(packet,mod,folder);Require(Encode(roundtrip,folder)==packet&&roundtrip.views.size()==1,"compiled native view codec is not canonical");
   auto runtime=EiemCompiledMod::DecodeRuntime(packet,mod,folder);
   Require(runtime.members.empty()&&runtime.manifest.plan.memberRecipes.at(0).empty(),"runtime reader eagerly restored offline object proofs and member recipes");
-  EiemResourceReloadPlan::Save(mod/"compiled.bin",Encode(a,folder));
+  if(storeFormat&&m==0){
+   EiemResourceCatalogDelta::Catalog discoveryCatalog;discoveryCatalog.domain="runtime-mixed-store-fixture";
+   if(storeFormat==1){auto records=EiemCompiledModStore::RuntimeRecords(a,folder);EiemCompiledModStore::Discovery(records,{},discoveryCatalog);EiemModUpdateStore::Commit(mod/"compiled.bin",0,records);}
+   else {EiemCompiledSourceRecords::FinalizeSchemas(a);Require(!a.sharedSchemas.empty(),"v2 fixture lacks shared Type dictionary");Require(Encode(a,folder)==packet,"shared Type dictionary changed the legacy packet codec");EiemCompiledModStore::Save(mod/"compiled.bin",0,a,folder,{},discoveryCatalog);
+    auto addressed=a;addressed.explicitResources=addressed.manifest.plan.resourceAddressed=true;addressed.resourceBindingBytes=EiemAddressedResources::Encode({});
+    auto directory=folder/"template-roundtrip";std::filesystem::create_directory(directory);auto path=directory/"compiled.bin";auto snapshot=EiemCompiledModStore::Save(path,0,addressed,folder,{},discoveryCatalog);auto bound=EiemCompiledModStore::Load(path,mod,folder,true);
+    auto identity=EiemCompiledInputView::Identity(bound.artifact.views.at(0),bound.artifact.manifest.plan.names);auto digest=bound.artifact.digest;auto effective=bound.artifact.views.at(0).startupHash;auto cold=a.views.at(0).startupHash;
+    Require(bound.artifact.views.at(0).templateHash==cold&&effective!=cold,"resource-addressed fixture did not preserve its cold template proof");
+    for(size_t round=0;round<3;++round){auto saved=EiemCompiledModStore::Save(path,bound.generation,bound.artifact,folder,{},discoveryCatalog);bound=EiemCompiledModStore::Load(path,mod,folder,true);
+     Require(saved.generation==snapshot.generation&&bound.artifact.views.at(0).templateHash==cold&&bound.artifact.views.at(0).startupHash==effective&&bound.artifact.digest==digest&&EiemCompiledInputView::Identity(bound.artifact.views.at(0),bound.artifact.manifest.plan.names)==identity,"template republishing drifted native resource identity");
+    }
+    std::cout<<"PASS explicit template republish: three Save/Load generations retain cold template hash, effective identity, artifact digest and unchanged generation\n";
+   }
+   auto published=EiemPublishedCompiledMod::Read(mod,folder);auto& lazy=published.artifact;
+   Require(published.store&&published.externalSnapshot,"production block reader did not pin an external snapshot");
+   Require(lazy.members.empty()&&lazy.proofReader&&!lazy.proofBlocks,"production block reader eagerly hydrated native proofs");
+   auto resourcePath=mod/"resources/component.bin";auto originalResource=Read(resourcePath);auto changedResource=originalResource;changedResource.back()^=1;Save(resourcePath,changedResource);
+   Rejected([&]{EiemCompiledModSet::ReadPublishedArtifact(mod,folder);});Save(resourcePath,originalResource);
+  }else EiemResourceReloadPlan::Save(mod/"compiled.bin",Encode(a,folder));
  }
  auto iniFile=mods/"Generic0/mod.ini";auto savedIni=Read(iniFile);std::atomic<bool> changedDuringRead{false};
  Rejected([&]{EiemCompiledModSet::Read(folder,{}, {},[&](const char* stage,double){if(std::string(stage)=="artifact-manifest"&&!changedDuringRead.exchange(true)){auto changed=savedIni;changed.push_back('\n');Save(iniFile,changed);}});});Save(iniFile,savedIni);
@@ -219,6 +237,51 @@ void GenericObjectRegression(){
  Rejected([&]{EiemCompiledModSet::Materialize(set,0,false);});set.mods[1]=saved;
  set.contributors[0]={{1,0}};auto one=EndfieldInput::Decode(EiemCompiledModSet::Materialize(set,0,false));Require(ParseSerialized(one.members.front().bytes).objects.count(700),"removing deleting Mod did not restore original object");
  set.contributors[0].clear();Require(EiemCompiledModSet::Materialize(set,0,false)==original,"empty generic set did not restore pristine input");
+ std::cout<<"PASS production Mod set "<<(storeFormat==2?"packet+v2-external-blocks":storeFormat==1?"packet+v1-inline-blocks":"packet")<<": shared-source composition, lazy proofs, author validation, mutation rejection, removal and restoration\n";
+}
+
+void StoreSnapshotPinsRegression(){
+ using namespace EiemModUpdateStore;auto parent=std::filesystem::temp_directory_path();auto folder=parent/("eff-store-pins-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));
+ Require(std::filesystem::create_directory(folder),"store pin fixture exists");struct Cleanup{std::filesystem::path parent,folder;~Cleanup(){if(folder.parent_path()==parent){std::error_code error;std::filesystem::remove_all(folder,error);}}}cleanup{parent,folder};
+ for(bool consumer:{false,true}){
+  auto mods=folder/"plugin/mods",mod=mods/"parent/child";std::filesystem::create_directories(mod);auto path=mod/"compiled.bin";Fork({},path,0,{{"runtime/proof/x",Bytes{1,2,3}},{"runtime/common",Bytes{9,8}}});
+  std::shared_ptr<EiemCompiledModStore::Backing> pinned;
+  {std::unique_ptr<Lock> publication;if(consumer)publication=std::make_unique<Lock>(path);pinned=std::make_shared<EiemCompiledModStore::Backing>(path,consumer);
+   Require(pinned->Get("runtime/common")==Bytes({9,8}),"immediate metadata differs in an author/consumer snapshot");}
+  Require(!pinned->link.path.empty(),"external store reader did not pin sidecar links");auto pinDirectory=pinned->link.directory;size_t links=0;
+  for(const auto& entry:std::filesystem::directory_iterator(pinDirectory/"compiled.blocks"))if(entry.is_regular_file())++links;
+  Require(links==(consumer?1u:2u),"consumer snapshot pinned immediate blocks or author snapshot omitted a block");
+  auto removed=folder/"removed-mods";std::filesystem::rename(mods,removed);std::filesystem::remove_all(removed);
+  Require(pinned->Get("runtime/proof/x")==Bytes({1,2,3}),"moving/removing a nested Mod invalidated delayed external proof");
+  if(!consumer)Require(pinned->Get("runtime/common")==Bytes({9,8}),"author snapshot lost retained metadata after Mod removal");
+  pinned.reset();Require(!std::filesystem::exists(pinDirectory),"retired store reader leaked snapshot links");
+ }
+ auto fallbackPlugin=folder/"fallback",fallback=fallbackPlugin/"mods/mod";std::filesystem::create_directories(fallback);EiemResourceReloadPlan::Save(fallbackPlugin/".eiem-compiled-snapshots",Bytes{0});
+ auto fallbackPath=fallback/"compiled.bin";auto fallbackIndex=Fork({},fallbackPath,0,{{"runtime/proof/x",Bytes{4,5,6}},{"runtime/common",Bytes{7,8}}});
+ {std::shared_ptr<EiemCompiledModStore::Backing> direct;{Lock publication(fallbackPath);direct=std::make_shared<EiemCompiledModStore::Backing>(fallbackPath,true);Require(direct->Get("runtime/common")==Bytes({7,8}),"fallback consumer immediate metadata differs");}
+  Require(direct->link.path.empty()&&direct->link.error&&direct->directBlobs.size()==1,"consumer hardlink fallback retained immediate metadata handles or lost its proof handle");
+  auto blob=fallback/std::filesystem::u8path(fallbackIndex.blocks.at("runtime/proof/x").external);Require(std::filesystem::remove(blob),"direct fallback did not allow immutable blob GC");
+  Require(direct->Get("runtime/proof/x")==Bytes({4,5,6}),"immutable blob GC invalidated the direct fallback proof reader");}
+ std::cout<<"PASS store snapshot pins: author/consumer pin coverage, nested Mod directory move/removal, delayed sidecar proof, cleanup and proof-only hardlink fallback survive blob GC\n";
+}
+
+void SharedSchemaDictionaryRegression(){
+ using namespace EiemCompiledMod;using namespace EiemCompiledSourceRecords;Fixture f;auto bytes=f.BytesOf();auto layout=ParseSerialized(bytes);Artifact a;
+ a.manifest.plan.inputs.resize(2);a.manifest.plan.memberRecipes.resize(2);a.manifest.plan.namespaceRecipes.resize(2);a.manifest.plan.inputDependencies.resize(2);a.inputMembers.resize(2);a.addedBundles.resize(2);
+ for(size_t i=0;i<2;++i){auto name="member-"+std::to_string(i);a.manifest.plan.names.members[name]=name;a.members[name].before=a.members[name].after=layout;a.inputMembers[i].insert(name);
+  EiemResourceRecipe::Member recipe;recipe.name=name;recipe.hash=Hash(bytes);recipe.size=bytes.size();recipe.spans={{EiemResourceRecipe::Original,name,0,bytes.size(),{}}};a.manifest.plan.memberRecipes[i].push_back(std::move(recipe));a.manifest.plan.namespaceRecipes[i].push_back({name,Hash(bytes),{}});
+ }
+ auto owners=MemberInputs(a);std::vector<Bytes> independent;size_t independentSize=0;
+ for(size_t i=0;i<2;++i){independent.push_back(Proof(a,i,Directory(a,i,owners)));independentSize+=Unpack(independent.back()).size();}
+ FinalizeSchemas(a);auto encoded=EncodeSchemas(a.sharedSchemas);auto decoded=DecodeSchemas(encoded);Require(decoded.size()==a.sharedSchemas.size()&&!decoded.empty(),"shared Type dictionary roundtrip lost schemas");
+ std::vector<Bytes> shared;size_t sharedSize=encoded.size();for(size_t i=0;i<2;++i){shared.push_back(Proof(a,i,Directory(a,i,owners)));sharedSize+=Unpack(shared.back()).size();}Require(sharedSize<independentSize,"cross-source shared Type dictionary did not reduce decoded proof storage");
+ auto lazy=a;lazy.members.clear();lazy.manifest.plan.memberRecipes.assign(2,{});lazy.manifest.plan.namespaceRecipes.assign(2,{});lazy.proofBlocks=std::make_shared<const std::vector<Bytes>>(shared);lazy.sharedSchemas=std::move(decoded);lazy.hydrated.clear();
+ HydrateInput(lazy,0);Require(lazy.members.size()==1&&!lazy.members.count("member-1"),"shared Type dictionary eagerly hydrated unrelated input");HydrateInput(lazy,1);
+ for(const auto& member:lazy.members){Writer expected,actual;SchemaWriter before,after;WriteLayout(expected,layout,before);WriteLayout(actual,member.second.after,after);Require(expected.b==actual.b,"shared Type dictionary changed a native layout");}
+ auto prior=a.sharedSchemas;auto extra=layout.types.front();extra.nodes.front().name+="-new";a.members["member-0"].after.types.push_back(extra);FinalizeSchemas(a);Require(a.sharedSchemas.size()==prior.size()+1,"new Type did not append to the dictionary");for(size_t i=0;i<prior.size();++i)Require(EncodeSchema(a.sharedSchemas[i])==EncodeSchema(prior[i]),"new Type changed an existing dictionary ID");
+ auto extended=lazy;extended.members.clear();extended.manifest.plan.memberRecipes.assign(2,{});extended.manifest.plan.namespaceRecipes.assign(2,{});extended.sharedSchemas=a.sharedSchemas;extended.hydrated.clear();HydrateInput(extended,0);Require(extended.members.count("member-0"),"appending a shared Type invalidated old immutable proof IDs");
+ auto duplicate=a.sharedSchemas;duplicate.push_back(duplicate.front());Rejected([&]{EncodeSchemas(duplicate);});encoded.push_back(0);Rejected([&]{DecodeSchemas(encoded);});
+ std::cout<<"PASS shared Type dictionary: cross-source deduplication, exact layouts, lazy input hydration, stable append-only IDs and malformed dictionary rejection\n";
 }
 
 void PreloadIntervalRegression(){
@@ -438,7 +501,7 @@ void ProfileOriginalBlocks(const std::filesystem::path& game,const std::filesyst
  using namespace EiemNativeInput;size_t readBytes=0,inputs=0,chunks=0,encoded=0,decoded=0,reusableBytes=0,partialBytes=0;
  std::set<std::string> seen;std::map<size_t,size_t> sizes;
  for(const auto& folder:std::filesystem::directory_iterator(mods))if(folder.is_directory()&&std::filesystem::is_regular_file(folder.path()/"compiled.bin")){
-  auto artifact=EiemCompiledMod::Read(folder.path(),game);const auto& plan=artifact.manifest.plan;
+  auto artifact=EiemPublishedCompiledMod::ReadFullArtifact(folder.path(),game);const auto& plan=artifact.manifest.plan;
   for(size_t input=0;input<plan.originals.size();++input){const auto& source=plan.originals[input];if(!seen.insert(source.file).second)continue;++inputs;
    std::ifstream file(source.physical,std::ios::binary);Require(bool(file),"native block profile source absent");
    auto range=[&](size_t offset,size_t size){Require(offset<=source.size&&size<=source.size-offset,"native block profile range differs");Bytes out(size);file.seekg(std::streamoff(source.offset+offset));file.read((char*)out.data(),std::streamsize(size));Require(bool(file),"native block profile source truncated");readBytes+=size;return out;};
@@ -562,7 +625,7 @@ void ReadonlyRangeRegression(){
  Rejected([&]{EiemReadonlyFileRange::Range bad(path,100000,4);});mapped.reset();backing={};Save(path,{1,2,3});
 }
 void CompareCompiledArtifacts(const std::filesystem::path& game,const std::filesystem::path& beforeRoot,const std::filesystem::path& afterRoot){
- auto before=EiemCompiledMod::Read(beforeRoot,game),after=EiemCompiledMod::Read(afterRoot,game);
+ auto before=EiemPublishedCompiledMod::ReadFullArtifact(beforeRoot,game),after=EiemPublishedCompiledMod::ReadFullArtifact(afterRoot,game);
  const auto& a=before.manifest.plan;const auto& b=after.manifest.plan;
  Require(a.author==b.author&&a.contract==b.contract&&a.key==b.key,"author/contract/key differs");
  Require(a.originals.size()==b.originals.size()&&a.inputs.size()==b.inputs.size()&&a.roots.size()==b.roots.size(),"compiled source/root coverage differs");
@@ -595,7 +658,7 @@ void LogicalRouteRegression(){
 }
 void ComparePrunedArtifacts(const std::filesystem::path& game,const std::filesystem::path& beforeRoot,const std::filesystem::path& afterRoot){
  using namespace EiemCompiledMod;
- auto before=EiemCompiledMod::Read(beforeRoot,game),after=EiemCompiledMod::Read(afterRoot,game);
+ auto before=EiemPublishedCompiledMod::ReadFullArtifact(beforeRoot,game),after=EiemPublishedCompiledMod::ReadFullArtifact(afterRoot,game);
  const auto& a=before.manifest.plan;const auto& b=after.manifest.plan;
  Require(a.author==b.author&&a.contract==b.contract,"pruning changed author data");
  std::map<std::string,const Root*> roots;for(const auto& root:a.roots)roots.emplace(root.path,&root);
@@ -610,6 +673,14 @@ void ComparePrunedArtifacts(const std::filesystem::path& game,const std::filesys
  std::cout<<"PASS pruned artifact: beforeInputs="<<a.inputs.size()<<" afterInputs="<<b.inputs.size()<<" removedReadOnly="<<removed<<" roots="<<b.roots.size()<<" authorAndAssembliesAndEditedBytesUnchanged=1 roundtrip=1\n";
 }
 int main(int argc,char** argv){try{
+ if(argc==4&&std::string(argv[1])=="--profile-proof-codec"){
+  auto game=std::filesystem::canonical(std::filesystem::u8path(argv[2])),mod=std::filesystem::canonical(std::filesystem::u8path(argv[3]));auto begin=std::chrono::steady_clock::now();auto artifact=EiemPublishedCompiledMod::ReadFullArtifact(mod,game);auto hydrated=std::chrono::steady_clock::now();
+  auto index=EiemModUpdateStore::Read(mod/"compiled.bin");size_t beforeBytes=0;for(const auto& row:index.blocks)if(row.first.rfind("runtime/proof/",0)==0)beforeBytes+=row.second.size;
+  EiemCompiledSourceRecords::FinalizeSchemas(artifact);artifact.retainedProofBlocks.clear();artifact.retainedInputDirectories.clear();artifact.proofBlocks.reset();artifact.proofReader={};auto finalized=std::chrono::steady_clock::now();
+  auto owners=EiemCompiledSourceRecords::MemberInputs(artifact);auto schemas=EiemCompiledSourceRecords::PrepareSchemas(artifact);auto prepared=std::chrono::steady_clock::now();size_t afterBytes=0;
+  for(size_t i=0;i<artifact.manifest.plan.inputs.size();++i)afterBytes+=EiemCompiledSourceRecords::Proof(artifact,i,EiemCompiledSourceRecords::Directory(artifact,i,owners),&schemas).size();auto encoded=std::chrono::steady_clock::now();
+  auto milliseconds=[](auto a,auto b){return std::chrono::duration<double,std::milli>(b-a).count();};std::cout<<"PROOF-CODEC inputs="<<artifact.manifest.plan.inputs.size()<<" schemas="<<artifact.sharedSchemas.size()<<" oldBytes="<<beforeBytes<<" newBytes="<<afterBytes<<" dictionaryBytes="<<EiemCompiledSourceRecords::EncodeSchemas(artifact.sharedSchemas).size()<<" hydrateMs="<<milliseconds(begin,hydrated)<<" finalizeMs="<<milliseconds(hydrated,finalized)<<" prepareMs="<<milliseconds(finalized,prepared)<<" encodeMs="<<milliseconds(prepared,encoded)<<'\n';return 0;
+ }
  GameUpdateCarryoverRegression();
  LogicalRouteRegression();
  if(argc==5&&std::string(argv[1])=="--compare-pruned-artifacts"){ComparePrunedArtifacts(std::filesystem::u8path(argv[2]),std::filesystem::u8path(argv[3]),std::filesystem::u8path(argv[4]));return 0;}
@@ -625,7 +696,7 @@ int main(int argc,char** argv){try{
  if(argc==4&&std::string(argv[1])=="--audit-shared-inputs"){
   struct Use {std::string mod,bundle,original,output;};std::map<std::string,std::vector<Use>> uses;
   for(const auto& root:EiemComposedPackage::Roots(std::filesystem::u8path(argv[3]))){
-   auto artifact=EiemCompiledMod::Read(root,std::filesystem::u8path(argv[2]));const auto& plan=artifact.manifest.plan;
+   auto artifact=EiemPublishedCompiledMod::ReadFullArtifact(root,std::filesystem::u8path(argv[2]));const auto& plan=artifact.manifest.plan;
    for(size_t i=0;i<plan.originals.size();++i)uses[plan.originals[i].file].push_back({artifact.manifest.package.id,plan.inputs.at(i).bundle,plan.originals[i].hash,plan.startupHashes.at(i)});
   }
   size_t shared=0,readOnly=0,singleWriter=0,multipleWriters=0;
@@ -708,7 +779,7 @@ int main(int argc,char** argv){try{
   std::cout<<"PASS control-only INI refresh shares prepared bytes, updates controls/stamps, preserves consumed-input lifetime, rejects corrupt resource changes; refreshMs="<<elapsed<<'\n';return 0;
  }
  if(argc==4&&std::string(argv[1])=="--bundle-names"){
-  std::set<std::string> names;for(const auto& mod:EiemComposedPackage::Roots(std::filesystem::u8path(argv[3]))){auto artifact=EiemCompiledMod::Read(mod,std::filesystem::u8path(argv[2]));for(const auto& input:artifact.manifest.plan.inputs)names.insert(input.bundle);}for(const auto& name:names)std::cout<<name<<'\n';return 0;
+  std::set<std::string> names;for(const auto& mod:EiemComposedPackage::Roots(std::filesystem::u8path(argv[3]))){auto artifact=EiemPublishedCompiledMod::ReadFullArtifact(mod,std::filesystem::u8path(argv[2]));for(const auto& input:artifact.manifest.plan.inputs)names.insert(input.bundle);}for(const auto& name:names)std::cout<<name<<'\n';return 0;
  }
  using namespace EiemCompiledMod;
  if(argc==4&&std::string(argv[1])=="--audit-added-dependencies"){
@@ -798,6 +869,10 @@ int main(int argc,char** argv){try{
  GenericResourceRegression();
  NativeRegistrationRegression();
  GenericObjectRegression();
+ GenericObjectRegression(1);
+ GenericObjectRegression(2);
+ StoreSnapshotPinsRegression();
+ SharedSchemaDictionaryRegression();
  PreloadIntervalRegression();
  NativeResidencyRegression();
  InputRetentionRegression();
@@ -838,7 +913,7 @@ int main(int argc,char** argv){try{
   for(size_t i=0;i<set->catalog.size();++i){auto bytes=EiemCompiledModSet::Materialize(*set,i,false);Require(Hash(bytes)==set->manifest.plan.startupHashes[i],"compiled startup replay is nondeterministic");}
   auto moved=modDirectory.parent_path()/"compiled-mod-portability";Require(!std::filesystem::exists(moved),"portability fixture exists");std::filesystem::rename(modRoot,moved);struct Restore{std::filesystem::path from,to;~Restore(){std::filesystem::rename(from,to);}}restore{moved,modRoot};
   auto retired=EiemCompiledModSet::Read(std::filesystem::u8path(argv[1]),set,modDirectory);Require(retired&&retired->mods.empty()&&retired->catalog.size()==set->catalog.size(),"empty directory retirement omitted source inputs");for(size_t i=0;i<retired->catalog.size();++i)Require(retired->manifest.plan.startupHashes[i]==retired->catalog[i].source.hash,"empty set failed pristine source restoration");
-  auto portable=EiemCompiledMod::Read(moved,std::filesystem::u8path(argv[1]));Require(portable.manifest.package.root==moved,"portable compiled Mod retained original author folder");Require(!EiemCompiledModSet::Unchanged(*set,modDirectory),"removed Mod not detected");
+  auto portable=EiemPublishedCompiledMod::ReadFullArtifact(moved,std::filesystem::u8path(argv[1]));Require(portable.manifest.package.root==moved,"portable compiled Mod retained original author folder");Require(!EiemCompiledModSet::Unchanged(*set,modDirectory),"removed Mod not detected");
   std::cout<<"real compiled set: inputs="<<set->catalog.size()<<" roots="<<set->manifest.plan.roots.size()<<" ms="<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count()<<'\n';
  }
  std::cout<<"PASS generic resources, native type/script registrations, shared object additions/edits/deletions and compiled Mod membership; existing sequence/dependency composition preserved; no resource compiler process or Mesh builder invoked\n";return 0;

@@ -239,10 +239,17 @@ def read_package(root, resource_cache=None):
     for generated in ("source-inputs.bin", "compiled.bin"):
         if (root / generated).is_file():
             allowed.add(generated)
+    from .compiled_store import snapshot, BLOCK_PATH, TRANSIENT_PATH
+    committed = snapshot(root, validate_files=True)
+    if committed is not None:
+        allowed.update(committed['blobs'])
     from .mod_directory import package_files
     actual = {p.relative_to(root).as_posix() for p in package_files(root)
               if not re.fullmatch(r"state\.ini(?:\.tmp-[0-9]+)?", p.relative_to(root).as_posix())
-              and p.suffix.lower() not in (".png", ".psd") and p.name.lower() != "eff_texture_convert.exe"}
+              and p.suffix.lower() not in (".png", ".psd") and p.name.lower() != "eff_texture_convert.exe"
+              and TRANSIENT_PATH.fullmatch(p.relative_to(root).as_posix()) is None
+              and (p.relative_to(root).as_posix() in allowed or
+                   BLOCK_PATH.fullmatch(p.relative_to(root).as_posix()) is None)}
     require(actual == allowed, "unreferenced/source files in Mod directory: " + str(sorted(actual ^ allowed)))
     return dict(format="EFF_NATIVE_MOD_DIRECTORY", version=2, modId=mod["id"], keySwitchEnabled=key_switch_enabled(mod.get("key_switch_enabled", "1")), parts=parts, materials=materials,
                 textures=textures, rules=rules, states=states, persistentStates=persistence, keyBindings=bindings,

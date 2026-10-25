@@ -7,7 +7,7 @@
 // never silently retain their old dependency indices or author resources.
 namespace EiemCompiledPrefabUpdate {
 using namespace EiemCompiledMod;
-inline Artifact Retire(const Artifact& previous,const std::set<std::string>& retired){
+inline Artifact Retire(const Artifact& previous,const std::set<std::string>& retired,bool allowEmptyRoots=false){
  if(retired.empty())return previous;
  const auto& old=previous.manifest.plan;Require(old.rulesOnly&&old.spanRecipes&&previous.manifest.rootAssembly,"Prefab retirement requires independent source proofs");
  auto owners=EiemCompiledSourceRecords::MemberInputs(previous);std::vector<InputProofDirectory> directories;
@@ -20,7 +20,7 @@ inline Artifact Retire(const Artifact& previous,const std::set<std::string>& ret
    removedMembers.insert(name);}
   removedBundles.insert(old.inputs.at(i).bundle);
  }
- Require(found==retired&&!retained.empty(),"retired Prefab identity absent or union loses all core inputs");
+ Require(found==retired&&(allowEmptyRoots||!retained.empty()),"retired Prefab identity absent or union loses all core inputs");
  for(auto i:retained)for(auto dependency:directories[i].dependencies)Require(dependency<mapped.size()&&mapped[dependency]!=SIZE_MAX,"retained input depends on retired Prefab; compile affected dependency batch first");
  Artifact result=previous;auto& p=result.manifest.plan;result.proofBlocks.reset();result.proofReader={};result.proofMutex=std::make_shared<std::mutex>();result.retainedProofBlocks.clear();result.retainedInputDirectories.clear();result.hydrated.clear();result.digest.clear();
  p.inputs.clear();p.originals.clear();p.startupHashes.clear();p.rendererRules.clear();p.memberRecipes.clear();p.namespaceRecipes.clear();p.inputDependencies.clear();p.closure.clear();p.roots.clear();result.pristine.clear();result.views.clear();result.inputMembers.clear();result.addedBundles.clear();result.verifiedSources.clear();
@@ -46,9 +46,17 @@ inline Artifact Retire(const Artifact& previous,const std::set<std::string>& ret
  roots(old.roots,p.roots);roots(previous.pristine,result.pristine);for(auto i:old.closure)if(mapped.at(i)!=SIZE_MAX)p.closure.push_back(mapped.at(i));
  Writer key;key.S(p.author);key.S(p.contract);for(const auto& source:p.originals){key.S(source.file);key.S(source.hash);}p.key=Hash(key.b);result.manifest.baseline=p.key;
  p.rendererParts=EiemCompiledArtifactAppend::RendererPartCount(result);
- Require(!p.roots.empty()&&result.pristine.size()==p.roots.size(),"Prefab retirement loses current root coverage");return result;
+ EiemCompiledArtifactAppend::PruneGenerated(result);
+ Require((allowEmptyRoots||!p.roots.empty())&&result.pristine.size()==p.roots.size(),"Prefab retirement loses current root coverage");return result;
 }
 inline Artifact Replace(const Artifact& previous,const Artifact& delta,const std::set<std::string>& retired){
  auto retained=Retire(previous,retired);return EiemCompiledArtifactAppend::Merge(retained,delta);
+}
+inline Artifact ReplaceAuthorSources(const Artifact& previous,const Artifact& delta,const std::set<std::string>& replaced,
+ const std::set<std::string>& changedResources,const Artifact* authorSnapshot=nullptr){
+ auto retained=Retire(previous,replaced,true);
+ if(authorSnapshot)for(const auto& frame:authorSnapshot->manifest.plan.frameRecipes){auto found=authorSnapshot->preparedFrames.find(frame.resource);
+  Require(found!=authorSnapshot->preparedFrames.end(),"updated author frame bytes absent");retained.preparedFrames[frame.resource]=found->second;}
+ return EiemCompiledArtifactAppend::Merge(retained,delta,true,changedResources);
 }
 } // namespace EiemCompiledPrefabUpdate

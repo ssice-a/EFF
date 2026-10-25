@@ -1,9 +1,12 @@
 #pragma once
 #include "eiem_native_input.h"
+#include "eiem_author_byte_origins.h"
 
 // Native serialized bytes only. The caller must separately validate reference
 // closure and loader ownership before submitting a rebuilt input to the game.
 namespace EiemNativeInput {
+using AuthorByteSpan=EiemAuthorBytes::Span;
+using AuthorByteSpans=EiemAuthorBytes::Spans;
 inline void WriteInteger(Bytes& bytes, size_t offset, uint64_t value, size_t size,
                          bool big = false) {
   Require(size <= 8 && offset <= bytes.size() && size <= bytes.size() - offset,
@@ -23,9 +26,11 @@ struct Value {
   // Primitive/string/TypelessData bytes, or packed primitive array elements.
   Bytes raw, padding;
   std::vector<Value> children;
+  AuthorByteSpans rawOrigins;
 };
 inline Value ReadValue(const Type& type, size_t index, Reader& reader,
-                       size_t base, unsigned depth = 0) {
+                       size_t base, unsigned depth = 0,
+                       const AuthorByteSpans* origins = nullptr) {
   Require(index < type.nodes.size() && depth < type.nodes.size(),
           "serialized value schema cycle");
   const auto& node = type.nodes[index];
@@ -38,6 +43,7 @@ inline Value ReadValue(const Type& type, size_t index, Reader& reader,
     size_t start = reader.p;
     reader.Skip(size);
     value.raw.assign(reader.b.begin() + start, reader.b.begin() + reader.p);
+    if(origins)value.rawOrigins=EiemAuthorBytes::Slice(*origins,start,size);
     if (node.type == "string") Text(value.raw.data(), value.raw.size());
   } else if (node.type == "Array") {
     Require(node.children.size() == 2 &&
@@ -51,17 +57,18 @@ inline Value ReadValue(const Type& type, size_t index, Reader& reader,
       size_t start = reader.p;
       reader.Skip(value.count * step);
       value.raw.assign(reader.b.begin() + start, reader.b.begin() + reader.p);
+      if(origins)value.rawOrigins=EiemAuthorBytes::Slice(*origins,start,value.count*step);
     } else {
       // Append decoded elements; a corrupt count cannot preallocate a huge tree.
       for (size_t i = 0; i < value.count; ++i)
-        value.children.push_back(ReadValue(type, element, reader, base, depth + 1));
+        value.children.push_back(ReadValue(type, element, reader, base, depth + 1,origins));
     }
   } else {
     if (node.children.empty()) Require(false, "unsupported serialized leaf: " + node.type);
     std::set<std::string> names;
     for (size_t child : node.children) {
       if (!node.uniqueFields) Require(names.insert(type.nodes[child].name).second, "duplicate serialized struct field");
-      value.children.push_back(ReadValue(type, child, reader, base, depth + 1));
+      value.children.push_back(ReadValue(type, child, reader, base, depth + 1,origins));
     }
   }
   if (node.align || node.type == "string") {
@@ -71,26 +78,37 @@ inline Value ReadValue(const Type& type, size_t index, Reader& reader,
   }
   return value;
 }
-inline Value DecodeValue(const Type& type, size_t node, const Bytes& bytes) {
+inline Value DecodeValue(const Type& type, size_t node, const Bytes& bytes,
+                         const AuthorByteSpans* origins = nullptr) {
+  if(origins)EiemAuthorBytes::Validate(bytes,*origins);
   Reader reader(bytes);
-  auto value = ReadValue(type, node, reader, 0);
+  auto value = ReadValue(type, node, reader, 0,0,origins);
   Require(reader.p == bytes.size(), "serialized TypeTree does not consume complete value");
   return value;
 }
+inline Value DecodeAuthorValue(const Type& type,size_t node,const Bytes& bytes,
+                              const std::string& resource,const Bytes& fullResource,size_t resourceOffset){
+  auto origins=EiemAuthorBytes::MakeRange(resource,fullResource,resourceOffset,bytes.size());
+  return DecodeValue(type,node,bytes,&origins);
+}
 inline void WriteValue(const Type& type, const Value& value, Bytes& output,
-                       unsigned depth = 0) {
+                       unsigned depth = 0,AuthorByteSpans* origins = nullptr) {
   Require(value.node < type.nodes.size() && depth < type.nodes.size(),
           "serialized output schema recursion");
   const auto& node = type.nodes[value.node];
   auto primitive = Primitive(node.type);
+  auto appendRaw=[&]{
+    if(origins){auto verified=EiemAuthorBytes::Matching(value.raw,value.rawOrigins);EiemAuthorBytes::Append(*origins,EiemAuthorBytes::Slice(verified,0,value.raw.size(),output.size()));}
+    output.insert(output.end(),value.raw.begin(),value.raw.end());
+  };
   if (primitive) {
     Require(value.raw.size() == primitive && value.children.empty(), "serialized primitive width");
-    output.insert(output.end(), value.raw.begin(), value.raw.end());
+    appendRaw();
   } else if (node.type == "string" || node.type == "TypelessData") {
     Require(value.raw.size() <= INT_MAX && value.children.empty(), "serialized blob length");
     if (node.type == "string") Text(value.raw.data(), value.raw.size());
     AppendInteger(output, value.raw.size(), 4);
-    output.insert(output.end(), value.raw.begin(), value.raw.end());
+    appendRaw();
   } else if (node.type == "Array") {
     Require(node.children.size() == 2, "serialized output array schema");
     auto element = node.children[1];
@@ -102,18 +120,18 @@ inline void WriteValue(const Type& type, const Value& value, Bytes& output,
             "serialized output array count");
     AppendInteger(output, value.count, 4);
     if (packed)
-      output.insert(output.end(), value.raw.begin(), value.raw.end());
+      appendRaw();
     else
       for (const auto& child : value.children) {
         Require(child.node == element, "serialized array element schema");
-        WriteValue(type, child, output, depth + 1);
+        WriteValue(type, child, output, depth + 1,origins);
       }
   } else {
     Require(value.raw.empty() && value.children.size() == node.children.size() &&
                 !node.children.empty(), "serialized output struct fields");
     for (size_t i = 0; i < node.children.size(); ++i) {
       Require(value.children[i].node == node.children[i], "serialized struct field order");
-      WriteValue(type, value.children[i], output, depth + 1);
+      WriteValue(type, value.children[i], output, depth + 1,origins);
     }
   }
   if (node.align || node.type == "string") {
@@ -124,9 +142,10 @@ inline void WriteValue(const Type& type, const Value& value, Bytes& output,
       output.resize(output.size() + size);
   }
 }
-inline Bytes EncodeValue(const Type& type, const Value& value) {
+inline Bytes EncodeValue(const Type& type, const Value& value,AuthorByteSpans* origins = nullptr) {
   Bytes bytes;
-  WriteValue(type, value, bytes);
+  if(origins)origins->clear();
+  WriteValue(type, value, bytes,0,origins);
   return bytes;
 }
 inline Value& Child(const Type& type, Value& value, const std::string& name) {
@@ -163,12 +182,14 @@ inline void SetInteger(const Type& type, Value& value, uint64_t data) {
   Require(size && type.nodes[value.node].type != "float" &&
               type.nodes[value.node].type != "double", "not a serialized integer schema");
   value.raw.resize(size);
+  value.rawOrigins.clear();
   WriteInteger(value.raw, 0, data, size);
 }
 inline void SetString(const Type& type, Value& value, const std::string& text) {
   Require(type.nodes.at(value.node).type == "string", "not a serialized string schema");
   Text((const unsigned char*)text.data(), text.size());
   value.raw.assign(text.begin(), text.end());
+  value.rawOrigins.clear();
 }
 using NativeReference = std::pair<std::string, int64_t>;
 inline bool ExternalPrefix(const std::vector<std::string>& before,const std::vector<std::string>& after) {
@@ -189,11 +210,13 @@ inline void SetReference(const Type& type,Value& value,const NativeReference& re
   SetInteger(type,Child(type,value,"m_FileID"),file);
   SetInteger(type,Child(type,value,"m_PathID"),uint64_t(reference.second));
 }
-inline Value ObjectValue(const Bytes& source, const SerializedLayout& layout, int64_t id) {
+inline Value ObjectValue(const Bytes& source, const SerializedLayout& layout, int64_t id,
+                         const AuthorByteSpans* origins = nullptr) {
   const auto& object = layout.objects.at(id);
   Bytes bytes(source.begin() + object.offset, source.begin() + object.offset + object.size);
   const auto& type = layout.types.at(object.type);
-  auto value = DecodeValue(type, 0, bytes);
+  auto relative=origins?EiemAuthorBytes::Slice(*origins,object.offset,object.size):AuthorByteSpans{};
+  auto value = DecodeValue(type, 0, bytes,origins?&relative:nullptr);
   Require(EncodeValue(type, value) == bytes, "source serialized value roundtrip changed bytes");
   return value;
 }
@@ -239,14 +262,19 @@ inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout
                               const std::vector<AddedObject>& added = {},
                               const std::set<int64_t>& removed = {},
                               const std::vector<Bytes>& addedTypes = {},
-                              const std::vector<Bytes>& addedScripts = {}) {
+                              const std::vector<Bytes>& addedScripts = {},
+                              const AuthorByteSpans* sourceOrigins = nullptr,
+                              const std::map<int64_t,AuthorByteSpans>* objectOrigins = nullptr,
+                              AuthorByteSpans* outputOrigins = nullptr) {
+  AuthorByteSpans resultOrigins;
+  if(sourceOrigins&&outputOrigins)EiemAuthorBytes::Validate(source,*sourceOrigins);
   Reader externalReader(source,layout.tableEnd,false,48+layout.metadataSize);
   auto scripts=externalReader.Count();externalReader.Skip(MultiplySize(scripts,12));
   auto externalCountOffset=externalReader.p;auto externalCount=externalReader.Count();
   std::vector<std::string> originalExternals;
   for(size_t i=0;i<externalCount;++i){externalReader.Z();externalReader.Skip(20);auto path=externalReader.Z();auto slash=path.find_last_of("/\\");originalExternals.push_back(slash==path.npos?path:path.substr(slash+1));}
   Require(ExternalPrefix(originalExternals,layout.externals),"serialized original external order changed");
-  if (replacements.empty() && added.empty() && removed.empty() && addedTypes.empty() && addedScripts.empty() && originalExternals==layout.externals) return source;
+  if (replacements.empty() && added.empty() && removed.empty() && addedTypes.empty() && addedScripts.empty() && originalExternals==layout.externals){if(outputOrigins)*outputOrigins=sourceOrigins?*sourceOrigins:AuthorByteSpans{};return source;}
   Require(layout.countOffset >= 48 && layout.tableEnd <= 48 + layout.metadataSize &&
               layout.tableStart >= layout.countOffset + 4, "serialized writer metadata range");
   for (const auto& change : replacements)
@@ -288,7 +316,7 @@ inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout
   output.resize(dataOffset);
   std::map<int64_t, size_t> ids;
   auto append = [&](size_t index, int64_t id, size_t type, const Bytes& bytes,
-                    size_t begin, size_t size) {
+                    size_t begin, size_t size,const AuthorByteSpans* origins) {
     Require(id && ids.emplace(id, index).second && type < layout.types.size() && size <= UINT_MAX,
             "serialized output identity/type/size");
     Require(begin <= bytes.size() && size <= bytes.size() - begin,
@@ -300,6 +328,7 @@ inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout
     WriteInteger(output, row + 16, size, 4);
     WriteInteger(output, row + 20, type, 4);
     AddSize(output.size(),size);
+    if(origins&&outputOrigins){auto sliced=EiemAuthorBytes::Slice(*origins,begin,size);EiemAuthorBytes::ValidateAt(bytes,begin,size,sliced);EiemAuthorBytes::Append(resultOrigins,EiemAuthorBytes::Slice(sliced,0,size,output.size()));}
     output.insert(output.end(), bytes.begin() + begin, bytes.begin() + begin + size);
   };
   size_t index = 0;
@@ -308,12 +337,12 @@ inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout
     const auto& object = layout.objects.at(id);
     auto change = replacements.find(id);
     if (change == replacements.end())
-      append(index++, id, object.type, source, object.offset, object.size);
+      append(index++, id, object.type, source, object.offset, object.size,sourceOrigins);
     else
-      append(index++, id, object.type, change->second, 0, change->second.size());
+      append(index++, id, object.type, change->second, 0, change->second.size(),objectOrigins&&objectOrigins->count(id)?&objectOrigins->at(id):nullptr);
   }
   for (const auto& object : added)
-    append(index++, object.id, object.type, object.bytes, 0, object.bytes.size());
+    append(index++, object.id, object.type, object.bytes, 0, object.bytes.size(),objectOrigins&&objectOrigins->count(object.id)?&objectOrigins->at(object.id):nullptr);
   // Native loading requires signed PathID order. Keep every payload offset intact.
   Bytes records(output.begin() + 48 + table, output.begin() + 48 + table + count * 24);
   size_t sortedIndex = 0;
@@ -329,6 +358,7 @@ inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout
   Require(checked.order.size() == count && checked.externals == layout.externals &&
               std::is_sorted(checked.order.begin(), checked.order.end()),
           "serialized output validation failed");
+  if(outputOrigins){EiemAuthorBytes::Validate(output,resultOrigins);*outputOrigins=std::move(resultOrigins);}
   return output;
 }
 }  // namespace EiemNativeInput

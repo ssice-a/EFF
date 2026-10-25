@@ -47,6 +47,10 @@ bin/
 # not sources; the corresponding releases live outside the repository.
 /backups/
 
+# Accidental PowerShell/native DLL staging directory.
+/System.Management.Automation.Internal.Host.InternalHost/
+/workspace-cleanup-20261025/
+
 # Local game captures, compiled packages and profiling output (not source).
 /diagnostics/
 

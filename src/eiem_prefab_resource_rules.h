@@ -31,20 +31,20 @@ struct Context {
   std::lock_guard<std::mutex> lock(buildMutex);const auto& source=plan->originals.at(index);auto bytes=ReadSource({},source);
   auto original=EndfieldInput::Decode(bytes);
   if(plan->spanRecipes){std::map<std::string,const Bytes*> members;for(const auto& member:original.members)Require(members.emplace(member.name,&member.bytes).second,"duplicate runtime recipe original member");std::vector<EndfieldInput::Member> output;
-   for(const auto& recipe:plan->memberRecipes.at(index))output.push_back({recipe.name,recipe.flags,EiemResourceRecipe::Apply(recipe,members,package,frameBytes)});
+   for(const auto& recipe:plan->memberRecipes.at(index))output.push_back({recipe.name,recipe.flags,EiemResourceRecipe::Apply(recipe,members,package,frameBytes,!plan->resourceAddressed)});
    if(plan->startupHashes.at(index)!=source.hash)bytes=EndfieldInput::Encode(bytes,output);
   }
-  Require(Hash(bytes)==plan->startupHashes.at(index),"runtime applied rules differ from offline validation: "+source.file);
+  Require(plan->resourceAddressed||Hash(bytes)==plan->startupHashes.at(index),"runtime applied rules differ from offline validation: "+source.file);
   if(!isolated)return bytes;
   auto bundle=EndfieldInput::Decode(bytes);size_t recipesUsed=0;
   for(auto& member:bundle.members){if(Serialized(member.bytes)){
    if(plan->namespaceRecipes.empty())member.bytes=EiemLoadingGeneration::PrepareSerialized(member.bytes,plan->names).bytes;
    else{const auto& recipes=plan->namespaceRecipes.at(index);auto recipe=std::find_if(recipes.begin(),recipes.end(),[&](const auto& r){return r.member==member.name;});
     Require(recipe!=recipes.end(),"namespace recipe source member absent");
-    member.bytes=EiemLoadingGeneration::ApplyProven(member.bytes,recipe->hash,recipe->patches);++recipesUsed;}
+    member.bytes=EiemLoadingGeneration::ApplyProven(member.bytes,recipe->hash,recipe->patches,!plan->resourceAddressed);++recipesUsed;}
   }member.name=plan->names.members.at(member.name);}
   Require(plan->namespaceRecipes.empty()||recipesUsed==plan->namespaceRecipes.at(index).size(),"namespace recipe serialized member coverage differs");
-  bytes=EndfieldInput::Encode(bytes,bundle.members);Require(Hash(bytes)==plan->inputs.at(index).hash,"runtime isolated rules differ from offline validation");return bytes;
+  bytes=EndfieldInput::Encode(bytes,bundle.members);Require(plan->resourceAddressed||Hash(bytes)==plan->inputs.at(index).hash,"runtime isolated rules differ from offline validation");return bytes;
  }
 };
 } // namespace EiemPrefabRules

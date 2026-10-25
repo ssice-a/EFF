@@ -57,8 +57,8 @@ inline Bytes ApplySites(const Bytes& bytes,std::vector<Patch> patches){
   }
   Bytes result=bytes;for(const auto& patch:patches)std::copy(patch.after.begin(),patch.after.end(),result.begin()+patch.offset);return result;
 }
-inline Bytes ApplyProven(const Bytes& bytes,const std::string& hash,std::vector<Patch> patches){
-  auto digest=Sha(bytes.data(),bytes.size());Require(Hex(digest.data(),digest.size())==hash,"namespace recipe source digest differs");
+inline Bytes ApplyProven(const Bytes& bytes,const std::string& hash,std::vector<Patch> patches,bool verify=true){
+  if(verify){auto digest=Sha(bytes.data(),bytes.size());Require(Hex(digest.data(),digest.size())==hash,"namespace recipe source digest differs");}
   return ApplySites(bytes,std::move(patches));
 }
 inline void AddPatch(std::vector<Patch>& patches, const Bytes& bytes, size_t offset,

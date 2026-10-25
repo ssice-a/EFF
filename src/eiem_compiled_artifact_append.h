@@ -1,5 +1,7 @@
 #pragma once
 #include "eiem_compiled_mod.h"
+#include "eiem_addressed_resource_update.h"
+#include "eiem_compiled_source_records.h"
 
 // First incremental slice: append newly discovered sources to one Mod's
 // immutable artifact. Existing sources must still match in content and output;
@@ -9,16 +11,31 @@ using namespace EiemCompiledMod;
 inline size_t RendererPartCount(const Artifact& a){size_t count=0;const auto& package=a.manifest.package;
  for(const auto& input:a.manifest.plan.rendererRules)for(const auto& renderer:input)count=AddSize(count,package.rules.at(package.targetIndex.at(renderer.mesh)).parts.size());return count;
 }
+inline void PruneGenerated(Artifact& a){
+ std::set<std::string> used;for(const auto& view:a.views)for(const auto& span:view.spans)if(span.kind==EiemResourceRecipe::ExpandedFrame)used.insert(span.source);
+ for(auto row=a.preparedFrames.begin();row!=a.preparedFrames.end();){if((row->first.rfind("@bounds:",0)==0||row->first.rfind("@literal:",0)==0)&&!used.count(row->first))row=a.preparedFrames.erase(row);else ++row;}
+}
+inline void MergeBindings(Artifact& result,const Artifact& delta,bool authorRevision=false,const std::set<std::string>& changedResources={}){
+ if(!result.explicitResources)return;Require(delta.explicitResources,"explicit source union lacks resource provenance");
+ auto bindings=EiemAddressedResources::Decode(result.resourceBindingBytes,result.manifest.package),added=EiemAddressedResources::Decode(delta.resourceBindingBytes,delta.manifest.package);
+ if(authorRevision){
+  for(auto i=bindings.ranges.begin();i!=bindings.ranges.end();)if(changedResources.count(i->first)||!delta.manifest.package.resources.count(i->first))i=bindings.ranges.erase(i);else ++i;
+  for(auto i=bindings.meshes.begin();i!=bindings.meshes.end();)if(changedResources.count(i->first)||!delta.manifest.package.resources.count(i->first))i=bindings.meshes.erase(i);else ++i;
+ }
+ for(const auto& row:added.ranges){auto& ranges=bindings.ranges[row.first];ranges.insert(ranges.end(),row.second.begin(),row.second.end());EiemAddressedResources::Normalize(ranges);}
+ for(const auto& row:added.meshes){auto old=bindings.meshes.find(row.first);Require(authorRevision&&changedResources.count(row.first)||old==bindings.meshes.end()||EiemCompiledSourceRecords::SameSchema(old->second,row.second),"appended Mesh binding schema differs");if(old==bindings.meshes.end())bindings.meshes.emplace(row);else if(authorRevision&&changedResources.count(row.first))old->second=row.second;}
+ result.resourceBindingBytes=EiemAddressedResources::Encode(bindings);result.manifest.plan.resourceAddressed=true;
+}
 inline Bytes Startup(const Artifact& a,size_t i){
  const auto& p=a.manifest.plan;auto input=ReadSource({},p.originals.at(i));auto original=EndfieldInput::Decode(input);std::map<std::string,const Bytes*> members;
  for(const auto& member:original.members)Require(members.emplace(member.name,&member.bytes).second,"append startup original member repeated");std::vector<EndfieldInput::Member> output;
- for(const auto& recipe:p.memberRecipes.at(i))output.push_back({recipe.name,recipe.flags,EiemResourceRecipe::Apply(recipe,members,a.manifest.package,a.preparedFrames)});
- if(p.startupHashes.at(i)!=p.originals.at(i).hash)input=EndfieldInput::Encode(input,output);
- Require(Hash(input)==p.startupHashes.at(i),"append startup differs from offline validation");return input;
+ for(const auto& recipe:p.memberRecipes.at(i))output.push_back({recipe.name,recipe.flags,EiemResourceRecipe::Apply(recipe,members,a.manifest.package,a.preparedFrames,!a.explicitResources)});
+ if(a.explicitResources||p.startupHashes.at(i)!=p.originals.at(i).hash)input=EndfieldInput::Encode(input,output);
+ Require(a.explicitResources||Hash(input)==p.startupHashes.at(i),"append startup differs from offline validation");return input;
 }
-inline Artifact Merge(const Artifact& previous,const Artifact& delta){
+inline Artifact Merge(const Artifact& previous,const Artifact& delta,bool authorRevision=false,const std::set<std::string>& changedResources={}){
  const auto& old=previous.manifest.plan;const auto& added=delta.manifest.plan;
- Require(previous.manifest.package.id==delta.manifest.package.id&&old.contract==added.contract&&old.author==added.author,"consumer delta belongs to another author contract");
+ Require(previous.manifest.package.id==delta.manifest.package.id&&(authorRevision||(old.contract==added.contract&&old.author==added.author)),"consumer delta belongs to another author contract");
  Require(previous.manifest.rootAssembly&&delta.manifest.rootAssembly&&old.rulesOnly&&added.rulesOnly&&old.spanRecipes&&added.spanRecipes,"consumer delta lacks independent input proofs");
  Artifact result=previous;auto& plan=result.manifest.plan;result.proofBlocks.reset();result.proofMutex=std::make_shared<std::mutex>();result.inputMembers.clear();result.addedBundles.clear();result.digest.clear();
  bool retainedStamps=previous.verifiedSources.size()==old.inputs.size();if(!retainedStamps)result.verifiedSources.clear();
@@ -36,7 +53,7 @@ inline Artifact Merge(const Artifact& previous,const Artifact& delta){
  std::map<std::string,size_t> existing;for(size_t i=0;i<old.originals.size();++i)Require(existing.emplace(old.originals[i].file,i).second,"previous input duplicated");
  std::vector<size_t> mapped(added.inputs.size(),SIZE_MAX),fresh;
  for(size_t i=0;i<added.inputs.size();++i){auto found=existing.find(added.originals.at(i).file);
-  if(found!=existing.end()){auto at=found->second;Require(old.originals.at(at).hash==added.originals.at(i).hash&&previous.views.at(at).startupHash==delta.views.at(i).startupHash&&previous.views.at(at).size==delta.views.at(i).size,"append delta modifies an existing source; use affected-source replacement");mapped[i]=at;continue;}
+  if(found!=existing.end()){auto at=found->second;Require(old.originals.at(at).hash==added.originals.at(i).hash&&((previous.explicitResources&&delta.explicitResources)||previous.views.at(at).startupHash==delta.views.at(i).startupHash)&&previous.views.at(at).size==delta.views.at(i).size,"append delta modifies an existing source; use affected-source replacement");mapped[i]=at;continue;}
   auto at=plan.inputs.size();mapped[i]=at;fresh.push_back(at);existing.emplace(added.originals.at(i).file,at);HydrateInput(delta,i);
   plan.originals.push_back(added.originals.at(i));plan.inputs.push_back(added.inputs.at(i));plan.startupHashes.push_back(added.startupHashes.at(i));plan.rendererRules.push_back(added.rendererRules.at(i));
   plan.memberRecipes.push_back(added.memberRecipes.at(i));plan.namespaceRecipes.push_back(added.namespaceRecipes.at(i));plan.inputDependencies.emplace_back();result.views.push_back(delta.views.at(i));
@@ -47,8 +64,22 @@ inline Artifact Merge(const Artifact& previous,const Artifact& delta){
  }
  for(const auto& row:added.names.members)plan.names.members.emplace(row);for(const auto& row:added.names.bundles)plan.names.bundles.emplace(row);
  for(const auto& row:added.sharedBundles){auto found=plan.sharedBundles.emplace(row);Require(found.second||found.first->second==row.second,"appended native dependency route conflicts");}
- for(const auto& frame:delta.preparedFrames){auto found=result.preparedFrames.find(frame.first);Require(found==result.preparedFrames.end()||found->second==frame.second,"delta author frame changed");result.preparedFrames.emplace(frame);}
- for(const auto& frame:added.frameRecipes)if(std::none_of(plan.frameRecipes.begin(),plan.frameRecipes.end(),[&](const auto& row){return row.resource==frame.resource;}))plan.frameRecipes.push_back(frame);
+  if(authorRevision){std::set<std::string> nextFrames;for(const auto& frame:added.frameRecipes)nextFrames.insert(frame.resource);
+   for(auto i=result.preparedFrames.begin();i!=result.preparedFrames.end();)if(i->first.rfind("@bounds:",0)!=0&&i->first.rfind("@literal:",0)!=0&&!nextFrames.count(i->first))i=result.preparedFrames.erase(i);else ++i;
+  }
+  for(const auto& frame:delta.preparedFrames){auto found=result.preparedFrames.find(frame.first);Require(found==result.preparedFrames.end()||found->second==frame.second||(authorRevision&&changedResources.count(frame.first)),"delta author frame changed");if(found==result.preparedFrames.end())result.preparedFrames.emplace(frame);else if(authorRevision&&changedResources.count(frame.first))found->second=frame.second;}
+  if(authorRevision)plan.frameRecipes=added.frameRecipes;
+  else for(const auto& frame:added.frameRecipes)if(std::none_of(plan.frameRecipes.begin(),plan.frameRecipes.end(),[&](const auto& row){return row.resource==frame.resource;}))plan.frameRecipes.push_back(frame);
+  MergeBindings(result,delta,authorRevision,changedResources);PruneGenerated(result);
+ // Hydrated delta layouts use their own schema IDs. Re-encode only fresh
+ // proofs against the retained dictionary prefix; previous immutable proofs
+ // keep both their bytes and IDs. Legacy inline dictionaries stay inline.
+ if(!result.sharedSchemas.empty()){
+  auto schemas=EiemCompiledSourceRecords::PrepareSchemaTypes(result.sharedSchemas);
+  for(auto i:fresh)for(const auto& recipe:plan.memberRecipes.at(i)){auto proof=result.members.find(recipe.name);if(proof==result.members.end())continue;
+   for(const auto* layout:{&proof->second.before,&proof->second.after})for(const auto& type:layout->types){auto& candidates=schemas.candidates[EiemCompiledSourceRecords::KeyOf(type)];
+    if(std::none_of(candidates.begin(),candidates.end(),[&](size_t id){return EiemCompiledSourceRecords::SameSchema(result.sharedSchemas.at(id),type);})){candidates.push_back(result.sharedSchemas.size());result.sharedSchemas.push_back(type);}}}
+ }
  std::map<std::string,size_t> memberInputs;for(size_t i=0;i<plan.memberRecipes.size();++i){auto directory=result.retainedInputDirectories.find(i);
   if(directory!=result.retainedInputDirectories.end()){for(const auto& name:directory->second.members)Require(memberInputs.emplace(name,i).second,"retained CAB belongs to multiple sources");}
   else for(const auto& recipe:plan.memberRecipes.at(i))Require(memberInputs.emplace(recipe.name,i).second,"appended CAB belongs to multiple sources");}
@@ -58,8 +89,11 @@ inline Artifact Merge(const Artifact& previous,const Artifact& delta){
  }
  auto roots=[&](const std::vector<Root>& source,std::vector<Root>& destination){for(const auto& root:source){auto at=mapped.at(root.input);auto found=std::find_if(destination.begin(),destination.end(),[&](const auto& row){return row.path==root.path;});
    if(found!=destination.end()){Require(found->input==at&&found->cab==root.cab&&found->source==root.source,"delta root conflicts with existing Prefab identity");continue;}auto copy=root;copy.input=at;destination.push_back(std::move(copy));}};
- roots(added.roots,plan.roots);roots(delta.pristine,result.pristine);
- plan.shared.insert(added.shared.begin(),added.shared.end());for(const auto& row:added.parts)plan.parts.emplace(row);for(const auto& row:added.materials)plan.materials.emplace(row);
+  roots(added.roots,plan.roots);roots(delta.pristine,result.pristine);
+  plan.shared.insert(added.shared.begin(),added.shared.end());
+  if(authorRevision){plan.parts=added.parts;plan.materials=added.materials;plan.meshParts=added.meshParts;plan.materialMatches=added.materialMatches;plan.textures=added.textures;
+   plan.author=added.author;plan.contract=added.contract;result.manifest.package=delta.manifest.package;result.genericResources=delta.genericResources;
+  }else{for(const auto& row:added.parts)plan.parts.emplace(row);for(const auto& row:added.materials)plan.materials.emplace(row);}
  std::set<size_t> closure(plan.closure.begin(),plan.closure.end());for(auto i:added.closure)closure.insert(mapped.at(i));plan.closure.assign(closure.begin(),closure.end());
  EiemOfflinePackage::Writer key;key.S(plan.author);key.S(plan.contract);for(const auto& source:plan.originals){key.S(source.file);key.S(source.hash);}plan.key=Hash(key.b);result.manifest.baseline=plan.key;
  // Existing CAB names/proofs are retained. Only new inputs' references to
@@ -68,7 +102,7 @@ inline Artifact Merge(const Artifact& previous,const Artifact& delta){
   // Shared frames were already verified/prepared by the author compiler.
   // Never expand every author's mesh frame again to replay one new PFB.
   auto startup=Startup(result,i);auto bundle=EndfieldInput::Decode(startup);
-  for(auto& member:bundle.members){if(Serialized(member.bytes)){auto recipe=std::find_if(plan.namespaceRecipes.at(i).begin(),plan.namespaceRecipes.at(i).end(),[&](const auto& row){return row.member==member.name;});Require(recipe!=plan.namespaceRecipes.at(i).end(),"new source namespace recipe absent");member.bytes=EiemLoadingGeneration::ApplyProven(member.bytes,recipe->hash,recipe->patches);}member.name=plan.names.members.at(member.name);}
+  for(auto& member:bundle.members){if(Serialized(member.bytes)){auto recipe=std::find_if(plan.namespaceRecipes.at(i).begin(),plan.namespaceRecipes.at(i).end(),[&](const auto& row){return row.member==member.name;});Require(recipe!=plan.namespaceRecipes.at(i).end(),"new source namespace recipe absent");member.bytes=EiemLoadingGeneration::ApplyProven(member.bytes,recipe->hash,recipe->patches,!result.explicitResources);}member.name=plan.names.members.at(member.name);}
   plan.inputs.at(i).hash=Hash(EndfieldInput::Encode(startup,bundle.members));
  }
  plan.rendererParts=RendererPartCount(result);Require(result.pristine.size()==plan.roots.size(),"appended Prefab proof coverage differs");return result;

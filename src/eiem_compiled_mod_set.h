@@ -1,5 +1,6 @@
 #pragma once
 #include "eiem_compiled_mod.h"
+#include "eiem_published_compiled_mod.h"
 #include "eiem_compiled_object_merge.h"
 #include "eiem_native_input_offsets.h"
 #include "eiem_source_namespace_keys.h"
@@ -10,6 +11,10 @@
 // resource queries or author-side executables are called by this path.
 namespace EiemCompiledModSet {
 using namespace EiemCompiledMod;
+inline Artifact ReadPublishedArtifact(const std::filesystem::path& root,const std::filesystem::path& game,
+                                     const std::function<void(const char*,double)>& cost={}){
+ return EiemPublishedCompiledMod::ReadArtifact(root,game,cost,true,true);
+}
 inline bool StandaloneEffectRoot(const std::filesystem::path& root){auto sections=EiemDirectory::ParseIni(EiemDirectory::Read(root/"mod.ini"));for(const auto& s:sections)if(s.id=="Mod")return s.values.count("type")&&s.values.at("type")=="effect";return false;}
 struct Catalog {EiemResourceReloadPlan::Source source;Input input;std::map<std::string,std::shared_ptr<const MemberProof>> members;std::vector<std::shared_ptr<const Root>> pristine;
  std::shared_ptr<const Artifact> proofArtifact;size_t proofInput=0;std::set<std::string> dependencyFiles;
@@ -100,7 +105,7 @@ inline EndfieldInput::Bundle Replay(const Artifact& a,size_t index,const Endfiel
  HydrateInput(a,index);
  std::map<std::string,const Bytes*> members;for(const auto& m:original.members)members.emplace(m.name,&m.bytes);EndfieldInput::Bundle output=original;output.members.clear();
  for(const auto& recipe:a.manifest.plan.memberRecipes.at(index)){
-  auto bytes=EiemResourceRecipe::Apply(recipe,members,a.manifest.package,frames);auto proof=a.members.find(recipe.name);
+  auto bytes=EiemResourceRecipe::Apply(recipe,members,a.manifest.package,frames,!a.explicitResources);auto proof=a.members.find(recipe.name);
   if(proof!=a.members.end()&&(a.genericResources||GenericObjectChanges(proof->second.before,proof->second.after)))VerifyObjectReferences(bytes,proof->second.before,ParseSerialized(bytes),*members.at(recipe.name));
   output.members.push_back({recipe.name,recipe.flags,std::move(bytes)});
  }return output;
@@ -122,11 +127,11 @@ inline Bytes Materialize(const Set& set,size_t index,bool isolated,PreparedNames
  }
  struct Edit {size_t mod=0,source=0;EndfieldInput::Bundle bundle;};std::vector<Edit> edits;Bytes singleStartup;
  for(const auto& contributor:writers){const auto& a=*set.mods.at(contributor.first);const auto& frames=set.frames.at(contributor.first);const Frames empty;begin=std::chrono::steady_clock::now();auto replay=Replay(a,contributor.second,original,frames?*frames:empty);report("shared-contributor-replay",begin);begin=std::chrono::steady_clock::now();
-  Bytes encoded;const auto& check=a.manifest.plan.startupHashes.at(contributor.second)==catalog.source.hash?input:(encoded=EndfieldInput::Encode(input,replay.members));Require(Hash(check)==a.manifest.plan.startupHashes.at(contributor.second),"compiled member replay differs from offline proof: "+catalog.source.file);if(writers.size()==1)singleStartup=std::move(encoded);edits.push_back({contributor.first,contributor.second,std::move(replay)});report("shared-contributor-proof",begin);}
+  Bytes encoded;const auto& check=a.manifest.plan.startupHashes.at(contributor.second)==catalog.source.hash?input:(encoded=EndfieldInput::Encode(input,replay.members));Require(a.explicitResources||Hash(check)==a.manifest.plan.startupHashes.at(contributor.second),"compiled member replay differs from offline proof: "+catalog.source.file);if(writers.size()==1)singleStartup=std::move(encoded);edits.push_back({contributor.first,contributor.second,std::move(replay)});report("shared-contributor-proof",begin);}
  // An independent Mod already supplied the complete edits and exact sites.
  // Only shared inputs need record merging; avoid reparsing/rebuilding the rest.
- if(edits.size()==1){auto& edit=edits.front();const auto& a=*set.mods.at(edit.mod);if(prepared)*prepared=a.manifest.plan.namespaceRecipes.at(edit.source);if(nativeLayout)*nativeLayout=EiemNativeInputOffsets::Describe(edit.bundle.members);if(!isolated){if(a.manifest.plan.startupHashes.at(edit.source)==catalog.source.hash)return input;return singleStartup;}
-  for(auto& member:edit.bundle.members){if(Serialized(member.bytes)){const auto& recipes=a.manifest.plan.namespaceRecipes.at(edit.source);auto recipe=std::find_if(recipes.begin(),recipes.end(),[&](const auto& row){return row.member==member.name;});Require(recipe!=recipes.end(),"compiled namespace member absent");auto patches=recipe->patches;for(auto& patch:patches)patch.after=NamespaceName(patch.before,set.manifest.plan.names);member.bytes=EiemLoadingGeneration::ApplyProven(member.bytes,recipe->hash,std::move(patches));}member.name=set.manifest.plan.names.members.at(member.name);}return EndfieldInput::Encode(input,edit.bundle.members);
+ if(edits.size()==1){auto& edit=edits.front();const auto& a=*set.mods.at(edit.mod);if(prepared){*prepared=a.manifest.plan.namespaceRecipes.at(edit.source);if(a.explicitResources)for(auto& recipe:*prepared){auto member=std::find_if(edit.bundle.members.begin(),edit.bundle.members.end(),[&](const auto& value){return value.name==recipe.member;});Require(member!=edit.bundle.members.end(),"resource-addressed namespace member absent");recipe.hash=Hash(member->bytes);}}if(nativeLayout)*nativeLayout=EiemNativeInputOffsets::Describe(edit.bundle.members);if(!isolated){if(a.manifest.plan.startupHashes.at(edit.source)==catalog.source.hash)return input;return singleStartup;}
+  for(auto& member:edit.bundle.members){if(Serialized(member.bytes)){const auto& recipes=a.manifest.plan.namespaceRecipes.at(edit.source);auto recipe=std::find_if(recipes.begin(),recipes.end(),[&](const auto& row){return row.member==member.name;});Require(recipe!=recipes.end(),"compiled namespace member absent");auto patches=recipe->patches;for(auto& patch:patches)patch.after=NamespaceName(patch.before,set.manifest.plan.names);member.bytes=EiemLoadingGeneration::ApplyProven(member.bytes,recipe->hash,std::move(patches),!a.explicitResources);}member.name=set.manifest.plan.names.members.at(member.name);}return EndfieldInput::Encode(input,edit.bundle.members);
  }
  std::map<std::string,const EndfieldInput::Member*> oldMembers;for(const auto& m:original.members)oldMembers.emplace(m.name,&m);
  std::map<std::string,std::vector<std::pair<size_t,const EndfieldInput::Member*>>> byMember;
@@ -256,7 +261,7 @@ inline std::shared_ptr<Set> Read(const std::filesystem::path& game,const std::sh
  std::vector<std::shared_ptr<Artifact>> decoded(roots.size());
  std::vector<std::map<std::filesystem::path,InputFileStamp>> decodedStamps(roots.size());
  EiemOfflineCompile::ParallelInputs(roots.size(),[&](size_t index){const auto& root=roots[index];decodedStamps[index]=AuthorStamps(root);bool reuse=false;if(previous)for(const auto& mod:previous->mods)if(mod->manifest.package.root==root){const auto& stamps=decodedStamps[index];size_t prior=0;for(const auto& row:previous->files){if(EiemModDirectory::Owns(root,row.first))++prior;}reuse=prior==stamps.size();for(const auto& row:stamps){auto old=previous->files.find(row.first);reuse=reuse&&old!=previous->files.end()&&SameStamp(row.second,old->second);}break;}
-  if(!reuse){Require(std::filesystem::is_regular_file(root/"compiled.bin"),"Mod lacks compiled.bin; export this Mod with Blender: "+root.filename().u8string());auto begin=std::chrono::steady_clock::now();decoded[index]=std::make_shared<Artifact>(EiemCompiledMod::ReadRuntime(root,game,cost));report("artifact",begin);}
+  if(!reuse){Require(std::filesystem::is_regular_file(root/"compiled.bin"),"Mod lacks compiled.bin; export this Mod with Blender: "+root.filename().u8string());auto begin=std::chrono::steady_clock::now();decoded[index]=std::make_shared<Artifact>(ReadPublishedArtifact(root,game,cost));report("artifact",begin);}
  },4);
  size_t rootIndex=0;for(const auto& root:roots){Require(std::filesystem::is_regular_file(root/"compiled.bin"),"Mod lacks compiled.bin; export this Mod with the Blender plug-in: "+root.filename().u8string());auto stamps=AuthorStamps(root);Require(stamps.size()==decodedStamps[rootIndex].size(),"Mod changed during parallel index read");for(const auto& row:stamps){auto old=decodedStamps[rootIndex].find(row.first);Require(old!=decodedStamps[rootIndex].end()&&SameStamp(old->second,row.second),"Mod changed during parallel index read");}
   size_t reuse=SIZE_MAX;
@@ -266,7 +271,7 @@ inline std::shared_ptr<Set> Read(const std::filesystem::path& game,const std::sh
   }
   std::shared_ptr<const Artifact> a;std::shared_ptr<const Frames> frames;Package current;
   if(reuse!=SIZE_MAX){a=previous->mods[reuse];current=previous->manifest.packages.at(reuse);frames=previous->frames[reuse];}
-  else{auto begin=std::chrono::steady_clock::now();auto loaded=decoded.at(rootIndex);if(!loaded)loaded=std::make_shared<Artifact>(EiemCompiledMod::ReadRuntime(root,game,cost));begin=std::chrono::steady_clock::now();current=Load(root,&loaded->manifest.package);Require(InputContractDigest(current)==loaded->manifest.plan.contract,"Mod resource declarations differ from compiled rules; re-export with Blender: "+current.id);loaded->manifest.package=current;a=std::move(loaded);report("author-load",begin);
+  else{auto begin=std::chrono::steady_clock::now();auto loaded=decoded.at(rootIndex);if(!loaded)loaded=std::make_shared<Artifact>(ReadPublishedArtifact(root,game,cost));begin=std::chrono::steady_clock::now();current=Load(root,&loaded->manifest.package);Require(InputContractDigest(current)==loaded->manifest.plan.contract,"Mod resource declarations differ from compiled rules; re-export with Blender: "+current.id);loaded->manifest.package=current;a=std::move(loaded);report("author-load",begin);
    begin=std::chrono::steady_clock::now();frames=std::shared_ptr<const Frames>(a,&a->preparedFrames);report("frame-expand",begin);
   }
   auto after=AuthorStamps(root);Require(stamps.size()==after.size(),"Mod files changed while reading compiled rules");for(const auto& row:stamps)Require(after.count(row.first)&&SameStamp(row.second,after.at(row.first)),"Mod changed while reading compiled rules");

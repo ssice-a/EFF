@@ -16,16 +16,16 @@ struct Reader {
  double D(){auto bits=N();double v;memcpy(&v,&bits,8);Require(std::isfinite(v),"Physics nonfinite transform");return v;}
 };
 struct Node {std::string path,parent;bool source=false,hasParent=false;std::array<double,3> position,scale;std::array<double,4> rotation;};
-struct Template {std::string cab;Bytes bytes;SerializedLayout layout;};
+struct Template {std::string cab;Bytes bytes;SerializedLayout layout;AuthorByteSpans origins;};
 struct Collider {std::string id,name,bone,cab;int64_t object=0;Vector3 position;std::array<double,4> rotation;};
 struct Group {std::string id,name,cab;int64_t object=0;std::set<Identity> targets;std::vector<std::pair<std::string,bool>> nodes;std::vector<std::string> colliders;};
 struct Document {std::string id;std::map<std::string,Node> nodes;std::map<std::string,Template> templates;std::map<std::string,Collider> colliders;std::vector<Group> groups;};
-inline Document Decode(const Resource& resource){
+inline Document Decode(const Resource& resource,const std::string& resourceName={}){
  const auto& block=resource.blocks.at("@physics");Bytes bytes(resource.bytes.begin()+block.offset,resource.bytes.begin()+block.offset+block.size);Reader r{bytes};Document d;
  Require(r.S()==structure,"new Physics input structure differs");d.id=r.S();Require(!d.id.empty(),"Physics identity absent");
  auto n=r.Count();for(size_t i=0;i<n;++i){Node v;v.path=r.S();v.parent=r.S();v.source=r.B();v.hasParent=r.B();for(auto& x:v.position)x=r.D();for(auto& x:v.rotation)x=r.D();for(auto& x:v.scale)x=r.D();Require(d.nodes.emplace(v.path,v).second,"duplicate Physics bone path");}
  for(const auto& node:d.nodes){const auto& v=node.second;Require(!v.hasParent||d.nodes.count(v.parent),"Physics bone parent absent");Require(v.source||v.hasParent,"new Physics bone lacks parent");}
- n=r.Count();for(size_t i=0;i<n;++i){Template v;v.cab=r.S();v.bytes=r.Blob();v.layout=ParseSerialized(v.bytes);auto cab=v.cab;Require(d.templates.emplace(cab,std::move(v)).second,"duplicate Physics template CAB");}
+ n=r.Count();for(size_t i=0;i<n;++i){Template v;v.cab=r.S();auto blobOffset=AddSize(r.p,8);v.bytes=r.Blob();v.layout=ParseSerialized(v.bytes);if(!resourceName.empty())v.origins=EiemAuthorBytes::MakeRange(resourceName,resource.bytes,AddSize(block.offset,blobOffset),v.bytes.size());auto cab=v.cab;Require(d.templates.emplace(cab,std::move(v)).second,"duplicate Physics template CAB");}
  n=r.Count();for(size_t i=0;i<n;++i){Collider v;v.id=r.S();v.name=r.S();v.bone=r.S();v.cab=r.S();v.object=int64_t(r.N());for(auto& x:v.position)x=r.D();for(auto& x:v.rotation)x=r.D();Require(d.nodes.count(v.bone)&&d.templates.count(v.cab)&&d.templates.at(v.cab).layout.objects.count(v.object),"Physics collider dependency absent");Require(d.colliders.emplace(v.id,v).second,"duplicate Physics collider");}
  n=r.Count();for(size_t i=0;i<n;++i){Group g;g.id=r.S();g.name=r.S();g.cab=r.S();g.object=int64_t(r.N());auto count=r.Count();for(size_t j=0;j<count;++j){auto path=r.S(),asset=r.S();Require(g.targets.insert({path,asset}).second,"duplicate Physics Mesh target");}
   count=r.Count();for(size_t j=0;j<count;++j){auto path=r.S();auto move=r.B();Require(d.nodes.count(path),"Physics group bone absent");g.nodes.emplace_back(path,move);}
@@ -34,18 +34,20 @@ inline Document Decode(const Resource& resource){
  }
  Require(r.p==bytes.size(),"Physics input trailing bytes");return d;
 }
-inline std::vector<Document> Documents(const Package& package){std::vector<Document> result;for(const auto& row:package.resources)if(row.second->blocks.count("@physics"))result.push_back(Decode(*row.second));return result;}
+inline std::vector<Document> Documents(const Package& package){std::vector<Document> result;for(const auto& row:package.resources)if(row.second->blocks.count("@physics"))result.push_back(Decode(*row.second,row.first));return result;}
 inline Value& FieldPath(const Type& t,Value& value,const std::vector<std::string>& path){auto* v=&value;for(const auto& key:path)v=&Child(t,*v,key);return *v;}
 
 class MemberBuilder {
  const Bytes& bytes;std::string cab;const Package& package;const AssetIndex& assets;const std::vector<Document>& documents;
+ const std::set<Identity>* relevantTargets;
+ const AuthorByteSpans* sourceOrigins=nullptr;
  SerializedLayout layout;std::map<int64_t,Value> values;std::map<int64_t,size_t> typeIds;std::set<int64_t> changed;
  std::map<int64_t,int64_t> owners,transforms,parents;std::map<int64_t,std::string> paths;std::map<int64_t,std::map<std::string,int64_t>> hierarchy;
  std::vector<AddedObject> added;std::vector<Bytes> types,scripts;std::map<std::pair<std::string,size_t>,size_t> imported;
  std::set<std::pair<int64_t,std::string>> movingBones;
  std::map<int64_t,std::vector<NativeReference>> preloads;
  const Type& Schema(int64_t id)const{return layout.types.at(typeIds.at(id));}
- Value& Tree(int64_t id){auto f=values.find(id);if(f==values.end())f=values.emplace(id,ObjectValue(bytes,layout,id)).first;return f->second;}
+ Value& Tree(int64_t id){auto f=values.find(id);if(f==values.end())f=values.emplace(id,ObjectValue(bytes,layout,id,sourceOrigins)).first;return f->second;}
  int64_t Pointer(int64_t id,const char* name){auto ref=NullableReference(Schema(id),Child(Schema(id),Tree(id),name),layout,cab);Require(ref.first==cab,"Physics hierarchy must be local");return ref.second;}
  int64_t Allocate(int64_t anchor,const std::string& identity,const char* kind){auto id=RendererObjectId(cab,package,kind,anchor,identity);Require(id&&!typeIds.count(id),"Physics PathID collision");return id;}
  int64_t Add(int64_t id,size_t type,Value value){Require(typeIds.emplace(id,type).second,"Physics object identity collision");values.emplace(id,std::move(value));added.push_back({id,type,{}});return id;}
@@ -95,7 +97,7 @@ class MemberBuilder {
   types.at(mapped-(layout.types.size()-types.size()))=record;layout.types.at(mapped).nativeRecord=record;return mapped;
  }
  void RemapScript(const Template& donor,const Type& type,Value& value){auto ref=NullableReference(type,Child(type,value,"m_Script"),donor.layout,donor.cab);Require(ref.second&&ref.first!=donor.cab,"Physics native script source unresolved");SetReference(type,Child(type,value,"m_Script"),ref,layout,cab);}
- int64_t Component(int64_t anchor,const std::string& identity,int64_t go,const Template& donor,int64_t donorId){auto object=donor.layout.objects.at(donorId);auto tree=ObjectValue(donor.bytes,donor.layout,donorId);const auto& originalType=donor.layout.types.at(object.type);RemapScript(donor,originalType,tree);auto type=Import(donor,object.type);auto id=Allocate(anchor,identity,"physics-component");Add(id,type,std::move(tree));Reference(id,"m_GameObject",go);Append(go,"m_Component",id,"component");return id;}
+ int64_t Component(int64_t anchor,const std::string& identity,int64_t go,const Template& donor,int64_t donorId){auto object=donor.layout.objects.at(donorId);auto tree=ObjectValue(donor.bytes,donor.layout,donorId,&donor.origins);const auto& originalType=donor.layout.types.at(object.type);RemapScript(donor,originalType,tree);auto type=Import(donor,object.type);auto id=Allocate(anchor,identity,"physics-component");Add(id,type,std::move(tree));Reference(id,"m_GameObject",go);Append(go,"m_Component",id,"component");return id;}
  Vector3 TransformPoint(int64_t id,Vector3 point,int64_t stop){for(auto current=id;current&&current!=stop;current=parents.at(current)){const auto& t=Schema(current);auto& tree=Tree(current);auto s=ReadVector(t,Child(t,tree,"m_LocalScale"));for(size_t i=0;i<3;++i)point[i]*=s[i];auto& q=Child(t,tree,"m_LocalRotation");double x=FloatValue(t,Child(t,q,"x")),y=FloatValue(t,Child(t,q,"y")),z=FloatValue(t,Child(t,q,"z")),w=FloatValue(t,Child(t,q,"w"));auto tx=2*(y*point[2]-z*point[1]),ty=2*(z*point[0]-x*point[2]),tz=2*(x*point[1]-y*point[0]);Vector3 next{point[0]+w*tx+y*tz-z*ty,point[1]+w*ty+z*tx-x*tz,point[2]+w*tz+x*ty-y*tx};auto p=ReadVector(t,Child(t,tree,"m_LocalPosition"));for(size_t i=0;i<3;++i)point[i]=next[i]+p[i];}return point;}
  void Populate(int64_t anchor,int64_t preloadRenderer,const Document& d,const std::vector<const Group*>& groups){
   const auto addedStart=added.size();std::map<std::string,int64_t> colliders;std::vector<NativeReference> refs;
@@ -122,16 +124,16 @@ class MemberBuilder {
    for(const char* field:{"m_Container","m_HashContainer"})for(auto& row:ArrayValue(t,Child(t,bundle,field)).children)update(Child(t,row,"second"));update(Child(t,bundle,"m_MainAsset"));list.children=std::move(next);list.count=list.children.size();changed.insert(id);
   }}
  public:
- MemberBuilder(const Bytes& b,const std::string& c,const Package& p,const AssetIndex& a,const std::vector<Document>& d):bytes(b),cab(c),package(p),assets(a),documents(d),layout(ParseSerialized(b)){for(const auto& o:layout.objects)typeIds[o.first]=o.second.type;}
- Bytes Build(){std::set<NativeReference> refs;std::map<NativeReference,Identity> targets;for(const auto& d:documents)for(const auto& g:d.groups)for(const auto& target:g.targets){Require(package.targetIndex.count(target)&&assets.count(target),"Physics Mesh is not a current INI replacement target");const auto& asset=assets.at(target);targets[{asset.cab,asset.pathId}]=target;refs.insert({asset.cab,asset.pathId});}
-  auto consumers=MeshConsumers(bytes,layout,cab,refs);if(consumers.empty())return bytes;Hierarchy();
+ MemberBuilder(const Bytes& b,const std::string& c,const Package& p,const AssetIndex& a,const std::vector<Document>& d,const std::set<Identity>* selectedTargets=nullptr):bytes(b),cab(c),package(p),assets(a),documents(d),relevantTargets(selectedTargets),layout(ParseSerialized(b)){for(const auto& o:layout.objects)typeIds[o.first]=o.second.type;}
+ Bytes Build(const AuthorByteSpans* inputOrigins=nullptr,AuthorByteSpans* outputOrigins=nullptr){sourceOrigins=inputOrigins;std::set<NativeReference> refs;std::map<NativeReference,Identity> targets;for(const auto& d:documents)for(const auto& g:d.groups)for(const auto& target:g.targets){if(relevantTargets&&!relevantTargets->count(target))continue;Require(package.targetIndex.count(target)&&assets.count(target),"Physics Mesh is not a current INI replacement target");const auto& asset=assets.at(target);targets[{asset.cab,asset.pathId}]=target;refs.insert({asset.cab,asset.pathId});}
+  auto consumers=MeshConsumers(bytes,layout,cab,refs);if(consumers.empty()){if(outputOrigins)*outputOrigins=inputOrigins?*inputOrigins:AuthorByteSpans{};return bytes;}Hierarchy();
   for(const auto& d:documents){std::map<int64_t,std::pair<int64_t,std::vector<const Group*>>> scopes;
    for(const auto& consumer:consumers)for(const auto& g:d.groups)if(g.targets.count(targets.at(consumer.mesh))){auto anchor=Anchor(consumer.renderer,d,g);auto& scope=scopes[anchor];if(!scope.first)scope.first=consumer.renderer;if(std::find(scope.second.begin(),scope.second.end(),&g)==scope.second.end())scope.second.push_back(&g);}
    for(const auto& scope:scopes)Populate(scope.first,scope.second.first,d,scope.second.second);
   }
-  Preloads();std::map<int64_t,Bytes> replacements;for(auto id:changed)replacements[id]=EncodeValue(Schema(id),Tree(id));for(auto& object:added)object.bytes=EncodeValue(Schema(object.id),Tree(object.id));return BuildSerialized(bytes,layout,replacements,added,{},types,scripts);
+  Preloads();std::map<int64_t,Bytes> replacements;std::map<int64_t,AuthorByteSpans> objectOrigins;for(auto id:changed)replacements[id]=EncodeValue(Schema(id),Tree(id),outputOrigins?&objectOrigins[id]:nullptr);for(auto& object:added)object.bytes=EncodeValue(Schema(object.id),Tree(object.id),outputOrigins?&objectOrigins[object.id]:nullptr);return BuildSerialized(bytes,layout,replacements,added,{},types,scripts,inputOrigins,&objectOrigins,outputOrigins);
  }
 };
-inline bool Build(EndfieldInput::Bundle& bundle,const Package& package,const AssetIndex& assets,const std::vector<Document>* prepared=nullptr){auto local=prepared?std::vector<Document>{}:Documents(package);const auto& documents=prepared?*prepared:local;if(documents.empty())return false;bool changed=false;for(auto& member:bundle.members)if(SerializedHeader(member.bytes)){auto built=MemberBuilder(member.bytes,member.name,package,assets,documents).Build();if(built!=member.bytes){member.bytes=std::move(built);changed=true;}}return changed;}
-inline Bytes Build(const Bytes& input,const Package& package,const AssetIndex& assets,const std::vector<Document>* prepared=nullptr){auto local=prepared?std::vector<Document>{}:Documents(package);const auto& documents=prepared?*prepared:local;if(documents.empty())return input;auto bundle=EndfieldInput::Decode(input);return Build(bundle,package,assets,&documents)?EndfieldInput::Encode(input,bundle.members):input;}
+inline bool Build(EndfieldInput::Bundle& bundle,const Package& package,const AssetIndex& assets,const std::vector<Document>* prepared=nullptr,const std::set<Identity>* relevantTargets=nullptr){auto local=prepared?std::vector<Document>{}:Documents(package);const auto& documents=prepared?*prepared:local;if(documents.empty())return false;bool changed=false;for(auto& member:bundle.members)if(SerializedHeader(member.bytes)){auto built=MemberBuilder(member.bytes,member.name,package,assets,documents,relevantTargets).Build(&member.origins,&member.origins);if(built!=member.bytes){member.bytes=std::move(built);changed=true;}}return changed;}
+inline Bytes Build(const Bytes& input,const Package& package,const AssetIndex& assets,const std::vector<Document>* prepared=nullptr,const std::set<Identity>* relevantTargets=nullptr){auto local=prepared?std::vector<Document>{}:Documents(package);const auto& documents=prepared?*prepared:local;if(documents.empty())return input;auto bundle=EndfieldInput::Decode(input);return Build(bundle,package,assets,&documents,relevantTargets)?EndfieldInput::Encode(input,bundle.members):input;}
 } // namespace EiemPhysicsInput

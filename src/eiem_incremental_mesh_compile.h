@@ -1,8 +1,8 @@
 #pragma once
 
 // Geometry edits with the same renderer/bone/shape contract reuse the already
-// compiled appearance and prefab graph. Only native Mesh bodies and skinned
-// renderer bounds depend on these edits. Structural edits use the full build.
+// compiled appearance and prefab graph. Structural edits rebuild only affected
+// Prefab sources when their author and source contracts remain supported.
 namespace EiemCompiledModWriter {
 inline std::set<std::string> MeshResourceChanges(const Package& author,const Package& old){
  if(author.resources.size()!=old.resources.size()||author.meshes.size()!=old.meshes.size())return {};
@@ -21,6 +21,98 @@ inline std::set<std::string> MeshResourceChanges(const Package& author,const Pac
  }
  if(changed.empty()||InputContractDigest(comparable)!=InputContractDigest(old))return {};
  return changed;
+}
+struct MeshStructureDelta {std::set<Identity> targets;std::set<std::string> resources;};
+inline std::optional<MeshStructureDelta> MeshStructureChanges(const Package& next,const Package& old){
+ auto meshResources=[](const Package& package){std::set<std::string> names;for(const auto& row:package.meshes)names.insert(row.second.resource);return names;};
+ const auto oldMeshes=meshResources(old),newMeshes=meshResources(next);
+ auto stable=[](Package package,const std::set<std::string>& resources){
+  for(const auto& name:resources)package.resources.erase(name);
+  package.meshes.clear();package.parts.clear();for(auto& rule:package.rules)rule.second.parts.clear();return InputContractDigest(package);
+ };
+ bool sameTargets=next.targetIndex.size()==old.targetIndex.size();
+ if(sameTargets){auto a=next.targetIndex.begin(),b=old.targetIndex.begin();for(;a!=next.targetIndex.end();++a,++b)
+   if(a->first.path!=b->first.path||a->first.asset!=b->first.asset||a->second!=b->second){sameTargets=false;break;}}
+ if(stable(next,newMeshes)!=stable(old,oldMeshes)||!sameTargets)return {};
+ MeshStructureDelta result;
+ auto sameMesh=[](const Mesh& a,const Mesh& b){return a.resource==b.resource&&a.vertices==b.vertices&&a.indices==b.indices&&a.bones==b.bones&&a.shapes==b.shapes;};
+ for(const auto& name:oldMeshes){auto before=old.resources.find(name),after=next.resources.find(name);
+  if(after==next.resources.end()||ResourceContentHash(*before->second)!=ResourceContentHash(*after->second))result.resources.insert(name);
+ }
+ for(const auto& name:newMeshes)if(!oldMeshes.count(name))result.resources.insert(name);
+ for(const auto& row:old.meshes){auto after=next.meshes.find(row.first);if(after==next.meshes.end()||!sameMesh(row.second,after->second)){
+   result.resources.insert(row.second.resource);if(after!=next.meshes.end())result.resources.insert(after->second.resource);
+  }}
+ for(const auto& row:next.meshes)if(!old.meshes.count(row.first))result.resources.insert(row.second.resource);
+ for(const auto& name:result.resources){auto before=old.resources.find(name),after=next.resources.find(name);
+  if((before!=old.resources.end()&&before->second->kind!=1)||(after!=next.resources.end()&&after->second->kind!=1))return {};
+ }
+ auto samePart=[](const EiemDirectory::Part& a,const EiemDirectory::Part& b){return a.mesh==b.mesh&&a.material==b.material;};
+ for(const auto& row:old.targetIndex){auto oldRule=old.rules.find(row.second),newRule=next.rules.find(row.second);if(oldRule==old.rules.end()||newRule==next.rules.end())return {};
+  bool changed=oldRule->second.skip!=newRule->second.skip||oldRule->second.parts!=newRule->second.parts;
+  std::set<std::string> parts(oldRule->second.parts.begin(),oldRule->second.parts.end());parts.insert(newRule->second.parts.begin(),newRule->second.parts.end());
+  for(const auto& id:parts){auto before=old.parts.find(id),after=next.parts.find(id);if(before==old.parts.end()||after==next.parts.end()){changed=true;continue;}
+   if(!samePart(before->second,after->second)){changed=true;continue;}
+   auto beforeMesh=old.meshes.find(before->second.mesh),afterMesh=next.meshes.find(after->second.mesh);
+   if(beforeMesh==old.meshes.end()||afterMesh==next.meshes.end()||!sameMesh(beforeMesh->second,afterMesh->second)){changed=true;continue;}
+   auto oldResource=old.resources.find(beforeMesh->second.resource),newResource=next.resources.find(afterMesh->second.resource);
+   if(oldResource==old.resources.end()||newResource==next.resources.end()||ResourceContentHash(*oldResource->second)!=ResourceContentHash(*newResource->second))changed=true;
+  }
+  if(changed)result.targets.insert(row.first);
+ }
+ if(result.targets.empty())return result;
+ for(const auto& resource:result.resources){bool used=false;
+  for(const auto& target:result.targets){const auto& before=old.rules.at(old.targetIndex.at(target));const auto& after=next.rules.at(next.targetIndex.at(target));
+   for(const auto& id:before.parts){auto part=old.parts.find(id);if(part!=old.parts.end()){auto mesh=old.meshes.find(part->second.mesh);used=used||(mesh!=old.meshes.end()&&mesh->second.resource==resource);}}
+   for(const auto& id:after.parts){auto part=next.parts.find(id);if(part!=next.parts.end()){auto mesh=next.meshes.find(part->second.mesh);used=used||(mesh!=next.meshes.end()&&mesh->second.resource==resource);}}
+  }
+  if(!used)return {};
+ }
+ return result;
+}
+inline bool MeshStructureSources(const Artifact& previous,const EiemStaticSources::Selection& selection,const std::set<Identity>& targets,
+ std::set<std::string>& files,EiemStaticSources::Discovery& discovery){
+ const auto& plan=previous.manifest.plan;if(plan.rendererRules.size()!=plan.originals.size()||plan.inputDependencies.size()!=plan.originals.size())return false;
+ std::vector<unsigned char> roots(plan.originals.size());for(const auto& root:plan.roots){if(root.input>=roots.size())return false;roots[root.input]=1;}
+ std::set<size_t> affected;
+ for(size_t i=0;i<plan.rendererRules.size();++i)for(const auto& renderer:plan.rendererRules[i])if(targets.count(renderer.mesh)){affected.insert(i);break;}
+ if(affected.empty())return false;
+ bool changed=true;while(changed){changed=false;for(size_t i=0;i<plan.inputDependencies.size();++i)if(!affected.count(i))for(auto dependency:plan.inputDependencies[i]){
+   if(dependency>=roots.size())return false;if(affected.count(dependency)){if(!roots[i])return false;affected.insert(i);changed=true;break;}
+  }}
+ for(auto i:affected){if(!roots[i])return false;const auto& source=plan.originals[i];std::string logical;
+  for(const auto& row:selection.inputs)if(EiemStaticSources::SourceFile(row.first,row.second.revision)==source.file){logical=row.first;break;}
+  if(logical.empty()||!selection.candidates.count(logical))return false;files.insert(source.file);discovery.sources.insert(logical);
+  for(const auto& root:plan.roots)if(root.input==i)discovery.roots.insert(root.path);discovery.renderers+=plan.rendererRules[i].size();
+ }
+ return !discovery.roots.empty()&&!files.empty();
+}
+inline bool PrepareMeshStructureBaseline(Artifact& artifact,const Package& author){
+ for(const auto& mesh:author.meshes)if(!author.resources.count(mesh.second.resource))return false;
+ std::map<std::string,EiemResourceReloadPlan::Part> parts;size_t meshParts=0;
+ for(const auto& rule:author.rules)if(!rule.second.skip)for(const auto& target:rule.second.targets)for(const auto& id:rule.second.parts){
+  const auto& part=author.parts.at(id);const auto& mesh=author.meshes.at(part.mesh);auto marker=EiemDirectory::RuntimePartName(author,id,target.second);
+  EiemResourceReloadPlan::Part expected{id,marker,part.material,mesh.vertices,mesh.bones,mesh.shapes};
+  Require(parts.emplace(marker,std::move(expected)).second,"incremental Mesh marker collision");++meshParts;
+ }
+ artifact.manifest.package=author;auto& plan=artifact.manifest.plan;plan.author=PackageDigest(author);plan.contract=InputContractDigest(author);
+ plan.parts=std::move(parts);plan.meshParts=meshParts;
+ return true;
+}
+inline bool PrepareMeshStructureFrames(Artifact& artifact,const Package& author,const std::set<std::string>& changedResources,
+ const EiemNativeInput::MeshSchemaIndex& schemas){
+ for(const auto& mesh:author.meshes)if(!mesh.second.shapes.empty()){
+  auto resource=author.resources.find(mesh.second.resource);if(resource==author.resources.end()||!schemas.count(resource->second->type))return false;
+ }
+ auto frames=EiemResourceRecipe::DescribeFrames(author,schemas);std::map<std::string,Bytes> prepared;
+ for(const auto& frame:frames){auto old=artifact.preparedFrames.find(frame.resource);
+  if(old!=artifact.preparedFrames.end()&&!changedResources.count(frame.resource)&&
+     (frame.hash.empty()||EiemResourceRecipe::Digest(old->second)==frame.hash))prepared.emplace(frame.resource,old->second);
+  else prepared.emplace(frame.resource,EiemResourceRecipe::ExpandFrame(frame,author.resources.at(frame.resource)->bytes));
+ }
+ for(const auto& row:artifact.preparedFrames)if(row.first.rfind("@bounds:",0)==0||row.first.rfind("@literal:",0)==0)prepared.emplace(row);
+ artifact.manifest.plan.frameRecipes=std::move(frames);artifact.preparedFrames=std::move(prepared);
+ return true;
 }
 inline void FreezeMeshDonors(std::vector<EiemResourceRecipe::Span>& spans,const std::set<std::string>& changed,
  const Package& old,const std::map<std::string,Bytes>& frames){

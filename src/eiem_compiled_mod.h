@@ -12,6 +12,8 @@ struct StreamSite {int64_t object=0;size_t offset=0,width=0;std::string member;u
 struct MemberProof {SerializedLayout before,after;std::vector<StreamSite> streams;std::vector<EiemLoadingGeneration::Patch> pristineNamespace;};
 struct InputProofDirectory {std::set<std::string> members,addedBundles;std::vector<size_t> dependencies;};
 struct Artifact {mutable Manifest manifest;mutable std::map<std::string,MemberProof> members;std::vector<Root> pristine;std::string digest;bool genericResources=false;
+ bool explicitResources=false;Bytes resourceBindingBytes;
+ std::vector<Type> sharedSchemas;
  std::vector<EiemCompiledInputView::Recipe> views;std::map<std::string,Bytes> preparedFrames;
  std::vector<std::set<std::string>> inputMembers,addedBundles;
  std::vector<InputFileStamp> verifiedSources;
@@ -51,15 +53,17 @@ inline Bytes Unpack(const Bytes& bytes){
 }
 struct SchemaWriter {std::map<Bytes,size_t> ids;};
 struct SchemaReader {std::vector<Type> types;};
+inline Bytes EncodeSchema(const Type& t){Writer w;w.N(uint64_t(t.classId));w.Raw(t.hash.data(),t.hash.size());w.N(t.nodes.size());for(const auto& n:t.nodes){w.S(n.type);w.S(n.name);w.B(n.align);w.N(n.children.size());for(auto c:n.children)w.N(c);}return std::move(w.b);}
+inline Type DecodeSchema(EiemOfflinePackage::Reader& r){Type t;t.classId=int(r.N());r.Raw(t.hash.data(),t.hash.size());auto nodes=r.Count();for(size_t j=0;j<nodes;++j){Node n;n.type=r.S();n.name=r.S();n.align=r.B();auto children=r.Count();for(size_t k=0;k<children;++k){auto c=r.Size();Require(c>j&&c<nodes,"compiled schema child extent/cycle differs");n.children.push_back(c);}t.nodes.push_back(std::move(n));}PrepareFixedWidths(t);return t;}
 inline void WriteLayout(Writer& w,const SerializedLayout& l,SchemaWriter& schemas){
  for(auto n:{l.metadataSize,l.dataOffset,l.countOffset,l.tableStart,l.tableEnd})w.N(n);
- w.N(l.types.size());for(const auto& t:l.types){Writer encoded;encoded.N(uint64_t(t.classId));encoded.Raw(t.hash.data(),t.hash.size());encoded.N(t.nodes.size());for(const auto& n:t.nodes){encoded.S(n.type);encoded.S(n.name);encoded.B(n.align);encoded.N(n.children.size());for(auto c:n.children)encoded.N(c);}auto id=schemas.ids.emplace(encoded.b,schemas.ids.size());w.N(id.first->second);if(id.second)w.Raw(encoded.b.data(),encoded.b.size());}
+ w.N(l.types.size());for(const auto& t:l.types){auto encoded=EncodeSchema(t);auto id=schemas.ids.emplace(encoded,schemas.ids.size());w.N(id.first->second);if(id.second)w.Raw(encoded.data(),encoded.size());}
  w.N(l.order.size());for(auto id:l.order){const auto& o=l.objects.at(id);w.N(uint64_t(id));w.N(o.offset);w.N(o.size);w.N(o.type);}w.Strings(l.externals);
 }
 inline SerializedLayout ReadLayout(EiemOfflinePackage::Reader& r,SchemaReader& schemas){
  SerializedLayout l;l.metadataSize=r.Size();l.dataOffset=r.Size();l.countOffset=r.Size();l.tableStart=r.Size();l.tableEnd=r.Size();
  Require(l.countOffset>=48&&l.tableStart>=l.countOffset+4&&l.tableEnd<=AddSize(48,l.metadataSize)&&l.dataOffset>=AddSize(48,l.metadataSize),"compiled object metadata extent differs");
- auto count=r.Count();for(size_t i=0;i<count;++i){auto id=r.Size();Require(id<=schemas.types.size(),"compiled schema dictionary reference differs");if(id==schemas.types.size()){Type t;t.classId=int(r.N());r.Raw(t.hash.data(),t.hash.size());auto nodes=r.Count();for(size_t j=0;j<nodes;++j){Node n;n.type=r.S();n.name=r.S();n.align=r.B();auto children=r.Count();for(size_t k=0;k<children;++k){auto c=r.Size();Require(c>j&&c<nodes,"compiled schema child extent/cycle differs");n.children.push_back(c);}t.nodes.push_back(std::move(n));}PrepareFixedWidths(t);schemas.types.push_back(std::move(t));}l.types.push_back(schemas.types.at(id));}
+ auto count=r.Count();for(size_t i=0;i<count;++i){auto id=r.Size();Require(id<=schemas.types.size(),"compiled schema dictionary reference differs");if(id==schemas.types.size())schemas.types.push_back(DecodeSchema(r));l.types.push_back(schemas.types.at(id));}
  count=r.Count();for(size_t i=0;i<count;++i){Object o;o.id=int64_t(r.N());o.offset=r.Size();o.size=r.Size();o.type=r.Size();Require(o.id&&o.type<l.types.size()&&o.offset>=l.dataOffset&&l.objects.emplace(o.id,o).second,"compiled object identity/type differs");l.order.push_back(o.id);}Require(MultiplySize(count,24)==l.tableEnd-l.tableStart,"compiled object table extent differs");l.externals=r.Strings();return l;
 }
 } // namespace EiemCompiledMod

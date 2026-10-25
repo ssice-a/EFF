@@ -42,10 +42,10 @@ inline Asset Isolate(const Bytes& source,const std::string& sourceCab,int64_t me
  SetString(bt,Child(bt,bundle,"m_Name"),key);
  SetString(bt,Child(bt,bundle,"m_AssetBundleName"),key);
  auto& dependencies=ArrayValue(bt,Child(bt,bundle,"m_Dependencies"));
- dependencies.children.clear();dependencies.raw.clear();dependencies.count=0;
+ dependencies.children.clear();dependencies.raw.clear();dependencies.rawOrigins.clear();dependencies.count=0;
  auto& preloads=ArrayValue(bt,Child(bt,bundle,"m_PreloadTable"));
  auto pointer=ArrayElement(bt,preloads);SetReference(bt,pointer,{sourceCab,meshId},layout,sourceCab);
- preloads.children={std::move(pointer)};preloads.raw.clear();preloads.count=1;
+ preloads.children={std::move(pointer)};preloads.raw.clear();preloads.rawOrigins.clear();preloads.count=1;
  auto assetInfo=[&](Value& info){
   SetInteger(bt,Child(bt,info,"preloadIndex"),0);SetInteger(bt,Child(bt,info,"preloadSize"),1);
   SetReference(bt,Child(bt,info,"asset"),{sourceCab,meshId},layout,sourceCab);
@@ -62,7 +62,7 @@ inline Asset Isolate(const Bytes& source,const std::string& sourceCab,int64_t me
    auto copy=entry;assetInfo(Child(bt,copy,"second"));kept.push_back(std::move(copy));
   }
   Require(!kept.empty(),"standalone Mesh lacks an exact string/hash asset directory entry");
-  entries.children=std::move(kept);entries.raw.clear();entries.count=entries.children.size();
+  entries.children=std::move(kept);entries.raw.clear();entries.rawOrigins.clear();entries.count=entries.children.size();
  }
  Require(exactPath,"standalone Mesh source path absent");
  auto& main=Child(bt,bundle,"m_MainAsset");SetInteger(bt,Child(bt,main,"preloadIndex"),0);

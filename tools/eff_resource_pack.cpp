@@ -68,14 +68,27 @@ int wmain(int argc,wchar_t** argv){try{
   if(!index.empty()){author=EiemResourceReloadPlan::Measure(cost,"author-read",[&]{return Load(mod);});selected=EiemAuthorSources::Prepare(*author,game,index,cost);auto identity=selected->manifest+'\n';selected->manifest=Hash(Bytes(identity.begin(),identity.end()));}
   bool caughtUp=false;if(!previous.empty()){if(!author)author=Load(mod);if(!selected)selected=EiemStaticSources::Merge({*author},game);caughtUp=EiemPreparedExportCarryover::Try(mod,previous,game,*author,*selected,cost,!index.empty());}
   if(!caughtUp)EiemCompiledModWriter::Export(mod,game,cost,previous,author?&*author:nullptr,selected?&*selected:nullptr,nullptr,
-   [](std::shared_ptr<const EiemCompiledMod::Artifact> artifact,const EiemStaticSources::Selection& selection){return EiemPreparedPrefabCompiler::Encode(EiemPreparedPrefabCompiler::Prepare(std::move(artifact),selection));},!index.empty());
+   [](std::shared_ptr<const EiemCompiledMod::Artifact> artifact,const EiemStaticSources::Selection& selection){return EiemPreparedPrefabCompiler::Encode(EiemPreparedPrefabCompiler::Prepare(std::move(artifact),selection));},!index.empty(),
+   [](std::shared_ptr<const EiemCompiledMod::Artifact> baseline,const EiemStaticSources::Selection& selection,const std::set<std::string>& sources,
+      const std::function<void(const char*,double)>& cost)->std::optional<EiemCompiledModWriter::MeshStructureCompilation>{
+    auto prepared=EiemPreparedPrefabCompiler::Prepare(baseline,selection);std::optional<EiemCompiledMod::Artifact> combined;EiemConsumerUpdateRecords::Decisions decisions;
+    for(const auto& source:sources){EiemSourceAdaptationJobs::Request request{source,EiemSourceAdaptationCompiler::StampFor(baseline->manifest.package,selection,source)};
+     auto result=EiemPreparedPrefabCompiler::Compile(prepared,request,cost);if(!result.artifact)return std::nullopt;
+     Require(decisions.emplace(source,result.decision).second,"Mesh structure source repeated");
+     if(!combined)combined=*result.artifact;else combined=EiemCompiledArtifactAppend::Merge(*combined,*result.artifact);
+    }
+    if(!combined)return std::nullopt;auto& plan=combined->manifest.plan;const auto& current=baseline->manifest.plan;
+    plan.parts=current.parts;plan.materials=current.materials;plan.meshParts=current.meshParts;plan.materialMatches=current.materialMatches;plan.textures=current.textures;
+    plan.opaque=current.opaque;plan.rendererBoundsHits=current.rendererBoundsHits;plan.rendererBoundsMisses=current.rendererBoundsMisses;plan.frameRecipes=current.frameRecipes;
+    return EiemCompiledModWriter::MeshStructureCompilation{std::move(*combined),std::move(decisions),std::move(prepared.schemas)};
+   });
   for(const auto& row:costs)std::cout<<"COMPILED-MOD-COST "<<row.first<<' '<<row.second<<'\n';std::cout<<"COMPILED-MOD-COST total "<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<<"\nCOMPILED-MOD-PUBLISHED"<<std::endl;return 0;
  }
  if((argc==5||argc==6)&&std::wstring(argv[1])==L"--prepare-static-sources"){Require(argc==5||std::wstring(argv[5])==L"--refresh","unknown source preparation option");auto package=Load(argv[4]);auto cost=[](const char* name,double elapsed){std::cout<<"COMPILED-MOD-COST "<<name<<' '<<elapsed<<'\n';};auto selection=EiemAuthorSources::Prepare(package,std::filesystem::canonical(argv[2]),std::filesystem::absolute(argv[3]),cost,argc==6);std::cout<<"STATIC-SOURCES-PREPARED paths="<<selection.assets.size()<<" candidates="<<selection.candidates.size()<<" inputs="<<selection.inputs.size()<<std::endl;return 0;}
  if(argc==3&&std::wstring(argv[1])==L"--source-request"){SourceRequest(Load(argv[2]));return 0;}
  if(argc==2&&std::wstring(argv[1])==L"--protocol") {
   std::cout<<"{\"format\":\"EFF_OFFLINE_PACKAGE_PROTOCOL\",\"version\":1,\"abi\":"<<EiemPackageProtocol::abi
-           <<",\"effectAuthorUpdate\":\"effects-only/validated-character-inputs/1\",\"sourcePreparation\":\"in-process/index-vfs+author-declarations\",\"compiledMod\":\""<<EiemCompiledMod::structure<<"\",\"compiledCacheInputs\":\"validated-previous-mod\",\"compiledExportCarryover\":\"validated-source-selection+published-discoveries\",\"compiler\":\""<<compiler<<"\",\"authorFormat\":"<<EiemPackageProtocol::authorFormat
+           <<",\"effectAuthorUpdate\":\"effects-only/validated-character-inputs/1\",\"sourcePreparation\":\"in-process/index-vfs+author-declarations\",\"compiledMod\":\""<<EiemCompiledMod::structure<<"\",\"compiledModStore\":\""<<EiemPackageProtocol::compiledModStore<<"\",\"compiledCacheInputs\":\"validated-previous-mod\",\"compiledExportCarryover\":\"validated-source-selection+published-discoveries\",\"compiler\":\""<<compiler<<"\",\"authorFormat\":"<<EiemPackageProtocol::authorFormat
            <<",\"resourceVersion\":"<<EiemPackageProtocol::resourceVersion<<",\"modSetVersion\":1,\"staticSourceInputs\":\""<<EiemPackageProtocol::staticSourceInputs<<"\",\"arguments\":[\"author\",\"baseline\",\"cache\"],\"structures\":{"
            <<"\"manifest\":\""<<EiemPackageProtocol::manifestStructure<<"\",\"author\":\""<<EiemPackageProtocol::authorStructure
            <<"\",\"resource\":\""<<EiemPackageProtocol::resourceStructure<<"\",\"current\":\""<<EiemPackageProtocol::currentStructure
@@ -83,6 +96,7 @@ int wmain(int argc,wchar_t** argv){try{
            <<"\",\"runtimeRules\":\""<<EiemPackageProtocol::ruleStructure
            <<"\",\"compiledInputView\":\""<<EiemPackageProtocol::compiledInputView
            <<"\",\"compiledRuntimeIndex\":\""<<EiemPackageProtocol::compiledRuntimeIndex
+           <<"\",\"compiledModStore\":\""<<EiemPackageProtocol::compiledModStore
            <<"\",\"shapeAnimation\":\""<<EiemPackageProtocol::shapeAnimation
            <<"\",\"shapeAnimationPlayback\":\""<<EiemPackageProtocol::shapeAnimationPlayback
            <<"\",\"materialAnimation\":\""<<EiemPackageProtocol::materialAnimation

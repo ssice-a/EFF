@@ -229,6 +229,7 @@ struct Member {
   std::string name;
   uint32_t flags = 0;
   Bytes bytes;
+  EiemAuthorBytes::Spans origins;
 };
 struct Bundle {
   Header header;

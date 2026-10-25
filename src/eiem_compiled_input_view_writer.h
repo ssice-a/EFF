@@ -33,7 +33,7 @@ inline Recipe Build(size_t index,const Plan& plan,const std::map<std::string,Mem
  size_t logical=AddSize(metadataSize,directory.decoded);std::vector<EiemNativeViewWriter::Member> members;
  EiemResourceRecipe::Dictionary empty({});
  auto literal=[&](Bytes bytes){if(bytes.empty())return SIZE_MAX;size_t n=result.spans.size();result.spans.push_back({EiemResourceRecipe::Literal,{},0,bytes.size(),std::move(bytes)});logical=AddSize(logical,result.spans.back().size);return n;};
- auto append=[&](const Bytes& bytes){if(bytes.empty())return;EndfieldInput::Member member{"",0,bytes};auto recipe=EiemResourceRecipe::Describe(member,empty,author);
+ auto append=[&](const Bytes& bytes,const AuthorByteSpans& origins){if(bytes.empty())return;EndfieldInput::Member member{"",0,bytes,origins};auto recipe=EiemResourceRecipe::Describe(member,empty,author,{},true);
   for(auto& span:recipe.spans){logical=AddSize(logical,span.size);result.spans.push_back(std::move(span));}
  };
  auto align=[&]{auto next=AlignSize(logical,16);if(next!=logical)literal(Bytes(next-logical));};
@@ -44,7 +44,7 @@ inline Recipe Build(size_t index,const Plan& plan,const std::map<std::string,Mem
   auto before=old.find(member.name);size_t originalSize=before==old.end()?0:before->second->bytes.size();
   Require(member.bytes.size()>=originalSize&&(before==old.end()||std::equal(before->second->bytes.begin(),before->second->bytes.end(),member.bytes.begin())),"compiled view stream is not an append-only extension");
   align();auto suffix=logical;appendedStreams.emplace(member.name,suffix);
-  append(Bytes(member.bytes.begin()+originalSize,member.bytes.end()));
+  append(Bytes(member.bytes.begin()+originalSize,member.bytes.end()),EiemAuthorBytes::Slice(member.origins,originalSize,member.bytes.size()-originalSize));
   auto original=originalEntries.find(member.name);auto begin=original==originalEntries.end()?suffix:AddSize(metadataSize,original->second.offset);
   members.push_back({member.name,member.flags,begin,0});
  }
@@ -54,7 +54,7 @@ inline Recipe Build(size_t index,const Plan& plan,const std::map<std::string,Mem
   for(const auto& patch:*patches)if(patch.offset<window.metadata.size())result.names.push_back({1,AddSize(window.entry.offset,patch.offset),patch.before,false});
   for(size_t row=0;row<layout.order.size();++row){auto id=layout.order[row];const auto& object=layout.objects.at(id);std::vector<EiemLoadingGeneration::Patch> objectNames;
    for(const auto& patch:*patches)if(patch.offset>=object.offset&&patch.offset-object.offset<object.size){Require(patch.before.size()<=object.size-(patch.offset-object.offset),"compiled view namespace crosses an object boundary");objectNames.push_back({patch.offset-object.offset,patch.before,{}});}
-   auto before=proof.before.objects.find(id);bool unchanged=objectNames.empty()&&before!=proof.before.objects.end()&&before->second.size==object.size&&std::equal(member.bytes.begin()+object.offset,member.bytes.begin()+object.offset+object.size,window.original->bytes.begin()+before->second.offset);
+   auto before=proof.before.objects.find(id);auto origins=EiemAuthorBytes::Slice(member.origins,object.offset,object.size);bool unchanged=origins.empty()&&objectNames.empty()&&before!=proof.before.objects.end()&&before->second.size==object.size&&std::equal(member.bytes.begin()+object.offset,member.bytes.begin()+object.offset+object.size,window.original->bytes.begin()+before->second.offset);
    size_t position=0;
    if(unchanged)position=AddSize(metadataSize,AddSize(originalEntries.at(member.name).offset,before->second.offset));
    else{Bytes bytes(member.bytes.begin()+object.offset,member.bytes.begin()+object.offset+object.size);
@@ -63,8 +63,9 @@ inline Recipe Build(size_t index,const Plan& plan,const std::map<std::string,Mem
      auto offset=AddSize(appendedStreams.at(site.member),size_t(site.value)-size);Require(offset>=stream->offset,"compiled view relocated stream offset precedes stream");WriteInteger(bytes,site.offset,offset-stream->offset,site.width);
     }
     align();position=logical;std::sort(objectNames.begin(),objectNames.end(),[](const auto& a,const auto& b){return a.offset<b.offset;});size_t cursor=0;
-    for(const auto& patch:objectNames){Require(patch.offset>=cursor&&std::equal(patch.before.begin(),patch.before.end(),bytes.begin()+patch.offset),"compiled view namespace overlap/preimage differs");append(Bytes(bytes.begin()+cursor,bytes.begin()+patch.offset));auto span=literal(Bytes(bytes.begin()+patch.offset,bytes.begin()+patch.offset+patch.before.size()));result.names.push_back({span,0,patch.before,false});cursor=patch.offset+patch.before.size();}
-    append(Bytes(bytes.begin()+cursor,bytes.end()));
+    origins=EiemAuthorBytes::Matching(bytes,origins);
+    for(const auto& patch:objectNames){Require(patch.offset>=cursor&&std::equal(patch.before.begin(),patch.before.end(),bytes.begin()+patch.offset),"compiled view namespace overlap/preimage differs");append(Bytes(bytes.begin()+cursor,bytes.begin()+patch.offset),EiemAuthorBytes::Slice(origins,cursor,patch.offset-cursor));auto span=literal(Bytes(bytes.begin()+patch.offset,bytes.begin()+patch.offset+patch.before.size()));result.names.push_back({span,0,patch.before,false});cursor=patch.offset+patch.before.size();}
+    append(Bytes(bytes.begin()+cursor,bytes.end()),EiemAuthorBytes::Slice(origins,cursor,bytes.size()-cursor));
    }
    Require(position>=metadataSize,"compiled view object precedes shared original data");WriteInteger(window.metadata,layout.tableStart+row*24+8,position-metadataSize,8);
   }
@@ -83,6 +84,7 @@ inline Recipe Build(size_t index,const Plan& plan,const std::map<std::string,Mem
  for(const auto& span:result.spans)result.size=AddSize(result.size,span.size);Require(result.size==h.bytes,"compiled view encoded span extent differs");
  EiemCompiledInputView::Buffers buffers;buffers.emplace(std::make_pair(EiemResourceRecipe::Original,std::string{}),std::shared_ptr<const Bytes>(&input,[](const Bytes*){}));
  for(const auto& buffer:author.buffers)buffers.emplace(std::make_pair(buffer.kind,buffer.name),std::shared_ptr<const Bytes>(buffer.bytes,[](const Bytes*){}));
+ for(const auto& member:edited.members)for(const auto& origin:member.origins)if(origin.resource.rfind("@bounds:",0)==0)buffers.emplace(std::make_pair(EiemResourceRecipe::ExpandedFrame,origin.resource),origin.owned);
  result.startupHash=EiemInputSpanView::Digest(*EiemCompiledInputView::Bind(result,buffers));return result;
 }
 inline Recipe Build(size_t index,const Artifact& artifact,const Bytes& input,const EndfieldInput::Bundle& source,const EndfieldInput::Bundle& edited,const EiemResourceRecipe::Dictionary& author){

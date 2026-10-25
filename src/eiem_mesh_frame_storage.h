@@ -113,6 +113,7 @@ inline bool ExpandShapedMeshFrames(const Type& type, Value& mesh) {
   SetInteger(type, Child(type, channels[2], "format"), 0);
   SetInteger(type, Child(type, channels[2], "dimension"), 4);
   Child(type, vertex, "m_DataSize").raw = std::move(data);
+  Child(type, vertex, "m_DataSize").rawOrigins.clear();
   Require(DescribeMeshVertexStorage(type, vertex).stride[0] == 40, "shaped Mesh expansion stride");
   return true;
 }

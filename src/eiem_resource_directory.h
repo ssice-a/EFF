@@ -708,6 +708,8 @@ inline Package Load(const std::filesystem::path& directory,const Package* verifi
   ValidateShapeAnimations(p);
   if(std::filesystem::is_regular_file(p.root/"source-inputs.bin"))allowed.insert("source-inputs.bin");
   if(std::filesystem::is_regular_file(p.root/"compiled.bin"))allowed.insert("compiled.bin");
+  static const std::regex compiledBlob("compiled\\.blocks/[0-9A-Fa-f]{64}\\.bin");
+  static const std::regex compiledTemporary("(?:compiled\\.bin|compiled\\.blocks/[0-9A-Fa-f]{64}\\.bin)\\.tmp-[0-9]+-[0-9]+-[0-9]+");
   std::set<std::string> actual;
   for (const auto& file : EiemModDirectory::Files(p.root)) {
       auto relative=file.lexically_relative(p.root).generic_u8string();
@@ -715,6 +717,10 @@ inline Package Load(const std::filesystem::path& directory,const Package* verifi
       // package digest. A concurrent atomic save can expose its temporary file.
       if (relative=="state.ini" || std::regex_match(relative,std::regex("state\\.ini\\.tmp-[0-9]+"))) continue;
       if (AuthorAuxiliary(file)) continue;
+      if (std::regex_match(relative,compiledTemporary)) continue;
+      // The compiled reader validates each immutable blob against the v2
+      // index. These derived runtime blocks are outside the author digest.
+      if (std::regex_match(relative,compiledBlob)) continue;
       actual.insert(std::move(relative));
   }
   Require(actual == allowed, "unreferenced/source files in Mod directory");
