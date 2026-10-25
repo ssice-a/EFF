@@ -84,7 +84,7 @@ def fixture():
                   targets=[dict(level=0, sourcePath="assets/body", sourceAsset="Body"),
                            dict(level=1, sourcePath="assets/body.fbx", sourceAsset="Body_LOD1")])]
     return dict(mod_id="Test", parts=[part], materials=[material], textures=[texture, second], rules=rules,
-                switches=[dict(variable="$mode", key="NUMPAD1", stateCount=3, default=0)])
+                switches=[dict(variable="$mode", label="服装切换组", key="NUMPAD1", stateCount=3, default=0)])
 
 
 class DirectoryTests(unittest.TestCase):
@@ -206,6 +206,54 @@ class DirectoryTests(unittest.TestCase):
         self.edit_ini(lambda text: text + '\n[KeyOther]\nkey=NUMPAD1\ntype=cycle\n$mode=0,1,2\n')
         bindings = read_package(self.root)['keyBindings']
         self.assertEqual(sum(b['key'] == 'NUMPAD1' for b in bindings), 2)
+
+    def test_switch_group_label_exports_and_old_packages_remain_readable(self):
+        package = read_package(self.root)
+        self.assertEqual(package['keyBindings'][0]['label'], '服装切换组')
+        self.edit_ini(lambda text: text.replace('label=服装切换组\n', ''))
+        self.assertEqual(read_package(self.root)['keyBindings'][0]['label'], '')
+
+    def test_material_switch_variants_share_one_mesh_and_follow_key_state(self):
+        data = fixture()
+        data['materials'].append(dict(data['materials'][0], id='MaterialAlternate'))
+        part = data['parts'][0]
+        part['visibilityBindings'].append(dict(variable='$material', visible=[0]))
+        alternate = dict(part, partId='author-part-alternate', material='MaterialAlternate',
+                         visibilityBindings=[dict(variable='$mode', visible=[1, 2]),
+                                             dict(variable='$material', visible=[1])])
+        data['parts'].append(alternate)
+        data['rules'][0]['parts'].append(alternate['partId'])
+        data['switches'].append(dict(variable='$material', label='裙子材质', key='F7',
+                                     stateCount=2, default=0))
+        with tempfile.TemporaryDirectory() as folder:
+            package = export_directory(Path(folder), **data)
+        self.assertEqual(len(package['parts']), 2)
+        self.assertEqual({part['mesh'] for part in package['parts']}, {'MeshBody'})
+        states = dict(package['states'], **{'$mode': 1, '$material': 0})
+        first, second = package['parts']
+        self.assertTrue(first['visible'].evaluate(states))
+        self.assertFalse(second['visible'].evaluate(states))
+        states['$material'] = 1
+        self.assertFalse(first['visible'].evaluate(states))
+        self.assertTrue(second['visible'].evaluate(states))
+        self.assertEqual({binding['label'] for binding in package['keyBindings']
+                          if binding['type'] == 'cycle'},
+                         {'服装切换组', '裙子材质'})
+
+    def test_partial_mesh_update_accepts_shared_material_variants(self):
+        data = fixture()
+        data['materials'].append(dict(data['materials'][0], id='MaterialAlternate'))
+        part = data['parts'][0]
+        alternate = dict(part, partId='author-part-alternate', material='MaterialAlternate')
+        data['parts'].append(alternate)
+        data['rules'][0]['parts'].append(alternate['partId'])
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            export_directory(root, **data)
+            updated = update_directory(root, parts=[part])
+        self.assertEqual(len(updated['parts']), 2)
+        self.assertEqual({row['material'] for row in updated['parts']},
+                         {'MaterialBody', 'MaterialAlternate'})
 
     def edit_ini(self, transform):
         path = self.root / "mod.ini"

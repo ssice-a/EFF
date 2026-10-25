@@ -38,7 +38,7 @@ inline bool TryUnchanged(const std::filesystem::path& mod,const std::filesystem:
  auto common=EiemModUpdateStore::Get(staged,stage,"runtime/common");std::vector<std::string> closure;
  auto verified=EiemCompiledSourceRecords::ReadCommon(common,mod,closure,&author);if(verified.manifest.plan.author!=PackageDigest(author))return false;
  auto priorCommon=EiemCompiledSourceRecords::CommonBytes(EiemModUpdateStore::Get(published,prior,"runtime/common"));EiemOfflinePackage::Reader fields{priorCommon};
- Require(fields.S()=="EFF_COMPILED_SOURCE_COMMON/author+metadata+identity-edges/le64","source-record common structure differs");
+ auto structure=fields.S();Require(structure=="EFF_COMPILED_SOURCE_COMMON/author+metadata+identity-edges/le64"||structure=="EFF_COMPILED_SOURCE_COMMON/author+metadata+identity-edges+key-label/le64","source-record common structure differs");
  for(size_t i=0;i<4;++i)fields.S();Require(fields.S()==author.id,"concurrent discoveries belong to another Mod");
  selected.manifest=current.manifest;auto sourceBytes=EiemCompiledModStore::SourceSelection(selected,game);
  if(Hash(sourceBytes)!=stage.blocks.at("discovery/source-selection").digest)

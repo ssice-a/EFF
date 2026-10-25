@@ -55,7 +55,7 @@ struct Reader {
   }return root;
  }
 };
-inline void WriteAuthor(Writer& w,const Package& p,bool references=false){
+inline void WriteAuthor(Writer& w,const Package& p,bool references=false,bool bindingLabels=true){
  w.S(p.id);w.S(p.root.filename().u8string());w.Raw(p.iniHash.data(),p.iniHash.size());
  w.N(p.resources.size());for(const auto& row:p.resources){const auto& r=*row.second;w.S(row.first);w.N(r.kind);w.Raw(r.type.data(),16);if(references)w.S(ResourceContentHash(r));else w.Blob(r.bytes);w.N(r.blocks.size());for(const auto& block:r.blocks){w.S(block.first);w.N(block.second.offset);w.N(block.second.size);w.Raw(block.second.digest.data(),32);}}
  w.N(p.meshes.size());for(const auto& row:p.meshes){w.S(row.first);const auto& v=row.second;w.S(v.resource);w.N(v.vertices);w.N(v.indices);w.Strings(v.bones);w.Strings(v.shapes);}
@@ -65,7 +65,7 @@ inline void WriteAuthor(Writer& w,const Package& p,bool references=false){
  w.N(p.rules.size());for(const auto& row:p.rules){w.S(row.first);w.Strings(row.second.parts);w.B(row.second.skip);w.N(row.second.targets.size());for(const auto& t:row.second.targets){w.N(t.first);w.Id(t.second);}}
  std::map<std::string,double> defaults(p.defaults.begin(),p.defaults.end());w.N(defaults.size());for(const auto& row:defaults){w.S(row.first);w.D(row.second);}w.Set(p.persistent);
  w.N(p.controls.size());for(const auto& row:p.controls){w.S(row.first);w.S(row.second.label);w.D(row.second.minimum);w.D(row.second.maximum);}
- w.N(p.bindings.size());for(const auto& v:p.bindings){w.S(v.id);w.S(v.variable);w.S(v.type);w.N(v.key.vk);w.N(v.key.modifiers);w.D(v.speed);w.N(v.values.size());for(auto n:v.values)w.D(n);}
+ w.N(p.bindings.size());for(const auto& v:p.bindings){w.S(v.id);w.S(v.variable);w.S(v.type);w.N(v.key.vk);w.N(v.key.modifiers);w.D(v.speed);w.N(v.values.size());for(auto n:v.values)w.D(n);if(bindingLabels)w.S(v.label);}
 }
 inline void ReadAuthorReference(Reader& r,const Package& package,const std::string& key,const std::string& hash,Resource& resource){
  // One compiler invocation owns an immutable, checksum-verified author
@@ -76,7 +76,7 @@ inline void ReadAuthorReference(Reader& r,const Package& package,const std::stri
  }
  resource.bytes=Read(DiskPath(package.root,key,resource.kind));resource.contentHash=Hash(resource.bytes);Require(resource.contentHash==hash,"rule author resource content changed");
 }
-inline Package ReadAuthor(Reader& r,const std::filesystem::path& modRoot,bool references=false,const std::filesystem::path& exactRoot={}){
+inline Package ReadAuthor(Reader& r,const std::filesystem::path& modRoot,bool references=false,const std::filesystem::path& exactRoot={},bool bindingLabels=true){
  Package p;p.id=r.S();auto folder=r.S();Require(Identifier(p.id)&&Identifier(folder)&&folder!="."&&folder!="..", "offline Mod identity/folder");p.root=exactRoot.empty()?modRoot/std::filesystem::u8path(folder):exactRoot;r.Raw(p.iniHash.data(),32);
  auto n=r.Count();for(size_t i=0;i<n;++i){
   auto key=r.S();auto v=std::make_shared<Resource>();std::shared_ptr<const Resource> shared;
@@ -100,7 +100,7 @@ inline Package ReadAuthor(Reader& r,const std::filesystem::path& modRoot,bool re
  n=r.Count();for(size_t i=0;i<n;++i){auto k=r.S();Rule v;v.parts=r.Strings();v.skip=r.B();auto count=r.Count();for(size_t j=0;j<count;++j){auto level=r.U();auto id=r.Id();Require(v.targets.emplace(level,id).second&&p.targetIndex.emplace(id,k).second,"offline duplicate target");}for(const auto& part:v.parts)Require(p.parts.count(part),"offline absent part");Require(!v.targets.empty()&&(v.skip?v.parts.empty():!v.parts.empty())&&p.rules.emplace(k,std::move(v)).second,"offline Rule descriptor");}
  n=r.Count();for(size_t i=0;i<n;++i){auto k=r.S();auto value=r.D();Require(EiemVariableName(k)&&p.defaults.emplace(k,value).second,"offline defaults");}p.persistent=r.Set();for(const auto& k:p.persistent)Require(p.defaults.count(k),"offline persistent variable");
  n=r.Count();for(size_t i=0;i<n;++i){auto k=r.S();Control v;v.label=r.S();v.minimum=r.D();v.maximum=r.D();Require(v.minimum<=v.maximum&&p.defaults.count(k)&&p.controls.emplace(k,v).second,"offline control domain");}
- n=r.Count();std::set<std::string> bindings;for(size_t i=0;i<n;++i){Binding v;v.id=r.S();v.variable=r.S();v.type=r.S();v.key.vk=r.U();v.key.modifiers=r.U();v.speed=r.D();auto count=r.Count();for(size_t j=0;j<count;++j)v.values.push_back(r.D());Require(p.defaults.count(v.variable)&&bindings.insert(v.id).second&&v.key.vk&&v.key.vk<=255&&!(v.key.modifiers&~(MOD_SHIFT|MOD_ALT|MOD_CONTROL))&&!v.values.empty()&&(v.type=="cycle"||v.type=="press"||v.type=="hold")&&v.speed>0,"offline binding descriptor");p.bindings.push_back(std::move(v));}
+ n=r.Count();std::set<std::string> bindings;for(size_t i=0;i<n;++i){Binding v;v.id=r.S();v.variable=r.S();v.type=r.S();v.key.vk=r.U();v.key.modifiers=r.U();v.speed=r.D();auto count=r.Count();for(size_t j=0;j<count;++j)v.values.push_back(r.D());if(bindingLabels)v.label=r.S();Require(p.defaults.count(v.variable)&&bindings.insert(v.id).second&&v.key.vk&&v.key.vk<=255&&!(v.key.modifiers&~(MOD_SHIFT|MOD_ALT|MOD_CONTROL))&&!v.values.empty()&&(v.type=="cycle"||v.type=="press"||v.type=="hold")&&v.speed>0,"offline binding descriptor");p.bindings.push_back(std::move(v));}
  for(const auto& part:p.parts){std::string error;Require(!part.second.visible||part.second.visible->Validate(p.defaults,error),"offline undeclared expression variable");for(const auto& shape:part.second.shapes)Require(p.controls.count(shape.second)&&std::find(p.meshes.at(part.second.mesh).shapes.begin(),p.meshes.at(part.second.mesh).shapes.end(),shape.first)!=p.meshes.at(part.second.mesh).shapes.end(),"offline shape binding");}
  for(const auto& m:p.materials)for(const auto& t:m.second.textures)Require(p.textures.count(t.second),"offline absent Texture override");RestoreShapeAnimations(p);ValidateShapeAnimations(p);return p;
 }
@@ -125,10 +125,10 @@ inline EiemRenderAssemblyDescription::Description ReadAssembly(Reader& r){
 }
 struct Manifest {Plan plan;Package package;std::string baseline;std::vector<Package> packages;bool composed=false;bool rootAssembly=EiemPackageProtocol::rootAssembly;};
 inline std::vector<Package> Authors(const Manifest& v){return v.composed?v.packages:std::vector<Package>{v.package};}
-inline Bytes Encode(const Manifest& v){Writer w;w.S(v.plan.rulesOnly?"author-references+prefab-renderer-rules+source-ranges/le64/sha256":EiemPackageProtocol::manifestStructure);w.B(v.composed);w.B(v.rootAssembly);
+inline Bytes Encode(const Manifest& v,bool bindingLabels=true){Writer w;w.S(v.plan.rulesOnly?(bindingLabels?EiemPackageProtocol::ruleStructure:"author-references+prefab-renderer-rules+source-ranges/le64/sha256"):(bindingLabels?EiemPackageProtocol::manifestStructure:"author-graph+inputs+roots+closure+parts+materials/le64/sha256"));w.B(v.composed);w.B(v.rootAssembly);
  // Keep the former executable digest slot so existing field layouts stay readable.
  w.S(std::string(64,'0'));w.S(v.baseline);const auto& p=v.plan;w.S(p.key);w.S(p.author);w.S(p.contract);
- if(v.composed){w.N(v.packages.size());for(const auto& author:v.packages)WriteAuthor(w,author,p.rulesOnly);}else WriteAuthor(w,v.package,p.rulesOnly);
+ if(v.composed){w.N(v.packages.size());for(const auto& author:v.packages)WriteAuthor(w,author,p.rulesOnly,bindingLabels);}else WriteAuthor(w,v.package,p.rulesOnly,bindingLabels);
  w.N(p.inputs.size());for(const auto& in:p.inputs){w.S(in.file);w.S(in.hash);w.S(in.bundle);w.Set(in.externals);}
  w.N(p.roots.size());for(const auto& root:p.roots){w.S(root.path);w.N(root.input);w.N(root.markers.size());for(const auto& m:root.markers){w.S(m.first);w.N(m.second);}
  if(v.rootAssembly){w.S(root.cab);w.N(uint64_t(root.source));WriteAssembly(w,root.Assembly());}
@@ -155,8 +155,12 @@ inline Bytes Encode(const Manifest& v){Writer w;w.S(v.plan.rulesOnly?"author-ref
 }
 inline Manifest DecodeLayout(const Bytes& bytes,const std::filesystem::path& directory,const std::filesystem::path& mods,int layout=-1,const std::filesystem::path& exactRoot={},bool deferredAssembly=false,const Package* verifiedAuthor=nullptr){
  Reader r{bytes};r.verifiedAuthor=verifiedAuthor;Manifest v;auto tag=r.S();
- bool rules=tag=="author-references+prefab-renderer-rules+source-ranges/le64/sha256";
- if(layout<0&&(tag==EiemPackageProtocol::manifestStructure||rules)){v.composed=r.B();v.rootAssembly=r.B();}
+ const std::string legacyManifest="author-graph+inputs+roots+closure+parts+materials/le64/sha256";
+ const std::string legacyRules="author-references+prefab-renderer-rules+source-ranges/le64/sha256";
+ const std::string currentRules=EiemPackageProtocol::ruleStructure;
+ const bool hasBindingLabels=tag==EiemPackageProtocol::manifestStructure||tag==currentRules;
+ bool rules=tag==legacyRules||tag==currentRules;
+ if(layout<0&&(tag==EiemPackageProtocol::manifestStructure||tag==legacyManifest||rules)){v.composed=r.B();v.rootAssembly=r.B();}
  else { // Legacy labels select a known field layout; they never gate on this build's ABI.
   auto base=tag;const std::string suffix="_MODSET_1";v.composed=base.size()>suffix.size()&&base.compare(base.size()-suffix.size(),suffix.size(),suffix)==0;
   if(v.composed)base.resize(base.size()-suffix.size());
@@ -165,7 +169,7 @@ inline Manifest DecodeLayout(const Bytes& bytes,const std::filesystem::path& dir
  }
  auto reserved=r.S();v.baseline=r.S();auto& p=v.plan;p.composed=v.composed;p.rulesOnly=rules;p.directory=directory;p.key=r.S();p.author=r.S();p.contract=r.S();
  Require(DigestText(reserved)&&DigestText(v.baseline)&&DigestText(p.key)&&DigestText(p.author)&&DigestText(p.contract),"offline digest syntax");
- if(v.composed){auto count=r.Count();for(size_t i=0;i<count;++i)v.packages.push_back(ReadAuthor(r,mods,rules,exactRoot));v.package=EiemComposedPackage::Compose(v.packages,true);}else v.package=ReadAuthor(r,mods,rules,exactRoot);
+ if(v.composed){auto count=r.Count();for(size_t i=0;i<count;++i)v.packages.push_back(ReadAuthor(r,mods,rules,exactRoot,hasBindingLabels));v.package=EiemComposedPackage::Compose(v.packages,true);}else v.package=ReadAuthor(r,mods,rules,exactRoot,hasBindingLabels);
  auto n=r.Count();std::set<std::string> files;for(size_t i=0;i<n;++i){Input in;in.file=r.S();in.hash=r.S();in.bundle=r.S();in.externals=r.Set();auto file=std::filesystem::u8path(in.file);Require(file==file.filename()&&file.extension()==".vfs"&&files.insert(in.file).second&&DigestText(in.hash),"offline input path/hash");in.path=directory/file;p.inputs.push_back(std::move(in));}
  n=r.Count();std::set<std::string> roots;for(size_t i=0;i<n;++i){Root root;root.path=r.S();root.input=r.Size();Require(root.input<p.inputs.size()&&root.path.rfind("assets/",0)==0&&root.path.find("..") ==root.path.npos&&roots.insert(root.path).second,"offline root descriptor");auto count=r.Count();for(size_t j=0;j<count;++j){auto marker=r.S();auto copies=r.U();Require(copies&&root.markers.emplace(marker,copies).second,"offline root markers");}
  if(v.rootAssembly){root.cab=r.S();root.source=int64_t(r.N());Require(EiemLoadingGeneration::Cab(root.cab)&&root.source,"offline source prefab identity");root.assembly=ReadAssembly(r);}
@@ -216,8 +220,8 @@ inline Manifest DecodeLayout(const Bytes& bytes,const std::filesystem::path& dir
 }
 inline Manifest Decode(const Bytes& bytes,const std::filesystem::path& directory,const std::filesystem::path& mods,const std::filesystem::path& exactRoot={},bool deferredAssembly=false,const Package* verifiedAuthor=nullptr) {
  Reader header{bytes};auto tag=header.S();
- if(tag=="compressed-rules/xpress-huffman/le64"){auto size=header.Size();auto packed=header.Blob();Require(header.p==bytes.size()&&size&&size<=Bytes{}.max_size(),"compressed rule extent differs");DECOMPRESSOR_HANDLE handle=nullptr;Require(CreateDecompressor(COMPRESS_ALGORITHM_XPRESS_HUFF,nullptr,&handle)!=0,"rule decompressor unavailable");struct Close{DECOMPRESSOR_HANDLE h;~Close(){CloseDecompressor(h);}}close{handle};SIZE_T actual=0;Require(Decompress(handle,packed.data(),packed.size(),nullptr,0,&actual)==0&&GetLastError()==ERROR_INSUFFICIENT_BUFFER&&actual==size,"compressed rule declared size differs");Bytes plain(size);Require(Decompress(handle,packed.data(),packed.size(),plain.data(),plain.size(),&actual)!=0&&actual==size,"rule decompression failed");Reader inner{plain};Require(inner.S()=="author-references+prefab-renderer-rules+source-ranges/le64/sha256","compressed rule payload structure differs");return DecodeLayout(plain,directory,mods,-1,exactRoot,deferredAssembly,verifiedAuthor);}
- if(tag=="author-references+prefab-renderer-rules+source-ranges/le64/sha256"||tag==EiemPackageProtocol::manifestStructure||tag=="EFF_NATIVE_PACK_V35_1"||tag=="EFF_NATIVE_PACK_V36_ASSEMBLY_1"||
+ if(tag=="compressed-rules/xpress-huffman/le64"){auto size=header.Size();auto packed=header.Blob();Require(header.p==bytes.size()&&size&&size<=Bytes{}.max_size(),"compressed rule extent differs");DECOMPRESSOR_HANDLE handle=nullptr;Require(CreateDecompressor(COMPRESS_ALGORITHM_XPRESS_HUFF,nullptr,&handle)!=0,"rule decompressor unavailable");struct Close{DECOMPRESSOR_HANDLE h;~Close(){CloseDecompressor(h);}}close{handle};SIZE_T actual=0;Require(Decompress(handle,packed.data(),packed.size(),nullptr,0,&actual)==0&&GetLastError()==ERROR_INSUFFICIENT_BUFFER&&actual==size,"compressed rule declared size differs");Bytes plain(size);Require(Decompress(handle,packed.data(),packed.size(),plain.data(),plain.size(),&actual)!=0&&actual==size,"rule decompression failed");Reader inner{plain};auto structure=inner.S();Require(structure=="author-references+prefab-renderer-rules+source-ranges/le64/sha256"||structure=="author-references+prefab-renderer-rules+source-ranges+key-label/le64/sha256","compressed rule payload structure differs");return DecodeLayout(plain,directory,mods,-1,exactRoot,deferredAssembly,verifiedAuthor);}
+ if(tag=="author-references+prefab-renderer-rules+source-ranges/le64/sha256"||tag=="author-references+prefab-renderer-rules+source-ranges+key-label/le64/sha256"||tag==EiemPackageProtocol::manifestStructure||tag=="author-graph+inputs+roots+closure+parts+materials/le64/sha256"||tag=="EFF_NATIVE_PACK_V35_1"||tag=="EFF_NATIVE_PACK_V36_ASSEMBLY_1"||
     tag=="EFF_NATIVE_PACK_V35_1_MODSET_1"||tag=="EFF_NATIVE_PACK_V36_ASSEMBLY_1_MODSET_1")return DecodeLayout(bytes,directory,mods,-1,exactRoot,deferredAssembly,verifiedAuthor);
  // Unknown release labels may still use an existing field layout. Probe the
  // single/set and marker/address layouts, accepting only a complete valid graph.

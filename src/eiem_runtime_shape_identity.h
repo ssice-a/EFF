@@ -41,4 +41,12 @@ inline std::string RuntimePartName(const Package& package,const std::string& par
 inline std::string LegacyRuntimePartName(const Package& package,const std::string& partId,const Identity& target) {
   return RuntimePartMarker(package,partId,LegacyRuntimeShapeName(package,partId,target));
 }
+inline std::string RendererPartTag(const std::string& ownerName,const std::string& marker) {
+  return ownerName+"__EFF_RENDERER_PART__"+marker;
+}
+inline std::string RendererPartMarker(const std::string& ownerName) {
+  constexpr const char* tag="__EFF_RENDERER_PART__";
+  auto start=ownerName.rfind(tag);
+  return start==std::string::npos?std::string():ownerName.substr(start+strlen(tag));
+}
 }

@@ -6,7 +6,7 @@
 // Numeric author state has no dependency on Unity Meshes or capture lifetime.
 namespace RuntimeControls {
 struct Spec {
-  std::string package, part, marker;
+  std::string package, part, marker, meshResource;
   unsigned vertices = 0;
   std::vector<std::string> channels;
   std::map<std::string,std::string> controls;
@@ -103,7 +103,7 @@ State Prepare(const std::shared_ptr<const std::vector<Package>>& graph,const Eie
       for(const auto& target:rule.second.targets) for(const auto& partId:rule.second.parts) {
         const auto& part=package.parts.at(partId);const auto& mesh=package.meshes.at(part.mesh);
         for(const auto& marker:{RuntimePartName(package,partId,target.second),LegacyRuntimePartName(package,partId,target.second)}) {
-          Spec spec{package.id,partId,marker,mesh.vertices,mesh.shapes,part.shapes,part.visible};
+          Spec spec{package.id,partId,marker,part.mesh,mesh.vertices,mesh.shapes,part.shapes,part.visible};
           spec.material=part.material;Require(state.specs.emplace(marker,std::move(spec)).second,"runtime part provenance collision");
         }
       }

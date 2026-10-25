@@ -96,6 +96,16 @@ handling=skip
 
 每个 Constants 声明一个状态；`persist ` 为持久化声明。多个 Key 可写同一个变量，数量增加不要求增加变量。`cycle` 的状态集合必须一致，但顺序可以不同；`press` 赋予一个目标值；`hold` 按 `speed` 接近一个目标值。同轮多键按配置声明顺序处理。
 
+Blender 导出的 `[KeySwitchN]` 可带 `label`，其值取自切换组名称并显示在 Ins 按键行中。它只是显示名，不是状态变量；切换行为仍由该段中 `$变量` 的赋值控制，重命名组不会改变变量或快捷键绑定。旧 Mod 没有 `label` 时仍可读取。
+
+```ini
+[KeySwitch1]
+key=NUMPAD1
+type=cycle
+$outfit=0,1,2
+label=外套切换组
+```
+
 显隐条件为无副作用表达式，支持数字、布尔量、变量、括号、`!`、`&&`、`||` 和比较运算；不允许赋值、函数调用或任意代码。读取器一次解析表达式并保存变量依赖，当前控制模块在 Unity 帧采样按键并更新绑定，见[按键与状态](resource-input-key-controls.md)。
 
 ShapeControl 声明变量、label、min/max；Part 用 `shape.<通道名>=$变量` 绑定。当前作者形态值以 0–1 为单位，对应原生百分比权重；通道数据及 100% 帧保存在 Mesh 文件中。

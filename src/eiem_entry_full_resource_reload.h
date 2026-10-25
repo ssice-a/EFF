@@ -794,7 +794,7 @@ RuntimeControls::State CompiledControls(const std::shared_ptr<const std::vector<
  // same Mesh payload again for each LOD on every F10 control preparation.
  for(const auto& row:plan.parts){const auto& expected=row.second;auto owner=owners.at(expected.id);const auto& package=*owner.first;const auto& part=package.parts.at(owner.second);const auto& mesh=package.meshes.at(part.mesh);
   Require(expected.marker==row.first&&expected.vertices==mesh.vertices&&expected.bones==mesh.bones&&expected.shapes==mesh.shapes&&(plan.composed||expected.material==part.material),"offline controls/part descriptor differs");
-  RuntimeControls::Spec spec{package.id,owner.second,expected.marker,mesh.vertices,mesh.shapes,part.shapes,part.visible};
+  RuntimeControls::Spec spec{package.id,owner.second,expected.marker,part.mesh,mesh.vertices,mesh.shapes,part.shapes,part.visible};
   spec.material=part.material;Require(state.specs.emplace(spec.marker,std::move(spec)).second,"offline control provenance collision");
  }RuntimeControls::PreviewPreferences(state);RuntimeControls::PreparePanel(state);return state;
 }

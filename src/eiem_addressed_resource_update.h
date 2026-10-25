@@ -130,11 +130,12 @@ inline bool SameDeclarations(const Package& next,const Package& previous){
 struct Update {bool compatible=false;std::set<std::string> resources,generated;};
 inline Bytes RebindPrepared(const Bytes& packed,const Artifact& before,const Artifact& after){
  auto bytes=Unpack(packed);EiemOfflinePackage::Reader r{bytes};auto structure=r.S();
- Require(structure=="EFF_PREPARED_PFB/author+core-inputs+assets+schemas+palettes+native-bundle-routes/le64","prepared resource template structure differs");
+ const bool bindingLabels=structure=="EFF_PREPARED_PFB/author+core-inputs+assets+schemas+palettes+native-bundle-routes+key-label/le64";
+ Require(bindingLabels||structure=="EFF_PREPARED_PFB/author+core-inputs+assets+schemas+palettes+native-bundle-routes/le64","prepared resource template structure differs");
  Require(r.S()==before.manifest.plan.author&&r.S()==before.manifest.plan.contract,"prepared resource template seal differs");
- r.verifiedAuthor=&before.manifest.package;auto resolved=ReadAuthor(r,before.manifest.package.root.parent_path(),true,before.manifest.package.root);
+ r.verifiedAuthor=&before.manifest.package;auto resolved=ReadAuthor(r,before.manifest.package.root.parent_path(),true,before.manifest.package.root,bindingLabels);
  auto next=after.manifest.package;for(auto& row:next.textures){auto old=resolved.textures.find(row.first);Require(old!=resolved.textures.end(),"prepared Texture identity differs");row.second.source=old->second.source;}
- Writer w;w.S(structure);w.S(after.manifest.plan.author);w.S(after.manifest.plan.contract);WriteAuthor(w,next,true);w.Raw(bytes.data()+r.p,bytes.size()-r.p);return Pack(w.b);
+ Writer w;w.S("EFF_PREPARED_PFB/author+core-inputs+assets+schemas+palettes+native-bundle-routes+key-label/le64");w.S(after.manifest.plan.author);w.S(after.manifest.plan.contract);WriteAuthor(w,next,true);w.Raw(bytes.data()+r.p,bytes.size()-r.p);return Pack(w.b);
 }
 inline Update Rebind(Artifact& artifact,const Package& author,const std::function<void(const char*,double)>& cost={}){
  Update update;const auto& old=artifact.manifest.package;

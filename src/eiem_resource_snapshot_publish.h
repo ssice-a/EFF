@@ -9,10 +9,12 @@ namespace EiemAddressedResources {
 inline Bytes RebindCommon(const Bytes& encoded,const Artifact& before,const Artifact& after){
  auto common=EiemCompiledSourceRecords::CommonBytes(encoded);
  EiemOfflinePackage::Reader r{common};auto marker=r.S(),baseline=r.S(),key=r.S();r.S();r.S();r.verifiedAuthor=&before.manifest.package;
- ReadAuthor(r,before.manifest.package.root.parent_path(),true,before.manifest.package.root);
+ const bool bindingLabels=marker=="EFF_COMPILED_SOURCE_COMMON/author+metadata+identity-edges+key-label/le64";
+ Require(bindingLabels||marker=="EFF_COMPILED_SOURCE_COMMON/author+metadata+identity-edges/le64","resource snapshot author structure differs");
+ ReadAuthor(r,before.manifest.package.root.parent_path(),true,before.manifest.package.root,bindingLabels);
  Writer oldFrames;oldFrames.N(before.manifest.plan.frameRecipes.size());for(const auto& frame:before.manifest.plan.frameRecipes)EiemCompiledSourceRecords::Frame(oldFrames,frame);
  Require(oldFrames.b.size()<=common.size()-r.p&&std::equal(oldFrames.b.begin(),oldFrames.b.end(),common.end()-oldFrames.b.size()),"resource snapshot frame suffix differs");
- Writer w;w.S(marker);w.S(baseline);w.S(key);w.S(after.manifest.plan.author);w.S(after.manifest.plan.contract);WriteAuthor(w,after.manifest.package,true);
+ Writer w;w.S("EFF_COMPILED_SOURCE_COMMON/author+metadata+identity-edges+key-label/le64");w.S(baseline);w.S(key);w.S(after.manifest.plan.author);w.S(after.manifest.plan.contract);WriteAuthor(w,after.manifest.package,true);
  w.Raw(common.data()+r.p,common.size()-r.p-oldFrames.b.size());w.N(after.manifest.plan.frameRecipes.size());for(const auto& frame:after.manifest.plan.frameRecipes)EiemCompiledSourceRecords::Frame(w,frame);return Pack(w.b);
 }
 inline bool SameSelection(const EiemStaticSources::Selection& current,const EiemStaticSources::Selection& prior){

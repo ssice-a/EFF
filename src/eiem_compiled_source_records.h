@@ -104,7 +104,7 @@ inline void Frame(Writer& w,const EiemResourceRecipe::Frame& frame){w.S(frame.re
 inline Bytes CommonBytes(const Bytes& bytes){EiemOfflinePackage::Reader r{bytes};return r.S()==compressionStructure?Unpack(bytes):bytes;}
 inline Bytes Common(const Artifact& a){
  const auto& m=a.manifest;const auto& p=m.plan;Require(!m.composed&&m.rootAssembly&&p.rulesOnly&&p.spanRecipes,"source records require independent compiled Mod");
- Writer w;w.S("EFF_COMPILED_SOURCE_COMMON/author+metadata+identity-edges/le64");w.S(m.baseline);w.S(p.key);w.S(p.author);w.S(p.contract);WriteAuthor(w,m.package,true);
+ Writer w;w.S("EFF_COMPILED_SOURCE_COMMON/author+metadata+identity-edges+key-label/le64");w.S(m.baseline);w.S(p.key);w.S(p.author);w.S(p.contract);WriteAuthor(w,m.package,true);
  w.Strings(p.names.members);w.Strings(p.names.bundles);w.Set(p.shared);
  w.N(p.closure.size());for(auto i:p.closure)w.S(p.originals.at(i).file);
  w.N(p.parts.size());for(const auto& row:p.parts){const auto& part=row.second;w.S(row.first);w.S(part.id);w.S(part.marker);w.S(part.material);w.N(part.vertices);w.Strings(part.bones);w.Strings(part.shapes);}
@@ -114,9 +114,9 @@ inline Bytes Common(const Artifact& a){
 }
 inline Artifact ReadCommon(const Bytes& encoded,const std::filesystem::path& mod,std::vector<std::string>& closure,const Package* verifiedAuthor=nullptr){
  auto bytes=CommonBytes(encoded);
- EiemOfflinePackage::Reader r{bytes};Require(r.S()=="EFF_COMPILED_SOURCE_COMMON/author+metadata+identity-edges/le64","source-record common structure differs");Artifact a;auto& m=a.manifest;auto& p=m.plan;
+ EiemOfflinePackage::Reader r{bytes};auto structure=r.S();const bool bindingLabels=structure=="EFF_COMPILED_SOURCE_COMMON/author+metadata+identity-edges+key-label/le64";Require(bindingLabels||structure=="EFF_COMPILED_SOURCE_COMMON/author+metadata+identity-edges/le64","source-record common structure differs");Artifact a;auto& m=a.manifest;auto& p=m.plan;
  m.baseline=r.S();p.key=r.S();p.author=r.S();p.contract=r.S();Require(DigestText(m.baseline)&&DigestText(p.key)&&DigestText(p.author)&&DigestText(p.contract),"source-record common digest invalid");
- r.verifiedAuthor=verifiedAuthor;m.package=ReadAuthor(r,mod.parent_path(),true,mod);m.rootAssembly=true;p.rulesOnly=p.spanRecipes=true;p.directory=mod;
+ r.verifiedAuthor=verifiedAuthor;m.package=ReadAuthor(r,mod.parent_path(),true,mod,bindingLabels);m.rootAssembly=true;p.rulesOnly=p.spanRecipes=true;p.directory=mod;
  p.names.members=r.StringsMap();p.names.bundles=r.StringsMap();p.shared=r.Set();closure=r.Strings();
  auto n=r.Count();for(size_t i=0;i<n;++i){auto key=r.S();EiemResourceReloadPlan::Part part;part.id=r.S();part.marker=r.S();part.material=r.S();part.vertices=r.U();part.bones=r.Strings();part.shapes=r.Strings();
   Require(key==part.marker&&m.package.parts.count(part.id)&&m.package.materials.count(part.material),"source-record Part declaration differs");const auto& authored=m.package.parts.at(part.id);const auto& mesh=m.package.meshes.at(authored.mesh);

@@ -11,7 +11,7 @@ Manifest Fixture(){
  p.defaults.emplace("$switch",0);p.defaults.emplace("$shape",.25);p.persistent={"$switch","$shape"};p.controls.emplace("$shape",Control{"Shape",0,1});
  std::string error;auto expr=EiemExpressionParser("$switch == 0",error).Parse();Require(bool(expr),"fixture expression");p.parts.emplace("body",EiemDirectory::Part{"body","body",expr,{{"Shape","$shape"}}});
  p.rules.emplace("body",Rule{{"body"},{{0,{"assets/body.asset","body"}}},false});p.targetIndex.emplace(Identity{"assets/body.asset","body"},"body");
- p.bindings.push_back(Binding{"switch","$switch","cycle",{VK_NUMPAD1,0},{0,1},1});
+ p.bindings.push_back(Binding{"switch","$switch","cycle",{VK_NUMPAD1,0},{0,1},1,u8"衣装切换组"});
  auto& plan=m.plan;plan.key=std::string(64,'C');plan.author=PackageDigest(p);plan.contract=InputContractDigest(p);plan.inputs.push_back(Input{"input-001.vfs",std::string(64,'D'),"main/example.ab",{}, {}});plan.closure={0};
  Root root;root.path="assets/model.prefab";root.markers={{"marker",1}};root.cab="CAB-"+std::string(32,'a');root.source=1;
  EiemRenderAssemblyDescription::Source source;source.cab=root.cab;source.id=2;source.renderer={"4:Body:0/",0};EiemRenderAssemblyDescription::Target target;target.renderer=source.renderer;target.marker="marker";target.bones={"4:Root:0/3:Bip:0/4:Bone:0/"};source.targets.push_back(target);root.assembly.sources.push_back(source);
@@ -34,13 +34,13 @@ Manifest SetFixture(unsigned count){
 }
 // Test-only legacy writer: historical headers omit the two layout booleans.
 Bytes LegacyBytes(const Manifest& v,const std::string& tag){
- auto bytes=Encode(v);EiemOfflinePackage::Reader header{bytes};header.S();header.B();header.B();header.S();
+ auto bytes=Encode(v,false);EiemOfflinePackage::Reader header{bytes};header.S();header.B();header.B();header.S();
  Writer old;old.S(tag);old.S(std::string(64,'A'));old.Raw(bytes.data()+header.p,bytes.size()-header.p);return old.b;
 }
 int main(){try{
  auto m=Fixture();auto bytes=Encode(m);auto roundtrip=Decode(bytes,"candidate","mods");Require(Encode(roundtrip)==bytes,"manifest changed during roundtrip");
  Require(roundtrip.package.parts.at("body").visible->Evaluate({{"$switch",0}})==1&&roundtrip.package.parts.at("body").visible->Evaluate({{"$switch",1}})==0,"compiled expression behavior changed");
- Require(roundtrip.package.root==std::filesystem::path("mods/LZY")&&roundtrip.plan.parts.at("marker").bones==m.plan.parts.at("marker").bones&&roundtrip.package.persistent==m.package.persistent&&roundtrip.package.bindings.front().key.vk==VK_NUMPAD1,"compiled author metadata lost");
+ Require(roundtrip.package.root==std::filesystem::path("mods/LZY")&&roundtrip.plan.parts.at("marker").bones==m.plan.parts.at("marker").bones&&roundtrip.package.persistent==m.package.persistent&&roundtrip.package.bindings.front().key.vk==VK_NUMPAD1&&roundtrip.package.bindings.front().label==u8"衣装切换组","compiled author metadata lost");
  auto reject=[](const Bytes& b){bool rejected=false;try{Decode(b,"candidate","mods");}catch(const std::exception&){rejected=true;}Require(rejected,"malformed offline manifest accepted");};
  auto bad=bytes;bad[8]^=1;reject(bad);bad=bytes;bad.pop_back();reject(bad);bad=bytes;std::fill(bad.begin(),bad.begin()+8,255);reject(bad);
  auto invalid=m;invalid.package.defaults.at("$shape")=NAN;bool rejected=false;try{Encode(invalid);}catch(const std::exception&){rejected=true;}Require(rejected,"nonfinite author encoded");
@@ -52,13 +52,16 @@ int main(){try{
   for(const auto& author:Authors(decoded)){auto part=EiemComposedPackage::Name(author.id,"body");Require(decoded.package.partOwners.at(part)==std::make_pair(author.id,std::string("body")),"original control owner lost during composition");
    Require(decoded.package.parts.at(part).visible->Evaluate(decoded.package.defaults)==1,"composed variable expression domain differs");}
  }
+ auto stripBindingLabels=[](Manifest& manifest){for(auto& binding:manifest.package.bindings)binding.label.clear();for(auto& author:manifest.packages)for(auto& binding:author.bindings)binding.label.clear();};
  // Both historical layouts remain readable by either compiler build.
  for(bool addresses:{false,true})for(bool composed:{false,true}){auto old=composed?SetFixture(2):Fixture();old.rootAssembly=addresses;
+  stripBindingLabels(old);
   auto tag=std::string(addresses?"EFF_NATIVE_PACK_V36_ASSEMBLY_1":"EFF_NATIVE_PACK_V35_1")+(composed?"_MODSET_1":"");
   auto encoded=LegacyBytes(old,tag);auto decoded=Decode(encoded,"candidate","mods");auto rewritten=Encode(decoded);
   Require(decoded.rootAssembly==addresses&&decoded.composed==composed&&rewritten==Encode(old)&&rewritten!=encoded,"legacy read/current rewrite differs");}
  for(bool addresses:{false,true})for(bool composed:{false,true}){
   auto old=composed?SetFixture(2):Fixture();old.rootAssembly=addresses;
+  stripBindingLabels(old);
   auto encoded=LegacyBytes(old,"EFF_NATIVE_PACK_ARBITRARY_RELEASE_999");auto decoded=Decode(encoded,"candidate","mods");Require(decoded.rootAssembly==addresses&&decoded.composed==composed&&Encode(decoded)==Encode(old),"same legacy structure rejected unknown release label");
  }
  auto large=Fixture();for(unsigned i=1;i<600;++i)large.plan.inputs.push_back(Input{"input-"+std::to_string(i)+".vfs",std::string(64,'D'),"main/example.ab",{}, {}});

@@ -72,6 +72,7 @@ struct Api {
   void* transformClass = nullptr;
   void *attributeCount = nullptr, *attributeDescriptor = nullptr, *bonesPerVertex = nullptr, *filterMesh = nullptr;
   void *getComponent = nullptr, *filterType = nullptr;
+  void *rendererGameObject = nullptr;
 } api;
 std::atomic<bool> enabled{false};
 std::atomic<unsigned> boundCount{0};
@@ -250,12 +251,23 @@ void* SourceMesh(void* renderer) {
   }
   return kind==137?(originalMeshGetter?originalMeshGetter(renderer):Call(api.mesh,renderer)):nullptr;
 }
-const Spec* Match(void* mesh) {
-  if (!mesh) return nullptr;
-  auto marker = String(Call(api.name,mesh));
-  auto it = specs.find(marker);
-  return it == specs.end() ? nullptr : &it->second;
+const Spec* Match(void* renderer,void* mesh) {
+  const Spec* meshSpec=nullptr;
+  if(mesh) {
+    auto marker=String(Call(api.name,mesh));
+    auto part=specs.find(marker);if(part!=specs.end())meshSpec=&part->second;
+  }
+  if(renderer&&api.rendererGameObject&&api.name) {
+    auto owner=Ref::Make(Call(api.rendererGameObject,renderer),false);
+    if(Alive(owner.Get())) {
+      auto marker=EiemDirectory::RendererPartMarker(String(Call(api.name,owner.Get())));
+      auto part=specs.find(marker);
+      if(part!=specs.end()&&(!meshSpec||part->second.meshResource==meshSpec->meshResource))return &part->second;
+    }
+  }
+  return meshSpec;
 }
+const Spec* Match(void* mesh) {return Match(nullptr,mesh);}
 void Bind(void* renderer, void* mesh, const Spec& spec) {
   auto existing = bound.find(renderer);
   if (existing != bound.end() && existing->second.renderer.Get() == renderer && existing->second.mesh.Get() == mesh) return;
@@ -621,7 +633,7 @@ void ApplyVisibility(void* renderer,Bound& binding,const Spec& spec,bool onlyIfC
 }
 void RegisterRenderer(void* renderer,void* mesh,bool modelReady=true) {
   if (registrationPaused) return;
-  if (auto spec=Match(mesh)) {
+  if (auto spec=Match(renderer,mesh)) {
     Bind(renderer,mesh,*spec);
     auto& binding=bound.at(renderer);
     if(modelReady && !binding.modelReady) {
@@ -833,6 +845,8 @@ void InstallOptional(void** assemblies,size_t count) {
     api.name=Exact(object,"get_name",{},"System.String",false);
     api.mesh=Exact(skin,"get_sharedMesh",{},"UnityEngine.Mesh",false);
     auto renderer=FindClass("UnityEngine","Renderer",assemblies,count);
+    api.rendererGameObject=Exact(FindClass("UnityEngine","Component",assemblies,count),"get_gameObject",{},"UnityEngine.GameObject",false);
+    Require(api.rendererGameObject,"runtime Renderer GameObject getter unavailable");
     api.getEnabled=Exact(renderer,"get_enabled",{},"System.Boolean",false);
     Require(api.getEnabled,"runtime Renderer enabled getter unavailable");
     api.modelRenderers=Exact(FindClass("UnityEngine","GameObject",assemblies,count),"GetComponentsInChildren",{"System.Type","System.Boolean"},"UnityEngine.Component[]",false);

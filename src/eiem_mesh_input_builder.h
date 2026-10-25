@@ -184,26 +184,35 @@ inline MeshInputBuild BuildMeshMember(const Bytes& source, const std::string& ca
     const auto& object = layout.objects.at(asset.pathId);
     const auto& type = layout.types.at(object.type);
     auto templateValue = ObjectValue(source, layout, asset.pathId, sourceOrigins);
+    std::map<std::string,int64_t> sharedMeshes;
     for (size_t i = 0; i < rule.parts.size(); ++i) {
       const auto& partId = rule.parts[i];
       const auto& part = package.parts.at(partId);
       const auto& mesh = package.meshes.at(part.mesh);
+      auto shared=sharedMeshes.find(mesh.resource);
+      if(shared!=sharedMeshes.end()){
+        result.parts.push_back({identity,selected->second,partId,cab,asset.pathId,
+                                shared->second,mesh.vertices,mesh.indices});
+        continue;
+      }
       const auto& resource = *package.resources.at(mesh.resource);
-      int64_t id = i == 0 ? asset.pathId : AllocateMeshId(cab, package, identity, partId);
-      Require(i == 0 || (!layout.objects.count(id) && allocated.insert(id).second),
+      const bool firstMesh=sharedMeshes.empty();
+      int64_t id = firstMesh ? asset.pathId : AllocateMeshId(cab, package, identity, partId);
+      Require(firstMesh || (!layout.objects.count(id) && allocated.insert(id).second),
               "additional Mesh PathID collision");
-      auto name = i == 0 ? asset.asset : asset.asset + "__EFF_" + package.id + "_" + partId;
+      auto name = firstMesh ? asset.asset : asset.asset + "__EFF_" + package.id + "_" + partId;
       const bool runtimeShapes = !mesh.shapes.empty();
       name = RuntimePartName(package, partId, identity);
       auto value = ApplyMesh(type, templateValue, resource, mesh, name, runtimeShapes);
       auto bytes = EncodeValue(type, value, &origins[id]);
       Require(EncodeValue(type, DecodeValue(type, 0, bytes)) == bytes,
               "rebuilt Mesh TypeTree roundtrip differs");
-      if (i == 0) changes.emplace(id, std::move(bytes));
+      if (firstMesh) changes.emplace(id, std::move(bytes));
       else {
         added.push_back({id, object.type, std::move(bytes)});
         expansion[asset.pathId].push_back(id);
       }
+      sharedMeshes.emplace(mesh.resource,id);
       result.parts.push_back({identity, selected->second, partId, cab, asset.pathId,
                               id, mesh.vertices, mesh.indices});
     }

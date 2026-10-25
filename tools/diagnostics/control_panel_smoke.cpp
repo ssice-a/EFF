@@ -17,7 +17,7 @@ bool CountAnimationKey(const EiemKeyChord& chord){++animationKeySamples;return S
 Package Make(const std::string& id) {
   Package p;p.id=id;p.root=std::filesystem::temp_directory_path()/"eff-panel-fixture"/id;
   p.defaults={{"$switch",0},{"$shape",0}};p.controls["$shape"]={u8"体型",0,1};
-  p.bindings={{"衣装切换","$switch","cycle",{VK_NUMPAD1,0},{0,1,2},1},
+  p.bindings={{"衣装切换","$switch","cycle",{VK_NUMPAD1,0},{0,1,2},1,u8"外套切换组"},
               {"increase","$shape","hold",{VK_UP,0},{1},1},
               {"set","$switch","press",{'P',0},{2},1}};
   p.targetIndex[Identity{"assets/characters/actor_"+id+"/body","body"}]="body";
@@ -279,6 +279,9 @@ void KeySettingsChecks(){
   std::cout<<"PASS per-Mod checkbox INI save, comments/BOM/CRLF preservation, restart/compiled control defaults, no resource rewrite, removed Mod save refusal\n";
 }
 void WindowChecks(bool demo) {
+  const std::string rendererMarker="Body__EFF_PART_0123456789abcdef";
+  Require(EiemDirectory::RendererPartMarker(EiemDirectory::RendererPartTag("Body",rendererMarker))==rendererMarker,
+          "renderer part marker did not round-trip");
   auto first=Make("lizhiyan"),other=Make("other");other.defaults["$fx_petals"]=0;other.controls["$fx_petals"]={u8"花瓣特效",0,1};
   EffectAttachment effect;effect.id="petals";effect.label=u8"花瓣特效";effect.variable="$fx_petals";other.effects.emplace(effect.id,effect);
   Install({first,other});
@@ -293,7 +296,7 @@ void WindowChecks(bool demo) {
   auto Pump=[&]{MSG msg{};while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}Frame();window.Tick(window.Handle());};
   for(int i=0;i<10;++i) {Pump();Sleep(20);}
   Require(IsWindowVisible(window.Handle()),"panel not shown");
-  window.Tick(nullptr);Require(!IsWindowVisible(window.Handle()),"external focus did not hide panel");window.Tick(owner);
+  window.Tick(nullptr);Require(IsWindowVisible(window.Handle()),"open panel flickered off when foreground left game");window.Tick(owner);
   auto ClickAt=[&](int x,int y){window.TestMouse(x,y,false);Pump();window.TestMouse(x,y,true);Pump();window.TestMouse(x,y,false);Pump();Pump();};
   auto Click=[&](RECT rect){ClickAt((rect.left+rect.right)/2,(rect.top+rect.bottom)/2);};
   Click(window.TestRect(Action::Keyboard,"lizhiyan"));Click(window.TestRect(Action::Keyboard,"other"));
@@ -302,7 +305,7 @@ void WindowChecks(bool demo) {
   Require(keySwitchEnabled.at("lizhiyan")&&keySwitchEnabled.at("other"),"ImGui could not enable multiple Mods");
   Click(window.TestRect(Action::Select,""));Click(window.TestRect(Action::Select,"other"));
   Require(selected=="other","ImGui selector not wired to runtime");
-  Click(window.TestRect(Action::Invoke,"other",u8"衣装切换"));
+  Click(window.TestRect(Action::Invoke,"other",u8"外套切换组"));
   Require(variables.at("other").at("$switch")==1&&variables.at("lizhiyan").at("$switch")==0,"ImGui cycle button not isolated");
   auto before=variables.at("other").at("$shape");Click(window.TestRect(Action::Value,"other","$shape"));
   auto value=variables.at("other").at("$shape");Require(value>=0&&value<=1&&value!=before,"ImGui shape slider not wired");
@@ -328,12 +331,12 @@ void WindowChecks(bool demo) {
     GetClientRect(handle,&client);
     Require(window.TestBufferSize()==std::make_pair(UINT(client.right),UINT(client.bottom)),"native drag did not resize the compositor backbuffer");
     Require(window.TestBackgroundAlpha()==255,"resized INS background does not cover the enlarged client area opaquely");
-    Pump();auto button=window.TestRect(Action::Invoke,"other",u8"衣装切换");
+    Pump();auto button=window.TestRect(Action::Invoke,"other",u8"外套切换组");
     Require(button.right<=client.right&&button.right-button.left>client.right-90,"button failed to follow resized client width");
     if(i==0)Require(window.TestScrollMax()>0,"small panel has no scrollable overflow");
     auto snapshot=panel.Read();Require(snapshot->selected=="other"&&snapshot->values.at("other").at("$switch")==1,"resize changed runtime control state");
   }
-  auto resized=window.TestRect(Action::Invoke,"other",u8"衣装切换");Click(resized);
+  auto resized=window.TestRect(Action::Invoke,"other",u8"外套切换组");Click(resized);
   Require(variables.at("other").at("$switch")==2,"resized cycle button lost its input mapping");
   std::cout<<"PASS native corner resize hit, minimum size, small/large/restored client and D3D buffers, responsive buttons and control state\n";
   std::cout<<"Panel backdrop acrylic="<<window.TestAcrylic()<<"\n";

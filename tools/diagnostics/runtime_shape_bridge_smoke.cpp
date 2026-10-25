@@ -320,7 +320,7 @@ int main(int argc,char** argv) {
       RuntimeShapes::bound.clear();RuntimeShapes::specs.clear();RuntimeShapes::keys.clear();
       RuntimeShapes::variables={{"fixture",{{"shape",.75}}}};
       Package animationOwner;animationOwner.id="fixture";RuntimeControls::animations[animationOwner.id].Prepare(animationOwner);
-      RuntimeShapes::specs["marker"]={"fixture","part","marker",1,{"bend"},{{"bend","shape"}}};
+      RuntimeShapes::specs["marker"]={"fixture","part","marker","",1,{"bend"},{{"bend","shape"}},{},{}};
       RuntimeShapes::bound[self]={RuntimeShapes::Ref::Make(self,false),RuntimeShapes::Ref::Make(root,false),"marker",{{"bend",0}}};
       RuntimeShapes::api.frame=(void*)0x301;RuntimeShapes::api.elapsed=(void*)0x302;
       RuntimeShapes::api.mesh=(void*)0x303;RuntimeShapes::api.getWeight=(void*)0x304;

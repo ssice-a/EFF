@@ -9,7 +9,8 @@
 // it has not yet been persisted by the offline exporter or wired to Unity.
 namespace EiemPreparedPrefabCompiler {
 using namespace EiemCompiledMod;
-constexpr const char* descriptorStructure="EFF_PREPARED_PFB/author+core-inputs+assets+schemas+palettes+native-bundle-routes/le64";
+constexpr const char* descriptorStructure="EFF_PREPARED_PFB/author+core-inputs+assets+schemas+palettes+native-bundle-routes+key-label/le64";
+constexpr const char* legacyDescriptorStructure="EFF_PREPARED_PFB/author+core-inputs+assets+schemas+palettes+native-bundle-routes/le64";
 struct Prepared {
  std::shared_ptr<const Artifact> baseline;EiemStaticSources::Selection current;
  Package resolved;
@@ -62,9 +63,9 @@ inline Bytes Encode(const Prepared& prepared){
  return Pack(w.b);
 }
 inline Prepared Decode(const Bytes& packed,std::shared_ptr<const Artifact> baseline,const EiemStaticSources::Selection& current){
- Require(bool(baseline),"prepared PFB descriptor lacks author snapshot");auto bytes=Unpack(packed);EiemOfflinePackage::Reader r{bytes};Require(r.S()==descriptorStructure,"prepared PFB descriptor structure differs");
+ Require(bool(baseline),"prepared PFB descriptor lacks author snapshot");auto bytes=Unpack(packed);EiemOfflinePackage::Reader r{bytes};auto structure=r.S();const bool bindingLabels=structure==descriptorStructure;Require(bindingLabels||structure==legacyDescriptorStructure,"prepared PFB descriptor structure differs");
  Prepared result;result.baseline=std::move(baseline);result.current=current;const auto& a=*result.baseline;Require(r.S()==a.manifest.plan.author&&r.S()==a.manifest.plan.contract,"prepared PFB descriptor belongs to another author");
- r.verifiedAuthor=&a.manifest.package;result.resolved=ReadAuthor(r,a.manifest.package.root.parent_path(),true,a.manifest.package.root);Require(result.resolved.id==a.manifest.package.id,"prepared resolved author identity differs");
+ r.verifiedAuthor=&a.manifest.package;result.resolved=ReadAuthor(r,a.manifest.package.root.parent_path(),true,a.manifest.package.root,bindingLabels);Require(result.resolved.id==a.manifest.package.id,"prepared resolved author identity differs");
  result.coreInputs=r.StringsMap();Require(!result.coreInputs.empty(),"prepared core resource seal empty");for(const auto& row:result.coreInputs)Require(DigestText(row.second)&&current.inputs.at(row.first).revision==row.second,"prepared core resources changed; update them before compiling a PFB");
  result.sharedBundles=r.StringsMap();for(const auto& row:result.sharedBundles)Require(!row.first.empty()&&!row.second.empty(),"prepared native dependency route absent");
  auto n=r.Count();for(size_t i=0;i<n;++i){auto key=r.Id();Asset asset;asset.path=r.S();asset.asset=r.S();asset.cab=r.S();asset.pathId=int64_t(r.N());asset.classId=int(r.N());r.Raw(asset.type.data(),asset.type.size());Require(asset.pathId&&key.path==asset.path&&key.asset==asset.asset&&result.assets.emplace(key,std::move(asset)).second,"prepared asset identity repeated/invalid");}

@@ -83,6 +83,24 @@ jobs:
         $version = $project.Project.PropertyGroup.Version
         Compress-Archive -Path bin/eff-repair/release/* -DestinationPath "EFF-Repair-v$version-win-x64.zip"
 
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Build paired Blender native base
+      shell: pwsh
+      run: |
+        python -m pip install --only-binary=:all: Pillow==12.3.0 --target bin/author-core/vendor
+        if ($LASTEXITCODE -ne 0) { throw 'Blender Pillow dependency build failed' }
+        cmd /c tools\diagnostics\build_author_core.cmd
+        if ($LASTEXITCODE -ne 0) { throw 'Blender author core build failed' }
+        cmd /c tools\build_resource_pack.cmd v35
+        if ($LASTEXITCODE -ne 0) { throw 'Blender resource compiler build failed' }
+        cmd /c tools\build_source_index.cmd
+        if ($LASTEXITCODE -ne 0) { throw 'Blender source index helper build failed' }
+        python tools/diagnostics/package_blender_native_base.py --output bin/release-artifacts --compiler bin/resource-pack-v35/eff_resource_pack.exe --dll-protocol bin/resource-directory-entry-v35/package-protocol.json
+        if ($LASTEXITCODE -ne 0) { throw 'Blender native base package failed' }
+
     - name: Verify production DLL excludes temporary diagnostics
       shell: pwsh
       run: |
@@ -215,6 +233,7 @@ jobs:
         files: |
           EFF_${{ env.RELEASE_TAG }}_dll.zip
           EFF-Repair-*-win-x64.zip
+          bin/release-artifacts/EFF_Blender_Native_*.zip
         body_path: RELEASE_NOTES.md
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

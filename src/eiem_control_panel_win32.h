@@ -151,10 +151,11 @@ class Window {
       const auto& p=*selected;
       for(const auto& b:p.bindings){
         ImGui::PushID(b.id.c_str());auto control=p.controls.find(b.variable);
-        std::ostringstream label;label<<'['<<EiemFormatKeyChord(b.key)<<"]  "<<(control==p.controls.end()?b.id:control->second.label);
+        const auto& name=!b.label.empty()?b.label:(control==p.controls.end()?b.id:control->second.label);
+        std::ostringstream label;label<<'['<<EiemFormatKeyChord(b.key)<<"]  "<<name;
         if(b.type=="hold")label<<u8"  按住 -> "<<b.values.front();label<<"    "<<view->values.at(p.id).at(b.variable);
         bool clicked=ImGui::Button(label.str().c_str(),{-1,32});
-        Item(b.type=="hold"?Action::Hold:Action::Invoke,p.id,b.id);
+        Item(b.type=="hold"?Action::Hold:Action::Invoke,p.id,name);
         if(b.type=="hold"){if(ImGui::IsItemActive()&&ImGui::IsMouseDown(ImGuiMouseButton_Left))nextHold=b.id;}
         else if(clicked)Send(Action::Invoke,p.id,b.id);
         ImGui::PopID();
@@ -199,7 +200,7 @@ class Window {
   void Visible(bool visible) {
     if(shown==visible)return;shown=visible;
     if(visible){ClipCursor(nullptr);ShowWindow(hwnd,SW_SHOW);SetForegroundWindow(hwnd);}
-    else{StopHold();bool owned=GetForegroundWindow()==hwnd;ShowWindow(hwnd,SW_HIDE);if(owned&&IsWindow(store.gameWindow.load()))SetForegroundWindow(store.gameWindow.load());}
+    else{StopHold();ShowWindow(hwnd,SW_HIDE);}
   }
 public:
   explicit Window(Store& store):store(store){}
@@ -234,7 +235,8 @@ public:
   }
   void Tick(HWND foreground=GetForegroundWindow()) {
     HWND game=store.gameWindow.load();
-    bool wanted=store.open&&IsWindow(game)&&!IsIconic(game)&&(foreground==hwnd||foreground==game);
+    bool wanted=store.open&&IsWindow(game)&&!IsIconic(game);
+    (void)foreground;
     auto next=store.Read();if(view&&next&&(view->scope!=next->scope||view->revision!=next->revision))StopHold();view=std::move(next);
     Visible(wanted&&bool(view));if(!shown)return;
     if(!width||!height||!RenderTarget())throw std::runtime_error("control panel graphics target unavailable");

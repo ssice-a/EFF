@@ -345,6 +345,7 @@ struct Binding {
   EiemKeyChord key;
   std::vector<double> values;
   double speed = 1;
+  std::string label;
 };
 #include "eiem_runtime_control_types.h"
 struct Package {
@@ -591,10 +592,13 @@ inline Package Load(const std::filesystem::path& directory,const Package* verifi
                   p.defaults.at(var) <= c.maximum && p.controls.emplace(var, c).second,
               "invalid shape control/default");
     } else if (Begins(s.id, "Key")) {
-      Keys(s, {"key", "type"}, {"speed"}, {"$"});
+      const bool switchSection=Begins(s.id,"KeySwitch");
+      if(switchSection)Keys(s,{"key","type"},{"speed","label"},{"$"});
+      else Keys(s,{"key","type"},{"speed"},{"$"});
       Binding b;
       b.id = s.id;
       b.type = v.at("type");
+      if(switchSection&&v.count("label"))b.label=v.at("label");
       Require(EiemParseKeyChord(v.at("key"), &b.key), "unknown key chord");
       Require(b.type == "cycle" || b.type == "hold" || b.type == "press", "unsupported key type");
       size_t assignments = 0;

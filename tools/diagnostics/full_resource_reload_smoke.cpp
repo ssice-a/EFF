@@ -1992,7 +1992,7 @@ int main(int argc,char** argv){
     VerifyPrefab(candidate,plan,plan.roots[0]);Require(!staticSkinCalls,"static verification touched skinning APIs");
     Require(!RuntimeShapes::SourceMesh(material),"non-Mesh Renderer invoked skin getter");
     auto specs=RuntimeShapes::specs;auto variables=RuntimeShapes::variables;auto setter=RuntimeShapes::originalEnabledSetter;
-    RuntimeShapes::specs["marker"]={"static","part","marker",2,{},{}};auto& spec=RuntimeShapes::specs.at("marker");spec.visible=EiemExpression::Make();spec.visible->op=EiemExpression::Variable;spec.visible->variable="shown";RuntimeShapes::variables["static"]["shown"]=0;
+    RuntimeShapes::specs["marker"]={"static","part","marker","",2,{},{},{},{}};auto& spec=RuntimeShapes::specs.at("marker");spec.visible=EiemExpression::Make();spec.visible->op=EiemExpression::Variable;spec.visible->variable="shown";RuntimeShapes::variables["static"]["shown"]=0;
     RuntimeShapes::originalEnabledSetter=[](void*,bool value){staticEnabled=value;};
     RuntimeShapes::RegisterRenderer(newRenderer,RuntimeShapes::SourceMesh(newRenderer));Require(!staticEnabled&&RuntimeShapes::bound.at(newRenderer).filter.Get()==filterObject,"static visibility/filter binding failed");
     RuntimeShapes::variables["static"]["shown"]=1;RuntimeShapes::ApplyVisibility(newRenderer,RuntimeShapes::bound.at(newRenderer),spec);Require(staticEnabled,"static visibility did not return");

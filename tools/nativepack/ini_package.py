@@ -161,13 +161,15 @@ def update_directory(root, *, parts=(), materials=(), textures=(), texture_only=
     for part in parts:
         mesh_id = identifier(part['object'])
         require(mesh_id in ini, 'new or renamed Mesh requires a full export: ' + mesh_id)
-        for section in ini.sections():
-            if section.startswith('Part') and ini[section].get('mesh') == mesh_id:
-                require(ini[section]['material'] == part['material'],
-                        'changing Mesh material slots requires a full export: ' + mesh_id)
-                bound_shapes = {key.removeprefix('shape.') for key in ini[section] if key.startswith('shape.')}
-                require(bound_shapes <= set(part['shapeNames']),
-                        'removing a controlled shape requires a full export: ' + mesh_id)
+        existing_parts = [ini[section] for section in ini.sections()
+                          if section.startswith('Part') and ini[section].get('mesh') == mesh_id]
+        require(existing_parts, 'Mesh has no existing Part declaration: ' + mesh_id)
+        require(part['material'] in {row['material'] for row in existing_parts},
+                'changing Mesh material slots requires a full export: ' + mesh_id)
+        for row in existing_parts:
+            bound_shapes = {key.removeprefix('shape.') for key in row if key.startswith('shape.')}
+            require(bound_shapes <= set(part['shapeNames']),
+                    'removing a controlled shape requires a full export: ' + mesh_id)
         relative = ini[mesh_id]['path']
         blocks = dict(part['fieldData'])
         blocks['@geometry'] = struct.pack('<II', part['vertices'], part['indices'])
@@ -254,21 +256,28 @@ def export_directory(root, *, mod_id, parts, materials, textures, rules, switche
     for switch in switches:
         require(switch["variable"] not in constants, "duplicate state declaration")
         constants[switch["variable"]] = switch["default"]
-    shapes, shape_variables = [], {}
+    shapes, shape_variables, shape_bindings = [], {}, {}
     for part in parts:
         for control in part["shapeControls"]:
             if not control["enabled"]:
                 continue
             token = re.sub(r"[^A-Za-z0-9_]", "_", part["object"])
-            variable = "$shape_" + token + "_" + identifier(control["identity"])
-            require(variable not in constants, "duplicate shape state")
-            constants[variable] = control["default"]
+            binding = (token, identifier(control["identity"]))
+            variable = shape_bindings.get(binding)
+            if variable is None:
+                variable = "$shape_" + token + "_" + binding[1]
+                require(variable not in constants, "duplicate shape state")
+                constants[variable] = control["default"]
+                shape_bindings[binding] = variable
+                shapes.append((variable, control))
             shape_variables[(part["partId"], control["shape"])] = variable
-            shapes.append((variable, control))
     section("Constants", {"persist " + name: value for name, value in constants.items()})
     for index, switch in enumerate(switches, 1):
-        section("KeySwitch" + str(index), {"key": switch["key"], "type": "cycle",
-                switch["variable"]: ",".join(str(i) for i in range(switch["stateCount"]))})
+        declaration = {"key": switch["key"], "type": "cycle",
+                       switch["variable"]: ",".join(str(i) for i in range(switch["stateCount"]))}
+        if switch.get("label"):
+            declaration["label"] = switch["label"]
+        section("KeySwitch" + str(index), declaration)
     for index, (variable, control) in enumerate(shapes, 1):
         section("ShapeControl" + str(index), dict(variable=variable, label=control["label"],
                 min=control["minimum"], max=control["maximum"]))
@@ -294,10 +303,11 @@ def export_directory(root, *, mod_id, parts, materials, textures, rules, switche
         section(mid, values)
 
     part_ids = {}
+    written_meshes = {}
     for part in parts:
         mesh_id = identifier(part["object"])
         require(mesh_id.startswith("Mesh"), "mesh section prefix")
-        pid = identifier("Part" + mesh_id.removeprefix("Mesh"))
+        pid = identifier("Part" + identifier(part["partId"]).removeprefix("Mesh"))
         require(part["partId"] not in part_ids, "duplicate part ID")
         part_ids[part["partId"]] = pid
         relative = "meshes/" + mesh_id + ".mesh"
@@ -305,8 +315,14 @@ def export_directory(root, *, mod_id, parts, materials, textures, rules, switche
         blocks["@geometry"] = struct.pack("<II", part["vertices"], part["indices"])
         blocks["@bones"] = encode_strings(part["bonePaths"])
         blocks["@shapes"] = encode_strings(part["shapeNames"])
-        write_resource(root, relative, MESH, part["nativeTypeHash"], blocks)
-        section(mesh_id, dict(path=relative))
+        previous = written_meshes.get(mesh_id)
+        if previous is None:
+            write_resource(root, relative, MESH, part["nativeTypeHash"], blocks)
+            section(mesh_id, dict(path=relative))
+            written_meshes[mesh_id] = (part["nativeTypeHash"], blocks)
+        else:
+            require(previous == (part["nativeTypeHash"], blocks),
+                    "parts sharing a Mesh must have identical geometry")
         values = dict(mesh=mesh_id, material=part["material"], visible=visibility(part["visibilityBindings"]))
         for shape in part["shapeNames"]:
             variable = shape_variables.get((part["partId"], shape))

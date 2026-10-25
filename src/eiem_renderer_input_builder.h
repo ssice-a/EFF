@@ -529,6 +529,8 @@ public:
       auto owner = Local(type, Child(type, original, "m_GameObject"), 1);
       Require(transforms.count(owner), "Renderer owner lacks Transform");
       auto tid = transforms.at(owner);
+      const auto& ownerNameField=Child(Schema(owner),Tree(owner),"m_Name");
+      const auto originalOwnerName=Text(ownerNameField.raw.data(),ownerNameField.raw.size());
       int64_t rootBone=0;
       std::vector<int64_t> nativeBones;
       if(skinned){rootBone = Local(type, Child(type, original, "m_RootBone"), 4);
@@ -550,6 +552,7 @@ public:
       for (size_t i = 0; i < rule.parts.size(); ++i) {
         const auto& pid = rule.parts[i];
         const auto& part = package.parts.at(pid);
+        const auto rendererMarker=RuntimePartName(package,pid,target);
         const auto& mesh = package.meshes.at(part.mesh);
         auto nativeMesh = std::find_if(meshes.begin(), meshes.end(), [&](const BuiltMeshPart& item) {
           return item.part == pid && !(item.target < target) && !(target < item.target);
@@ -569,8 +572,7 @@ public:
           newRid = Allocate("renderer", rid, pid); gid = Allocate("go", rid, pid); newTid = Allocate("transform", rid, pid);
           if(!skinned)newFilter=Allocate("filter",rid,pid);
           auto go = Tree(owner);
-          SetString(goType, Child(goType, go, "m_Name"),
-              Text(Child(goType, go, "m_Name").raw.data(), Child(goType, go, "m_Name").raw.size()) + "__EFF_" + package.id + "_" + pid);
+          SetString(goType, Child(goType, go, "m_Name"),RendererPartTag(originalOwnerName,rendererMarker));
           auto& components = ArrayValue(goType, Child(goType, go, "m_Component"));
           components.children.clear();
           std::vector<int64_t> componentIds{newTid};if(!skinned)componentIds.push_back(newFilter);componentIds.push_back(newRid);
@@ -600,6 +602,10 @@ public:
           changed.insert(tid); Add(newTid, tid, transform);
           for (auto id : {gid, newTid, newRid}) dependencies.insert({cab, id});
           if(!skinned)dependencies.insert({cab,newFilter});
+        } else {
+          auto go=Tree(owner);
+          SetString(goType,Child(goType,go,"m_Name"),RendererPartTag(originalOwnerName,rendererMarker));
+          Tree(owner)=std::move(go);changed.insert(owner);
         }
         SetReference(type, Child(type, renderer, "m_GameObject"), {cab, gid}, layout, cab);
         if(skinned)SetReference(type, Child(type, renderer, "m_Mesh"), {nativeMesh->cab, nativeMesh->id}, layout, cab);

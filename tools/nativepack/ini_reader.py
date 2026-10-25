@@ -140,7 +140,8 @@ def read_package(root, resource_cache=None):
             require(low < high and low <= states[variable] <= high, "invalid shape range/default")
             controls.append(dict(variable=variable, label=values["label"], minimum=low, maximum=high))
         elif name.startswith("Key"):
-            values = keys(name, ("key", "type"), ("speed",), ("$",))
+            optional = ("speed", "label") if name.startswith("KeySwitch") else ("speed",)
+            values = keys(name, ("key", "type"), optional, ("$",))
             assignments = [(key, value) for key, value in values.items() if key.startswith("$")]
             require(len(assignments) == 1, "one key binding must update one state")
             variable, text = assignments[0]
@@ -155,7 +156,8 @@ def read_package(root, resource_cache=None):
                 require(len(numbers) == 1, "press/hold binding requires one target")
             speed = number(values.get("speed", "1"))
             require(speed > 0 and (values["type"] == "hold" or "speed" not in values), "invalid key speed")
-            bindings.append(dict(id=name, key=values["key"], type=values["type"], variable=variable, values=numbers, speed=speed))
+            bindings.append(dict(id=name, key=values["key"], type=values["type"], variable=variable,
+                                 values=numbers, speed=speed, label=values.get("label", "")))
         elif name.startswith("Replace"):
             values = keys(name, ("target.path", "target.asset"), ("parts", "handling"), ("lod.",))
             hidden = values.get("handling") == "skip"
