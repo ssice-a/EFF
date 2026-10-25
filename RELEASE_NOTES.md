@@ -1,6 +1,6 @@
 # EFF v1.10.1
 
-配套版本：[EFF Blender v0.49.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.49.0)、[AnimeStudio v1.8.1](https://github.com/ssice-a/AnimeStudio/releases/tag/v1.8.1)。
+配套版本：[EFF Blender v0.49.1](https://github.com/ssice-a/EFF-blender/releases/tag/v0.49.1)、[AnimeStudio v1.8.1](https://github.com/ssice-a/AnimeStudio/releases/tag/v1.8.1)。
 
 - 修复多部件静态 Mesh 装配的 provenance 校验，使额外 Renderer 与对应作者部件的稳定资源标识一致。
 - 延续 v1.10.0 的资源增量更新和命名按键切换组协议；保留既有 Mod 格式兼容读取。
