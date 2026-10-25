@@ -4,13 +4,13 @@
 
 AnimeStudio exports source assets and templates. Blender creates and compiles each independent Mod. EFF applies the compiled rules before the game creates resources and uses the game's model lifecycle for reloads.
 
-Paired releases: **EFF v1.10.1, EFF Blender v0.49.1, AnimeStudio v1.8.1**. There is one production DLL package. Compatibility follows byte structures, fields, source hashes and references.
+Paired releases: **EFF v1.10.2, EFF Blender v0.49.2, AnimeStudio v1.8.1**. There is one production DLL package. Compatibility follows byte structures, fields, source hashes and references.
 
 See the illustrated quick tutorial for installation, extraction, Blender editing and export: [English](Mod%20Tutorial_EN.md) · [中文](Mod%20Tutorial.md).
 
 ## Install
 
-Download `EFF_v1.10.1_dll.zip` from [Releases](https://github.com/ssice-a/EFF/releases), quit the game and extract beside `Endfield.exe`. The current proxy forwarders support Windows installations at `C:\Windows`; other system directories are not supported yet. Preserve `plugin/eff.ini`, your Mods and their `state.ini` when upgrading.
+Download `EFF_v1.10.2_dll.zip` from [Releases](https://github.com/ssice-a/EFF/releases), quit the game and extract beside `Endfield.exe`. The current proxy forwarders support Windows installations at `C:\Windows`; other system directories are not supported yet. Preserve `plugin/eff.ini`, your Mods and their `state.ini` when upgrading.
 
 ```text
 d3dcompiler_47.dll

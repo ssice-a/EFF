@@ -104,6 +104,40 @@ inline bool ExpandTexturePreloads(const Type& type, Value& bundle,
   preloads.children = std::move(output); preloads.count = preloads.children.size();
   return true;
 }
+// AssetBundles commonly contain very large preload tables. Most of them are
+// unrelated to the current Mod, so decoding every pointer into a Value tree
+// needlessly multiplies the compiler working set. Scan the pointer records
+// directly and decode only a Bundle that contains an expanded source.
+inline bool HasTextureExpansion(const Bytes& source, const SerializedLayout& layout,
+                                const Type& type, const Field& preload,
+                                const std::string& cab,
+                                const TextureExpansion& expansion) {
+  size_t arrayNode = preload.node;
+  if (type.nodes.at(arrayNode).type != "Array") {
+    Require(type.nodes.at(arrayNode).children.size() == 1 &&
+                type.nodes.at(type.nodes.at(arrayNode).children[0]).type == "Array",
+            "AssetBundle preload table schema");
+    arrayNode = type.nodes.at(arrayNode).children[0];
+  }
+  const auto& array = type.nodes.at(arrayNode);
+  Require(array.children.size() == 2, "AssetBundle preload array schema");
+  Reader reader(source, preload.offset, false, preload.offset + preload.size);
+  auto count = reader.Count(reader.limit - reader.p);
+  auto element = array.children[1];
+  for (size_t i = 0; i < count; ++i) {
+    auto begin = reader.p;
+    SkipValue(type, element, reader, preload.offset);
+    auto fields = Fields(type, element, source, begin, reader.p, preload.offset);
+    auto file = (int32_t)Le(source, fields.at("m_FileID").offset, fields.at("m_FileID").size);
+    auto path = (int64_t)Le(source, fields.at("m_PathID").offset, fields.at("m_PathID").size);
+    if (!path) continue;
+    Require(file >= 0 && size_t(file) <= layout.externals.size(),
+            "AssetBundle preload external index");
+    auto owner = file ? layout.externals[size_t(file) - 1] : cab;
+    if (expansion.find({owner, path}) != expansion.end()) return true;
+  }
+  return false;
+}
 inline Value ApplyMaterial(const Type& type, Value value, const Resource& resource,
                              const Material& material, const Package& package,
                              const AssetIndex& assets, const SerializedLayout& layout,
@@ -353,6 +387,12 @@ inline TextureInputBuild BuildTextureInput(EndfieldInput::Bundle& bundle, const 
     }
     for (const auto& row : layout.objects) if (layout.types.at(row.second.type).classId == 142) {
       const auto& type = layout.types.at(row.second.type);
+      auto fields = Fields(type, 0, member.bytes, row.second.offset,
+                           row.second.offset + row.second.size, row.second.offset);
+      auto preload = fields.find("m_PreloadTable");
+      Require(preload != fields.end(), "AssetBundle preload table absent");
+      if (!HasTextureExpansion(member.bytes, layout, type, preload->second,
+                               member.name, expansion)) continue;
       auto value = ObjectValue(member.bytes, layout, row.first, &member.origins);
       if (ExpandTexturePreloads(type, value, layout, member.name, expansion, referencedPreloads)) {
         changes.emplace(row.first, EncodeValue(type, value, &origins[row.first])); result.changedPreloads = true;

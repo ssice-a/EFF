@@ -126,7 +126,15 @@ inline Description Build(const Graph& before,const Graph& after,const std::strin
                          const Package& package,const AssetIndex& assets,const std::map<NativeReference,std::string>& markers){
  Description d;std::set<int64_t> native,claimed;
  for(auto id:before.Renderers())native.insert(id);
- for(auto id:native){Source source{cab,id,before.At(id),{}};Require(source.renderer==after.At(id),"assembly native anchor address changed");
+ for(auto id:native){
+  auto beforeAddress=before.At(id),afterAddress=after.At(id);
+  if(!(beforeAddress==afterAddress)){
+   auto gameObject=before.Pointer(id,"m_GameObject");
+   throw std::runtime_error("assembly native anchor address changed: renderer="+
+    before.Name(gameObject)+" before="+beforeAddress.path+":"+std::to_string(beforeAddress.component)+
+    " after="+afterAddress.path+":"+std::to_string(afterAddress.component));
+  }
+  Source source{cab,id,beforeAddress,{}};
  auto ref=before.Mesh(id);bool skip=false;const Rule* rule=nullptr;const Identity* targetIdentity=nullptr;
   for(const auto& selected:package.targetIndex){auto a=assets.find(selected.first);if(a!=assets.end()&&ref==NativeReference{a->second.cab,a->second.pathId}){targetIdentity=&selected.first;rule=&package.rules.at(selected.second);skip=rule->skip;break;}}
   if(!skip){auto target=after.ReadTarget(id,false);auto marker=markers.find(after.Mesh(id));if(marker!=markers.end())target.marker=marker->second;source.targets.push_back(std::move(target));}

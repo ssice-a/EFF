@@ -48,7 +48,7 @@ def package(output, compiler=None, dll_protocol=None):
         if dll_protocol:
             declared = json.loads(Path(dll_protocol).read_text('utf-8-sig'))
             actual = report['compilerProtocol']
-            for key in ('compiledMod', 'compiledModStore'):
+            for key in ('compiledMod', 'compiledModStore', 'resourceUpdate'):
                 if actual.get(key) != declared.get(key):
                     raise ValueError('Blender compiler and DLL protocol differ at ' + key)
             for key, value in actual.get('structures', {}).items():

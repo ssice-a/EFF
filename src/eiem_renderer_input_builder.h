@@ -603,9 +603,9 @@ public:
           for (auto id : {gid, newTid, newRid}) dependencies.insert({cab, id});
           if(!skinned)dependencies.insert({cab,newFilter});
         } else {
-          auto go=Tree(owner);
-          SetString(goType,Child(goType,go,"m_Name"),RendererPartTag(originalOwnerName,rendererMarker));
-          Tree(owner)=std::move(go);changed.insert(owner);
+          // Keep the native owner's name and hierarchy path stable. The first
+          // authored part is identified by its Mesh marker; only generated
+          // renderer owners (the i>0 branch above) need a provenance tag.
         }
         SetReference(type, Child(type, renderer, "m_GameObject"), {cab, gid}, layout, cab);
         if(skinned)SetReference(type, Child(type, renderer, "m_Mesh"), {nativeMesh->cab, nativeMesh->id}, layout, cab);
@@ -783,14 +783,80 @@ inline void AddMeshSchemas(MeshSchemaIndex& schemas, const Bytes& input,
     AddMeshSchemas(schemas,member.bytes,member.name,layout,assets,palettes,package);
   }
 }
+inline SerializedNamedAssets NamedSerializedAssets(const EndfieldInput::Bundle& bundle) {
+  SerializedNamedAssets result;
+  for (const auto& member : bundle.members) {
+    if (!SerializedHeader(member.bytes)) continue;
+    auto layout = ParseSerialized(member.bytes);
+    auto local = EiemNativeInput::NamedSerializedAssets(member.bytes, member.name, layout);
+    for (auto& row : local) {
+      auto found = result.find(row.first);
+      Require(found == result.end() ||
+                  (found->second.classId == row.second.classId &&
+                   found->second.asset == row.second.asset &&
+                   found->second.type == row.second.type),
+              "duplicate named asset across source CABs");
+      result.emplace(row.first, std::move(row.second));
+    }
+  }
+  return result;
+}
+// The AssetBundle container names its root Prefab, while the Mesh/Material/
+// Texture objects used by that Prefab are usually only present in the
+// container's preload table. Expose those references under the same logical
+// path so author source identities such as `prefab + M_material` can resolve.
+inline std::vector<Asset> SerializedReferencedAssets(
+    const Bytes& bytes, const std::string& cab, const SerializedLayout& layout,
+    const SerializedNamedAssets* named = nullptr) {
+  auto result = SerializedAssets(bytes, cab, layout, named);
+  SerializedNamedAssets local;
+  if (!named) local = EiemNativeInput::NamedSerializedAssets(bytes, cab, layout);
+  const auto& lookup = named ? *named : local;
+  std::set<std::tuple<std::string, std::string, std::string, int64_t>> seen;
+  for (const auto& asset : result)
+    if (asset.classId == 43 || asset.classId == 21 || asset.classId == 28)
+      seen.emplace(asset.path, asset.asset, asset.cab, asset.pathId);
+  for (const auto& row : layout.objects) {
+    const auto& bundleType = layout.types.at(row.second.type);
+    if (bundleType.classId != 142) continue;
+    auto bundle = ObjectValue(bytes, layout, row.first);
+    const auto& preloads = ConstArray(bundleType, Child(bundleType, bundle, "m_PreloadTable"));
+    for (const auto& entry : ConstArray(bundleType, Child(bundleType, bundle, "m_Container")).children) {
+      const auto& info = Child(bundleType, entry, "second");
+      const auto& firstValue = Child(bundleType, entry, "first");
+      auto first = Text(firstValue.raw.data(), firstValue.raw.size());
+      auto preloadIndex = size_t(Integer(Child(bundleType, info, "preloadIndex")));
+      auto preloadSize = size_t(Integer(Child(bundleType, info, "preloadSize")));
+      Require(preloadIndex <= preloads.children.size() &&
+                  preloadSize <= preloads.children.size() - preloadIndex,
+              "AssetBundle preload interval");
+      for (size_t i = preloadIndex; i < preloadIndex + preloadSize; ++i) {
+        auto reference = NullableReference(bundleType, preloads.children[i], layout, cab);
+        if (!reference.second) continue;
+        auto found = lookup.find({SerializedAssetCabKey(reference.first), reference.second});
+        if (found == lookup.end()) continue;
+        const auto& source = found->second;
+        if (source.classId != 43 && source.classId != 21 && source.classId != 28) continue;
+        Asset asset = source;
+        asset.path = first;
+        std::transform(asset.path.begin(), asset.path.end(), asset.path.begin(),
+                       [](unsigned char c) { return char(std::tolower(c)); });
+        auto key = std::make_tuple(asset.path, asset.asset, asset.cab, asset.pathId);
+        if (seen.insert(key).second) result.push_back(std::move(asset));
+      }
+    }
+  }
+  return result;
+}
 // All source indexes describe the same immutable input. Decode its bundle,
 // TypeTrees and asset table once; retain each index's own validation rules.
 inline void AddSourceInventory(AssetIndex& assets,MeshSchemaIndex& schemas,MeshBoneHashIndex& palettes,
     MaterialPreloadIndex& preloads,const EndfieldInput::Bundle& bundle,const Package& package,
     std::map<std::string,std::string>* bundleOwners=nullptr) {
+  const auto named = NamedSerializedAssets(bundle);
   std::string bundleName;
   for(const auto& member:bundle.members)if(SerializedHeader(member.bytes)) {
-    auto layout=ParseSerialized(member.bytes);auto catalog=SerializedAssets(member.bytes,member.name,layout);
+    auto layout=ParseSerialized(member.bytes);auto catalog=SerializedReferencedAssets(member.bytes,member.name,layout,&named);
     if(bundleOwners)for(const auto& row:layout.objects)if(layout.types.at(row.second.type).classId==142){const auto& type=layout.types.at(row.second.type);auto value=ObjectValue(member.bytes,layout,row.first);const auto& name=Child(type,value,"m_Name");auto text=Text(name.raw.data(),name.raw.size());Require(bundleName.empty()||bundleName==text,"source inventory Bundle identity ambiguous");bundleName=std::move(text);}
     AddMeshSchemas(schemas,member.bytes,member.name,layout,catalog,&palettes,&package);
     AddMaterialPreloads(preloads,member.bytes,member.name,layout,catalog,package);

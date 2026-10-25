@@ -62,12 +62,12 @@ inline bool RecompileMaterialParameters(Artifact& artifact,const Package& author
  for(const auto& job:jobs){const auto i=job.first;auto input=ReadSource({},plan.originals[i]);auto original=EndfieldInput::Decode(input);
   std::map<std::string,const Bytes*> originalMembers;std::vector<EiemResourceRecipe::Buffer> buffers;
   for(const auto& member:original.members){originalMembers.emplace(member.name,&member.bytes);buffers.push_back({EiemResourceRecipe::Original,member.name,&member.bytes});}
-  EiemResourceRecipe::Dictionary originalSpans(std::move(buffers));auto edited=original;edited.members.clear();
+  EiemResourceRecipe::Dictionary originalSpans(std::move(buffers));auto edited=original;edited.members.clear();auto named=NamedSerializedAssets(original);
   for(const auto& recipe:plan.memberRecipes[i])edited.members.push_back({recipe.name,recipe.flags,EiemResourceRecipe::Apply(recipe,originalMembers,old,artifact.preparedFrames)});
   std::set<std::string> found;
   for(auto& member:edited.members){if(!Serialized(member.bytes))continue;
    auto source=originalMembers.find(member.name);Require(source!=originalMembers.end(),"incremental material original member absent");
-   auto pristineLayout=ParseSerialized(*source->second);auto layout=ParseSerialized(member.bytes);auto assets=SerializedAssets(*source->second,member.name,pristineLayout);std::map<int64_t,Bytes> replacements;
+   auto pristineLayout=ParseSerialized(*source->second);auto layout=ParseSerialized(member.bytes);auto assets=SerializedReferencedAssets(*source->second,member.name,pristineLayout,&named);std::map<int64_t,Bytes> replacements;
    for(const auto& id:job.second){const auto& material=author.materials.at(id);
     auto asset=std::find_if(assets.begin(),assets.end(),[&](const auto& a){return a.classId==21&&a.path==material.source.path&&a.asset==material.source.asset;});if(asset==assets.end())continue;
     auto cloneId=AllocateMaterialId(member.name,author,id);auto clone=layout.objects.find(cloneId);Require(clone!=layout.objects.end(),"incremental material clone absent");

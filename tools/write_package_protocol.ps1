@@ -23,5 +23,5 @@ $structures['materialAnimation'] = Read-Contract 'materialAnimation'
 $structures['effectAttachment'] = Read-Contract 'effectAttachment'
 $structures['effectTarget'] = Read-Contract 'effectTarget'
 $structures['standaloneEffect'] = Read-Contract 'standaloneEffect'
-$declaration = [ordered]@{format='EFF_OFFLINE_PACKAGE_PROTOCOL'; compiledMod=(Read-Contract 'compiledRuntimeIndex'); compiledModStore=(Read-Contract 'compiledModStore'); structures=$structures}
+$declaration = [ordered]@{format='EFF_OFFLINE_PACKAGE_PROTOCOL'; compiledMod=(Read-Contract 'compiledRuntimeIndex'); compiledModStore=(Read-Contract 'compiledModStore'); resourceUpdate=(Read-Contract 'resourceUpdate'); structures=$structures}
 $declaration | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $Output -Encoding utf8

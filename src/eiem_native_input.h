@@ -165,6 +165,57 @@ struct Asset {
   int classId = 0;
   std::array<unsigned char, 16> type{};
 };
+// AssetBundle container entries may point at an object in another CAB in the
+// same Endfield input.  Keep the lookup key independent of the display case
+// used by the serialized external table; the Asset identity itself remains
+// unchanged so existing source and runtime references keep their spelling.
+using SerializedAssetKey = std::pair<std::string, int64_t>;
+using SerializedNamedAssets = std::map<SerializedAssetKey, Asset>;
+inline std::string SerializedAssetCabKey(std::string cab) {
+  std::transform(cab.begin(), cab.end(), cab.begin(),
+                 [](unsigned char c) { return char(std::tolower(c)); });
+  return cab;
+}
+inline std::string SerializedObjectName(const Bytes& b, const Type& type,
+                                        const Object& object) {
+  Reader prefix(b, object.offset, false, object.offset + object.size);
+  for (auto child : type.nodes.at(0).children) {
+    size_t start = prefix.p;
+    SkipValue(type, child, prefix, object.offset);
+    if (type.nodes[child].name == "m_Name")
+      return FieldString(b, {child, start, prefix.p - start});
+  }
+  return {};
+}
+inline SerializedNamedAssets NamedSerializedAssets(const Bytes& b,
+                                                   const std::string& cab,
+                                                   const SerializedLayout& layout) {
+  SerializedNamedAssets result;
+  for (const auto& pair : layout.objects) {
+    const auto& object = pair.second;
+    const auto& type = layout.types.at(object.type);
+    if (type.classId != 43 && type.classId != 21 && type.classId != 28 &&
+        type.classId != 142)
+      continue;
+    auto name = SerializedObjectName(b, type, object);
+    if (name.empty()) continue;
+    Asset asset;
+    asset.cab = cab;
+    asset.pathId = object.id;
+    asset.classId = type.classId;
+    asset.type = type.hash;
+    asset.asset = std::move(name);
+    auto key = SerializedAssetKey{SerializedAssetCabKey(cab), object.id};
+    auto found = result.find(key);
+    Require(found == result.end() ||
+                (found->second.classId == asset.classId &&
+                 found->second.asset == asset.asset &&
+                 found->second.type == asset.type),
+            "duplicate named serialized asset identity");
+    result.emplace(std::move(key), std::move(asset));
+  }
+  return result;
+}
 inline std::string LocalString(const Bytes& b, size_t base, size_t size, uint32_t offset);
 inline const std::map<unsigned, std::string>& CommonStrings() {
   static const std::map<unsigned, std::string> values = {
@@ -408,7 +459,8 @@ inline SerializedLayout ParseSerialized(const Bytes& b) {
   return layout;
 }
 inline std::vector<Asset> SerializedAssets(const Bytes& b, const std::string& cab,
-                                           const SerializedLayout& layout) {
+                                           const SerializedLayout& layout,
+                                           const SerializedNamedAssets* named = nullptr) {
   const auto& types = layout.types;
   const auto& objects = layout.objects;
   const auto& externals = layout.externals;
@@ -462,6 +514,13 @@ inline std::vector<Asset> SerializedAssets(const Bytes& b, const std::string& ca
         a.classId = nativeType.classId;
         a.type = nativeType.hash;
         if (names.count(id)) a.asset = names.at(id);
+      } else if (file != 0 && named) {
+        auto found = named->find({SerializedAssetCabKey(a.cab), id});
+        if (found != named->end()) {
+          a.classId = found->second.classId;
+          a.type = found->second.type;
+          a.asset = found->second.asset;
+        }
       }
       assets.push_back(std::move(a));
       SkipValue(t, element, entries, o.offset);

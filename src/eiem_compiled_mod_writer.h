@@ -38,6 +38,7 @@ using InputAnalysis=EiemResourceReloadPlan::InputAnalysis;
 inline Artifact DescribeInput(size_t i,const Plan& plan,bool rootAssembly,const EndfieldInput::Bundle& source,const EndfieldInput::Bundle& edited,std::function<void(const char*,double)> cost={},const Artifact* previous=nullptr,const InputAnalysis* analysis=nullptr){
  Artifact artifact;
  size_t priorInput=SIZE_MAX;
+ std::map<std::string,std::shared_ptr<const InputAnalysis::GraphData>> pristineGraphs;
  if(previous&&i<plan.originals.size())for(size_t n=0;n<previous->manifest.plan.originals.size();++n){const auto& old=previous->manifest.plan.originals[n];const auto& current=plan.originals[i];if(old.file==current.file&&old.hash==current.hash){priorInput=n;break;}}
   for(const auto& member:edited.members)if(Serialized(member.bytes)){
    auto old=std::find_if(source.members.begin(),source.members.end(),[&](const auto& x){return x.name==member.name;});Require(old!=source.members.end(),"compiled serialized member lacks original");
@@ -54,7 +55,21 @@ inline Artifact DescribeInput(size_t i,const Plan& plan,bool rootAssembly,const 
     if(changed){EiemNativeInput::Reader reader(member.bytes,object.offset,false,object.offset+object.size);StreamSites(proof.after.types.at(object.type),0,reader,object.offset,id,proof.streams,streamNodes.at(object.type));Require(reader.p==object.offset+object.size,"compiled stream proof object extent differs");}
    }return 0;});
    Require(artifact.members.emplace(member.name,std::move(proof)).second,"compiled duplicate serialized member");
-   if(analysis)continue;
+   if(analysis){
+    Require(rootAssembly,"shared input analysis requires full root assemblies");
+    for(const auto& root:plan.roots)if(root.input==i&&root.cab==member.name){
+     auto found=pristineGraphs.find(member.name);
+     if(found==pristineGraphs.end()){
+      auto graph=std::make_shared<const InputAnalysis::GraphData>(old->bytes,member.name,artifact.members.at(member.name).before);
+      found=pristineGraphs.emplace(member.name,std::move(graph)).first;
+     }
+     EiemRenderAssemblyDescription::Graph graph(found->second,root.source);
+     Root pristine;pristine.path=root.path;pristine.input=i;pristine.cab=member.name;pristine.source=root.source;
+     pristine.assembly=EiemRenderAssemblyDescription::Build(graph,graph,member.name,Package{},AssetIndex{},{});
+     artifact.pristine.push_back(std::move(pristine));
+    }
+    continue;
+   }
    // Assemblies carry full renderer/bone palettes. Unrelated roots are only
    // inspected; a pristine assembly must not copy a candidate it will replace.
    std::optional<std::vector<Asset>> rootAssets;std::shared_ptr<const EiemRenderAssemblyDescription::GraphData> pristineGraph;
@@ -66,9 +81,8 @@ inline Artifact DescribeInput(size_t i,const Plan& plan,bool rootAssembly,const 
     if(rootAssembly)pristine.assembly=Measure(cost,"proof-root-assembly",[&]{if(!pristineGraph)pristineGraph=std::make_shared<const EiemRenderAssemblyDescription::GraphData>(old->bytes,member.name);EiemRenderAssemblyDescription::Graph graph(pristineGraph,pristine.source);return EiemRenderAssemblyDescription::Build(graph,graph,member.name,Package{},AssetIndex{},{});});artifact.pristine.push_back(std::move(pristine));
    }
   }
- if(analysis){Require(rootAssembly,"shared input analysis requires full root assemblies");std::set<std::string> roots;
-  for(const auto& root:plan.roots)if(root.input==i)roots.insert(root.path);
-  for(const auto& root:analysis->pristine){Require(root.input==i&&artifact.members.count(root.cab)&&roots.erase(root.path),"shared pristine assembly outside input roots");artifact.pristine.push_back(root);}
+ if(analysis){std::set<std::string> roots;for(const auto& root:plan.roots)if(root.input==i)roots.insert(root.path);
+  for(const auto& root:artifact.pristine)if(root.input==i)roots.erase(root.path);
   Require(roots.empty(),"shared pristine assembly coverage incomplete");}
  return artifact;
 }
