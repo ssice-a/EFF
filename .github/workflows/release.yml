@@ -68,21 +68,6 @@ jobs:
         dotnet run --project tools/AnimeStudio/AnimeStudio.UpdateTests/AnimeStudio.UpdateTests.csproj -c Release -p:TargetFrameworks=net9.0-windows
         if ($LASTEXITCODE -ne 0) { throw 'Source update regression failed' }
 
-    - name: Build standalone Mod repair tool
-      shell: pwsh
-      run: |
-        cmd /c tools\build_resource_pack.cmd v35
-        if ($LASTEXITCODE -ne 0) { throw 'Repair compiler build failed' }
-        $compiler = (Resolve-Path bin/resource-pack-v35/eff_resource_pack.exe).Path
-        dotnet publish tools/EFF.Repair/EFF.Repair.csproj -c Release -o bin/eff-repair/release -p:NativeCompilerPath=$compiler
-        if ($LASTEXITCODE -ne 0) { throw 'Repair tool build failed' }
-        dotnet bin/eff-repair/release/EFF.Repair.dll --smoke-ui "$pwd/bin/eff-repair/release-ui.png"
-        if ($LASTEXITCODE -ne 0) { throw 'Repair UI smoke test failed' }
-        if (-not (Test-Path bin/eff-repair/release-ui.png)) { throw 'Repair UI screenshot was not generated' }
-        [xml]$project = Get-Content tools/EFF.Repair/EFF.Repair.csproj
-        $version = $project.Project.PropertyGroup.Version
-        Compress-Archive -Path bin/eff-repair/release/* -DestinationPath "EFF-Repair-v$version-win-x64.zip"
-
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
@@ -99,7 +84,23 @@ jobs:
         cmd /c tools\build_source_index.cmd
         if ($LASTEXITCODE -ne 0) { throw 'Blender source index helper build failed' }
         python tools/diagnostics/package_blender_native_base.py --output bin/release-artifacts --compiler bin/resource-pack-v35/eff_resource_pack.exe --dll-protocol bin/resource-directory-entry-v35/package-protocol.json
-        if ($LASTEXITCODE -ne 0) { throw 'Blender native base package failed' }
+        $packageExit = $LASTEXITCODE
+        $expected = Get-Content tools/Blender/native-base.json -Raw | ConvertFrom-Json
+        Write-Host "EXPECTED_NATIVE_BASE bytes=$($expected.bytes) sha256=$($expected.sha256)"
+        Get-ChildItem bin/release-artifacts -Filter 'EFF_Blender_Native_*.zip' -File -ErrorAction SilentlyContinue | ForEach-Object {
+          $actual = Get-FileHash $_.FullName -Algorithm SHA256
+          Write-Host "ACTUAL_NATIVE_BASE file=$($_.Name) bytes=$($_.Length) sha256=$($actual.Hash.ToLowerInvariant())"
+        }
+        if ($packageExit -ne 0) { throw 'Blender native base package failed' }
+
+    - name: Upload Blender native base diagnostic
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: eff-blender-native-base-diagnostic-${{ env.RELEASE_TAG }}
+        path: bin/release-artifacts/EFF_Blender_Native_*.zip
+        if-no-files-found: warn
+        retention-days: 7
 
     - name: Verify production DLL excludes temporary diagnostics
       shell: pwsh
@@ -232,7 +233,6 @@ jobs:
         draft: true
         files: |
           EFF_${{ env.RELEASE_TAG }}_dll.zip
-          EFF-Repair-*-win-x64.zip
           bin/release-artifacts/EFF_Blender_Native_*.zip
         body_path: RELEASE_NOTES.md
       env:
