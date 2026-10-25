@@ -10,9 +10,21 @@ on:
         description: Existing version tag to build and release
         required: true
         type: string
+      native_base_run_id:
+        description: Optional workflow run ID containing the validated Blender native base
+        required: false
+        type: string
+        default: ''
+      native_base_sha256:
+        description: Required SHA256 when reusing a Blender native base artifact
+        required: false
+        type: string
+        default: ''
 
 env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  NATIVE_BASE_RUN_ID: ${{ inputs.native_base_run_id || '' }}
+  NATIVE_BASE_SHA256: ${{ inputs.native_base_sha256 || '' }}
 
 jobs:
   build:
@@ -20,6 +32,7 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+      actions: read
 
     steps:
     - name: Checkout Code
@@ -72,7 +85,30 @@ jobs:
       with:
         python-version: '3.11'
 
+    - name: Download validated Blender native base
+      if: env.NATIVE_BASE_RUN_ID != ''
+      uses: actions/download-artifact@v4
+      with:
+        name: eff-blender-native-base-diagnostic-${{ env.RELEASE_TAG }}
+        path: bin/release-artifacts
+        repository: ${{ github.repository }}
+        run-id: ${{ env.NATIVE_BASE_RUN_ID }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Verify reused Blender native base
+      if: env.NATIVE_BASE_RUN_ID != ''
+      shell: pwsh
+      run: |
+        if ($env:NATIVE_BASE_RUN_ID -notmatch '^\d+$') { throw 'Invalid Blender native base workflow run ID' }
+        if ($env:NATIVE_BASE_SHA256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'A valid native base SHA256 is required when reusing an artifact' }
+        $archives = @(Get-ChildItem bin/release-artifacts -Filter 'EFF_Blender_Native_*.zip' -File -ErrorAction SilentlyContinue)
+        if ($archives.Count -ne 1) { throw "Expected one Blender native base ZIP; found $($archives.Count)" }
+        $actual = Get-FileHash $archives[0].FullName -Algorithm SHA256
+        Write-Host "REUSED_NATIVE_BASE file=$($archives[0].Name) bytes=$($archives[0].Length) sha256=$($actual.Hash.ToLowerInvariant())"
+        if ($actual.Hash -ine $env:NATIVE_BASE_SHA256) { throw 'Reused Blender native base SHA256 differs from the requested digest' }
+
     - name: Build paired Blender native base
+      if: env.NATIVE_BASE_RUN_ID == ''
       shell: pwsh
       run: |
         python -m pip install --only-binary=:all: Pillow==12.3.0 --target bin/author-core/vendor
