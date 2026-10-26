@@ -91,17 +91,45 @@ jobs:
       with:
         python-version: '3.11'
 
-    - name: Download validated Blender native base
+    - name: Verify release preflight tooling
+      shell: pwsh
+      run: |
+        python -m unittest discover -s tools/release -v
+        if ($LASTEXITCODE -ne 0) { throw 'Release preflight regression failed' }
+
+    - name: Download prepared Blender native base
       if: env.NATIVE_BASE_RUN_ID != ''
       uses: actions/download-artifact@v4
       with:
-        name: eff-blender-native-base-diagnostic-${{ env.NATIVE_BASE_ARTIFACT_TAG }}
+        name: eff-blender-native-base-${{ env.NATIVE_BASE_ARTIFACT_TAG }}
         path: bin/release-artifacts
         repository: ${{ github.repository }}
         run-id: ${{ env.NATIVE_BASE_RUN_ID }}
         github-token: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Verify reused Blender native base
+    - name: Download pinned Blender native base
+      if: env.NATIVE_BASE_RUN_ID == ''
+      shell: pwsh
+      run: |
+        $manifest = Get-Content tools/Blender/native-base.json -Raw | ConvertFrom-Json
+        $uri = [Uri]$manifest.url
+        $parts = $uri.AbsolutePath.Trim('/').Split('/')
+        if ($uri.Scheme -ne 'https' -or $uri.Host -ne 'github.com' -or $parts.Count -lt 5 -or $parts[0] -ne 'ssice-a' -or $parts[1] -ne 'EFF' -or $parts[2] -ne 'releases' -or $parts[3] -ne 'download') {
+          throw 'native-base.json must point to an immutable EFF release asset on github.com'
+        }
+        if ($parts[4] -eq $env:RELEASE_TAG) {
+          throw 'This release creates its own native base. Run Prepare Blender Native Base first, pin its receipt, then pass that workflow run ID and SHA256.'
+        }
+        New-Item -ItemType Directory -Force bin/release-artifacts | Out-Null
+        $archive = Join-Path 'bin/release-artifacts' (Split-Path $uri.AbsolutePath -Leaf)
+        try {
+          Invoke-WebRequest -Uri $manifest.url -OutFile $archive
+        } catch {
+          throw "Pinned Blender native base is unavailable at $($manifest.url): $($_.Exception.Message)"
+        }
+        Write-Host "DOWNLOADED_NATIVE_BASE file=$archive bytes=$((Get-Item $archive).Length)"
+
+    - name: Verify Blender native base against manifest and DLL protocol
       if: env.NATIVE_BASE_RUN_ID != ''
       shell: pwsh
       run: |
@@ -109,40 +137,30 @@ jobs:
         if ($env:NATIVE_BASE_SHA256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'A valid native base SHA256 is required when reusing an artifact' }
         $archives = @(Get-ChildItem bin/release-artifacts -Filter 'EFF_Blender_Native_*.zip' -File -ErrorAction SilentlyContinue)
         if ($archives.Count -ne 1) { throw "Expected one Blender native base ZIP; found $($archives.Count)" }
+        $expected = Get-Content tools/Blender/native-base.json -Raw | ConvertFrom-Json
         $actual = Get-FileHash $archives[0].FullName -Algorithm SHA256
-        Write-Host "REUSED_NATIVE_BASE file=$($archives[0].Name) bytes=$($archives[0].Length) sha256=$($actual.Hash.ToLowerInvariant())"
-        if ($actual.Hash -ine $env:NATIVE_BASE_SHA256) { throw 'Reused Blender native base SHA256 differs from the requested digest' }
+        if ($actual.Hash -ine $env:NATIVE_BASE_SHA256) { throw 'Prepared native base SHA256 differs from the requested digest' }
+        if ($archives[0].Length -ne $expected.bytes -or $actual.Hash -ine $expected.sha256) { throw 'Prepared native base differs from the committed native-base.json receipt' }
+        python tools/release/verify_native_base.py --archive $archives[0].FullName --dll-protocol bin/resource-directory-entry-v35/package-protocol.json --manifest tools/Blender/native-base.json --sha256 $env:NATIVE_BASE_SHA256
+        if ($LASTEXITCODE -ne 0) { throw 'Prepared Blender native base is incompatible with the production DLL protocol' }
 
-    - name: Build paired Blender native base
+    - name: Verify downloaded Blender native base against manifest and DLL protocol
       if: env.NATIVE_BASE_RUN_ID == ''
       shell: pwsh
       run: |
-        python -m pip install --only-binary=:all: Pillow==12.3.0 --target bin/author-core/vendor
-        if ($LASTEXITCODE -ne 0) { throw 'Blender Pillow dependency build failed' }
-        cmd /c tools\diagnostics\build_author_core.cmd
-        if ($LASTEXITCODE -ne 0) { throw 'Blender author core build failed' }
-        cmd /c tools\build_resource_pack.cmd v35
-        if ($LASTEXITCODE -ne 0) { throw 'Blender resource compiler build failed' }
-        cmd /c tools\build_source_index.cmd
-        if ($LASTEXITCODE -ne 0) { throw 'Blender source index helper build failed' }
-        python tools/diagnostics/package_blender_native_base.py --output bin/release-artifacts --compiler bin/resource-pack-v35/eff_resource_pack.exe --dll-protocol bin/resource-directory-entry-v35/package-protocol.json
-        $packageExit = $LASTEXITCODE
-        $expected = Get-Content tools/Blender/native-base.json -Raw | ConvertFrom-Json
-        Write-Host "EXPECTED_NATIVE_BASE bytes=$($expected.bytes) sha256=$($expected.sha256)"
-        Get-ChildItem bin/release-artifacts -Filter 'EFF_Blender_Native_*.zip' -File -ErrorAction SilentlyContinue | ForEach-Object {
-          $actual = Get-FileHash $_.FullName -Algorithm SHA256
-          Write-Host "ACTUAL_NATIVE_BASE file=$($_.Name) bytes=$($_.Length) sha256=$($actual.Hash.ToLowerInvariant())"
-        }
-        if ($packageExit -ne 0) { throw 'Blender native base package failed' }
+        $archives = @(Get-ChildItem bin/release-artifacts -Filter 'EFF_Blender_Native_*.zip' -File -ErrorAction SilentlyContinue)
+        if ($archives.Count -ne 1) { throw "Expected one pinned Blender native base ZIP; found $($archives.Count)" }
+        python tools/release/verify_native_base.py --archive $archives[0].FullName --dll-protocol bin/resource-directory-entry-v35/package-protocol.json --manifest tools/Blender/native-base.json
+        if ($LASTEXITCODE -ne 0) { throw 'Pinned Blender native base is incompatible with the production DLL protocol' }
 
     - name: Upload Blender native base diagnostic
-      if: always()
+      if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: eff-blender-native-base-diagnostic-${{ env.RELEASE_TAG }}
+        name: eff-blender-native-base-${{ env.RELEASE_TAG }}
         path: bin/release-artifacts/EFF_Blender_Native_*.zip
         if-no-files-found: warn
-        retention-days: 7
+        retention-days: 30
 
     - name: Verify production DLL excludes temporary diagnostics
       shell: pwsh

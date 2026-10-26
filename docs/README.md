@@ -46,6 +46,7 @@
 | 相机 | [反虚化契约](camera-fade.md) | CameraMono 原评估后的清理与验证边界 |
 | 后续物理 | [三端设计](physics-authoring-design.md)、[作者 v5](physics-authoring-v5.md)、[源图 v2](physics-authoring-v2.md) | 目标及作者文件，不能代替运行时能力 |
 | 仓库与工具 | [三仓库架构](repository-architecture.md)、[资源浏览器](../tools/README.md)、[Blender 插件](https://github.com/ssice-a/EFF-blender/blob/main/README.md) | 所有权、协议、开发与发布关系 |
+| 发布管理 | [三端发布流程](release-management.md) | 三仓库版本/提交跟踪、native base 固定、发布顺序与失败恢复 |
 
 ## 维护规则
 

@@ -25,7 +25,8 @@ def addon_version():
     return tuple(info['version'])
 
 
-def package(output, compiler=None, dll_protocol=None):
+def package(output, compiler=None, dll_protocol=None, verify_pin=True,
+            framework_tag=None, manifest_output=None):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     version = addon_version()
@@ -67,8 +68,23 @@ def package(output, compiler=None, dll_protocol=None):
 
     manifest = json.loads((ADDON / 'native-base.json').read_text('utf-8'))
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    if archive.stat().st_size != manifest.get('bytes') or digest != manifest.get('sha256'):
+    if verify_pin and (archive.stat().st_size != manifest.get('bytes')
+                       or digest != manifest.get('sha256')):
         raise ValueError('Generated native base differs from native-base.json')
+    if manifest_output:
+        if not framework_tag:
+            raise ValueError('--framework-tag is required with --manifest-output')
+        receipt = {
+            'format': 'EFF_BLENDER_NATIVE_BASE/1',
+            'framework': framework_tag,
+            'url': 'https://github.com/ssice-a/EFF/releases/download/'
+                   + framework_tag + '/' + archive.name,
+            'bytes': archive.stat().st_size,
+            'sha256': digest,
+        }
+        Path(manifest_output).write_text(
+            json.dumps(receipt, ensure_ascii=False, indent=2) + '\n',
+            encoding='utf-8')
     return archive
 
 
@@ -77,5 +93,14 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--compiler', type=Path)
     parser.add_argument('--dll-protocol', type=Path)
+    parser.add_argument('--allow-unpinned', action='store_true',
+                        help='Build a one-time candidate for a new pinned native base')
+    parser.add_argument('--framework-tag',
+                        help='EFF release tag that will publish the new base')
+    parser.add_argument('--manifest-output', type=Path,
+                        help='Write the exact size/SHA256/URL receipt for native-base.json')
     args = parser.parse_args()
-    print(package(args.output, args.compiler, args.dll_protocol))
+    print(package(args.output, args.compiler, args.dll_protocol,
+                  verify_pin=not args.allow_unpinned,
+                  framework_tag=args.framework_tag,
+                  manifest_output=args.manifest_output))

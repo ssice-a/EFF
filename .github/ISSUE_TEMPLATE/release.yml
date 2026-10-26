@@ -1,0 +1,66 @@
+name: Release readiness
+description: Track a coordinated EFF, Blender, and AnimeStudio release.
+title: "Release: "
+labels: ["release-management"]
+body:
+  - type: input
+    id: eff_version
+    attributes:
+      label: EFF version
+      placeholder: v1.11.0
+    validations:
+      required: true
+  - type: input
+    id: blender_version
+    attributes:
+      label: Blender add-on version
+      placeholder: v0.50.0
+    validations:
+      required: true
+  - type: input
+    id: animestudio_version
+    attributes:
+      label: AnimeStudio version
+      description: Use the current pinned release when this release does not change AnimeStudio.
+      placeholder: v1.8.1
+    validations:
+      required: true
+  - type: textarea
+    id: commits
+    attributes:
+      label: Source commits
+      description: Record exact commits and parent-repository gitlinks before creating tags.
+      placeholder: |
+        EFF:
+        EFF-blender:
+        AnimeStudio:
+        EFF gitlinks verified:
+    validations:
+      required: true
+  - type: checkboxes
+    id: release_gates
+    attributes:
+      label: Release gates
+      options:
+        - label: All intended changes are committed in each repository; no local-only file is part of the release.
+          required: false
+        - label: EFF gitlinks point to the reviewed Blender and AnimeStudio commits.
+          required: false
+        - label: Blender native-base.json size, SHA256, framework URL, and compiler protocol were verified.
+          required: false
+        - label: CI for the exact tags passed before publishing either release.
+          required: false
+        - label: EFF release contains the DLL and the verified native base.
+          required: false
+        - label: Blender release was manually dispatched after the EFF native base became available.
+          required: false
+        - label: Final asset names, sizes, and SHA256 values were checked on both release pages.
+          required: false
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation evidence
+      description: Link CI runs, native-base preparation, release pages, and any manual acceptance.
+      render: markdown
+    validations:
+      required: false
