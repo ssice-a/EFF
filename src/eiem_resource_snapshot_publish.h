@@ -24,6 +24,10 @@ inline bool SameSelection(const EiemStaticSources::Selection& current,const Eiem
  for(const auto& row:current.dependencies){auto old=prior.dependencies.find(row.first);if(old==prior.dependencies.end()||old->second!=row.second)return false;}
  return true;
 }
+inline bool RequiresSemanticRebuild(const Package& author,const std::set<std::string>& changedResources){
+ for(const auto& name:changedResources){auto resource=author.resources.find(name);if(resource!=author.resources.end()&&resource->second->kind==1)return true;}
+ return false;
+}
 inline bool TryPublish(const std::filesystem::path& mod,const std::filesystem::path& previous,const std::filesystem::path& game,const Package& author,
  const EiemStaticSources::Selection* current=nullptr,const std::function<void(const char*,double)>& cost={},bool effectsOnly=false,bool currentSelectionComplete=false){
  auto path=previous/"compiled.bin";if(!std::filesystem::is_regular_file(path)||!EiemCompiledModStore::IsStore(path))return false;
@@ -40,6 +44,10 @@ inline bool TryPublish(const std::filesystem::path& mod,const std::filesystem::p
  // A binding decode authenticates resource ranges before any update. Static
  // pooled metadata and source schemas are not needed by the author fast path.
  std::set<std::string> changed;for(const auto& row:author.resources){auto old=before.manifest.package.resources.find(row.first);if(old==before.manifest.package.resources.end()||ResourceContentHash(*row.second)!=ResourceContentHash(*old->second))changed.insert(row.first);}
+ // Mesh object bytes are also the baseline for the cross-version semantic
+ // replay record. Rebuild them together so a later game update cannot replay
+ // stale vertex/index data from the previous author snapshot.
+ if(RequiresSemanticRebuild(author,changed))return false;
  for(const auto& frame:before.manifest.plan.frameRecipes)if(changed.count(frame.resource))before.preparedFrames.emplace(frame.resource,Unpack(EiemModUpdateStore::Get(file,snapshot,"runtime/frame/"+frame.resource)));
  for(const auto& row:snapshot.blocks)if(row.first.rfind("runtime/generated/",0)==0){auto name=row.first.substr(strlen("runtime/generated/"));size_t root;AffineMatrix matrix;std::string resource;
   if(DecodeBoundsOrigin(name,root,matrix,resource)&&changed.count(resource))before.preparedFrames.emplace(name,Unpack(EiemModUpdateStore::Get(file,snapshot,row.first)));}

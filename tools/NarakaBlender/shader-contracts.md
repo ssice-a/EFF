@@ -30,6 +30,19 @@ Fragment blob 4：周期层为 `mask² * pow(saturate((sin(phase*x + time*y)*.5+
 
 这些 AdvancedCloth 还包含 ForwardLit / DoubleTransparentPass / DepthOnly 的深度分工。当前仍保留其 alpha unresolved 状态，没有仅因 D 图存在 Alpha 或 `_Cutoff` 就启用透明；需要独立还原整套深度/覆盖路径后才能准确复刻多 pass。
 
+## 标准 Cloth / ClothSilk 相位发光（0.4.1）
+
+2026-10-23 从本机 `ch_f_ming_shenjiying_lv_s9_ui.prefab` 的实际引用提取编译程序并核对：
+
+- `lx22standardcharactercloth.shader` ForwardLit fragment blob **189**，关键字 `_MFX_EMISSIVE_PERIODIC_2 _USE_CUTOUT`。
+- `lx22standardcharacterclothsilk.shader` ForwardLit fragment blob **130**，关键字 `_MFX_EMISSIVE_PERIODIC_2`。
+
+两者 `_EmissionMap` 均取基础 UV（对应已检查顶点程序的 UV0），R/B 平方作为两层区域，G/A 分别乘 `_MatEffectParam0.x` / `1.x`，加 `_Time.y * Param0.y` / `1.y`，经 sin、阈值归一化和锐度幂运算。颜色为 `_EmissionColor.rgb` 和 `_MatEffectColor0.rgb * (1 + Param2.y * (_EmissionColor.rgb - 1))`。这是相位推进，不是 UV 滚动，A 不接透明度。
+
+轻量路径只保留这两层相位和颜色，仍省略同一程序中的视角、背面增益及场景光照项；不将标准 Cloth 标为 AdvancedCloth，也不启用细节数组。仅 Shader 身份受支持且对应周期关键字/开关启用时使用 packed 解码；未启用时保留普通发光路径。导入与旧材质修复共用该判定。证据位于 `diagnostics/naraka-emission-20261023/shader-evidence`。
+
+Blender 5.0.1 的实际三材质导入回归覆盖此前漏判；用空间变化的 G/A 相位图在两帧渲染 16 个采样点，对照编译程序中的轻量数学公式，验证空间亮区随时间推进。另检查旧接线修复幂等、编辑颜色保留和 PBR/Alpha/剔除设置不变。
+
 ## Uber / Skin
 
 `fx_uber_transparent.shadergraph` 按这套材质的四个关键字精确选出 fragment blob 925 / vertex 67：`_MASK_LAYER_ON _SECOND_LAYER_ON _TEXTURE_ROTATION_ON _UV_DISTORT_ON`。恢复 UV 选择、中心旋转、缩放/滚动、RG/A 扭曲、三层染色与亮度 falloff、multiply/add/replace 图层、mask RGB/A 选择、顶点色、gamma、预乘。One/One 用透明闭包与发光闭包相加，保留后方模型可见性。场景深度柔边、雾、海面裁切、粒子 custom-data 和游戏曝光仍未执行。

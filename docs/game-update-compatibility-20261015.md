@@ -35,3 +35,27 @@
 11:54:36 启动的新游戏会话 PID 35068 已确认加载上述 DLL。日志为 `ENTRY-GENERATION initial=1 mods=5`、`FULL-RELOAD-POOL-API unloadImmediatelyArgument=1 forcedAssetUnload=0`、`FULL-RELOAD-READY` 与 `replacementArmed=1 ruleMemoryArmed=1`；之前的来源读取失败和回收接口签名缺失未再出现。11:55 已记录 lino 角色展示模型完成、作者控制网格注册。此会话 compiledSetMs=5453.915，不包含游戏就绪等待；不把离线读取约 3.3 秒当作实机启动耗时。
 
 已保存启动日志到 `bin/game-update-repair-20261015/game-session-35068-startup.log`。当前可确认新会话成功加载 Mod 并完成接口绑定；尚无 F10 提交日志，角色画面与实际 F10 结果仍待用户确认。此证据仅覆盖当前版本恢复，不代表自动适配下一次游戏更新已实现。
+
+## 2026-10-27 逻辑资源身份与 PFB 重放调查
+
+身份规则已明确：替换目标由 Mesh 的逻辑资源路径和资产名确定；其内容摘要、长度、TypeTree 或顶点结构不是身份。原游戏 Material/Texture 依赖同样以逻辑路径定位。当前 VFS 的物理文件、偏移、长度和摘要只描述这次安装里的载荷位置与完整性，不能单独判定 Mod 失效。
+
+对 `gly` 的当前实测显示：逻辑来源 `bundles/windows/main/68c216df3439cc0d11c16c01.ab` 从 672,040 字节变为 671,058 字节，仍是同一个 CAB 成员；TypeTree 数量都是 42，6,341 个对象 ID 保留，另有 875 个新增、881 个删除和 2 个对象大小变化。探针先按 22 个 Mesh 逻辑路径+资产名重新解析当前 Mesh 引用，再反查到 28 个当前 Renderer 消费者。当前 Renderer 恰好仍保留原类、TypeTree 与对象大小；这些相等只是样本观察，不是兼容前提。旧 Mod 对它们的修改集中在 Bounds、BlendShapeWeights、Bones 和 Materials。
+
+当前热重载仍用旧的整成员 span recipe。它因 `recipe reconstructed member digest differs` 拒绝新 PFB。诊断探针进一步跳过整成员摘要后，结果仍无法解析（`invalid native object record`）；因此只删除长度/SHA 校验会生成损坏对象，也可能丢掉游戏新增对象。
+
+在同一份 gly 输入上，诊断原型从当前 PFB 的 Mesh 引用重新发现 28 个 Renderer，再按字段名把可兼容的 Mod 改动叠加到当前对象；输出能重新解析，875/875 个当前新增对象保留，原生对象引用检查通过。合成回归覆盖字段重排、新字段保留、缺失字段及字段类型变化。真实样本中 Bounds 与 Materials 可应用；18 个 BlendShapeWeights/Bones 数组因长度不同而单项跳过。这些字段需要基于 Mesh 逻辑身份及骨骼/形态名称实现专门映射，不能要求整个 Renderer 或 Mesh 结构相等，也不能把单个字段无法映射升级成 Mesh 身份失配。
+
+后续运行时适配必须按逻辑资源路径+资产名解析当前 Mesh，并在当前 PFB 内反查所有消费者；当前物理文件、偏移、长度、摘要、CAB、PathID 和完整 TypeTree 都只是本次安装中的读取或定位信息。Mod 资源替换应以逻辑路径引用，不能把原游戏 Mesh/Material/Texture 的旧载荷复制成 Mod 身份。Renderer 更新保存为字段级语义操作：应用时按当前字段名和所需类型转换，保留未声明字段及当前新增对象；对 Bones、BlendShapeWeights 等索引数组按稳定的骨骼/形态身份单独映射。某个字段不存在或无法转换时记录该操作的兼容结果，不得因此判定 Mesh 逻辑身份或整个 Mod 失效。摘要只用于完整性及旧快照验证，不能充当资源身份或兼容门槛。
+
+生产 DLL 与资源编译器现已接入对象级重放。新导出会在每个 source record 保存逻辑 Mesh 身份、Mesh/Renderer 对象的原始与编辑 TypeTree 值，以及按字段路径叠加所需的数据；运行时对未变化 source 继续使用原有 native view 快路径，source 内容改变时才按逻辑 Mesh 路径和资产名重找 Mesh、反查当前 Renderer，并将可兼容字段写入当前对象。当前新增字段会保留；缺失字段或类型不兼容只跳过对应字段，不会把整个逻辑 Mesh 判为失效。资源块快路径遇到 Mesh 资源变化会退回标准编译，以同步刷新语义记录。
+
+旧 source record 仍可读取，且 source 未变化时仍可正常使用；旧记录没有字段语义数据，source 内容变化时会拒绝重放并提示离线修复。修复应使用 Mod 的 `mod.ini`、作者资源和当前来源索引重新生成运行数据，不要求用户重新导出 Blender 工程。当前语义捕获对未知对象新增/删除或未覆盖的对象改动会将该 source 标记为不完整并拒绝跨版本重放，避免静默生成损坏 PFB。Bones、BlendShapeWeights 等依赖名称身份的数组映射仍需专项实现；长度不同的数组目前不能保证逐项迁移。`tools/diagnostics/game_update_compat_probe.cpp` 包含生产重放函数的合成回归，以及真实数据探针。
+
+## 旧 Mod 迁移策略
+
+游戏更新不应仅因 Mesh 内容、PathID、文件长度或 TypeTree 改变就判定旧 Mod 失效。新格式语义记录可在 DLL 热重载时适配可兼容的对象字段；较旧 compiled.bin 没有这类记录，或 source 中包含未支持的结构改动时，Mod Manager 的修复流程需要用当前索引重新定位目标及消费者，并从作者声明重建当前运行数据。`source-inputs.bin` 是可重新生成的来源映射，不要求作者重新用 Blender 导出。
+
+修复服务将 `EFF_MOD_BLOCKS/2` 视为可供增量追赶的当前缓存。旧块格式、旧单体 `compiled.bin`、损坏或未知格式不作为增量前态：修复只在临时副本删除 `compiled.bin`、`compiled.blocks/` 与 `source-inputs.bin`，再以当前索引冷重建。只有完整构建并校验通过才替换原目录，旧目录保存在相邻备份目录。旧包缺少 `mod.ini` 时不能从运行缓存反推完整的作者资源与命中声明；应恢复原始 Mod 包或 Blender 工程，修复失败不得触碰原目录。
+
+该迁移只适用于保留了完整 `mod.ini` 及其引用作者资源的包。它是当前阶段的离线恢复路径，不代表生产 DLL 已完成跨游戏版本的字段级语义重放；后者仍需在 DLL 与编译器协议里单独实现和验证。

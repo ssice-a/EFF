@@ -92,7 +92,8 @@ int wmain(int argc,wchar_t** argv){try{
    [](std::shared_ptr<const EiemCompiledMod::Artifact> artifact,const EiemStaticSources::Selection& selection){return EiemPreparedPrefabCompiler::Encode(EiemPreparedPrefabCompiler::Prepare(std::move(artifact),selection));},!index.empty(),
    [](std::shared_ptr<const EiemCompiledMod::Artifact> baseline,const EiemStaticSources::Selection& selection,const std::set<std::string>& sources,
       const std::function<void(const char*,double)>& cost)->std::optional<EiemCompiledModWriter::MeshStructureCompilation>{
-    auto prepared=EiemPreparedPrefabCompiler::Prepare(baseline,selection);std::optional<EiemCompiledMod::Artifact> combined;EiemConsumerUpdateRecords::Decisions decisions;
+     auto prepared=EiemPreparedPrefabCompiler::Prepare(baseline,selection);if(sources.empty())return EiemCompiledModWriter::MeshStructureCompilation{EiemCompiledModWriter::EmptyMeshStructureDelta(*baseline),{},std::move(prepared.schemas)};
+     std::optional<EiemCompiledMod::Artifact> combined;EiemConsumerUpdateRecords::Decisions decisions;
     for(const auto& source:sources){EiemSourceAdaptationJobs::Request request{source,EiemSourceAdaptationCompiler::StampFor(baseline->manifest.package,selection,source)};
      auto result=EiemPreparedPrefabCompiler::Compile(prepared,request,cost);if(!result.artifact)return std::nullopt;
      Require(decisions.emplace(source,result.decision).second,"Mesh structure source repeated");
@@ -115,9 +116,12 @@ int wmain(int argc,wchar_t** argv){try{
            <<"\",\"resource\":\""<<EiemPackageProtocol::resourceStructure<<"\",\"current\":\""<<EiemPackageProtocol::currentStructure
            <<"\",\"modSet\":\""<<EiemPackageProtocol::setStructure
            <<"\",\"runtimeRules\":\""<<EiemPackageProtocol::ruleStructure
+            <<"\",\"compiledObjects\":\""<<EiemPackageProtocol::compiledObjects
+            <<"\",\"resourcePayloads\":\""<<EiemPackageProtocol::resourcePayloads
            <<"\",\"compiledInputView\":\""<<EiemPackageProtocol::compiledInputView
            <<"\",\"compiledRuntimeIndex\":\""<<EiemPackageProtocol::compiledRuntimeIndex
            <<"\",\"compiledModStore\":\""<<EiemPackageProtocol::compiledModStore
+           <<"\",\"semanticRendererReplay\":\""<<EiemPackageProtocol::semanticRendererReplay
            <<"\",\"shapeAnimation\":\""<<EiemPackageProtocol::shapeAnimation
            <<"\",\"shapeAnimationPlayback\":\""<<EiemPackageProtocol::shapeAnimationPlayback
            <<"\",\"materialAnimation\":\""<<EiemPackageProtocol::materialAnimation

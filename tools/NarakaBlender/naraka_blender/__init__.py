@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Naraka Prefab Importer / 永劫无间时装",
     "author": "EIEM",
-    "version": (0, 3, 0),
+    "version": (0, 4, 1),
     "blender": (4, 2, 0),
     "location": "File > Import > Naraka Prefab package",
-    "description": "Import Naraka meshes, skinning and lightweight editable PBR / animated emission",
+    "description": "Import Naraka outfit meshes, effect resources and lightweight editable PBR",
     "category": "Import-Export",
 }
 
@@ -119,6 +119,7 @@ class NARAKA_PT_material(bpy.types.Panel):
                     box.prop(node.inputs[key],'default_value',text=key)
         else:
             layout.label(text="当前材质没有周期流光")
+            layout.operator('material.naraka_repair_emission',text='修复旧版相位发光接线')
 
 
 class NARAKA_OT_import(bpy.types.Operator, ImportHelper):
@@ -134,8 +135,9 @@ class NARAKA_OT_import(bpy.types.Operator, ImportHelper):
         from .importer import import_package
         try:
             result = import_package(self.filepath, highest_lod=self.highest_lod)
-            self.report({"INFO"}, "%d meshes, %d materials, %d textures" % (
-                result["meshes"], result["materials"], result["textures"]))
+            self.report({"INFO"}, "%d outfit meshes, %d FX renderers, %d FX Mesh assets, %d particle previews, %d materials, %d textures" % (
+                result["meshes"], result["effectMeshRenderers"], result["effectMeshAssets"],
+                result["billboardPreviews"], result["materials"], result["textures"]))
             return {"FINISHED"}
         except Exception as error:
             self.report({"ERROR"}, str(error))
@@ -163,6 +165,30 @@ class NARAKA_OT_arrange_material(bpy.types.Operator):
         count = arrange_material(material)
         self.report({"INFO"}, "Arranged %d material sections" % count)
         return {"FINISHED"}
+
+
+class NARAKA_OT_repair_emission(bpy.types.Operator):
+    bl_idname = "material.naraka_repair_emission"
+    bl_label = "Repair Naraka phase emission / 修复永劫相位发光"
+    bl_description = "Back up the active material and repair old static RGB emission wiring"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        material = active_material(context)
+        return material is not None and material.get('naraka_material_profile') == 'LIGHTWEIGHT'
+
+    def execute(self, context):
+        from .lightweight import repair_periodic_emission
+        from .simplify import material_backup_path
+        material = active_material(context)
+        backup = material_backup_path()
+        bpy.data.libraries.write(str(backup), {material}, fake_user=True, compress=True)
+        if repair_periodic_emission(material):
+            self.report({'INFO'}, '已修复相位发光；原材质备份：' + str(backup))
+        else:
+            self.report({'INFO'}, '无需修复，或当前发光接线已被手动修改')
+        return {'FINISHED'}
 
 
 class NARAKA_OT_simplify(bpy.types.Operator):
@@ -196,6 +222,7 @@ def register():
     bpy.utils.register_class(NARAKA_OT_import)
     bpy.utils.register_class(NARAKA_OT_arrange_material)
     bpy.utils.register_class(NARAKA_OT_simplify)
+    bpy.utils.register_class(NARAKA_OT_repair_emission)
     bpy.utils.register_class(NARAKA_OT_preview)
     bpy.utils.register_class(NARAKA_PT_material)
     bpy.utils.register_class(NARAKA_OT_focus_texture)
@@ -208,6 +235,7 @@ def unregister():
     bpy.utils.unregister_class(NARAKA_OT_import)
     bpy.utils.unregister_class(NARAKA_OT_arrange_material)
     bpy.utils.unregister_class(NARAKA_OT_simplify)
+    bpy.utils.unregister_class(NARAKA_OT_repair_emission)
     bpy.utils.unregister_class(NARAKA_PT_material)
     bpy.utils.unregister_class(NARAKA_PT_textures)
     bpy.utils.unregister_class(NARAKA_OT_focus_texture)

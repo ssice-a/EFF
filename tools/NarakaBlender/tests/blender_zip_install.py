@@ -11,7 +11,7 @@ result = bpy.ops.preferences.addon_enable(module="naraka_blender")
 assert result == {"FINISHED"}, result
 assert "naraka_blender" in bpy.context.preferences.addons
 module = importlib.import_module("naraka_blender")
-assert module.bl_info["version"] == (0, 3, 0)
+assert module.bl_info["version"] == (0, 4, 1)
 result = bpy.ops.preferences.addon_disable(module="naraka_blender")
 assert result == {"FINISHED"}, result
 print("NARAKA_ZIP_INSTALL_PASS")

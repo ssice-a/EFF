@@ -9,6 +9,7 @@ import math
 import bpy
 
 from .alpha import resolve_alpha
+from .emission import STANDARD_PHASE_SHADERS, periodic2_enabled
 from .materials import Graph
 from .readable import interface, quiet_previews
 
@@ -120,6 +121,76 @@ def arrange_lightweight(material):
     return len(columns)
 
 
+def repair_periodic_emission(material):
+    """Replace only the old importer's direct RGB-emission branch, once.
+
+    Custom emission graphs and existing wave controls are left for the author.
+    Meshes, all other shader inputs and material render settings are untouched.
+    Callers back up materials before applying this explicit migration.
+    """
+    if material.get("naraka_material_profile") != "LIGHTWEIGHT" or not material.use_nodes:
+        return False
+    source = json.loads(material.get("naraka_parameters_json", "{}"))
+    floats = {k: p["defaults"][0] for k, p in source.get("shaderProperties", {}).items()
+              if p["type"] in ("Float", "Range", "Int")}
+    floats.update(source.get("floats", {}))
+    if not periodic2_enabled(source.get("shader", ""), floats, source.get("keywords", "").split()):
+        return False
+    tree = material.node_tree
+    if any(n.get("naraka_role") == "flow_layer" for n in tree.nodes):
+        return False
+    for bsdf in tree.nodes:
+        if bsdf.type != "BSDF_PRINCIPLED" or not bsdf.inputs["Emission Color"].is_linked:
+            continue
+        old = bsdf.inputs["Emission Color"].links[0].from_node
+        if (old.type != "MIX_RGB" or old.blend_type != "MULTIPLY"
+                or old.get("naraka_section") != "emission"
+                or old.inputs[0].is_linked or old.inputs[0].default_value != 1
+                or not old.inputs[1].is_linked or old.inputs[2].is_linked):
+            continue
+        texture = old.inputs[1].links[0].from_node
+        if (texture.type != "TEX_IMAGE" or texture.get("naraka_binding") != "_EmissionMap"
+                or not texture.image
+                or any(l.to_socket != bsdf.inputs["Emission Color"] for l in old.outputs[0].links)):
+            continue
+        graph = LightweightGraph.__new__(LightweightGraph)
+        graph.material, graph.nodes, graph.links = material, tree.nodes, tree.links
+        graph.vectors = {k: p["defaults"] for k, p in source.get("shaderProperties", {}).items()
+                         if p["type"] in ("Color", "Vector")}
+        graph.vectors.update(source.get("vectors", {}))
+        # Preserve edits to the formerly exposed HDR tint.
+        graph.vectors["_EmissionColor"] = list(old.inputs[2].default_value)
+        graph.section = "time"
+        graph.time = graph.node("ShaderNodeValue", "Time in seconds")
+        driver = graph.time.outputs[0].driver_add("default_value").driver
+        for name, path in (("fps", "render.fps"), ("base", "render.fps_base")):
+            var = driver.variables.new()
+            var.name, var.type = name, "SINGLE_PROP"
+            var.targets[0].id_type, var.targets[0].id = "SCENE", bpy.context.scene
+            var.targets[0].data_path = path
+        driver.expression = "frame*base/fps"
+        graph.section = "emission"
+        emission = graph.waves(texture)
+        shader = source["shader"].lower().replace("\\", "/").rsplit("/", 1)[-1]
+        if shader in STANDARD_PHASE_SHADERS:
+            base = next((n for n in tree.nodes if n.type == "TEX_IMAGE" and n.get("naraka_binding") == "_MainTex"), None)
+            if base and base.inputs[0].is_linked:
+                tree.links.new(base.inputs[0].links[0].from_socket, texture.inputs[0])
+        if texture.image.colorspace_settings.name != "Non-Color" or texture.image.alpha_mode != "CHANNEL_PACKED":
+            texture.image = texture.image.copy()
+            texture.image.colorspace_settings.name = "Non-Color"
+            texture.image.alpha_mode = "CHANNEL_PACKED"
+        tree.links.new(emission, bsdf.inputs["Emission Color"])
+        tree.nodes.remove(old)
+        from .texture_layout import expose
+        expose(tree, source)
+        quiet_previews(tree)
+        arrange_lightweight(material)
+        material["naraka_emission_contract"] = "periodic2-rgba-v1"
+        return True
+    return False
+
+
 class LightweightGraph(Graph):
     def vector(self, operation, a, b=(0, 0, 0)):
         n = self.node("ShaderNodeVectorMath", operation)
@@ -137,7 +208,7 @@ class LightweightGraph(Graph):
             self.uvs[index] = node.outputs[0]
         return self.uvs[index]
 
-    def sample(self, prop, data=False, scroll=None, uv_override=None):
+    def sample(self, prop, data=False, scroll=None, uv_override=None, transform_binding=None):
         if not prop or not self.textures.get(prop, {}).get("texture"):
             return None
         key = (prop, data)
@@ -145,7 +216,8 @@ class LightweightGraph(Graph):
             return self.sampled[key]
         binding = self.textures[prop]
         uv = uv_override if uv_override is not None else self.uv(1 if prop.endswith("UV2") else 0)
-        scale, offset = binding.get("scale", [1, 1]), binding.get("offset", [0, 0])
+        uv_binding = self.textures.get(transform_binding, {}) if transform_binding else binding
+        scale, offset = uv_binding.get("scale", [1, 1]), uv_binding.get("offset", [0, 0])
         if scale != [1, 1] or offset != [0, 0] or scroll:
             mapping = self.node("ShaderNodeMapping", prop + " · 缩放/偏移/滚动")
             self.assign(mapping.inputs[0], uv)
@@ -201,12 +273,13 @@ class LightweightGraph(Graph):
             node["naraka_role"], node["naraka_flow_layer"] = "flow_layer", i
             param = self.vectors.get("_MatEffectParam%d" % i, [1, 0, 0, 1])
             tint = emission if i == 0 else [color[j]*(1+extra[1]*(emission[j]-1)) for j in range(3)]+[1]
-            for name, value in {"区域蒙版": channels[i*2], "相位": channels[1] if i == 0 else tex.outputs["Alpha"],
+            for name, value in {"区域蒙版": channels[i*2], "相位": channels[1] if i == 0 else tex.outputs[1],
                 "时间 秒": self.time.outputs[0], "相位频率": param[0], "速度 rad/s": param[1],
                 "阈值": min(param[2], 1-2**-24), "锐度": param[3], "颜色": tint, "强度": 1}.items():
                 self.assign(node.inputs[name], value)
             terms.append(node.outputs["发光"])
         self.material["naraka_dynamic_material"] = "periodic2"
+        self.material["naraka_emission_contract"] = "periodic2-rgba-v1"
         return self.add_color(*terms, "两层相位流光相加")
 
     def effect(self):
@@ -271,6 +344,7 @@ class LightweightGraph(Graph):
         shader = self.source["shader"].lower().rsplit("/",1)[-1]
         from .advanced_cloth import VERIFIED_SHADERS
         advanced, skin = shader in VERIFIED_SHADERS, shader == "lx22standardcharacterskin.shader"
+        source_only_bindings = []
         self.section = "output"
         out = self.node("ShaderNodeOutputMaterial", "材质输出")
         bsdf = self.node("ShaderNodeBsdfPrincipled", "轻量 PBR")
@@ -337,7 +411,7 @@ class LightweightGraph(Graph):
                 self.assign(bsdf.inputs["Normal"],normal.outputs[0])
             self.section="emission"
             emprop=self.first(("_EmissionMap","_EmissionTexture","_EmissiveMap"))
-            periodic=(advanced or "periodic2" in shader) and (self.floats.get("_MFX_EMISSIVE_PERIODIC_2",0) or "_MFX_EMISSIVE_PERIODIC_2" in self.keywords or "_MFX_EMISSIVE_PERIODIC_2_ON" in self.keywords)
+            periodic=periodic2_enabled(shader, self.floats, self.keywords)
             # This saved billboard branch never samples its bound em map.
             disabled_billboard=shader=="ch_cloth_billboard_opaque.shadergraph" and not self.keywords & {"_MFX_EMISSIVE_PERIODIC_2","_MFX_EMISSIVE_PERIODIC_2_ON"}
             if emprop and not disabled_billboard:
@@ -350,7 +424,8 @@ class LightweightGraph(Graph):
                     for uv in chosen[1:]:coords=self.vector("ADD",coords,uv)
                     transform=self.vectors.get("_EffectUVTransform",[0,0,1,1])
                     if transform != [0,0,1,1]:coords=self.vector("DIVIDE",self.vector("SUBTRACT",coords,(*transform[:2],0)),(*transform[2:],1))
-                tex=self.sample(emprop,True if periodic else self.builder.manifest["textures"][self.textures[emprop]["texture"]]["linear"],uv_override=coords)
+                transform_binding="_MainTex" if periodic and shader in STANDARD_PHASE_SHADERS else None
+                tex=self.sample(emprop,True if periodic else self.builder.manifest["textures"][self.textures[emprop]["texture"]]["linear"],uv_override=coords,transform_binding=transform_binding)
                 emission=self.waves(tex) if periodic else self.multiply_color(tex.outputs["Color"],self.vectors.get("_EmissionColor",[1]*4),"发光图 × 材质颜色")
                 self.assign(bsdf.inputs["Emission Color"],emission);bsdf.inputs["Emission Strength"].default_value=1
             alpha=1
@@ -373,19 +448,42 @@ class LightweightGraph(Graph):
             transparent=self.node("ShaderNodeBsdfTransparent","透过后方物体")
             add=self.node("ShaderNodeAddShader","One / One 加法")
             self.links.new(transparent.outputs[0],add.inputs[0]);self.links.new(emission.outputs[0],add.inputs[1]);self.links.new(add.outputs[0],out.inputs["Surface"])
+        effect_shader = any(token in shader for token in ("uber", "particle", "unlit", "pyro"))
+        if effect_shader:
+            preview_prop = self.first(("_MainTextureMVector", "_MainTexture", "_MainTex", "_BaseMap"))
+            if preview_prop and shader != "fx_uber_transparent.shadergraph":
+                identity = self.textures[preview_prop]["texture"]
+                is_data = self.builder.manifest["textures"][identity].get("linear", True)
+                preview = self.sample(preview_prop, is_data)
+                self.assign(bsdf.inputs["Base Color"], (0, 0, 0, 1))
+                self.assign(bsdf.inputs["Emission Color"], preview.outputs["Color"])
+                bsdf.inputs["Emission Strength"].default_value = 1
+                self.material["naraka_material_preview_only"] = "Main texture RGB preview; source alpha and other shader channels are not interpreted"
+                self.notes.append("Effect shader-specific decoding and particle simulation are not applied; %s RGB is shown for inspection only. Alpha and other texture channels remain source data." % preview_prop)
+            for name, binding in self.textures.items():
+                if not binding.get("texture") or name in self.used:
+                    continue
+                identity = binding["texture"]
+                is_data = self.builder.manifest["textures"][identity].get("linear", True)
+                image_node = self.sample(name, is_data)
+                image_node["naraka_keep_root"] = True
+                image_node["naraka_texture_source_only"] = True
+                source_only_bindings.append(name)
         self.material.use_backface_culling=policy["cull"]==2
         if hasattr(self.material,"surface_render_method"):self.material.surface_render_method="DITHERED"
         else:self.material.blend_method="HASHED"
         self.material["naraka_material_profile"]="LIGHTWEIGHT"
         self.material["naraka_readable_layout"]=2
-        self.notes.append("Lightweight PBR: no detail arrays, diamond/glitter, refraction, view-dependent emission, detail emission gates or original multi-pass coverage. Source parameters remain metadata; unused images are not loaded.")
-        status={"surface":"approximate","profile":"LIGHTWEIGHT","alpha":policy,"verifiedFeatures":["PBR channel routing","packed RG/BA phase waves","source UV sets and UV motion"],"retainedTextureBindings":[],"omittedTextureBindings":[p for p,b in self.textures.items() if b.get("texture") and p not in self.used],"notes":self.notes}
+        self.notes.append("Lightweight PBR: no detail arrays, diamond/glitter, refraction, view-dependent emission, detail emission gates or original multi-pass coverage. Unused outfit maps stay in source metadata; effect maps with unknown semantics remain visible as unconnected image nodes.")
+        features=["PBR channel routing","source UV sets and UV motion"]
+        if self.material.get("naraka_dynamic_material")=="periodic2":features.append("packed RG/BA phase waves")
+        status={"surface":"approximate","profile":"LIGHTWEIGHT","alpha":policy,"verifiedFeatures":features,"retainedTextureBindings":source_only_bindings,"omittedTextureBindings":[p for p,b in self.textures.items() if b.get("texture") and p not in self.used],"notes":self.notes}
         self.material["naraka_conversion_status_json"]=json.dumps(status,ensure_ascii=False)
         self.material["naraka_conversion_notes"]=json.dumps(self.notes,ensure_ascii=False)
         self.builder.statuses[self.source["id"]]=status
         self.builder.adapters[self.source["id"]]="lightweight-pbr"
         self.builder.report.extend(self.source["name"]+": "+n for n in self.notes)
-        keep=set();stack=[out]
+        keep=set();stack=[out]+[n for n in self.nodes if n.get("naraka_keep_root")]
         while stack:
             node=stack.pop()
             if node in keep:continue

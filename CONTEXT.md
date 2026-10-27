@@ -44,7 +44,7 @@
 
 2026-10-20 特效作者新增自定义粒子 Mesh 与二维图片：发射器渲染块选择 Blender 网格/提取来源网格，显示实际材质并跳转材质 Empty；逐槽替换图片、UV 变换、采样及原生材质参数。原生构建克隆 Mesh/Texture2D/Material，保留来源对象和依赖表；支持当前静态修改器和单材质网格，不导出 Blender 节点 Shader。真实 Blender 保存/重开与原生资源解码/Bundle 确定性/失败保留检查通过，游戏画面未验收；普通 eff.dll 无需更换。操作与编译器要求见[特效作者说明](tools/Blender/docs/effects-editor.md)。
 
-2026-10-17 Blender v0.46.0 已发布。更新默认跟踪 main 的已测试完整包：GitHub 自动复用 native-base.json 固定大小／SHA256 的完整原生基础包，校验当前 Python 所需编译器协议，并通过 101 项作者／更新回归后发布持续更新目录。按源码提交 SHA 比较，无需 Python 修改逐次升版本／手工发 Release；正式 Release 独立保留。用户下载校验后，Windows 自带 Python 助手等待全部 Blender 退出，再事务替换并备份；不保存／关闭工程、不修改 Mod／游戏 DLL，源码链接安装使用 Git。公开匿名下载、文件校验、隔离安装／备份／自定义文件保留及再次检查同提交跳过已验证。旧版需先手动升级一次取得更新器，说明见[插件安装与更新](tools/Blender/README.md)。
+历史记录（2026-10-17；当前已改为 EFF Release 共享工具包，native-base 流程已退休）：Blender v0.46.0 已发布。更新默认跟踪 main 的已测试完整包：GitHub 自动复用 native-base.json 固定大小／SHA256 的完整原生基础包，校验当前 Python 所需编译器协议，并通过 101 项作者／更新回归后发布持续更新目录。按源码提交 SHA 比较，无需 Python 修改逐次升版本／手工发 Release；正式 Release 独立保留。用户下载校验后，Windows 自带 Python 助手等待全部 Blender 退出，再事务替换并备份；不保存／关闭工程、不修改 Mod／游戏 DLL，源码链接安装使用 Git。公开匿名下载、文件校验、隔离安装／备份／自定义文件保留及再次检查同提交跳过已验证。旧版需先手动升级一次取得更新器。
 
 2026-10-17 Blender 材质功能视图已实现：按来源已声明的 CharacterNPR／CharacterNPR_VFX 字段组合识别，中文开关同步功能参数与关键字；表面模式同步透明／裁剪配方和队列，保留现有深度写入与双面。禁用功能隐藏细节但不删除设置；所有已绑定贴图集中顶部，开启功能的已声明空槽自动加入顶部，虚拟空槽不写作者覆盖。呼吸联动自发光与角色 VFX，独立特效使用自己的 Blend／Mask 等开关。保留原始参数入口与未知 Shader 原始编辑，不在打开面板时改写旧工程；格式与 DLL 不变。验证和本地部署状态见本轮交付记录，说明见[材质编辑](tools/Blender/docs/material-effects.md)。
 
@@ -100,7 +100,7 @@
 
 ## 小型替换规则方向
 
-2026-10-06 用户选择离线确定全部目标、持久化替换规则，运行时读取原 PFB 并在实例创建前应用。每 Mod 自动生成 `source-inputs.bin`，Blender 自带编译器从 INI 生成独立规则清单；不复制完整原依赖，不持久化完整 PFB/资源包。构建与离线验证不替代游戏画面验收。
+2026-10-06 用户选择离线确定全部目标、持久化替换规则，运行时读取原 PFB 并在实例创建前应用。每 Mod 自动生成 `source-inputs.bin`，Blender 使用 EFF Release 提供并按 SHA256 缓存的共享编译器从 INI 生成独立规则清单；不复制完整原依赖，不持久化完整 PFB/资源包。构建与离线验证不替代游戏画面验收。
 
 - 工具根据原 Mesh 的精确引用生成该 Mod 的目标和来源清单；构建前就明确所有命中的 Prefab/Renderer，DLL 不依赖当前角色、场景扫描或额外主动加载来补全目标。
 - 首次或来源声明改变时，工具复用 AnimeStudio 现有资产索引，读取相关包的实际范围；不生成新的全游戏索引。清单记录游戏相对路径、范围、内容摘要及依赖，未改变来源声明时直接复用。准备机需要现有索引；DLL 不读取该索引。
@@ -112,7 +112,7 @@
 
 ## 核心对象
 
-- **Source identity（源身份）**：逻辑资源路径与资产名解析到当前 SerializedFile/CAB 中的实际对象。Mesh 同名不证明来源相同；实例装配还需要源 Prefab/Renderer 身份。
+- **Source identity（源身份）**：Mesh 由逻辑资源路径与资产名标识；当前 SerializedFile/CAB、PathID、内容摘要、长度、TypeTree、顶点结构只是本次安装的定位或载荷信息，不能单独使 Mod 失效。原生 Prefab/Renderer 身份用来反查消费者与装配实例，不替代 Mesh 逻辑身份。
 - **Author package（作者包）**：`mod.ini format=2` 与独立 `.mesh/.mat/.tex`，声明 Replace、Part、资源引用、表达式、按键和数值。它不包含 Unity 对象，也不能直接作为 AssetBundle 加载。
 - **Part / Replace（部件与替换规则）**：Part 引用一个 Mesh 和基础材质；Replace 将源消费者映射到完整目标部件集，并保留精确 LOD 目标。完整装配目标支持 0/1/N 部件、增删和改名。
 - **Baseline（基线）**：与 pristine 加载输入对应的序列化图、schema、物理范围和 SHA；游戏版本号或 GameAssembly 整体摘要不作为兼容门槛，用于重建和来源校验。DLL 合并每个 Mod 的已编译来源描述，仅保留命中的 Prefab 与所需依赖；退休 Mod 的 pristine 来源用于统一构建原版候选，见[静态来源流程](docs/runtime-resource-discovery.md)。
@@ -125,7 +125,7 @@
 
 - 生产入口是 `src/eiem_resource_entry.cpp`。基础 Mesh、Material、Texture 在 Blender 端编译成合法序列化输入，经游戏加载和创建；已移除旧入口、setter 替换执行器及私有 native 内存路线。
 - DLL 编译读取路径支持 INI 的通用 Resource 载荷及无作者 Mesh 的包；共享成员按结构组合对象增改删、原生类型/脚本注册及引用，见[通用编译资源接入](docs/compiled-resource-graph.md)。Blender 已接通新增骨链、球/胶囊碰撞体的离线编译；这不表示任意资源 owner 的 F10/物理退出已验证。
-- 兼容性按实际数据结构、字段编码、引用关系和运行时签名判断，不按产品版本、编译器名称、ABI 数字或 GameAssembly 整体摘要拒绝。协议声明 structures；当前输出包含预编译输入视图和运行时索引，旧 compiled.bin 需重新导出，不保留旧包读取分支。v35/v36 构建参数保留为输出布局别名。
+- 兼容性按实际数据结构、字段编码、引用关系和运行时签名判断，不按产品版本、编译器名称、ABI 数字或 GameAssembly 整体摘要拒绝。协议声明 structures；当前输出包含预编译输入视图和运行时索引，旧 compiled.bin 需重新导出，不保留旧包读取分支。当前 DLL/编译器只有一个自描述构建；命令行的 v35/v36 是兼容别名。读入端仍兼容历史 marker-only 与 address-map 清单编码。
 - 独立导出编译接收一个作者目录与游戏安装路径，不读取 GameAssembly；协议查询失败直接报错，不从 EXE 字符串猜测。清单统一为自描述结构；游戏 IL2CPP 绑定仍使用已加载的 GameAssembly。
 - DLL/编译器不设置 Mod 数量、基线输入/根数量、清单/资源/序列化文件体积或运行时 Renderer/层级数量上限。保留真实字节范围、字段表示范围、整数溢出、引用唯一性与环检查；分块 I/O、缓存、并行任务和软帧预算负责性能调度。
 - 多 Mod 指多个角色各自的作者包；没有对应 Mod 的角色保持原版。当前源码把 plugin/mods 的完整 0/1/N 独立编译结果组合成一次原生事务。共享 CAB/PFB 合并已编译修改，冲突的 Mesh 目标或 Material 覆盖拒绝。

@@ -70,7 +70,15 @@ def load_package(path, verify=True):
         for name, expected in checksums.items():
             if hashlib.sha256(safe_path(root, name).read_bytes()).hexdigest().lower() != expected.lower():
                 raise ValueError("Package checksum mismatch: " + name)
-        for name in ["naraka.json"] + [r["mesh"] for r in data["renderers"]] + [p for t in data["textures"].values() for p in t.get("slices", [t["path"]])]:
+
+        required = ["naraka.json"]
+        renderer_rows = list(data["renderers"]) + list(data.get("effectRenderers", []))
+        mesh_rows = list(data.get("effectMeshes", []))
+        required.extend(row["mesh"] for row in renderer_rows + mesh_rows)
+        required.extend(path for texture in data["textures"].values()
+                        for path in texture.get("slices", [texture["path"]]))
+        required.extend(effect["components"] for effect in data.get("effects", []) if effect.get("components"))
+        for name in required:
             if name not in checksums:
                 raise ValueError("Unverified package file: " + name)
     for index, node in enumerate(data["nodes"]):
@@ -78,12 +86,45 @@ def load_package(path, verify=True):
             raise ValueError("Invalid hierarchy node/parent")
         if not all(math.isfinite(v) for field in ("position", "rotation", "scale") for v in node[field]):
             raise ValueError("Non-finite hierarchy transform")
-    for renderer in data["renderers"]:
+    effect_paths = {effect["prefab"] for effect in data.get("effects", [])}
+    for renderer in list(data["renderers"]) + list(data.get("effectRenderers", [])):
         if not 0 <= renderer["node"] < len(data["nodes"]):
             raise ValueError("Renderer has no hierarchy node")
         for reference in renderer["materialSlots"]:
             if reference is not None and reference not in data["materials"]:
                 raise ValueError("Unresolved material identity")
+        effect_prefab = renderer.get("effectPrefab")
+        if effect_prefab is not None and effect_prefab not in effect_paths:
+            raise ValueError("Renderer references an unknown effect Prefab")
+    for mesh in data.get("effectMeshes", []):
+        if not 0 <= mesh["node"] < len(data["nodes"]):
+            raise ValueError("Effect Mesh has no hierarchy node")
+        if mesh.get("effectPrefab") not in effect_paths:
+            raise ValueError("Effect Mesh references an unknown effect Prefab")
+        for reference in mesh.get("materialSlots", []):
+            if reference is not None and reference not in data["materials"]:
+                raise ValueError("Unresolved effect Mesh material identity")
+    for effect in data.get("effects", []):
+        if not 0 <= effect["rootNode"] < len(data["nodes"]):
+            raise ValueError("Effect Prefab has no hierarchy root")
+        for mount in effect.get("mounts", []):
+            if not 0 <= mount["node"] < len(data["nodes"]):
+                raise ValueError("Effect Prefab mount has no hierarchy node")
+        for reference in effect.get("materials", []):
+            if reference not in data["materials"]:
+                raise ValueError("Unresolved effect material identity")
+        for reference in effect.get("textures", []):
+            if reference not in data["textures"]:
+                raise ValueError("Unresolved effect texture identity")
+    for system in data.get("particleSystems", []):
+        if not 0 <= system["node"] < len(data["nodes"]):
+            raise ValueError("ParticleSystem has no hierarchy node")
+        for reference in system.get("materials", []):
+            if reference not in data["materials"]:
+                raise ValueError("Unresolved ParticleSystem material identity")
+        for reference in system.get("textures", []):
+            if reference not in data["textures"]:
+                raise ValueError("Unresolved ParticleSystem texture identity")
     return root, data
 
 

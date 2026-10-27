@@ -22,18 +22,15 @@ inline std::set<std::string> MeshResourceChanges(const Package& author,const Pac
  if(changed.empty()||InputContractDigest(comparable)!=InputContractDigest(old))return {};
  return changed;
 }
-struct MeshStructureDelta {std::set<Identity> targets;std::set<std::string> resources;};
+struct MeshStructureDelta {std::set<Identity> targets,previousTargets,currentTargets;std::set<std::string> resources;};
 inline std::optional<MeshStructureDelta> MeshStructureChanges(const Package& next,const Package& old){
  auto meshResources=[](const Package& package){std::set<std::string> names;for(const auto& row:package.meshes)names.insert(row.second.resource);return names;};
- const auto oldMeshes=meshResources(old),newMeshes=meshResources(next);
+ const auto oldMeshes=meshResources(old),newMeshes=meshResources(next);auto allMeshes=oldMeshes;allMeshes.insert(newMeshes.begin(),newMeshes.end());
  auto stable=[](Package package,const std::set<std::string>& resources){
   for(const auto& name:resources)package.resources.erase(name);
-  package.meshes.clear();package.parts.clear();for(auto& rule:package.rules)rule.second.parts.clear();return InputContractDigest(package);
+  package.meshes.clear();package.parts.clear();package.rules.clear();package.targetIndex.clear();return InputContractDigest(package);
  };
- bool sameTargets=next.targetIndex.size()==old.targetIndex.size();
- if(sameTargets){auto a=next.targetIndex.begin(),b=old.targetIndex.begin();for(;a!=next.targetIndex.end();++a,++b)
-   if(a->first.path!=b->first.path||a->first.asset!=b->first.asset||a->second!=b->second){sameTargets=false;break;}}
- if(stable(next,newMeshes)!=stable(old,oldMeshes)||!sameTargets)return {};
+ if(stable(next,allMeshes)!=stable(old,allMeshes))return {};
  MeshStructureDelta result;
  auto sameMesh=[](const Mesh& a,const Mesh& b){return a.resource==b.resource&&a.vertices==b.vertices&&a.indices==b.indices&&a.bones==b.bones&&a.shapes==b.shapes;};
  for(const auto& name:oldMeshes){auto before=old.resources.find(name),after=next.resources.find(name);
@@ -48,9 +45,12 @@ inline std::optional<MeshStructureDelta> MeshStructureChanges(const Package& nex
   if((before!=old.resources.end()&&before->second->kind!=1)||(after!=next.resources.end()&&after->second->kind!=1))return {};
  }
  auto samePart=[](const EiemDirectory::Part& a,const EiemDirectory::Part& b){return a.mesh==b.mesh&&a.material==b.material;};
- for(const auto& row:old.targetIndex){auto oldRule=old.rules.find(row.second),newRule=next.rules.find(row.second);if(oldRule==old.rules.end()||newRule==next.rules.end())return {};
-  bool changed=oldRule->second.skip!=newRule->second.skip||oldRule->second.parts!=newRule->second.parts;
-  std::set<std::string> parts(oldRule->second.parts.begin(),oldRule->second.parts.end());parts.insert(newRule->second.parts.begin(),newRule->second.parts.end());
+ auto sameRuleTargets=[](const std::map<unsigned,Identity>& a,const std::map<unsigned,Identity>& b){if(a.size()!=b.size())return false;auto x=a.begin(),y=b.begin();
+  for(;x!=a.end();++x,++y)if(x->first!=y->first||x->second.path!=y->second.path||x->second.asset!=y->second.asset)return false;return true;};
+ auto changedTarget=[&](const Identity& target,const std::string* oldId,const std::string* newId){
+  bool changed=!oldId||!newId||*oldId!=*newId;if(!changed){auto oldRule=old.rules.find(*oldId),newRule=next.rules.find(*newId);if(oldRule==old.rules.end()||newRule==next.rules.end())return false;
+   changed=oldRule->second.skip!=newRule->second.skip||oldRule->second.parts!=newRule->second.parts||!sameRuleTargets(oldRule->second.targets,newRule->second.targets);
+   std::set<std::string> parts(oldRule->second.parts.begin(),oldRule->second.parts.end());parts.insert(newRule->second.parts.begin(),newRule->second.parts.end());
   for(const auto& id:parts){auto before=old.parts.find(id),after=next.parts.find(id);if(before==old.parts.end()||after==next.parts.end()){changed=true;continue;}
    if(!samePart(before->second,after->second)){changed=true;continue;}
    auto beforeMesh=old.meshes.find(before->second.mesh),afterMesh=next.meshes.find(after->second.mesh);
@@ -58,34 +58,88 @@ inline std::optional<MeshStructureDelta> MeshStructureChanges(const Package& nex
    auto oldResource=old.resources.find(beforeMesh->second.resource),newResource=next.resources.find(afterMesh->second.resource);
    if(oldResource==old.resources.end()||newResource==next.resources.end()||ResourceContentHash(*oldResource->second)!=ResourceContentHash(*newResource->second))changed=true;
   }
-  if(changed)result.targets.insert(row.first);
- }
+  }
+  if(changed){result.targets.insert(target);if(oldId)result.previousTargets.insert(target);if(newId)result.currentTargets.insert(target);}
+  return changed;
+ };
+ for(const auto& row:old.targetIndex){auto current=next.targetIndex.find(row.first);changedTarget(row.first,&row.second,current==next.targetIndex.end()?nullptr:&current->second);}
+ for(const auto& row:next.targetIndex)if(!old.targetIndex.count(row.first))changedTarget(row.first,nullptr,&row.second);
  if(result.targets.empty())return result;
  for(const auto& resource:result.resources){bool used=false;
-  for(const auto& target:result.targets){const auto& before=old.rules.at(old.targetIndex.at(target));const auto& after=next.rules.at(next.targetIndex.at(target));
-   for(const auto& id:before.parts){auto part=old.parts.find(id);if(part!=old.parts.end()){auto mesh=old.meshes.find(part->second.mesh);used=used||(mesh!=old.meshes.end()&&mesh->second.resource==resource);}}
-   for(const auto& id:after.parts){auto part=next.parts.find(id);if(part!=next.parts.end()){auto mesh=next.meshes.find(part->second.mesh);used=used||(mesh!=next.meshes.end()&&mesh->second.resource==resource);}}
+  for(const auto& target:result.targets){auto oldTarget=old.targetIndex.find(target),newTarget=next.targetIndex.find(target);
+   auto inspect=[&](const Package& package,const std::map<Identity,std::string>::const_iterator& targetRule){if(targetRule==package.targetIndex.end())return;
+    const auto& rule=package.rules.at(targetRule->second);for(const auto& id:rule.parts){auto part=package.parts.find(id);if(part==package.parts.end())continue;auto mesh=package.meshes.find(part->second.mesh);
+     used=used||(mesh!=package.meshes.end()&&mesh->second.resource==resource);}};
+   inspect(old,oldTarget);inspect(next,newTarget);
   }
   if(!used)return {};
  }
  return result;
 }
-inline bool MeshStructureSources(const Artifact& previous,const EiemStaticSources::Selection& selection,const std::set<Identity>& targets,
- std::set<std::string>& files,EiemStaticSources::Discovery& discovery){
- const auto& plan=previous.manifest.plan;if(plan.rendererRules.size()!=plan.originals.size()||plan.inputDependencies.size()!=plan.originals.size())return false;
- std::vector<unsigned char> roots(plan.originals.size());for(const auto& root:plan.roots){if(root.input>=roots.size())return false;roots[root.input]=1;}
- std::set<size_t> affected;
- for(size_t i=0;i<plan.rendererRules.size();++i)for(const auto& renderer:plan.rendererRules[i])if(targets.count(renderer.mesh)){affected.insert(i);break;}
- if(affected.empty())return false;
- bool changed=true;while(changed){changed=false;for(size_t i=0;i<plan.inputDependencies.size();++i)if(!affected.count(i))for(auto dependency:plan.inputDependencies[i]){
-   if(dependency>=roots.size())return false;if(affected.count(dependency)){if(!roots[i])return false;affected.insert(i);changed=true;break;}
-  }}
- for(auto i:affected){if(!roots[i])return false;const auto& source=plan.originals[i];std::string logical;
-  for(const auto& row:selection.inputs)if(EiemStaticSources::SourceFile(row.first,row.second.revision)==source.file){logical=row.first;break;}
-  if(logical.empty()||!selection.candidates.count(logical))return false;files.insert(source.file);discovery.sources.insert(logical);
-  for(const auto& root:plan.roots)if(root.input==i)discovery.roots.insert(root.path);discovery.renderers+=plan.rendererRules[i].size();
+inline bool MeshStructureSources(const Artifact& previous,const EiemStaticSources::Selection& oldSelection,const EiemStaticSources::Selection& selection,
+ const MeshStructureDelta& delta,const EiemStaticSources::Discovery* currentDiscovery,bool currentSelectionComplete,
+ std::set<std::string>& replaced,std::set<std::string>& sources,std::set<std::string>& affectedFiles,std::string* reason=nullptr){
+ auto reject=[&](const char* message){if(reason)*reason=message;return false;};
+ const auto& plan=previous.manifest.plan;if(plan.rendererRules.size()!=plan.originals.size()||plan.inputs.size()!=plan.originals.size())return reject("source directory coverage differs");
+ if(currentDiscovery&&currentDiscovery->decisions.size()!=selection.candidates.size())return reject("current candidate decisions incomplete");
+ auto dependencies=plan.inputDependencies;if(dependencies.size()!=plan.inputs.size()){
+  try{auto hydrated=previous;hydrated.inputMembers.clear();hydrated.addedBundles.clear();auto owners=EiemCompiledSourceRecords::MemberInputs(hydrated);dependencies.resize(plan.inputs.size());
+   for(size_t i=0;i<dependencies.size();++i)dependencies[i]=EiemCompiledSourceRecords::Directory(hydrated,i,owners).dependencies;
+  }catch(const std::exception&){return reject("source dependency proof unavailable");}
  }
- return !discovery.roots.empty()&&!files.empty();
+ auto logicalFor=[](const EiemStaticSources::Selection& selected,const std::string& file){for(const auto& row:selected.inputs)
+   if(EiemStaticSources::SourceFile(row.first,row.second.revision)==file)return row.first;return std::string{};};
+ auto containsTarget=[](const std::set<Identity>& set,const Identity& target){auto path=EiemStaticSources::Logical(target.path);return std::any_of(set.begin(),set.end(),[&](const auto& row){return EiemStaticSources::Logical(row.path)==path&&row.asset==target.asset;});};
+ auto represented=[&](const EiemStaticSources::Selection& selected,const Identity& target){auto asset=selected.assets.find(EiemStaticSources::Logical(target.path));if(asset==selected.assets.end())return std::string{};
+  const auto& entry=selected.inputs.at(asset->second);return EiemStaticSources::SourceFile(asset->second,entry.revision);};
+ std::set<std::string> oldFiles;for(const auto& source:plan.originals)oldFiles.insert(source.file);
+ for(const auto& target:delta.currentTargets){auto source=represented(selection,target);if(source.empty()||!oldFiles.count(source))return reject("new target Mesh source is not covered by an existing native input");}
+ for(const auto& target:delta.previousTargets)if(!containsTarget(delta.currentTargets,target)){
+  auto source=represented(oldSelection,target);if(source.empty())return reject("removed target Mesh source provenance absent");
+  auto retained=std::any_of(selection.assets.begin(),selection.assets.end(),[&](const auto& row){return row.second==logicalFor(oldSelection,source);});
+  if(!retained)return reject("removed target Mesh source needs core-resource retirement");
+ }
+ std::vector<unsigned char> roots(plan.originals.size());for(const auto& root:plan.roots){if(root.input>=roots.size())return reject("Prefab root index invalid");roots[root.input]=1;}
+ std::set<size_t> affectedInputs;
+ for(size_t i=0;i<plan.rendererRules.size();++i)for(const auto& renderer:plan.rendererRules[i])if(containsTarget(delta.previousTargets,renderer.mesh)){affectedInputs.insert(i);break;}
+ const auto oldAffected=affectedInputs;
+ bool changed=true;while(changed){changed=false;for(size_t i=0;i<dependencies.size();++i)if(!affectedInputs.count(i))for(auto dependency:dependencies[i]){
+    if(dependency>=roots.size())return reject("source dependency index invalid");if(affectedInputs.count(dependency)){if(!roots[i])return reject("affected PFB has a core resource dependant");affectedInputs.insert(i);changed=true;break;}
+  }}
+ for(auto i:affectedInputs){if(!roots[i])return reject("affected Renderer source is not a PFB");replaced.insert(plan.originals[i].file);}
+ if(oldAffected.empty()&&delta.currentTargets.empty())return reject("changed targets have no proven old/current consumer");
+ for(size_t i=0;i<plan.originals.size();++i){const auto& source=plan.originals[i];auto prior=logicalFor(oldSelection,source.file);if(prior.empty())return reject("old source logical identity absent");
+  auto current=logicalFor(selection,source.file);if(current.empty()){if(!currentSelectionComplete||!affectedInputs.count(i))return reject("retained source absent from current selection");continue;}
+  const auto& before=oldSelection.inputs.at(prior);const auto& after=selection.inputs.at(current);
+  if(before.revision!=after.revision||before.physical!=after.physical||before.offset!=after.offset||before.size!=after.size)return reject("old/current source revision or routing differs");
+  if(!affectedInputs.count(i)&&roots[i]&&!selection.candidates.count(current))return reject("retained PFB is not a current candidate");
+ }
+ if(currentDiscovery){
+  for(const auto& row:selection.candidates){auto decision=currentDiscovery->decisions.find(row);if(decision==currentDiscovery->decisions.end())return reject("candidate decision absent");
+   bool changedTargetHit=false;auto hits=currentDiscovery->targetConsumers.find(row);if(hits!=currentDiscovery->targetConsumers.end())
+    for(const auto& target:hits->second)if(containsTarget(delta.currentTargets,target)){changedTargetHit=true;break;}
+   auto previousFile=EiemStaticSources::SourceFile(row,selection.inputs.at(row).revision);
+   bool wasAffected=replaced.count(previousFile)!=0;
+   auto oldSource=std::find_if(plan.originals.begin(),plan.originals.end(),[&](const auto& source){return source.file==previousFile;});bool existed=oldSource!=plan.originals.end();bool hasRoot=false;
+   if(existed){auto index=size_t(oldSource-plan.originals.begin());hasRoot=std::any_of(plan.roots.begin(),plan.roots.end(),[&](const auto& root){return root.input==index;});}
+   if(changedTargetHit&&existed&&hasRoot){replaced.insert(previousFile);wasAffected=true;}
+   if((changedTargetHit||wasAffected)&&!decision->second.roots.empty())sources.insert(row);
+  }
+  for(const auto& row:selection.candidates)if(!oldSelection.candidates.count(row)){
+   bool hit=false;auto found=currentDiscovery->targetConsumers.find(row);if(found!=currentDiscovery->targetConsumers.end())
+    for(const auto& target:found->second)if(containsTarget(delta.currentTargets,target)){hit=true;break;}
+    if(!hit)return reject("new candidate does not consume any changed target");
+  }
+ }else{
+  auto sameTargets=delta.previousTargets.size()==delta.currentTargets.size();if(sameTargets){auto before=delta.previousTargets.begin(),after=delta.currentTargets.begin();
+   for(;before!=delta.previousTargets.end();++before,++after)if(before->path!=after->path||before->asset!=after->asset){sameTargets=false;break;}}
+   if(!sameTargets)return reject("changed target set requires full discovery");
+   for(auto i:affectedInputs){auto logical=logicalFor(selection,plan.originals[i].file);if(logical.empty()||!selection.candidates.count(logical))return reject("old affected PFB source is not current");sources.insert(logical);}
+ }
+ if(sources.empty()&&replaced.empty())return reject("no PFB source can be safely retired or rebuilt");
+ for(const auto& source:sources){auto entry=selection.inputs.find(source);if(entry==selection.inputs.end()||!selection.candidates.count(source))return reject("rebuild source is not a current candidate");
+  affectedFiles.insert(EiemStaticSources::SourceFile(source,entry->second.revision));}
+ if(replaced.empty()&&sources.empty())return reject("no affected source remained after consumer decisions");return true;
 }
 inline bool PrepareMeshStructureBaseline(Artifact& artifact,const Package& author){
  for(const auto& mesh:author.meshes)if(!author.resources.count(mesh.second.resource))return false;
@@ -98,6 +152,13 @@ inline bool PrepareMeshStructureBaseline(Artifact& artifact,const Package& autho
  artifact.manifest.package=author;auto& plan=artifact.manifest.plan;plan.author=PackageDigest(author);plan.contract=InputContractDigest(author);
  plan.parts=std::move(parts);plan.meshParts=meshParts;
  return true;
+}
+inline Artifact EmptyMeshStructureDelta(const Artifact& authorSnapshot){
+ Artifact delta=authorSnapshot;auto& plan=delta.manifest.plan;
+ plan.inputs.clear();plan.originals.clear();plan.startupHashes.clear();plan.rendererRules.clear();plan.memberRecipes.clear();plan.namespaceRecipes.clear();plan.inputDependencies.clear();plan.closure.clear();plan.roots.clear();
+ plan.names.members.clear();plan.names.bundles.clear();delta.members.clear();delta.pristine.clear();delta.views.clear();delta.inputMembers.clear();delta.addedBundles.clear();delta.verifiedSources.clear();delta.proofBlocks.reset();delta.proofReader={};
+ delta.retainedProofBlocks.clear();delta.retainedInputDirectories.clear();delta.hydrated.clear();delta.digest.clear();delta.proofMutex=std::make_shared<std::mutex>();
+ if(delta.explicitResources)delta.resourceBindingBytes=EiemAddressedResources::Encode({});return delta;
 }
 inline bool PrepareMeshStructureFrames(Artifact& artifact,const Package& author,const std::set<std::string>& changedResources,
  const EiemNativeInput::MeshSchemaIndex& schemas){
@@ -189,7 +250,7 @@ inline bool RecompileMeshResources(Artifact& artifact,const Package& author,cons
     Bytes bytes;
     if(type.classId==43)bytes.assign(generated->bytes.begin()+object.offset,generated->bytes.begin()+object.offset+object.size);
     else{auto before=ObjectValue(member.bytes,layout,id),after=ObjectValue(generated->bytes,fresh,id);
-     Child(type,before,"m_AABB")=Child(type,after,"m_AABB");bytes=EncodeValue(type,before);
+      Child(type,before,"m_AABB")=Child(type,after,"m_AABB");bytes=EncodeValue(type,before);
     }
     if(bytes.size()==current->second.size&&std::equal(bytes.begin(),bytes.end(),member.bytes.begin()+current->second.offset))continue;
     Require(EncodeValue(type,DecodeValue(type,0,bytes))==bytes,"incremental Mesh object roundtrip differs");replacements.emplace(id,std::move(bytes));

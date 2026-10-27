@@ -1,4 +1,4 @@
-"""Verify a pinned Blender native base before an EFF or Blender release."""
+"""Verify the shared native tools that are distributed by EFF releases."""
 import argparse
 import hashlib
 import json
@@ -28,12 +28,21 @@ def verify_protocol(base_protocol, dll_protocol):
             raise ValueError('native base compiler protocol differs at structures.' + key)
 
 
-def verify_native_base(archive_path, dll_protocol_path, manifest_path,
-                       expected_sha256=None):
+def verify_shared_tools(archive_path, dll_protocol_path, manifest_path,
+                        expected_sha256=None):
     archive_path = Path(archive_path)
     manifest = json.loads(Path(manifest_path).read_text(encoding='utf-8-sig'))
-    if manifest.get('format') != 'EFF_BLENDER_NATIVE_BASE/1':
-        raise ValueError('unsupported native-base manifest format')
+    if manifest.get('format') != 'EFF_SHARED_NATIVE_TOOLS/1':
+        raise ValueError('unsupported shared native tools manifest format')
+    expected_layout = {
+        'archiveRoot': 'EFF_Native_Tools',
+        'compiler': 'nativepack/eff_resource_pack.exe',
+        'indexUpdater': 'nativepack/eff_source_index.exe',
+        'authorCore': 'nativepack/eff_author_core.dll',
+        'protocol': 'nativepack/package-protocol.json',
+    }
+    if any(manifest.get(key) != value for key, value in expected_layout.items()):
+        raise ValueError('shared native tools manifest has an unsupported file layout')
     actual_size = archive_path.stat().st_size
     digest = hashlib.sha256()
     with archive_path.open('rb') as source:
@@ -41,11 +50,11 @@ def verify_native_base(archive_path, dll_protocol_path, manifest_path,
             digest.update(chunk)
     actual_sha256 = digest.hexdigest()
     if actual_size != manifest.get('bytes'):
-        raise ValueError('native base size differs from native-base.json')
+        raise ValueError('shared tools size differs from manifest')
     if actual_sha256.lower() != str(manifest.get('sha256', '')).lower():
-        raise ValueError('native base SHA256 differs from native-base.json')
+        raise ValueError('shared tools SHA256 differs from manifest')
     if expected_sha256 and actual_sha256.lower() != expected_sha256.lower():
-        raise ValueError('native base SHA256 differs from the requested artifact')
+        raise ValueError('shared tools SHA256 differs from the requested artifact')
     url = manifest.get('url', '')
     parsed_url = urlparse(url)
     parts = parsed_url.path.strip('/').split('/')
@@ -53,14 +62,16 @@ def verify_native_base(archive_path, dll_protocol_path, manifest_path,
             or len(parts) != 6 or parts[:4] != ['ssice-a', 'EFF', 'releases', 'download']
             or parts[4] != manifest.get('framework')
             or parts[5] != archive_path.name):
-        raise ValueError('native-base.json URL must name this immutable EFF release asset on github.com')
+        raise ValueError('manifest URL must name this immutable EFF release asset on github.com')
 
     required_files = {
-        'EFF_Blender/nativepack/package-protocol.json',
-        'EFF_Blender/nativepack/eff_resource_pack.exe',
-        'EFF_Blender/nativepack/eff_author_core.dll',
-        'EFF_Blender/nativepack/eff_source_index.exe',
-        'EFF_Blender/vendor/PIL/__init__.py',
+        'EFF_Native_Tools/nativepack/package-protocol.json',
+        'EFF_Native_Tools/nativepack/eff_resource_pack.exe',
+        'EFF_Native_Tools/nativepack/eff_author_core.dll',
+        'EFF_Native_Tools/nativepack/eff_source_index.exe',
+        'EFF_Native_Tools/vendor/PIL/__init__.py',
+        'EFF_Native_Tools/vendor/PIL/_imaging.cp311-win_amd64.pyd',
+        'EFF_Native_Tools/vendor/PIL/_imaging.cp313-win_amd64.pyd',
     }
     with zipfile.ZipFile(archive_path) as package:
         damaged = package.testzip()
@@ -72,7 +83,7 @@ def verify_native_base(archive_path, dll_protocol_path, manifest_path,
             raise ValueError('native base is missing required files: '
                              + ', '.join(sorted(missing)))
         base_protocol = _read_json(
-            package.read('EFF_Blender/nativepack/package-protocol.json'),
+            package.read('EFF_Native_Tools/nativepack/package-protocol.json'),
             'native base protocol')
 
     dll_protocol = json.loads(Path(dll_protocol_path).read_text(encoding='utf-8-sig'))
@@ -92,8 +103,8 @@ def main():
     parser.add_argument('--manifest', type=Path, required=True)
     parser.add_argument('--sha256')
     args = parser.parse_args()
-    receipt = verify_native_base(args.archive, args.dll_protocol,
-                                 args.manifest, args.sha256)
+    receipt = verify_shared_tools(args.archive, args.dll_protocol,
+                                  args.manifest, args.sha256)
     print(json.dumps(receipt, indent=2))
 
 

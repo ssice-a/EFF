@@ -74,3 +74,11 @@ Physics-only 导出此前逐个重建所有命中 Prefab。Chen 的一个 Physic
 新格式 `EFF_MOD_BLOCKS/2` 使用小索引和不可变 `compiled.blocks/`，共享 TypeTree 字典与布局差分，保留旧 packet、`/1` 读取。真实包各类及混合快更为约 0.4～1.24 s，全部 View/MemberRecipe 实际字节与冷编一致，来源/证明块改写为 0。这是 C++ Export 墙钟，不是 Blender 总导出或游戏 F10。
 
 详细体积口径、公共清单压缩、作者读取成本、结构变化回退、发布原子性边界及实机测试见[实现记录](resource-update-separation-20261024.md)。生产 DLL 构建与离线回归已通过初轮，未部署游戏；同内容 F10 的控制刷新行为保留。
+
+## Chen 冷编译与 Blender 编译器同步（2026-10-27）
+
+Blender 5.0 的插件目录是 `tools/Blender` Junction。原插件编译器 SHA256 为 `BDC38277...`，仓库候选此前为 `CAE2B244...`；两者协议相同，但插件实际使用了旧 EXE。将候选部署到 `tools/Blender/nativepack/eff_resource_pack.exe` 后 SHA256 为 `D79A977F...`，旧 EXE 备份在 `bin/resource-pack/cold-compile-worker-ab-20261027/eff_resource_pack-before.exe`。
+
+Chen 隔离冷测使用相同作者快照、游戏目录及 831 MB 来源索引；125 个输入、24 个共享输入。每轮从没有 `compiled.bin` 和 `compiled.blocks` 的目标目录开始；保留 `source-inputs.bin` 只用于复用来源选择，不复用编译产物。当前代码把普通输入 worker 上限从 8 调到 12，并把持有大型 PFB 图结构的元数据阶段从 4 调到 8。相对仓库旧候选的一轮完整索引对照为 17.58 → 16.48 秒；资源构建为 12.18 → 11.00 秒，元数据阶段为 3.13 → 1.84 秒。worker 12 → 16 没有稳定收益，因此保留 12。
+
+基准现在同时校验 `compiled.bin` 与 `compiled.blocks`。旧插件 EXE 与当前 EXE 的完整输出相同：`compiled.bin` 96,350 字节、SHA256 `bf90f57e...`；334 个 block 共 55,777,505 字节、目录内容 SHA256 `7f549170...`。反向顺序 A/B 中旧版 → 新版分别为 20.55 → 17.44 秒、33.06 → 25.02 秒；另有一轮受发布 I/O 波动影响为 33.93 → 35.73 秒，其中新版发布阶段单独升至 5.90 秒。峰值私有内存约 3.1–3.35 GB。该机器负载下波动明显，42 秒尚未稳定复现；不能把单轮结果当成固定时长保证。当前 EXE 已部署到本地 Blender 插件目录，Blender 每次导出才启动编译器，不需重启 Blender。

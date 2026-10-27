@@ -19,8 +19,7 @@ inline std::string RuntimeShapeName(const Package& package, const std::string& p
 // they retain shape and visibility controls with the new reader.
 inline std::string LegacyRuntimeShapeName(const Package& package,const std::string& partId,const Identity& target) {
   const auto& resource=*package.resources.at(package.meshes.at(package.parts.at(partId).mesh).resource);
-  auto digest=Sha(resource.bytes.data(),resource.bytes.size());
-  auto label=RuntimeShapeLabel(package,partId,target)+"\n"+Hex(digest.data(),digest.size());
+  auto label=RuntimeShapeLabel(package,partId,target)+"\n"+ResourceContentHash(resource);
   auto token = Sha((const unsigned char*)label.data(),label.size());
   return target.asset + "__EFF_SHAPE_" + Hex(token.data(),token.size());
 }

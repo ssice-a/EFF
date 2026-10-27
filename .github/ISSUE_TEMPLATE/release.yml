@@ -1,5 +1,5 @@
 name: Release readiness
-description: Track a coordinated EFF, Blender, and AnimeStudio release.
+description: Track validation and publishing across the independently released EFF tools.
 title: "Release: "
 labels: ["release-management"]
 body:
@@ -21,10 +21,16 @@ body:
     id: animestudio_version
     attributes:
       label: AnimeStudio version
-      description: Use the current pinned release when this release does not change AnimeStudio.
       placeholder: v1.8.1
     validations:
       required: true
+  - type: input
+    id: manager_version
+    attributes:
+      label: EFF Mod Manager version
+      placeholder: v0.1.1
+    validations:
+      required: false
   - type: textarea
     id: commits
     attributes:
@@ -34,6 +40,7 @@ body:
         EFF:
         EFF-blender:
         AnimeStudio:
+        EFF-Mod-Manager:
         EFF gitlinks verified:
     validations:
       required: true
@@ -46,21 +53,21 @@ body:
           required: false
         - label: EFF gitlinks point to the reviewed Blender and AnimeStudio commits.
           required: false
-        - label: Blender native-base.json size, SHA256, framework URL, and compiler protocol were verified.
+        - label: EFF shared-tools ZIP, manifest size/SHA256, and compiler-to-DLL protocol were verified.
           required: false
-        - label: CI for the exact tags passed before publishing either release.
+        - label: CI for each exact repository commit passed before its Release was published.
           required: false
-        - label: EFF release contains the DLL and the verified native base.
+        - label: EFF Release contains the DLL, shared-tools ZIP, and eff-native-tools.json.
           required: false
-        - label: Blender release was manually dispatched after the EFF native base became available.
+        - label: Blender's package excludes duplicate native tools and targets Blender 5.2.
           required: false
-        - label: Final asset names, sizes, and SHA256 values were checked on both release pages.
+        - label: Final asset names, sizes, and SHA256 values were checked on each changed Release page.
           required: false
   - type: textarea
     id: validation
     attributes:
       label: Validation evidence
-      description: Link CI runs, native-base preparation, release pages, and any manual acceptance.
+      description: Link CI runs, shared-tools validation, Release pages, and any manual acceptance.
       render: markdown
     validations:
       required: false

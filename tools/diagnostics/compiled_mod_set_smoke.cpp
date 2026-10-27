@@ -22,6 +22,24 @@ void GameUpdateCarryoverRegression(){
  std::cout<<"PASS game-update carryover: incomplete conflicting selection rejects; complete current index refreshes changed/retired sources; same-content relocation preserved\n";
 }
 
+void SemanticReplayCompatibilityRegression(){
+ using namespace EiemCompiledMod;
+ EiemResourceReloadPlan::Plan legacy;legacy.originals.resize(2);
+ Require(!EiemResourceReloadPlan::SemanticCompleteAt(legacy,0)&&
+         EiemResourceReloadPlan::SemanticOperationsAt(legacy,0).empty()&&
+         EiemResourceReloadPlan::SemanticOperationsAt(legacy,1).empty(),
+         "legacy source records without semantic vectors are not treated as unsupported safely");
+ legacy.semanticOperations.resize(2);legacy.semanticComplete={true,false};
+ Require(EiemResourceReloadPlan::SemanticCompleteAt(legacy,0)&&
+         !EiemResourceReloadPlan::SemanticCompleteAt(legacy,1),
+         "semantic completeness does not follow source identity");
+ Package package;auto mesh=std::make_shared<Resource>();mesh->kind=1;package.resources.emplace("meshes/leaf.mesh",mesh);
+ auto texture=std::make_shared<Resource>();texture->kind=4;package.resources.emplace("textures/leaf.tex",texture);
+ Require(EiemAddressedResources::RequiresSemanticRebuild(package,{"meshes/leaf.mesh"})&&
+         !EiemAddressedResources::RequiresSemanticRebuild(package,{"textures/leaf.tex"}),
+         "resource fast path did not force Mesh semantic records to refresh");
+}
+
 void AssemblySelectionRegression(){
  using namespace EiemRenderAssemblyDescription;using EiemResourceReloadPlan::Root;
  Root pristine;pristine.path="assets/shared.prefab";
@@ -85,6 +103,33 @@ void GenericResourceRegression(){
  auto invalid=resource;invalid.back()^=1;Rejected([&]{EiemDirectory::Decode(invalid,0);});
  Rejected([&]{DiskPath(folder,"resources/../escape.bin",0);});
  Rejected([&]{EiemDirectory::Decode(resource,1);});
+}
+
+void MappedAuthorResourceRegression(){
+ using namespace EiemResourceRecipe;using namespace EiemResourceReloadPlan;
+ auto parent=std::filesystem::weakly_canonical(std::filesystem::temp_directory_path());
+ auto folder=parent/("eff-mapped-author-"+std::to_string(GetCurrentProcessId()));
+ Require(std::filesystem::create_directory(folder),"mapped author fixture exists");
+ struct Cleanup{std::filesystem::path parent,folder;~Cleanup(){if(folder.parent_path()==parent)std::filesystem::remove_all(folder);}}cleanup{parent,folder};
+ std::filesystem::create_directories(folder/"textures");auto path=folder/"textures"/"leaf.tex";
+ Bytes payload{2,7,1,8,2,8,1,8};auto original=GenericPayload(payload);WriteInteger(original,12,4,4);EiemResourceReloadPlan::Save(path,original);
+ Package authored;authored.id="Mapped";authored.root=folder;authored.resources.emplace("textures/leaf.tex",std::make_shared<const Resource>(EiemDirectory::Decode(original,4)));
+ EiemOfflinePackage::Writer authorRecord;EiemOfflinePackage::WriteAuthor(authorRecord,authored,true);
+ EiemOfflinePackage::Reader reader{authorRecord.b};reader.mapResourceBytes=true;auto decoded=EiemOfflinePackage::ReadAuthor(reader,folder,true,folder);
+ Require(reader.p==authorRecord.b.size(),"mapped author descriptor has a suffix");auto resource=*decoded.resources.at("textures/leaf.tex");
+ Require(resource.bytes.empty()&&resource.mapped&&ResourceSize(resource)==original.size()&&ResourceContentHash(resource)==EiemResourceRecipe::Digest(original),"runtime author resource was copied or lost its verified identity");
+ Package package;package.id="Mapped";package.resources.emplace("textures/leaf.tex",std::make_shared<const Resource>(resource));
+ auto objectOffset=EiemDirectory::DecodeView(original.data(),original.size(),4).blocks.at("object").offset;
+ Require(ResourceData(resource)==resource.mapped->Data()&&ResourceLe(resource,objectOffset,4)==
+         (uint64_t(2)|(uint64_t(7)<<8)|(uint64_t(1)<<16)|(uint64_t(8)<<24)),
+         "mapped resource metadata reads did not use the file view");
+ Member recipe;recipe.name="fixture";recipe.hash=EiemResourceRecipe::Digest(payload);recipe.size=payload.size();recipe.spans={{Author,"textures/leaf.tex",objectOffset,payload.size(),{}}};
+ auto rebuilt=Apply(recipe,{},package,{});Require(rebuilt==payload,"mapped resource fallback did not reproduce its author span");
+ auto replacement=GenericPayload(Bytes{9,9,9});WriteInteger(replacement,12,4,4);EiemOfflineCompile::AtomicSave(path,replacement);
+ Require(Apply(recipe,{},package,{})==payload,"atomic author replacement changed an already-pinned F10 snapshot");
+ Resource next;next.kind=4;Package declaration;declaration.id="Mapped";declaration.root=folder;EiemOfflinePackage::ReadAuthorReference(reader,declaration,"textures/leaf.tex",EiemResourceRecipe::Digest(replacement),next);
+ Require(next.bytes.empty()&&next.mapped&&ResourceContentHash(next)==EiemResourceRecipe::Digest(replacement),"replacement resource mapping did not observe the new generation");
+ std::cout<<"PASS mapped author resources: verified file view, lazy fallback reconstruction and atomic F10 replacement snapshot\n";
 }
 
 void PristineProofReuseRegression(){
@@ -241,7 +286,7 @@ void GenericObjectRegression(unsigned storeFormat=0){
 }
 
 void StoreSnapshotPinsRegression(){
- using namespace EiemModUpdateStore;auto parent=std::filesystem::temp_directory_path();auto folder=parent/("eff-store-pins-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));
+ using namespace EiemModUpdateStore;auto parent=std::filesystem::absolute("bin");auto folder=parent/("eff-store-pins-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));
  Require(std::filesystem::create_directory(folder),"store pin fixture exists");struct Cleanup{std::filesystem::path parent,folder;~Cleanup(){if(folder.parent_path()==parent){std::error_code error;std::filesystem::remove_all(folder,error);}}}cleanup{parent,folder};
  for(bool consumer:{false,true}){
   auto mods=folder/"plugin/mods",mod=mods/"parent/child";std::filesystem::create_directories(mod);auto path=mod/"compiled.bin";Fork({},path,0,{{"runtime/proof/x",Bytes{1,2,3}},{"runtime/common",Bytes{9,8}}});
@@ -259,9 +304,14 @@ void StoreSnapshotPinsRegression(){
  auto fallbackPlugin=folder/"fallback",fallback=fallbackPlugin/"mods/mod";std::filesystem::create_directories(fallback);EiemResourceReloadPlan::Save(fallbackPlugin/".eiem-compiled-snapshots",Bytes{0});
  auto fallbackPath=fallback/"compiled.bin";auto fallbackIndex=Fork({},fallbackPath,0,{{"runtime/proof/x",Bytes{4,5,6}},{"runtime/common",Bytes{7,8}}});
  {std::shared_ptr<EiemCompiledModStore::Backing> direct;{Lock publication(fallbackPath);direct=std::make_shared<EiemCompiledModStore::Backing>(fallbackPath,true);Require(direct->Get("runtime/common")==Bytes({7,8}),"fallback consumer immediate metadata differs");}
-  Require(direct->link.path.empty()&&direct->link.error&&direct->directBlobs.size()==1,"consumer hardlink fallback retained immediate metadata handles or lost its proof handle");
-  auto blob=fallback/std::filesystem::u8path(fallbackIndex.blocks.at("runtime/proof/x").external);Require(std::filesystem::remove(blob),"direct fallback did not allow immutable blob GC");
-  Require(direct->Get("runtime/proof/x")==Bytes({4,5,6}),"immutable blob GC invalidated the direct fallback proof reader");}
+  Require(!direct->link.path.empty()&&direct->link.error&&direct->directBlobs.empty(),"consumer cache failure did not fall back to an outside snapshot");
+  auto blob=fallback/std::filesystem::u8path(fallbackIndex.blocks.at("runtime/proof/x").external);
+  auto pinnedBlob=direct->link.directory/std::filesystem::u8path(fallbackIndex.blocks.at("runtime/proof/x").external);
+  Require(std::filesystem::exists(pinnedBlob)&&!std::filesystem::equivalent(blob,pinnedBlob),"cross-volume fallback did not copy the delayed proof outside the Mod tree");
+  auto moved=fallbackPlugin/"removed-mods";std::error_code moveError;std::filesystem::rename(fallbackPlugin/"mods",moved,moveError);
+  Require(!moveError,"outside fallback snapshot still pins the nested Mod directory against movement: "+moveError.message());
+  std::error_code removeError;std::filesystem::remove_all(moved,removeError);Require(!removeError,"outside fallback snapshot still pins the nested Mod directory against removal: "+removeError.message());
+  Require(direct->Get("runtime/proof/x")==Bytes({4,5,6}),"outside fallback snapshot lost its delayed proof after Mod removal");}
  std::cout<<"PASS store snapshot pins: author/consumer pin coverage, nested Mod directory move/removal, delayed sidecar proof, cleanup and proof-only hardlink fallback survive blob GC\n";
 }
 
@@ -623,6 +673,8 @@ void ReadonlyRangeRegression(){
  auto mapped=std::make_shared<const EiemReadonlyFileRange::Range>(path,999,90000);Require(SameStamp(mapped->Stamp(),FileStamp(path)),"mapped stamp differs");EiemCompiledInputView::Buffer backing(mapped);Bytes actual(90000);backing.Read(0,actual.data(),actual.size());Require(std::equal(actual.begin(),actual.end(),bytes.begin()+999),"unaligned mapped source bytes differ");
  Rejected([&]{backing.Read(90000,actual.data(),1);});auto write=CreateFileW(path.c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);Require(write==INVALID_HANDLE_VALUE,"mapped source allowed live overwrite");
  Rejected([&]{EiemReadonlyFileRange::Range bad(path,100000,4);});mapped.reset();backing={};Save(path,{1,2,3});
+ auto resources=folder/"plugin"/"mods"/"snapshot-test"/"resources";std::filesystem::create_directories(resources);auto author=resources/"texture.tex";Bytes old{1,3,5,7};Save(author,old);
+ {auto snapshot=std::make_shared<const EiemReadonlyFileRange::Range>(author,0,0,true);Require(DeleteFileW(author.c_str())!=0,"live author snapshot blocks deleting/replacing the Mod resource");Bytes retained(snapshot->Size());std::memcpy(retained.data(),snapshot->Data(),retained.size());Require(retained==old,"author snapshot changed after original Mod resource deletion");Save(author,{2,4,6,8});}
 }
 void CompareCompiledArtifacts(const std::filesystem::path& game,const std::filesystem::path& beforeRoot,const std::filesystem::path& afterRoot){
  auto before=EiemPublishedCompiledMod::ReadFullArtifact(beforeRoot,game),after=EiemPublishedCompiledMod::ReadFullArtifact(afterRoot,game);
@@ -647,12 +699,16 @@ void LogicalRouteRegression(){
  auto root=game/"Endfield_Data/StreamingAssets/VFS";std::filesystem::create_directories(root);Bytes payload{0,0,0,7,8,9};auto chunk=root/(std::string(32,'A')+".chk");Save(chunk,payload);
  Bytes plain;auto n=[&](uint64_t value,size_t width){AppendInteger(plain,value,width);};n(4,4);n(100,4);n(0,2);n(1,8);n(1,4);n(payload.size(),8);n(0,1);n(1,4);
  plain.insert(plain.end(),16,0xAA);plain.insert(plain.end(),16,0xBB);n(payload.size(),8);n(0,1);n(0,4);n(1,4);
- std::string path="Data/Bundles/Windows/moved.ab";n(path.size(),2);plain.insert(plain.end(),path.begin(),path.end());n(0,8);plain.insert(plain.end(),16,0xCC);plain.insert(plain.end(),16,0xDD);n(3,8);n(3,8);n(0,1);n(0,1);n(0,4);n(0,4);
+ std::string path="Data/Bundles/Windows/moved.ab";n(path.size(),2);plain.insert(plain.end(),path.begin(),path.end());n(0,8);plain.insert(plain.end(),16,0xCC);
+ Bytes selectedPayload(payload.begin()+3,payload.end());auto md5=EiemVfsCatalog::Md5(selectedPayload);
+ for(size_t i=0;i<md5.size();i+=2)plain.push_back(uint8_t(std::stoul(md5.substr(i,2),nullptr,16)));
+ n(3,8);n(3,8);n(0,1);n(0,1);n(0,4);n(0,4);
  Bytes nonce(12);EiemVfsCatalog::ChaCha(plain,nonce.data());nonce.insert(nonce.end(),plain.begin(),plain.end());Save(root/"current.blc",nonce);
  std::string logical="bundles/windows/moved.ab";auto revision=Hash(Bytes{7,8,9});EiemStaticSources::Selection selection;selection.manifest="logical-test";selection.inputs[logical]={logical,revision,game/"removed.chk",0,3};
  EiemLogicalSourceRoutes::Routes routes;EiemLogicalSourceRoutes::Include(routes,selection);std::vector<EiemResourceReloadPlan::Source> sources{{EiemStaticSources::SourceFile(logical,revision),revision,game/"removed.chk",55,3}};
  EiemLogicalSourceRoutes::Rebind(sources,routes,game);Require(sources[0].physical==chunk&&sources[0].offset==3&&ReadSource({},sources[0])==Bytes({7,8,9}),"logical source retained a stale physical range");
- Rejected([&]{EiemLogicalSourceRoutes::Rebind(sources,{},game);});auto wrong=sources;wrong[0].size=4;Rejected([&]{EiemLogicalSourceRoutes::Rebind(wrong,routes,game);});
+ Rejected([&]{EiemLogicalSourceRoutes::Rebind(sources,{},game);});auto wrong=sources;wrong[0].size=4;EiemLogicalSourceRoutes::Rebind(wrong,routes,game);
+ Require(wrong[0].size==3&&wrong[0].offset==3,"logical source did not rebind a changed VFS range length");
  payload[4]=99;Save(chunk,payload);Rejected([&]{ReadSource({},sources[0]);});
  std::cout<<"PASS logical source routes: deleted old CHK, current range rebinding, missing provenance/range rejection, changed-byte SHA rejection\n";
 }
@@ -673,6 +729,17 @@ void ComparePrunedArtifacts(const std::filesystem::path& game,const std::filesys
  std::cout<<"PASS pruned artifact: beforeInputs="<<a.inputs.size()<<" afterInputs="<<b.inputs.size()<<" removedReadOnly="<<removed<<" roots="<<b.roots.size()<<" authorAndAssembliesAndEditedBytesUnchanged=1 roundtrip=1\n";
 }
 int main(int argc,char** argv){try{
+ if(argc==4&&std::string(argv[1])=="--profile-set-early"){
+  auto game=std::filesystem::u8path(argv[2]),mods=std::filesystem::u8path(argv[3]);auto set=EiemCompiledModSet::Read(game,{},mods);
+  Require(bool(set),"profile has no compiled Mods");size_t shared=0;for(const auto& contributors:set->contributors)if(contributors.size()>1)++shared;
+  std::cout<<"PASS production Mod-set read: mods="<<set->mods.size()<<" inputs="<<set->catalog.size()<<" roots="<<set->manifest.plan.roots.size()<<" sharedInputs="<<shared<<" views="<<set->views.size()<<"\n";return 0;
+ }
+ if(argc==2&&std::string(argv[1])=="--readonly-range-smoke"){ReadonlyRangeRegression();std::cout<<"PASS read-only mapped source and replaceable author snapshot\n";return 0;}
+ if(argc==2&&std::string(argv[1])=="--store-snapshot-smoke"){StoreSnapshotPinsRegression();return 0;}
+ if(argc==2&&std::string(argv[1])=="--semantic-compat-smoke"){
+  GameUpdateCarryoverRegression();SemanticReplayCompatibilityRegression();LogicalRouteRegression();
+  std::cout<<"PASS semantic compatibility source routing and resource refresh policy\n";return 0;
+ }
  if(argc==4&&std::string(argv[1])=="--profile-proof-codec"){
   auto game=std::filesystem::canonical(std::filesystem::u8path(argv[2])),mod=std::filesystem::canonical(std::filesystem::u8path(argv[3]));auto begin=std::chrono::steady_clock::now();auto artifact=EiemPublishedCompiledMod::ReadFullArtifact(mod,game);auto hydrated=std::chrono::steady_clock::now();
   auto index=EiemModUpdateStore::Read(mod/"compiled.bin");size_t beforeBytes=0;for(const auto& row:index.blocks)if(row.first.rfind("runtime/proof/",0)==0)beforeBytes+=row.second.size;
@@ -682,6 +749,7 @@ int main(int argc,char** argv){try{
   auto milliseconds=[](auto a,auto b){return std::chrono::duration<double,std::milli>(b-a).count();};std::cout<<"PROOF-CODEC inputs="<<artifact.manifest.plan.inputs.size()<<" schemas="<<artifact.sharedSchemas.size()<<" oldBytes="<<beforeBytes<<" newBytes="<<afterBytes<<" dictionaryBytes="<<EiemCompiledSourceRecords::EncodeSchemas(artifact.sharedSchemas).size()<<" hydrateMs="<<milliseconds(begin,hydrated)<<" finalizeMs="<<milliseconds(hydrated,finalized)<<" prepareMs="<<milliseconds(finalized,prepared)<<" encodeMs="<<milliseconds(prepared,encoded)<<'\n';return 0;
  }
  GameUpdateCarryoverRegression();
+ SemanticReplayCompatibilityRegression();
  LogicalRouteRegression();
  if(argc==5&&std::string(argv[1])=="--compare-pruned-artifacts"){ComparePrunedArtifacts(std::filesystem::u8path(argv[2]),std::filesystem::u8path(argv[3]),std::filesystem::u8path(argv[4]));return 0;}
  if(argc==5&&std::string(argv[1])=="--write-runtime-index"){
@@ -867,6 +935,7 @@ int main(int argc,char** argv){try{
  FixedWidthSkipRegression();
  AuthorSourceRegression();
  GenericResourceRegression();
+ MappedAuthorResourceRegression();
  NativeRegistrationRegression();
  GenericObjectRegression();
  GenericObjectRegression(1);

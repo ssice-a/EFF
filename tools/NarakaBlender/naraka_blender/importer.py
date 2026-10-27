@@ -70,10 +70,11 @@ def shape_keys(obj, payload, weights):
                     driver.expression += "*min(1,max(0,((%r)-w)/(%r)))" % (following, following - frame_weight)
 
 
-def make_mesh(renderer, payload, collection, material_map):
+def make_mesh(renderer, payload, collection, material_map, renderer_property="naraka_renderer"):
     vertices = [convert(payload["vertices"][i:i + 3]) for i in range(0, len(payload["vertices"]), 3)]
     faces, slots = [], []
-    mapping = {sub: slot for slot, sub in enumerate(renderer["submeshSlots"])}
+    submesh_slots = renderer.get("submeshSlots", list(range(len(renderer["materialSlots"]))))
+    mapping = {sub: slot for slot, sub in enumerate(submesh_slots)}
     for sub_index, (_, start, length, base, *_rest) in enumerate(payload["submeshes"]):
         for i in range(start, start + length, 3):
             indices = payload["indices"][i:i + 3]
@@ -84,13 +85,16 @@ def make_mesh(renderer, payload, collection, material_map):
                 raise ValueError("Submesh base vertex exceeds positions")
             faces.append((indices[0], indices[2], indices[1]))
             slots.append(mapping.get(sub_index, min(sub_index, max(0, len(renderer["materialSlots"]) - 1))))
-    mesh = bpy.data.meshes.new(renderer["meshName"])
+    mesh = bpy.data.meshes.new(renderer.get("meshName", renderer.get("sourceName", renderer["name"])))
     mesh.from_pydata(vertices, [], faces)
     mesh.update()
     obj = bpy.data.objects.new(renderer["name"], mesh)
     collection.objects.link(obj)
-    obj["naraka_renderer"] = renderer["id"]
-    obj["naraka_mesh_source"] = renderer["meshSource"]
+    obj[renderer_property] = renderer.get("id", renderer.get("source"))
+    source_property = "naraka_mesh_source" if renderer_property == "naraka_renderer" else "naraka_effect_mesh_source"
+    obj[source_property] = renderer.get("meshSource", renderer.get("source", renderer.get("id")))
+    obj["naraka_resource_kind"] = "mesh-renderer" if renderer_property == "naraka_renderer" else (
+        "effect-mesh-renderer" if renderer_property == "naraka_effect_renderer" else "effect-mesh-asset")
     for reference in renderer["materialSlots"]:
         mesh.materials.append(material_map.get(reference))
     for polygon, slot in zip(mesh.polygons, slots):
@@ -127,6 +131,68 @@ def make_mesh(renderer, payload, collection, material_map):
             (*payload["colors"][i * dim:i * dim + 3], payload["colors"][i * dim + 3] if dim == 4 else 1)])
     shape_keys(obj, payload, renderer.get("blendShapeWeights", []))
     return obj
+
+
+def make_billboard_preview(system, collection, material_map, world, node_path):
+    size = max(0.05, float(system.get("previewSize", 0.12)))
+    name = "%s %s source proxy" % (system["name"], system["renderModeName"])
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata([(-size, 0, -size), (size, 0, -size), (size, 0, size), (-size, 0, size)], [], [(0, 1, 2, 3)])
+    mesh.update()
+    uv = mesh.uv_layers.new(name="UV0")
+    uv.data.foreach_set("uv", [0, 0, 1, 0, 1, 1, 0, 1])
+    obj = bpy.data.objects.new(name, mesh)
+    collection.objects.link(obj)
+    obj.matrix_world = world[system["node"]]
+    obj["naraka_resource_kind"] = "billboard-preview"
+    obj["naraka_effect_prefab"] = system["prefab"]
+    obj["naraka_particle_system"] = system["source"]
+    obj["naraka_source_mesh"] = "Unity built-in billboard quad; no authored Mesh reference"
+    obj["naraka_preview_only"] = True
+    obj["naraka_render_mode"] = system["renderModeName"]
+    obj["naraka_source_node_path"] = node_path
+    obj["naraka_particle_materials_json"] = json.dumps(system.get("materials", []))
+    obj["naraka_particle_textures_json"] = json.dumps(system.get("textures", []))
+    material_ids = system.get("materials", [])
+    for material_id in material_ids:
+        material = material_map.get(material_id)
+        if material is not None:
+            mesh.materials.append(material)
+    if mesh.materials:
+        for polygon in mesh.polygons:
+            polygon.material_index = 0
+    return obj
+
+
+def _texture_inventory(manifest, identity):
+    source = manifest["textures"].get(identity)
+    if source is None:
+        return {"id": identity, "name": identity, "missing": True}
+    return {"id": identity, "name": source["name"], "logicalPath": source.get("logicalPath"),
+        "packagePath": source.get("path"), "width": source.get("width"), "height": source.get("height")}
+
+
+def _material_inventory(manifest, identity):
+    source = manifest["materials"].get(identity)
+    if source is None:
+        return {"id": identity, "name": identity, "missing": True}
+    bindings = []
+    for property_name, binding in source.get("textures", {}).items():
+        texture_id = binding.get("source") or binding.get("texture")
+        if texture_id:
+            bindings.append({"property": property_name, "texture": _texture_inventory(manifest, texture_id),
+                "scale": binding.get("scale"), "offset": binding.get("offset")})
+    return {"id": identity, "name": source["name"], "shader": source.get("shader"),
+        "logicalPath": source.get("logicalPath"), "textures": bindings}
+
+
+def _mesh_inventory(row, payload, manifest):
+    return {"id": row.get("id", row.get("source")), "name": row["name"],
+        "sourceName": row.get("meshName", row.get("sourceName")), "logicalPath": row.get("logicalPath"),
+        "packagePath": row.get("mesh"), "vertices": payload["count"],
+        "triangles": len(payload["indices"]) // 3, "submeshes": len(payload["submeshes"]),
+        "uses": row.get("uses", []),
+        "materials": [_material_inventory(manifest, identity) for identity in row.get("materialSlots", []) if identity]}
 
 
 def make_rig(collection, prepared, world, source_nodes, report):
@@ -202,6 +268,10 @@ def import_package(path, highest_lod=True):
     root, manifest = load_package(path)
     # Validate every binary before touching the user's scene.
     payloads = [read_mesh(safe_path(root, r["mesh"])) for r in manifest["renderers"]]
+    effect_renderers = manifest.get("effectRenderers", [])
+    effect_renderer_payloads = [read_mesh(safe_path(root, r["mesh"])) for r in effect_renderers]
+    effect_meshes = manifest.get("effectMeshes", [])
+    effect_mesh_payloads = [read_mesh(safe_path(root, r["mesh"])) for r in effect_meshes]
     previous_active = bpy.context.view_layer.objects.active
     previous_selection = list(bpy.context.selected_objects)
     if bpy.context.object and bpy.context.object.mode != "OBJECT":
@@ -222,6 +292,9 @@ def import_package(path, highest_lod=True):
         skeleton_collection = bpy.data.collections.new(collection.name + " Skeletons")
         skeleton_collection["naraka_collection_role"] = "SKELETONS"
         collection.children.link(skeleton_collection)
+        effects_collection = bpy.data.collections.new(collection.name + " Effects")
+        effects_collection["naraka_collection_role"] = "EFFECTS"
+        collection.children.link(effects_collection)
         builder = MaterialBuilder(root, manifest, report)
         materials = {key: builder.build(value) for key, value in manifest["materials"].items()}
         world, visible = [], []
@@ -235,6 +308,24 @@ def import_package(path, highest_lod=True):
         source_text = bpy.data.texts.new(collection.name + " source hierarchy.json")
         source_text.write(json.dumps(manifest["nodes"], ensure_ascii=False, indent=2))
         collection["naraka_source_hierarchy"] = source_text.name
+        effect_collections = {}
+        for effect in manifest.get("effects", []):
+            name = Path(effect["prefab"].replace("\\", "/")).stem
+            child = bpy.data.collections.new(collection.name + " FX " + name)
+            child["naraka_collection_role"] = "EFFECT_PREFAB"
+            child["naraka_effect_prefab"] = effect["prefab"]
+            child["naraka_embedded_effect"] = bool(effect.get("embedded", False))
+            effects_collection.children.link(child)
+            effect_collections[effect["prefab"]] = child
+            component_path = effect.get("components")
+            if component_path:
+                component_text = bpy.data.texts.new(child.name + " source components.json")
+                component_text.write(safe_path(root, component_path).read_text(encoding="utf-8-sig"))
+                child["naraka_source_components"] = component_text.name
+
+        particles_by_prefab = {}
+        for particle in manifest.get("particleSystems", []):
+            particles_by_prefab.setdefault(particle["prefab"], []).append(particle)
         hidden_lods, lod_levels = set(), {}
         for group in manifest.get("lodGroups", []):
             if group["levels"]:
@@ -282,9 +373,138 @@ def import_package(path, highest_lod=True):
                 obj.matrix_parent_inverse = world[renderer["node"]]
                 obj.matrix_basis = Matrix.Identity(4)
         bpy.context.view_layer.update()
+
+        effect_prepared_by_prefab = {}
+        for renderer, payload in zip(effect_renderers, effect_renderer_payloads):
+            prefab = renderer["effectPrefab"]
+            obj = make_mesh(renderer, payload, effect_collections[prefab], materials, "naraka_effect_renderer")
+            node = manifest["nodes"][renderer["node"]]
+            obj.matrix_world = world[renderer["node"]]
+            obj["naraka_effect_prefab"] = prefab
+            obj["naraka_source_node"] = node["source"]
+            obj["naraka_source_node_path"] = node["path"]
+            obj["naraka_source_enabled"] = bool(visible[renderer["node"]] and renderer["enabled"])
+            obj.hide_render = not obj["naraka_source_enabled"]
+            obj.hide_set(obj.hide_render)
+            effect_prepared_by_prefab.setdefault(prefab, []).append((renderer, payload, obj))
+
+        effect_mesh_objects = {}
+        for row, payload in zip(effect_meshes, effect_mesh_payloads):
+            prefab = row["effectPrefab"]
+            obj = make_mesh(row, payload, effect_collections[prefab], materials, "naraka_effect_mesh")
+            node = manifest["nodes"][row["node"]]
+            obj.matrix_world = world[row["node"]]
+            obj["naraka_effect_prefab"] = prefab
+            obj["naraka_source_node"] = node["source"]
+            obj["naraka_source_node_path"] = node["path"]
+            obj["naraka_mesh_uses"] = row.get("uses", [])
+            obj["naraka_source_enabled"] = bool(visible[row["node"]])
+            obj.hide_render = not obj["naraka_source_enabled"]
+            obj.hide_set(obj.hide_render)
+            effect_mesh_objects[(prefab, row.get("id", row.get("source")))] = obj
+
+        for particle in manifest.get("particleSystems", []):
+            prefab = particle["prefab"]
+            for mesh_id in particle.get("meshes", []):
+                obj = effect_mesh_objects.get((prefab, mesh_id))
+                if obj is not None:
+                    users = json.loads(obj.get("naraka_particle_systems_json", "[]"))
+                    if particle["source"] not in users:
+                        users.append(particle["source"])
+                    obj["naraka_particle_systems_json"] = json.dumps(users)
+            if particle.get("renderModeName") in ("Billboard", "Stretch", "HorizontalBillboard", "VerticalBillboard"):
+                node = manifest["nodes"][particle["node"]]
+                obj = make_billboard_preview(particle, effect_collections[prefab], materials, world, node["path"])
+                obj["naraka_source_node"] = node["source"]
+                active = bool(visible[particle["node"]])
+                obj["naraka_source_enabled"] = active
+                obj.hide_render = not active
+                obj.hide_set(obj.hide_render)
+            elif particle.get("renderModeName") != "Mesh":
+                report.append("Particle system %s uses %s mode; source resources are listed, but no preview geometry was generated." % (
+                    particle["name"], particle.get("renderModeName", "Unknown")))
+
+        for prefab, effect_prepared in effect_prepared_by_prefab.items():
+            if not any(payload["skin"] and payload["bindposes"] for _, payload, _ in effect_prepared):
+                continue
+            skeleton_collection = bpy.data.collections.new(effect_collections[prefab].name + " Skeletons")
+            skeleton_collection["naraka_collection_role"] = "EFFECT_SKELETONS"
+            effect_collections[prefab].children.link(skeleton_collection)
+            effect_rig = make_rig(skeleton_collection, effect_prepared, world, manifest["nodes"], report)
+            if effect_rig:
+                for renderer, _, obj in effect_prepared:
+                    if not renderer.get("skinned"):
+                        continue
+                    obj.parent = effect_rig
+                    obj.matrix_parent_inverse = world[renderer["node"]]
+                    obj.matrix_basis = Matrix.Identity(4)
+
+        mesh_payload_by_effect_identity = {
+            (row["effectPrefab"], row["id"]): payload for row, payload in zip(effect_meshes, effect_mesh_payloads)}
+        renderer_payload_by_effect_identity = {
+            (row["effectPrefab"], row["id"]): payload for row, payload in zip(effect_renderers, effect_renderer_payloads)}
+        mesh_rows_by_effect_identity = {
+            (row["effectPrefab"], row.get("id", row.get("source"))): row for row in effect_meshes}
+        mesh_reference_rows = {}
+        for row in effect_meshes:
+            mesh_reference_rows[(row["effectPrefab"], row["id"])] = row
+        for row in effect_renderers:
+            mesh_reference_rows[(row["effectPrefab"], row["meshSource"])] = row
+        effect_inventory = []
+        for effect in manifest.get("effects", []):
+            prefab = effect["prefab"]
+            renderer_inventory = [_mesh_inventory(row, renderer_payload_by_effect_identity[(prefab, row["id"])], manifest)
+                for row in effect.get("renderers", [])]
+            asset_rows = [mesh_rows_by_effect_identity[(prefab, identity)] for identity in effect.get("meshes", [])
+                if (prefab, identity) in mesh_rows_by_effect_identity]
+            mesh_asset_inventory = [_mesh_inventory(row, mesh_payload_by_effect_identity[(prefab, row["id"])], manifest)
+                for row in asset_rows]
+            particles = []
+            for particle in particles_by_prefab.get(prefab, []):
+                node = manifest["nodes"][particle["node"]]
+                mesh_refs = []
+                for identity in particle.get("meshes", []):
+                    row = mesh_reference_rows.get((prefab, identity))
+                    payload = (mesh_payload_by_effect_identity.get((prefab, identity)) or
+                        renderer_payload_by_effect_identity.get((prefab, identity)))
+                    if row is not None and payload is not None:
+                        mesh_refs.append(_mesh_inventory(row, payload, manifest))
+                    else:
+                        mesh_refs.append({"id": identity, "name": identity, "missing": True})
+                particles.append({"id": particle["source"], "name": particle["name"],
+                    "node": node["name"], "nodePath": node["path"], "renderMode": particle["renderModeName"],
+                    "sourceGeometry": ({"kind": "Unity built-in particle quad", "vertices": 4, "triangles": 2,
+                        "authoredMesh": False} if particle["renderModeName"] in
+                        ("Billboard", "Stretch", "HorizontalBillboard", "VerticalBillboard") else
+                        {"kind": "particle mesh reference", "authoredMesh": True}),
+                    "customMeshReferences": mesh_refs,
+                    "materials": [_material_inventory(manifest, identity) for identity in particle.get("materials", [])],
+                    "textures": [_texture_inventory(manifest, identity) for identity in particle.get("textures", [])]})
+            effect_inventory.append({
+                "prefab": prefab,
+                "mounts": effect.get("mounts", []),
+                "meshRenderers": renderer_inventory,
+                "meshAssets": mesh_asset_inventory,
+                "materials": [_material_inventory(manifest, identity) for identity in effect.get("materials", [])],
+                "textures": [_texture_inventory(manifest, identity) for identity in effect.get("textures", [])],
+                "particleSystems": particles,
+                "components": effect.get("components"),
+            })
+            effect_collection = effect_collections[prefab]
+            effect_collection["naraka_mesh_renderer_count"] = len(renderer_inventory)
+            effect_collection["naraka_mesh_asset_count"] = len(mesh_asset_inventory)
+            effect_collection["naraka_particle_system_count"] = len(particles)
+        inventory_text = bpy.data.texts.new(collection.name + " effects inventory.json")
+        inventory_text.write(json.dumps(effect_inventory, ensure_ascii=False, indent=2))
+        effects_collection["naraka_effect_inventory"] = inventory_text.name
+
+        created_objects = set(bpy.data.objects) - before["objects"]
         summary = {"format": "NARAKA_IMPORT_REPORT", "package": str(root), "collection": collection.name,
             "meshes": len(prepared), "materials": len(materials), "textures": len(builder.images),
             "sourceTextures": len(manifest["textures"]), "bones": len(rig.data.bones) if rig else 0,
+            "effects": len(manifest.get("effects", [])), "effectMeshRenderers": len(effect_renderers),
+            "effectMeshAssets": len(effect_meshes), "particleSystems": len(manifest.get("particleSystems", [])),
+            "billboardPreviews": sum(o.get("naraka_resource_kind") == "billboard-preview" for o in created_objects),
             "empties": 0, "sourceNodes": len(manifest["nodes"]),
             "warnings": list(dict.fromkeys(report)), "materialAdapters": builder.adapters,
             "materialStatus": builder.statuses}

@@ -8,14 +8,18 @@
 2. 在 Asset List 选择一个或多个时装 `_ui.prefab`；也可在 Logical Asset Paths 树中勾选多个 Prefab。
 3. **Export → Format specific → Naraka / 永劫无间 → Selected Prefabs as Blender packages...**，树中勾选则使用 **Checked Prefabs as Blender packages...**。
 4. 选择输出目录，每个 Prefab 生成一个 `.naraka` 文件夹。
-5. Blender **编辑 → 偏好设置 → 插件 → 从磁盘安装**，选择 `dist/naraka_blender-0.3.0.zip`，启用 **Naraka Prefab Importer / 永劫无间时装**。
+5. Blender **编辑 → 偏好设置 → 插件 → 从磁盘安装**，选择 `dist/naraka_blender-0.4.1.zip`，启用 **Naraka Prefab Importer / 永劫无间时装**。
 6. **文件 → 导入 → Naraka Prefab package / 永劫无间**，选择资源包中的 `naraka.json`。材质预览或渲染模式下查看贴图，播放时间轴查看支持的动态材质。
 
 全部网格都会导入。默认隐藏低精度 LOD，关闭导入选项 **Show highest detail LOD** 可全部显示。原生 LODGroup 不存在时，只按明确的 `_L数字` 后缀暂时隐藏低精度对象，并在报告中说明。所有原始对象与启用状态仍保留。
 
-场景按资源组织：每次导入创建一个时装集合，下面是 **Meshes → LOD0 / LOD1 / …** 和 **Skeletons**。只创建网格和骨架，不逐个生成 Transform 空物体。网格保留完整的原层级世界变换，挂在共享骨架下，移动骨架时整体跟随；原层级、辅助节点和挂点存入集合关联的 `source hierarchy.json` 文本，供后续分析。有骨架时，父级矩阵保留嵌套非均匀缩放形成的剪切，无需烘焙顶点或形态键。旧版 `.naraka` 包可直接重新导入，无需重新导出。
+场景按资源组织：每次导入创建一个时装集合，下面是 **Meshes → LOD0 / LOD1 / …**、**Skeletons** 和独立的 **Effects**。只创建资源网格和骨架，不逐个生成 Transform 空物体。网格保留完整的原层级世界变换，挂在共享骨架下，移动骨架时整体跟随；原层级、辅助节点和挂点存入集合关联的 `source hierarchy.json` 文本，供后续分析。有骨架时，父级矩阵保留嵌套非均匀缩放形成的剪切，无需烘焙顶点或形态键。旧版 `.naraka` 包可直接重新导入，无需重新导出。
+
+`Effects` 按被引用的 FX Prefab 分子集合，导入其中的 MeshRenderer、SkinnedMeshRenderer、独立 Mesh、材质和贴图；若特效网格有蒙皮，会在对应子集合下另建骨架。Billboard、Stretch、水平/垂直 Billboard 使用 Unity 内建四边形而非独立模型，插件会按源挂点放一个带材质的静态检查卡片，并标记 `naraka_preview_only`；它不模拟粒子、朝向相机或播放。Mesh 粒子引用的模型直接作为真实 Mesh 资源导入。特效的面数、子网格、模型资源路径、材质/Shader、贴图属性名与路径、粒子渲染模式和引用关系写在 Blender 文本块 **`effects inventory.json`**；原始组件字段与资源引用另存为每个 Prefab 的 `source components.json`。`fx_pyro_uber.shadergraph` 会把主图 RGB 接到静态检查材质作检视，其透射图和遮罩只保留为未连接的图像节点，不按未知语义猜测 Alpha。运行时脚本创建或选择的资源不在静态 Prefab 引用范围内。
 
 每次导入建立独立集合；重复导入不覆盖现有对象、材质或贴图。失败会清理本次创建的数据。导入器不保存或覆盖现有 `.blend`。
+
+0.4.1 修复普通 `lx22standardcharactercloth` / `lx22standardcharacterclothsilk` 启用 `_MFX_EMISSIVE_PERIODIC_2` 时被误当成静态 RGB 发光的问题。`_EmissionMap` 以 Non-Color 读取：R/B 为两层区域，G/A 为相位；颜色来自材质 HDR 参数。UV 固定，时间推进相位，不滚动整张发光图。贴图、通道分解及两个轻量流光组都在外层可见。旧场景选中相应材质，F3 搜索 **Repair Naraka phase emission / 修复永劫相位发光**，或在 N → 永劫材质面板点击修复；先备份原材质，仅替换旧版的直接 RGB 发光接线，保留其他 PBR、透明度和渲染设置。已手动改写的发光图和已有流光组不会自动覆盖。无需重新解包。
 
 ## 包结构与保真范围
 
@@ -24,8 +28,10 @@
   naraka.json              # 层级、Renderer、材质、贴图的准确来源和引用
   checksums.json           # 读入前验证资源完整性
   meshes/*.mesh            # 复用 EFFMESH v6 原生格式，不经 FBX/OBJ
+  effects/meshes/*.mesh    # FX Prefab 的实际 Renderer Mesh 与粒子 Mesh 引用
   materials/*.json         # 完整 Shader 参数、开关、纹理 ST、属性声明
   textures/*.png
+  source/effects/*.components.json # FX 组件字段及其资源引用
   source/manifest.json     # 完整导出凭证；重导出先暂存，再备份旧包
 ```
 
@@ -39,7 +45,7 @@
 
 ## 材质
 
-**0.3.0 默认生成轻量 PBR。** 自动连接基础色、金属度、粗糙度、法线、第二套 UV 覆盖、普通发光、RG/BA 两层相位流光，以及独立特效的 UV 滚动/旋转、颜色和遮罩。不再生成钻石、闪片、折射、细节数组、虹彩、复杂视角项和多 pass 还原。未使用的贴图保留引用元数据，不再加载或创建空接节点；AO 保留在 MRAV 的 B 通道，不通过乘基础色伪造环境光照。皮肤使用独立的打包通道规则。
+**0.4.0 默认生成轻量 PBR。** 自动连接基础色、金属度、粗糙度、法线、第二套 UV 覆盖、普通发光、RG/BA 两层相位流光，以及独立特效的 UV 滚动/旋转、颜色和遮罩。不再生成钻石、闪片、折射、细节数组、虹彩、复杂视角项和多 pass 还原。未使用的衣料贴图保留引用元数据，不再加载或创建空接节点；Shader 语义未识别的特效贴图保留为顶层未连接节点，供资源检查。AO 保留在 MRAV 的 B 通道，不通过乘基础色伪造环境光照。皮肤使用独立的打包通道规则。
 
 实际图片、UV、通道分解和 PBR 连接均在顶层，只将法线重建 Z 和相位波公式放在小型共享组内。按 N → **永劫材质 → 贴图与通道用途** 可查看用途并“定位”。所有节点按依赖从左向右排列。
 
@@ -87,6 +93,6 @@ AnimeStudio.GUI.exe --export-naraka-prefab "D:\steam\steamapps\common\NARAKA BLA
 blender --background --factory-startup --python-exit-code 1 --python tests/blender_import_smoke.py -- "E:\Exports\yulinglong_s16_ui.naraka\naraka.json" "E:\Exports\validation"
 ```
 
-验证插件注册/重复注册、资源校验、网格/三角形/材质槽、贴图加载、静止蒙皮、重复导入隔离，并保存独立样例与渲染。样例为 59 网格、12 材质、13 贴图，Blender 5.2 验证通过；0.2.0 在 Blender 5.0.1 验证零空物体、LOD 集合、网格世界变换、骨架整体移动、嵌套非均匀缩放、节点无重叠和整理前后连接不变，并在当前 Blender 5.0.1 经 MCP 实际导入查看。
+验证插件注册/重复注册、资源校验、网格/三角形/材质槽、贴图加载、静止蒙皮、特效资源归属、Billboard 代理和重复导入隔离，并保存独立样例与渲染。旧版衣料样例在 Blender 5.2 验证通过；0.2.0 在 Blender 5.0.1 验证零空物体、LOD 集合、网格世界变换、骨架整体移动、嵌套非均匀缩放、节点无重叠和整理前后连接不变。0.4.0 的真实特效包使用 Blender 5.0.1 验证；该玲珑样例有 3 个 Billboard 粒子系统、2 个特效材质、4 张贴图，没有独立模型 Mesh，因而导入 3 张标记为代理的 Unity 内建粒子面片。
 
 第二套 `lv_s0_ui` 的 52 个网格、15 个材质、24 张贴图也已通过结构、蒙皮和渲染检查。其其他 Shader 采用通用预览适配，不等于与游戏视觉一致。

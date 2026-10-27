@@ -7,7 +7,7 @@ if errorlevel 1 for /f "usebackq tokens=*" %%i in (`"%vfs_layers_vswhere%" -late
 where cl >nul 2>nul
 if errorlevel 1 goto vfs_layers_failed
 if not exist bin\vfs-layers mkdir bin\vfs-layers
-cl /nologo /utf-8 /O2 /MD /EHsc /std:c++17 /W4 /DEFF_OFFLINE_PACKAGE_V35=1 /Fo"bin\vfs-layers\smoke.obj" tools\diagnostics\vfs_layers_native_smoke.cpp /Fe"bin\vfs-layers\smoke.exe" /link bcrypt.lib
+cl /nologo /utf-8 /O2 /MD /EHsc /std:c++17 /W4 /Fo"bin\vfs-layers\smoke.obj" tools\diagnostics\vfs_layers_native_smoke.cpp /Fe"bin\vfs-layers\smoke.exe" /link bcrypt.lib
 set "vfs_layers_result=%errorlevel%"
 popd
 exit /b %vfs_layers_result%

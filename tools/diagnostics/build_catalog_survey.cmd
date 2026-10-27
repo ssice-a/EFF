@@ -9,7 +9,7 @@ if errorlevel 1 goto catalog_failed
 if not exist bin\catalog-survey mkdir bin\catalog-survey
 call tools\build_imgui.cmd static
 if errorlevel 1 goto catalog_failed
-cl /nologo /utf-8 /O2 /Zi /MT /LD /EHsc /std:c++17 /bigobj /W4 /DEFF_OFFLINE_PACKAGE_V35=1 /DEIEM_CATALOG_SURVEY=1 /DEIEM_STATIC_RUNTIME=1 /Ideps\minhook_lib\include /Fo"bin\catalog-survey\entry.obj" /Fd"bin\catalog-survey\compile.pdb" src\eiem_resource_entry.cpp deps\minhook_lib\lib\libMinHook.x64.lib /Fe"bin\catalog-survey\eff.dll" /link /DLL /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /NODEFAULTLIB:MSVCRT bcrypt.lib user32.lib /PDB:"bin\catalog-survey\eff.pdb"
+cl /nologo /utf-8 /O2 /Zi /MT /LD /EHsc /std:c++17 /bigobj /W4 /DEIEM_CATALOG_SURVEY=1 /DEIEM_STATIC_RUNTIME=1 /Ideps\minhook_lib\include /Fo"bin\catalog-survey\entry.obj" /Fd"bin\catalog-survey\compile.pdb" src\eiem_resource_entry.cpp deps\minhook_lib\lib\libMinHook.x64.lib /Fe"bin\catalog-survey\eff.dll" /link /DLL /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /NODEFAULTLIB:MSVCRT bcrypt.lib user32.lib /PDB:"bin\catalog-survey\eff.pdb"
 set "catalog_result=%errorlevel%"
 popd
 exit /b %catalog_result%

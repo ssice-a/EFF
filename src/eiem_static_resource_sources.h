@@ -63,13 +63,13 @@ inline std::set<std::string> Closure(const Selection& s,std::set<std::string> se
  std::vector<std::string> queue(selected.begin(),selected.end());while(!queue.empty()){auto path=queue.back();queue.pop_back();Require(s.inputs.count(path),"resource not queried from game: "+path);auto d=s.dependencies.find(path);
   if(d!=s.dependencies.end())for(const auto& dep:d->second)if(selected.insert(dep).second)queue.push_back(dep);}return selected;
 }
-struct Discovery {std::set<std::string> roots,sources;size_t renderers=0;EiemConsumerUpdateRecords::Decisions decisions;};
+struct Discovery {std::set<std::string> roots,sources;size_t renderers=0;EiemConsumerUpdateRecords::Decisions decisions;std::map<std::string,std::set<Identity>> targetConsumers;};
 inline Discovery FindConsumers(const Selection& s,const std::set<Identity>& targets,bool requireAllTargets=true) {
  std::set<std::string> targetSources;for(const auto& t:targets){auto a=s.assets.find(Logical(t.path));Require(a!=s.assets.end(),"Mesh path not queried from game: "+t.path);targetSources.insert(a->second);}
- std::set<NativeReference> selected,covered;std::map<Identity,NativeReference> resolved;
+ std::set<NativeReference> selected,covered;std::map<Identity,NativeReference> resolved;std::map<NativeReference,std::set<Identity>> identitiesByReference;
  for(const auto& source:targetSources){auto bundle=EndfieldInput::Decode(Payload(s.inputs.at(source)));
   for(const auto& m:bundle.members)if(SerializedHeader(m.bytes))for(const auto& a:SerializedAssets(m.bytes,m.name,ParseSerialized(m.bytes))){Identity id{Logical(a.path),a.asset};if(!targets.count(id))continue;
-   Require(a.classId==43,"INI target is not an original Mesh");NativeReference ref{Cab(a.cab),a.pathId};auto old=resolved.emplace(id,ref);Require(old.second||old.first->second==ref,"ambiguous Mesh path+asset");selected.insert(ref);}}
+   Require(a.classId==43,"INI target is not an original Mesh");NativeReference ref{Cab(a.cab),a.pathId};auto old=resolved.emplace(id,ref);Require(old.second||old.first->second==ref,"ambiguous Mesh path+asset");identitiesByReference[ref].insert(id);selected.insert(ref);}}
  Require(resolved.size()==targets.size(),"original Mesh path+asset missing in game-selected source");Discovery result;result.sources=targetSources;
  EiemOfflinePackage::Writer dependencies,matching;for(const auto& source:targetSources){dependencies.S(source);dependencies.S(s.inputs.at(source).revision);}
  for(const auto& row:resolved){matching.Id(row.first);matching.S(row.second.first);matching.N(uint64_t(row.second.second));}
@@ -82,7 +82,8 @@ inline Discovery FindConsumers(const Selection& s,const std::set<Identity>& targ
   auto& decision=result.decisions[source];decision.stamp={s.inputs.at(source).revision,dependencyDigest,matchingDigest,"mesh-pptr+local-transform-children"};
   auto bundle=EndfieldInput::Decode(Payload(s.inputs.at(source)));
   for(const auto& m:bundle.members)if(SerializedHeader(m.bytes)){auto layout=ParseSerialized(m.bytes);std::vector<int64_t> matched;
-   for(const auto& consumer:MeshConsumers(m.bytes,layout,m.name,selected,Cab)){matched.push_back(consumer.renderer);auto ref=consumer.mesh;ref.first=Cab(ref.first);covered.insert(ref);}
+   for(const auto& consumer:MeshConsumers(m.bytes,layout,m.name,selected,Cab)){matched.push_back(consumer.renderer);auto ref=consumer.mesh;ref.first=Cab(ref.first);covered.insert(ref);
+    auto identities=identitiesByReference.find(ref);Require(identities!=identitiesByReference.end(),"consumer Mesh identity absent from current target set");result.targetConsumers[source].insert(identities->second.begin(),identities->second.end());}
    if(matched.empty())continue;std::set<int64_t> owned;EiemPrefabConsumers::Ownership hierarchy(m.bytes,layout,m.name);
    std::map<int64_t,int64_t> owners;for(auto id:matched)owners.emplace(id,hierarchy.Owner(id));
    for(const auto& a:SerializedAssets(m.bytes,m.name,layout))if(a.classId==1&&Ends(Logical(a.path),".prefab")){
@@ -95,6 +96,7 @@ inline Discovery FindConsumers(const Selection& s,const std::set<Identity>& targ
  for(const auto& input:consumers){covered.insert(input.covered.begin(),input.covered.end());
   result.roots.insert(input.discovery.roots.begin(),input.discovery.roots.end());
   result.sources.insert(input.discovery.sources.begin(),input.discovery.sources.end());result.renderers+=input.discovery.renderers;
+  for(const auto& row:input.discovery.targetConsumers)result.targetConsumers[row.first].insert(row.second.begin(),row.second.end());
   for(const auto& row:input.discovery.decisions)Require(result.decisions.emplace(row).second,"consumer source conclusion duplicated");
  }
  if(requireAllTargets)Require(covered==selected,"Mesh target has no verified Prefab Renderer consumer");return result;

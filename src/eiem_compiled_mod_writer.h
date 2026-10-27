@@ -60,12 +60,14 @@ inline Artifact DescribeInput(size_t i,const Plan& plan,bool rootAssembly,const 
     for(const auto& root:plan.roots)if(root.input==i&&root.cab==member.name){
      auto found=pristineGraphs.find(member.name);
      if(found==pristineGraphs.end()){
+       auto graphStarted=std::chrono::steady_clock::now();
       auto graph=std::make_shared<const InputAnalysis::GraphData>(old->bytes,member.name,artifact.members.at(member.name).before);
       found=pristineGraphs.emplace(member.name,std::move(graph)).first;
+       if(cost)cost("proof-pristine-graph",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-graphStarted).count());
      }
      EiemRenderAssemblyDescription::Graph graph(found->second,root.source);
      Root pristine;pristine.path=root.path;pristine.input=i;pristine.cab=member.name;pristine.source=root.source;
-     pristine.assembly=EiemRenderAssemblyDescription::Build(graph,graph,member.name,Package{},AssetIndex{},{});
+      pristine.assembly=EiemResourceReloadPlan::Measure(cost,"proof-pristine-assembly",[&]{return EiemRenderAssemblyDescription::Build(graph,graph,member.name,Package{},AssetIndex{},{});});
      artifact.pristine.push_back(std::move(pristine));
     }
     continue;
@@ -125,6 +127,7 @@ inline Artifact Describe(Manifest manifest){
 #include "eiem_incremental_material_compile.h"
 #include "eiem_incremental_mesh_compile.h"
 #include "eiem_incremental_physics_compile.h"
+#include "eiem_semantic_renderer_replay.h"
 namespace EiemCompiledModWriter {
 inline Artifact Compile(const Package& author,const EiemStaticSources::Selection& selected,const std::filesystem::path& game,
  std::function<void(const char*,double)> cost={},const Artifact* previousArtifact=nullptr,const EiemStaticSources::Discovery* preparedDiscovery=nullptr){
@@ -135,6 +138,10 @@ inline Artifact Compile(const Package& author,const EiemStaticSources::Selection
  std::vector<EiemCompiledInputView::Recipe> views(sourceCount);std::map<std::string,Bytes> preparedFrames;std::once_flag framesReady;
  std::vector<EiemAddressedResources::Bindings> bindings(sourceCount);
  auto plan=Measure(cost,"resource-build",[&]{return Build(author,baseline,work/"candidate",std::string(structure),{},{},cost,{},true,game,[&](size_t i,Plan& current,const Bytes& input,const EndfieldInput::Bundle& original,const EndfieldInput::Bundle& edited,const EiemResourceRecipe::Dictionary& originalSpans,const EiemResourceRecipe::Dictionary& authorSpans,const InputAnalysis& analysis){
+  const auto sourceLogical=EiemSemanticRendererReplay::LogicalForSource(selected,current.originals.at(i).file);
+  std::map<Identity,std::string> targetBundles;for(const auto& target:author.targetIndex){auto path=EiemStaticSources::Logical(target.first.path);auto source=selected.assets.find(path);Require(source!=selected.assets.end(),"semantic target Mesh has no current logical Bundle route: "+target.first.path);targetBundles.emplace(target.first,EiemStaticSources::Logical(source->second));}
+  for(auto& rule:current.rendererRules.at(i)){auto source=selected.assets.find(EiemStaticSources::Logical(rule.mesh.path));Require(source!=selected.assets.end(),"semantic Renderer Mesh has no current logical Bundle route: "+rule.mesh.path);rule.meshBundle=EiemStaticSources::Logical(source->second);}
+  current.semanticComplete.at(i)=EiemSemanticRendererReplay::Capture(original,edited,sourceLogical,current.rendererRules.at(i),targetBundles,current.semanticOperations.at(i));
   proofs.at(i)=DescribeInput(i,current,true,original,edited,cost,previousArtifact,&analysis);
   EiemAddressedResources::Capture(bindings.at(i),edited);
   current.memberRecipes.at(i)=Measure(cost,"addressed-recipe",[&]{return DescribeMembers(edited,proofs.at(i).members,originalSpans,authorSpans);});
@@ -152,7 +159,7 @@ inline Artifact Compile(const Package& author,const EiemStaticSources::Selection
   const auto retained=std::move(compact.retainedInputs);std::vector<size_t> remap(compact.inputs.size(),SIZE_MAX);
   for(size_t i=0;i<retained.size();++i)remap.at(retained[i])=i;
   auto select=[&](auto& values){using Values=std::decay_t<decltype(values)>;Values result;result.reserve(retained.size());for(auto old:retained)result.push_back(std::move(values.at(old)));values=std::move(result);};
-  select(compact.inputs);select(compact.originals);select(compact.startupHashes);select(compact.rendererRules);select(compact.namespaceRecipes);select(compact.memberRecipes);select(artifact.views);
+  select(compact.inputs);select(compact.originals);select(compact.startupHashes);select(compact.rendererRules);select(compact.semanticOperations);select(compact.semanticComplete);select(compact.namespaceRecipes);select(compact.memberRecipes);select(artifact.views);
   for(auto& root:compact.roots){Require(remap.at(root.input)!=SIZE_MAX,"retention removed a Prefab root");root.input=remap[root.input];}
   for(auto& root:artifact.pristine){Require(remap.at(root.input)!=SIZE_MAX,"retention removed a pristine root");root.input=remap[root.input];}
   std::vector<size_t> closure;for(auto old:compact.closure)if(remap.at(old)!=SIZE_MAX)closure.push_back(remap[old]);compact.closure=std::move(closure);
@@ -168,7 +175,7 @@ inline void Export(const std::filesystem::path& mod,const std::filesystem::path&
  const std::function<std::optional<MeshStructureCompilation>(std::shared_ptr<const Artifact>,const EiemStaticSources::Selection&,const std::set<std::string>&,const std::function<void(const char*,double)>&)>& compileMeshStructure={}){
  Require(!currentSelectionComplete||preparedSelection,"complete source selection requires the verified current index adapter");
  auto author=Measure(cost,"author-read",[&]{return preparedAuthor?*preparedAuthor:Load(mod);});auto selected=Measure(cost,"source-selection",[&]{return preparedSelection?*preparedSelection:EiemStaticSources::Merge({author},game);});
- std::optional<Artifact> cached;std::optional<EiemCompiledModStore::Loaded> store;std::optional<EiemStaticSources::Selection> inherited;bool sameDiscovery=false;
+ std::optional<Artifact> cached;std::optional<EiemCompiledModStore::Loaded> store;std::optional<EiemStaticSources::Selection> inherited;bool sameDiscovery=false,sameTargetSet=false,structureSelectionStable=false;
  const auto& cacheRoot=previous.empty()?mod:previous;
  if(!preparedDiscovery&&EiemAddressedResources::TryPublish(mod,cacheRoot,game,author,&selected,cost,false,currentSelectionComplete))return;
  if(std::filesystem::is_regular_file(cacheRoot/"compiled.bin")){
@@ -180,13 +187,30 @@ inline void Export(const std::filesystem::path& mod,const std::filesystem::path&
   Require(cached->manifest.package.id==author.id,"previous compiled discoveries belong to another Mod; export to a new directory");
   if(!inherited)inherited=EiemStaticSources::LoadMod(cacheRoot,game);
   auto targets=[](const Package& package){std::set<std::pair<std::string,std::string>> result;for(const auto& row:package.targetIndex)result.emplace(row.first.path,row.first.asset);return result;};
-  sameDiscovery=inherited->candidates==selected.candidates&&targets(cached->manifest.package)==targets(author);
+   sameTargetSet=targets(cached->manifest.package)==targets(author);
+   sameDiscovery=inherited->candidates==selected.candidates&&sameTargetSet;
+   structureSelectionStable=true;std::set<std::string> commonCandidates;
+   std::set_intersection(inherited->candidates.begin(),inherited->candidates.end(),selected.candidates.begin(),selected.candidates.end(),std::inserter(commonCandidates,commonCandidates.end()));
+   for(const auto& row:inherited->inputs){auto found=selected.inputs.find(row.first);if(found==selected.inputs.end())continue;
+    if(found->second.revision!=row.second.revision||found->second.physical!=row.second.physical||found->second.offset!=row.second.offset||found->second.size!=row.second.size)structureSelectionStable=false;}
+   for(const auto& source:commonCandidates){auto before=inherited->inputs.find(source),after=selected.inputs.find(source);if(before==inherited->inputs.end()||after==selected.inputs.end()||
+      before->second.revision!=after->second.revision||before->second.physical!=after->second.physical||before->second.offset!=after->second.offset||before->second.size!=after->second.size){structureSelectionStable=false;continue;}
+    auto oldDeps=inherited->dependencies.find(source),newDeps=selected.dependencies.find(source);std::set<std::string> oldCommon,newCommon;
+    if(oldDeps!=inherited->dependencies.end())for(const auto& dependency:oldDeps->second)if(commonCandidates.count(dependency))oldCommon.insert(dependency);
+    if(newDeps!=selected.dependencies.end())for(const auto& dependency:newDeps->second)if(commonCandidates.count(dependency))newCommon.insert(dependency);
+    if(oldCommon!=newCommon)structureSelectionStable=false;
+   }
+   std::set<std::string> targetPaths;for(const auto& row:cached->manifest.package.targetIndex)targetPaths.insert(EiemStaticSources::Logical(row.first.path));
+   for(const auto& row:author.targetIndex)targetPaths.insert(EiemStaticSources::Logical(row.first.path));
+   for(const auto& row:inherited->assets){if(targetPaths.count(row.first)||EiemStaticSources::Ends(row.first,".prefab"))continue;auto found=selected.assets.find(row.first);
+    if(found==selected.assets.end()||found->second!=row.second)structureSelectionStable=false;}
+   for(const auto& row:selected.assets){if(targetPaths.count(row.first)||EiemStaticSources::Ends(row.first,".prefab"))continue;auto found=inherited->assets.find(row.first);
+    if(found==inherited->assets.end()||found->second!=row.second)structureSelectionStable=false;}
   for(const auto& row:inherited->inputs){auto found=selected.inputs.find(row.first);if(found==selected.inputs.end()||found->second.revision!=row.second.revision||found->second.physical!=row.second.physical||found->second.offset!=row.second.offset||found->second.size!=row.second.size)sameDiscovery=false;}
   for(const auto& row:inherited->assets){auto found=selected.assets.find(row.first);if(found==selected.assets.end()||found->second!=row.second)sameDiscovery=false;}
   if(inherited->dependencies!=selected.dependencies)sameDiscovery=false;
-  bool gameRefresh=currentSelectionComplete&&EiemCompiledExportCarryover::RevisionsChanged(selected,*inherited);
   selected=Measure(cost,"compiled-source-carryover",[&]{return EiemCompiledExportCarryover::Merge(selected,*inherited,*cached,currentSelectionComplete);});
-  EiemCompiledExportCarryover::RebindSources(*cached,selected,gameRefresh);
+   EiemCompiledExportCarryover::RebindSources(*cached,selected,currentSelectionComplete);
   // The descriptor keeps the source tool's request identity, not the combined
   // compiler identity, so a subsequent export still reuses the index selection.
   auto descriptor=selected;if(std::filesystem::is_regular_file(mod/"source-inputs.bin"))descriptor.manifest=EiemStaticSources::LoadMod(mod,game).manifest;
@@ -209,22 +233,27 @@ inline void Export(const std::filesystem::path& mod,const std::filesystem::path&
  }
 
  bool preparedSupported=std::none_of(author.resources.begin(),author.resources.end(),[](const auto& row){return row.second->kind!=10&&(row.first.rfind("resources/",0)==0||row.second->blocks.count("@physics"));});
- if(store&&cached&&sameDiscovery&&!preparedDiscovery&&SharedInputsPruned(*cached)&&cached->manifest.rootAssembly&&preparedSupported&&preparePrefab&&compileMeshStructure){
+ if(store&&cached&&!preparedDiscovery&&SharedInputsPruned(*cached)&&cached->manifest.rootAssembly&&preparedSupported&&preparePrefab&&compileMeshStructure&&
+    (sameDiscovery||(currentSelectionComplete&&structureSelectionStable))){
   auto structure=MeshStructureChanges(author,cached->manifest.package);
   if(structure&&!structure->targets.empty()){
-   std::set<std::string> affected;EiemStaticSources::Discovery discovery;
-   if(MeshStructureSources(*cached,selected,structure->targets,affected,discovery)){
+   std::optional<EiemStaticSources::Discovery> currentDiscovery;const EiemStaticSources::Discovery* discovery=nullptr;
+   bool sameCandidates=inherited&&inherited->candidates==selected.candidates;
+   if(!sameTargetSet||!sameCandidates){std::set<Identity> currentTargets;for(const auto& row:author.targetIndex)currentTargets.insert({EiemStaticSources::Logical(row.first.path),row.first.asset});
+    currentDiscovery=Measure(cost,"mesh-structure-consumer-discovery",[&]{return EiemStaticSources::FindConsumers(selected,currentTargets);});discovery=&*currentDiscovery;}
+   std::set<std::string> replaced,compileSources,affected;
+   if(inherited&&MeshStructureSources(*cached,*inherited,selected,*structure,discovery,currentSelectionComplete,replaced,compileSources,affected)){
     auto revised=std::make_shared<Artifact>(*cached);
     if(PrepareMeshStructureBaseline(*revised,author)){
-     auto compiled=Measure(cost,"mesh-structure-compile",[&]{return compileMeshStructure(revised,selected,discovery.sources,cost);});
+      auto compiled=Measure(cost,"mesh-structure-compile",[&]{return compileMeshStructure(revised,selected,compileSources,cost);});
      if(compiled&&PrepareMeshStructureFrames(*revised,author,structure->resources,compiled->schemas)){
       compiled->delta.manifest.plan.frameRecipes=revised->manifest.plan.frameRecipes;
-      auto artifact=EiemCompiledPrefabUpdate::ReplaceAuthorSources(*cached,compiled->delta,affected,structure->resources,revised.get());
-      auto decisions=store->decisions;for(auto& row:decisions)row.second.stamp.rules=InputContractDigest(author);
+       auto artifact=EiemCompiledPrefabUpdate::ReplaceAuthorSources(*cached,compiled->delta,replaced,structure->resources,revised.get());
+       auto decisions=discovery?discovery->decisions:store->decisions;if(!discovery)for(auto& row:decisions)row.second.stamp.rules=InputContractDigest(author);
       for(const auto& row:compiled->decisions)decisions[row.first]=row.second;
       auto prepared=Measure(cost,"mesh-structure-descriptor",[&]{return preparePrefab(std::make_shared<const Artifact>(artifact),selected);});
       Measure(cost,"mesh-structure-publish",[&]{EiemCompiledModStore::SaveAuthorRevision(cacheRoot/"compiled.bin",mod/"compiled.bin",store->generation,
-       artifact,game,affected,decisions,EiemCompiledExportCarryover::Catalog(selected),&prepared,selected,structure->resources);return 0;});
+        artifact,game,affected,decisions,EiemCompiledExportCarryover::Catalog(selected),&prepared,selected,structure->resources);return 0;});
       auto checked=Measure(cost,"compiled-runtime-check",[&]{return EiemCompiledModStore::Load(mod/"compiled.bin",mod,game,true);});
       Require(checked.artifact.manifest.plan.author==PackageDigest(author),"Mesh structure snapshot author roundtrip differs");
       if(cost)cost("mesh-structure-incremental",1);return;

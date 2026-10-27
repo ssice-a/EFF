@@ -10,27 +10,9 @@ on:
         description: Existing version tag to build and release
         required: true
         type: string
-      native_base_run_id:
-        description: Optional workflow run ID containing the validated Blender native base
-        required: false
-        type: string
-        default: ''
-      native_base_artifact_tag:
-        description: Release tag used in the validated native base artifact name
-        required: false
-        type: string
-        default: ''
-      native_base_sha256:
-        description: Required SHA256 when reusing a Blender native base artifact
-        required: false
-        type: string
-        default: ''
 
 env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-  NATIVE_BASE_RUN_ID: ${{ inputs.native_base_run_id || '' }}
-  NATIVE_BASE_ARTIFACT_TAG: ${{ inputs.native_base_artifact_tag || inputs.tag || github.ref_name }}
-  NATIVE_BASE_SHA256: ${{ inputs.native_base_sha256 || '' }}
 
 jobs:
   build:
@@ -38,7 +20,6 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
-      actions: read
 
     steps:
     - name: Checkout Code
@@ -65,7 +46,7 @@ jobs:
 
     - name: Build Project
       run: |
-        cmd /c build.bat v35
+        cmd /c build.bat
 
     - uses: actions/setup-dotnet@v4
       with:
@@ -91,76 +72,37 @@ jobs:
       with:
         python-version: '3.11'
 
+    - name: Build shared authoring tools
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force bin/pillow-wheels | Out-Null
+        python -m pip download --only-binary=:all: --no-deps --platform win_amd64 --implementation cp --python-version 3.11 --abi cp311 Pillow==12.3.0 --dest bin/pillow-wheels
+        if ($LASTEXITCODE -ne 0) { throw 'Pillow cp311 wheel download failed' }
+        python -m pip download --only-binary=:all: --no-deps --platform win_amd64 --implementation cp --python-version 3.13 --abi cp313 Pillow==12.3.0 --dest bin/pillow-wheels
+        if ($LASTEXITCODE -ne 0) { throw 'Pillow cp313 wheel download failed' }
+        $cp311 = Get-ChildItem bin/pillow-wheels/*cp311-cp311-win_amd64.whl | Select-Object -First 1 -ExpandProperty FullName
+        $cp313 = Get-ChildItem bin/pillow-wheels/*cp313-cp313-win_amd64.whl | Select-Object -First 1 -ExpandProperty FullName
+        if (-not $cp311 -or -not $cp313) { throw 'Pillow wheels for Blender 5.0 and 5.2 were not found' }
+        python tools/diagnostics/prepare_pillow_vendor.py --cp311-wheel $cp311 --cp313-wheel $cp313 --destination bin/author-core/vendor
+        if ($LASTEXITCODE -ne 0) { throw 'Pillow dual-ABI vendor preparation failed' }
+        cmd /c tools\diagnostics\build_author_core.cmd
+        if ($LASTEXITCODE -ne 0) { throw 'Author core build failed' }
+        cmd /c tools\build_resource_pack.cmd
+        if ($LASTEXITCODE -ne 0) { throw 'Resource compiler build failed' }
+        cmd /c tools\build_source_index.cmd
+        if ($LASTEXITCODE -ne 0) { throw 'Source index helper build failed' }
+        New-Item -ItemType Directory -Force bin/release-artifacts | Out-Null
+        python tools/diagnostics/package_shared_native_tools.py --output bin/release-artifacts --compiler bin/resource-pack/eff_resource_pack.exe --dll-protocol bin/resource-directory-entry-v35/package-protocol.json --framework-tag $env:RELEASE_TAG --manifest-output bin/release-artifacts/eff-native-tools.json
+        if ($LASTEXITCODE -ne 0) { throw 'Shared authoring tools do not match the production DLL protocol' }
+        $archive = Get-ChildItem bin/release-artifacts/EFF_Shared_Native_Tools_*.zip | Select-Object -First 1 -ExpandProperty FullName
+        python tools/release/verify_shared_tools.py --archive $archive --dll-protocol bin/resource-directory-entry-v35/package-protocol.json --manifest bin/release-artifacts/eff-native-tools.json
+        if ($LASTEXITCODE -ne 0) { throw 'Shared tools receipt validation failed' }
+
     - name: Verify release preflight tooling
       shell: pwsh
       run: |
         python -m unittest discover -s tools/release -v
         if ($LASTEXITCODE -ne 0) { throw 'Release preflight regression failed' }
-
-    - name: Download prepared Blender native base
-      if: env.NATIVE_BASE_RUN_ID != ''
-      uses: actions/download-artifact@v4
-      with:
-        name: eff-blender-native-base-${{ env.NATIVE_BASE_ARTIFACT_TAG }}
-        path: bin/release-artifacts
-        repository: ${{ github.repository }}
-        run-id: ${{ env.NATIVE_BASE_RUN_ID }}
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Download pinned Blender native base
-      if: env.NATIVE_BASE_RUN_ID == ''
-      shell: pwsh
-      run: |
-        $manifest = Get-Content tools/Blender/native-base.json -Raw | ConvertFrom-Json
-        $uri = [Uri]$manifest.url
-        $parts = $uri.AbsolutePath.Trim('/').Split('/')
-        if ($uri.Scheme -ne 'https' -or $uri.Host -ne 'github.com' -or $parts.Count -lt 5 -or $parts[0] -ne 'ssice-a' -or $parts[1] -ne 'EFF' -or $parts[2] -ne 'releases' -or $parts[3] -ne 'download') {
-          throw 'native-base.json must point to an immutable EFF release asset on github.com'
-        }
-        if ($parts[4] -eq $env:RELEASE_TAG) {
-          throw 'This release creates its own native base. Run Prepare Blender Native Base first, pin its receipt, then pass that workflow run ID and SHA256.'
-        }
-        New-Item -ItemType Directory -Force bin/release-artifacts | Out-Null
-        $archive = Join-Path 'bin/release-artifacts' (Split-Path $uri.AbsolutePath -Leaf)
-        try {
-          Invoke-WebRequest -Uri $manifest.url -OutFile $archive
-        } catch {
-          throw "Pinned Blender native base is unavailable at $($manifest.url): $($_.Exception.Message)"
-        }
-        Write-Host "DOWNLOADED_NATIVE_BASE file=$archive bytes=$((Get-Item $archive).Length)"
-
-    - name: Verify Blender native base against manifest and DLL protocol
-      if: env.NATIVE_BASE_RUN_ID != ''
-      shell: pwsh
-      run: |
-        if ($env:NATIVE_BASE_RUN_ID -notmatch '^\d+$') { throw 'Invalid Blender native base workflow run ID' }
-        if ($env:NATIVE_BASE_SHA256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'A valid native base SHA256 is required when reusing an artifact' }
-        $archives = @(Get-ChildItem bin/release-artifacts -Filter 'EFF_Blender_Native_*.zip' -File -ErrorAction SilentlyContinue)
-        if ($archives.Count -ne 1) { throw "Expected one Blender native base ZIP; found $($archives.Count)" }
-        $expected = Get-Content tools/Blender/native-base.json -Raw | ConvertFrom-Json
-        $actual = Get-FileHash $archives[0].FullName -Algorithm SHA256
-        if ($actual.Hash -ine $env:NATIVE_BASE_SHA256) { throw 'Prepared native base SHA256 differs from the requested digest' }
-        if ($archives[0].Length -ne $expected.bytes -or $actual.Hash -ine $expected.sha256) { throw 'Prepared native base differs from the committed native-base.json receipt' }
-        python tools/release/verify_native_base.py --archive $archives[0].FullName --dll-protocol bin/resource-directory-entry-v35/package-protocol.json --manifest tools/Blender/native-base.json --sha256 $env:NATIVE_BASE_SHA256
-        if ($LASTEXITCODE -ne 0) { throw 'Prepared Blender native base is incompatible with the production DLL protocol' }
-
-    - name: Verify downloaded Blender native base against manifest and DLL protocol
-      if: env.NATIVE_BASE_RUN_ID == ''
-      shell: pwsh
-      run: |
-        $archives = @(Get-ChildItem bin/release-artifacts -Filter 'EFF_Blender_Native_*.zip' -File -ErrorAction SilentlyContinue)
-        if ($archives.Count -ne 1) { throw "Expected one pinned Blender native base ZIP; found $($archives.Count)" }
-        python tools/release/verify_native_base.py --archive $archives[0].FullName --dll-protocol bin/resource-directory-entry-v35/package-protocol.json --manifest tools/Blender/native-base.json
-        if ($LASTEXITCODE -ne 0) { throw 'Pinned Blender native base is incompatible with the production DLL protocol' }
-
-    - name: Upload Blender native base diagnostic
-      if: success()
-      uses: actions/upload-artifact@v4
-      with:
-        name: eff-blender-native-base-${{ env.RELEASE_TAG }}
-        path: bin/release-artifacts/EFF_Blender_Native_*.zip
-        if-no-files-found: warn
-        retention-days: 30
 
     - name: Verify production DLL excludes temporary diagnostics
       shell: pwsh
@@ -171,7 +113,7 @@ jobs:
     - name: Verify native reload transaction
       shell: pwsh
       run: |
-        cmd /c tools\diagnostics\build_full_resource_reload_smoke.cmd v35
+        cmd /c tools\diagnostics\build_full_resource_reload_smoke.cmd
         if ($LASTEXITCODE -ne 0) { throw 'Reload test build failed' }
         & "bin/resource-directory-entry-v35/full_resource_reload_smoke.exe"
         if ($LASTEXITCODE -ne 0) { throw 'Reload test failed' }
@@ -293,7 +235,8 @@ jobs:
         draft: true
         files: |
           EFF_${{ env.RELEASE_TAG }}_dll.zip
-          bin/release-artifacts/EFF_Blender_Native_*.zip
+          bin/release-artifacts/EFF_Shared_Native_Tools_*.zip
+          bin/release-artifacts/eff-native-tools.json
         body_path: RELEASE_NOTES.md
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

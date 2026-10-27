@@ -116,6 +116,10 @@ inline EiemModUpdateStore::Snapshot SaveDiscovery(const std::filesystem::path& p
 }
 struct SnapshotLink {
  std::filesystem::path path,directory;DWORD error=ERROR_SUCCESS;std::optional<EiemModUpdateStore::Snapshot> snapshot;
+ static bool LinkOrCopy(const std::filesystem::path& source,const std::filesystem::path& target,DWORD& failure){
+  if(CreateHardLinkW(target.c_str(),source.c_str(),nullptr))return true;
+  if(CopyFileW(source.c_str(),target.c_str(),TRUE))return true;failure=GetLastError();return false;
+ }
  static void Reap(const std::filesystem::path& cache){
   static std::mutex mutex;static std::set<std::filesystem::path> visited;std::lock_guard<std::mutex> lock(mutex);if(!visited.insert(cache).second)return;
   std::error_code ec;std::filesystem::directory_iterator it(cache,ec),end;
@@ -135,24 +139,22 @@ struct SnapshotLink {
   // Keep the link outside the entire mods tree so nested packages can move too.
   for(auto at=absolute.parent_path();!at.empty();){auto name=at.filename().wstring();std::transform(name.begin(),name.end(),name.begin(),[](wchar_t c){return wchar_t(std::towlower(c));});
    if(name==L"mods"){parent=at.parent_path();break;}auto next=at.parent_path();if(next==at)break;at=std::move(next);}
-  auto cache=parent/L".eiem-compiled-snapshots";std::error_code ec;std::filesystem::create_directories(cache,ec);
-  if(ec){error=DWORD(ec.value());return;}
-  Reap(cache);
+  std::vector<std::filesystem::path> caches{parent/L".eiem-compiled-snapshots"};std::error_code ec;auto temporary=std::filesystem::temp_directory_path(ec);
+  if(!ec){auto fallback=temporary/L"EFF"/L"compiled-snapshots";if(fallback!=caches.front())caches.push_back(std::move(fallback));}
   static std::atomic<uint64_t> serial{0};
-  for(size_t attempt=0;attempt<8;++attempt){auto candidate=cache/(L"pin-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64())+L"-"+std::to_wstring(serial.fetch_add(1)));
-   if(std::filesystem::create_directory(candidate,ec)){directory=std::move(candidate);break;}if(ec){error=DWORD(ec.value());return;}
+  for(const auto& cache:caches){ec.clear();std::filesystem::create_directories(cache,ec);if(ec){error=DWORD(ec.value());continue;}Reap(cache);
+   for(size_t attempt=0;attempt<8;++attempt){auto candidate=cache/(L"pin-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64())+L"-"+std::to_wstring(serial.fetch_add(1)));ec.clear();
+    if(std::filesystem::create_directory(candidate,ec)){directory=std::move(candidate);break;}if(ec){error=DWORD(ec.value());break;}}
+   if(directory.empty())continue;path=directory/L"compiled.bin";bool pinned=LinkOrCopy(absolute,path,error);
+   try{if(pinned){EiemModUpdateStore::File metadata(path,false);snapshot=EiemModUpdateStore::Read(metadata);
+     if(snapshot->external){ec.clear();std::filesystem::create_directories(directory/L"compiled.blocks",ec);if(ec){error=DWORD(ec.value());pinned=false;}
+      std::set<std::string> linked;for(const auto& row:snapshot->blocks){if(!pinned)break;if(deferredOnly&&row.first.rfind("runtime/proof/",0)!=0)continue;const auto& external=row.second.external;if(!linked.insert(external).second)continue;
+       if(!LinkOrCopy(absolute.parent_path()/std::filesystem::u8path(external),directory/std::filesystem::u8path(external),error))pinned=false;
+      }
+     }
+   }}catch(const std::exception&){if(error==ERROR_SUCCESS)error=ERROR_INVALID_DATA;pinned=false;}
+   if(pinned)return;Cleanup();
   }
-  if(directory.empty()){error=ERROR_ALREADY_EXISTS;return;}path=directory/L"compiled.bin";
-  if(!CreateHardLinkW(path.c_str(),absolute.c_str(),nullptr)){error=GetLastError();Cleanup();return;}
-  bool pinned=false;
-  try{EiemModUpdateStore::File metadata(path,false);snapshot=EiemModUpdateStore::Read(metadata);pinned=true;
-   if(snapshot->external){std::filesystem::create_directory(directory/L"compiled.blocks");std::set<std::string> linked;
-    for(const auto& row:snapshot->blocks){if(deferredOnly&&row.first.rfind("runtime/proof/",0)!=0)continue;const auto& external=row.second.external;if(!linked.insert(external).second)continue;
-     if(!CreateHardLinkW((directory/std::filesystem::u8path(external)).c_str(),(absolute.parent_path()/std::filesystem::u8path(external)).c_str(),nullptr)){error=GetLastError();pinned=false;break;}
-    }
-   }
-  }catch(const std::exception&){error=ERROR_INVALID_DATA;pinned=false;}
-  if(!pinned)Cleanup();
  }
  SnapshotLink(const SnapshotLink&)=delete;
  void Retire()noexcept{if(!path.empty())DeleteFileW(path.c_str());}
@@ -164,6 +166,7 @@ struct Backing {
  std::filesystem::path sourceDirectory;bool deferredOnly=false;
  std::map<std::string,std::unique_ptr<EiemModUpdateStore::File>> directBlobs;
  explicit Backing(const std::filesystem::path& path,bool proofOnly=false):link(path,proofOnly),file(link.path.empty()?path:link.path,false),snapshot(link.snapshot?*link.snapshot:EiemModUpdateStore::Read(file)),sourceDirectory(std::filesystem::absolute(path).parent_path()),deferredOnly(proofOnly){
+  Require(!proofOnly||!link.path.empty(),"outside compiled Mod snapshot unavailable; refusing to retain handles inside the Mod directory: win32="+std::to_string(link.error));
   // Mark the outside name for deletion immediately; the handle retains its
   // bytes through compaction and Windows reclaims the link on process exit.
   link.Retire();
@@ -187,7 +190,7 @@ inline Loaded Load(const std::filesystem::path& path,const std::filesystem::path
  std::unique_ptr<EiemModUpdateStore::Lock> publication;if(consumerSnapshot)publication=std::make_unique<EiemModUpdateStore::Lock>(path);report("store-publication-lock");
  auto backing=std::make_shared<Backing>(path,consumerSnapshot);report("store-snapshot-pin");auto common=backing->Get("runtime/common"),ordered=backing->Get("runtime/order");std::vector<std::string> closure;
  Loaded result;result.externalSnapshot=!backing->link.path.empty();result.snapshotLinkError=backing->link.error;
- result.artifact=EiemCompiledSourceRecords::ReadCommon(common,mod,closure);auto& a=result.artifact;auto& p=a.manifest.plan;report("store-common");
+ result.artifact=EiemCompiledSourceRecords::ReadCommon(common,mod,closure,nullptr,runtime);auto& a=result.artifact;auto& p=a.manifest.plan;report("store-common");
  if(backing->snapshot.blocks.count("runtime/resource-bindings")){a.explicitResources=p.resourceAddressed=true;a.resourceBindingBytes=backing->Get("runtime/resource-bindings");}
  if(backing->snapshot.blocks.count("runtime/schema-dictionary"))a.sharedSchemas=EiemCompiledSourceRecords::DecodeSchemas(backing->Get("runtime/schema-dictionary"));report("store-schema");
  EiemOfflinePackage::Reader r{ordered};Require(r.S()=="EFF_COMPILED_SOURCE_ORDER/identity/le64","source store order differs");auto count=r.Count();std::map<std::string,size_t> order;
@@ -203,7 +206,7 @@ inline Loaded Load(const std::filesystem::path& path,const std::filesystem::path
   std::map<std::string,std::string> generated;for(const auto& row:a.preparedFrames)generated.emplace(row.first,Hash(row.second));
   for(auto& view:a.views){view.templateHash=view.startupHash;Writer bound;bound.S("EFF_BOUND_NATIVE_TEMPLATE/verified-source+template+resource-versions");bound.S(view.sourceHash);bound.S(view.templateHash);
    std::set<std::pair<unsigned,std::string>> versions;
-   for(const auto& span:view.spans)if(span.kind==EiemResourceRecipe::Author){const auto& resource=*a.manifest.package.resources.at(span.source);Require(span.offset<=resource.bytes.size()&&span.size<=resource.bytes.size()-span.offset,"bound author extent differs");versions.emplace(span.kind,span.source);}
+   for(const auto& span:view.spans)if(span.kind==EiemResourceRecipe::Author){const auto& resource=*a.manifest.package.resources.at(span.source);auto resourceSize=ResourceSize(resource);Require(span.offset<=resourceSize&&span.size<=resourceSize-span.offset,"bound author extent differs");versions.emplace(span.kind,span.source);}
    else if(span.kind==EiemResourceRecipe::ExpandedFrame){Require(a.preparedFrames.count(span.source)&&span.offset<=a.preparedFrames.at(span.source).size()&&span.size<=a.preparedFrames.at(span.source).size()-span.offset,"bound generated extent differs");versions.emplace(span.kind,span.source);}
    for(const auto& version:versions){bound.N(version.first);bound.S(version.second);bound.S(version.first==EiemResourceRecipe::Author?ResourceContentHash(*a.manifest.package.resources.at(version.second)):generated.at(version.second));}
    view.startupHash=Hash(bound.b);

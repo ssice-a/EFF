@@ -27,6 +27,8 @@
 #include "eiem_mod_directory.h"
 #pragma comment(lib, "bcrypt.lib")
 
+namespace EiemReadonlyFileRange { class Range; }
+
 namespace EiemDirectory {
 using Bytes = std::vector<unsigned char>;
 using Digest = std::array<unsigned char, 32>;
@@ -128,54 +130,75 @@ struct Resource {
   uint32_t kind = 0;
   std::array<unsigned char, 16> type{};
   Bytes bytes;
+  std::shared_ptr<const EiemReadonlyFileRange::Range> mapped;
+  const unsigned char* mappedBytes = nullptr;
+  size_t byteSize = 0;
+  bool directoryVerified = false;
   std::map<std::string, Block> blocks;
   // Set only when bytes have been verified. Packages share immutable Resources.
   std::string contentHash;
 };
 inline std::string ResourceContentHash(const Resource& resource) {
   if (!resource.contentHash.empty()) return resource.contentHash;
-  auto hash=Sha(resource.bytes.data(),resource.bytes.size());return Hex(hash.data(),hash.size());
+  auto data=resource.mappedBytes?resource.mappedBytes:resource.bytes.data();
+  auto size=resource.byteSize?resource.byteSize:resource.bytes.size();
+  auto hash=Sha(data,size);return Hex(hash.data(),hash.size());
 }
-inline Resource Decode(Bytes bytes, unsigned expected) {
-  Require(bytes.size() >= 80, "resource header truncated");
-  Require(memcmp(bytes.data(), "EFFRES", 6) == 0 && bytes[7] == 0,
+inline size_t ResourceSize(const Resource& resource) { return resource.byteSize ? resource.byteSize : resource.bytes.size(); }
+inline const unsigned char* ResourceData(const Resource& resource) { return resource.mappedBytes ? resource.mappedBytes : resource.bytes.data(); }
+inline uint64_t Le(const unsigned char* bytes,size_t size,size_t p,size_t n) {
+  Require(n<=8&&p<=size&&n<=size-p,"truncated integer");uint64_t value=0;
+  for(size_t i=0;i<n;++i)value|=uint64_t(bytes[p+i])<<(i*8);return value;
+}
+inline uint64_t ResourceLe(const Resource& resource,size_t offset,size_t width) {
+  return Le(ResourceData(resource),ResourceSize(resource),offset,width);
+}
+inline Resource DecodeView(const unsigned char* data,size_t size,unsigned expected) {
+  Require(size >= 80, "resource header truncated");
+  Require(memcmp(data, "EFFRES", 6) == 0 && data[7] == 0,
           "unsupported resource container");
   Resource r;
-  r.kind = (uint32_t)Le(bytes, 12, 4);
+  r.kind = (uint32_t)Le(data,size,12,4);
   Require(r.kind && (!expected || r.kind == expected),
           "resource kind mismatch");
-  Require(Le(bytes, 40, 8) == bytes.size(), "resource total size mismatch");
-  Require(EqualDigest(Sha(bytes.data() + 80, bytes.size() - 80), bytes, 48),
+  Require(Le(data,size,40,8) == size, "resource total size mismatch");
+  auto bodyHash=Sha(data+80,size-80);
+  Require(std::equal(bodyHash.begin(),bodyHash.end(),data+48),
           "resource body SHA256 mismatch");
-  std::copy_n(bytes.begin() + 24, 16, r.type.begin());
-  size_t count = (size_t)Le(bytes, 16, 4), directory = (size_t)Le(bytes, 20, 4);
-  Require(directory <= bytes.size() - 80 && count <= directory / 51, "invalid block directory");
+  std::copy_n(data + 24, 16, r.type.begin());
+  size_t count = (size_t)Le(data,size,16,4), directory = (size_t)Le(data,size,20,4);
+  Require(directory <= size - 80 && count <= directory / 51, "invalid block directory");
   size_t stop = 80 + directory, p = 80, end = stop;
   for (size_t i = 0; i < count; ++i) {
     Require(p <= stop && stop - p >= 2, "truncated block directory");
-    size_t n = (size_t)Le(bytes, p, 2);
+    size_t n = (size_t)Le(data,size,p,2);
     p += 2;
     Require(n && n <= stop - p && stop - p - n >= 48, "truncated block name");
-    auto name = Text(bytes.data() + p, n);
+    auto name = Text(data + p, n);
     p += n;
-    uint64_t off = Le(bytes, p, 8), size = Le(bytes, p + 8, 8);
-    Require(off == ((end + 15) & ~size_t(15)) && off <= bytes.size() && size <= bytes.size() - off,
+    uint64_t off = Le(data,size,p,8), blockSize = Le(data,size,p+8,8);
+    Require(off == ((end + 15) & ~size_t(15)) && off <= size && blockSize <= size - off,
             "overlapping/unreferenced block");
-    Require(std::all_of(bytes.begin() + end, bytes.begin() + (size_t)off,
+    Require(std::all_of(data + end, data + (size_t)off,
                         [](unsigned char v) { return v == 0; }),
             "nonzero block alignment");
     Block block;
     block.offset = (size_t)off;
-    block.size = (size_t)size;
-    std::copy_n(bytes.begin() + p + 16, 32, block.digest.begin());
-    Require(EqualDigest(Sha(bytes.data() + block.offset, block.size), bytes, p + 16),
+    block.size = (size_t)blockSize;
+    std::copy_n(data + p + 16, 32, block.digest.begin());
+    auto blockHash=Sha(data+block.offset,block.size);
+    Require(std::equal(blockHash.begin(),blockHash.end(),data+p+16),
             "block SHA256 mismatch: " + name);
     Require(r.blocks.emplace(name, block).second, "duplicate block: " + name);
     p += 48;
-    end = block.offset + block.size;
+    end = block.offset + blockSize;
   }
-  Require(p == stop && end == bytes.size(), "unreferenced directory/suffix");
-  auto content=Sha(bytes.data(),bytes.size());r.contentHash=Hex(content.data(),content.size());
+  Require(p == stop && end == size, "unreferenced directory/suffix");
+  auto content=Sha(data,size);r.contentHash=Hex(content.data(),content.size());r.byteSize=size;r.directoryVerified=true;
+  return r;
+}
+inline Resource Decode(Bytes bytes, unsigned expected) {
+  auto r=DecodeView(bytes.data(),bytes.size(),expected);
   r.bytes = std::move(bytes);
   return r;
 }
@@ -183,17 +206,18 @@ inline std::vector<std::string> Strings(const Resource& r, const char* name) {
   const auto& b = r.blocks.at(name);
   size_t end = b.offset + b.size, p = b.offset;
   Require(b.size >= 4, "binding table truncated");
-  size_t count = (size_t)Le(r.bytes, p, 4);
+  auto data=ResourceData(r);auto size=ResourceSize(r);
+  size_t count = (size_t)Le(data,size,p,4);
   p += 4;
   Require(count <= (end - p) / 2, "invalid binding count");
   std::vector<std::string> out;
   std::set<std::string> seen;
   for (size_t i = 0; i < count; ++i) {
     Require(end - p >= 2, "truncated binding length");
-    size_t n = (size_t)Le(r.bytes, p, 2);
+    size_t n = (size_t)Le(data,size,p,2);
     p += 2;
     Require(n && n <= end - p, "truncated/empty binding");
-    auto text = Text(r.bytes.data() + p, n);
+    auto text = Text(data + p, n);
     p += n;
     Require(seen.insert(text).second, "duplicate binding");
     out.push_back(text);
@@ -500,8 +524,8 @@ inline Package Load(const std::filesystem::path& directory,const Package* verifi
       Require(g.size == 8, "invalid geometry metadata");
       Mesh m;
       m.resource = v.at("path");
-      m.vertices = (unsigned)Le(r.bytes, g.offset, 4);
-      m.indices = (unsigned)Le(r.bytes, g.offset + 4, 4);
+      m.vertices = (unsigned)ResourceLe(r, g.offset, 4);
+      m.indices = (unsigned)ResourceLe(r, g.offset + 4, 4);
       Require(m.vertices && m.indices && m.indices % 3 == 0, "invalid geometry count");
       m.bones = Strings(r, "@bones");
       m.shapes = Strings(r, "@shapes");
@@ -536,10 +560,10 @@ inline Package Load(const std::filesystem::path& directory,const Package* verifi
       if (r.blocks.count("@texture")) {
         const auto& spec = r.blocks.at("@texture");
         Require(spec.size == 20 &&
-                    Le(r.bytes, spec.offset + 12, 4) == 4, "unsupported TEX metadata structure/pixel encoding");
-        t.width = (unsigned)Le(r.bytes, spec.offset + 4, 4);
-        t.height = (unsigned)Le(r.bytes, spec.offset + 8, 4);
-        t.mips = (unsigned)Le(r.bytes, spec.offset + 16, 4);
+                    ResourceLe(r, spec.offset + 12, 4) == 4, "unsupported TEX metadata structure/pixel encoding");
+        t.width = (unsigned)ResourceLe(r, spec.offset + 4, 4);
+        t.height = (unsigned)ResourceLe(r, spec.offset + 8, 4);
+        t.mips = (unsigned)ResourceLe(r, spec.offset + 16, 4);
       } else {
         Require(v.count("width") && v.count("height") && v.count("mip_count") &&
                     v.count("format") && v.at("format") == "RGBA32", "legacy TEX needs INI dimensions; re-export once");

@@ -10,7 +10,108 @@ void ChangeMeshBounds(const std::filesystem::path& mod){
  size_t p=80;for(size_t i=0;i<resource.blocks.size();++i){auto n=Le(bytes,p,2);p+=2;std::string name((const char*)bytes.data()+p,size_t(n));p+=size_t(n);if(name=="m_LocalAABB"){auto digest=Sha(bytes.data()+bounds.offset,bounds.size);std::copy(digest.begin(),digest.end(),bytes.begin()+p+16);}p+=48;}
  auto body=Sha(bytes.data()+80,bytes.size()-80);std::copy(body.begin(),body.end(),bytes.begin()+48);EiemDirectory::Decode(bytes,1);EiemOfflineCompile::AtomicSave(path,bytes);
 }
+Package TargetFixture(std::vector<Identity> targets){
+ Package package;package.id="mesh-target-fixture";package.iniHash[0]=1;auto resource=std::make_shared<Resource>();resource->kind=1;resource->bytes={1,3,3,7};
+ package.resources.emplace("meshes/fixture.mesh",resource);package.meshes.emplace("fixture",Mesh{"meshes/fixture.mesh",3,3,{},{}});
+ for(size_t i=0;i<targets.size();++i){auto id="rule"+std::to_string(i),part="part"+std::to_string(i);EiemDirectory::Part authored;authored.mesh="fixture";package.parts.emplace(part,std::move(authored));
+  Rule rule;rule.parts={part};rule.targets.emplace(unsigned(i),targets[i]);package.rules.emplace(id,std::move(rule));package.targetIndex.emplace(targets[i],id);}
+ return package;
+}
+EiemStaticSources::Selection TargetSelection(std::initializer_list<std::string> sources){
+ EiemStaticSources::Selection selection;selection.manifest="fixture";for(const auto& source:sources){const auto revision=std::string(64,'a');EiemStaticSources::Entry entry;entry.logical=source;entry.revision=revision;entry.physical=std::filesystem::path("fixture")/(source+".vfs");entry.size=16;
+  selection.inputs.emplace(source,std::move(entry));selection.candidates.insert(source);}return selection;
+}
+EiemConsumerUpdateRecords::Decision TargetDecision(const std::string& source,bool positive){
+ EiemConsumerUpdateRecords::Decision decision;decision.stamp={std::string(64,'a'),std::string(64,'b'),std::string(64,'c'),"fixture"};if(positive)decision.roots.push_back({"assets/fixture.prefab",source,1,{1}});return decision;
+}
+int MeshTargetDeltaFixtures(){
+ const Identity a{"assets/a.mesh","A"},b{"assets/b.mesh","B"};const std::string shared="assets/shared.pfb",other="assets/other.pfb";
+ auto oldAuthor=TargetFixture({a}),addedAuthor=TargetFixture({a,b});auto added=EiemCompiledModWriter::MeshStructureChanges(addedAuthor,oldAuthor);
+ Require(added&&added->previousTargets.empty()&&added->currentTargets.size()==1&&added->currentTargets.count(b),"new Mesh target was not isolated");
+ Artifact old;old.manifest.package=oldAuthor;old.manifest.plan.originals={{EiemStaticSources::SourceFile(shared,std::string(64,'a')),std::string(64,'a'),"fixture/shared.vfs",0,16}};
+ old.manifest.plan.rendererRules={{{"cab-shared",1,a}}};old.manifest.plan.inputDependencies.resize(1);old.manifest.plan.roots.push_back({"assets/shared.prefab",0});
+ auto prior=TargetSelection({shared}),current=TargetSelection({shared,other});
+ EiemStaticSources::Discovery addDiscovery;addDiscovery.decisions.emplace(shared,TargetDecision(shared,true));addDiscovery.decisions.emplace(other,TargetDecision(other,true));
+ addDiscovery.targetConsumers[shared].insert({b});addDiscovery.targetConsumers[other].insert({b});std::set<std::string> replaced,sources,affected;
+ Require(EiemCompiledModWriter::MeshStructureSources(old,prior,current,*added,&addDiscovery,true,replaced,sources,affected),"added target sources were not isolated");
+ Require(replaced==std::set<std::string>{EiemStaticSources::SourceFile(shared,std::string(64,'a'))}&&sources==std::set<std::string>{shared,other}&&affected.size()==2,
+  "new target did not replace its existing PFB and compile a separate new PFB");
+
+ auto oldBoth=TargetFixture({a,b}),removedAuthor=TargetFixture({a});auto removed=EiemCompiledModWriter::MeshStructureChanges(removedAuthor,oldBoth);
+ Require(removed&&removed->previousTargets.size()==1&&removed->previousTargets.count(b)&&removed->currentTargets.empty(),"deleted Mesh target was not isolated");
+ Artifact priorBoth;priorBoth.manifest.package=oldBoth;priorBoth.manifest.plan.originals={
+  {EiemStaticSources::SourceFile(shared,std::string(64,'a')),std::string(64,'a'),"fixture/shared.vfs",0,16},
+  {EiemStaticSources::SourceFile(other,std::string(64,'a')),std::string(64,'a'),"fixture/other.vfs",0,16}};
+ priorBoth.manifest.plan.rendererRules={{{"cab-shared",1,a},{"cab-shared",2,b}},{{"cab-other",3,b}}};priorBoth.manifest.plan.inputDependencies.resize(2);
+ priorBoth.manifest.plan.roots.push_back({"assets/shared.prefab",0});priorBoth.manifest.plan.roots.push_back({"assets/other.prefab",1});
+ auto priorBothSelection=TargetSelection({shared,other}),afterDelete=TargetSelection({shared});
+ EiemStaticSources::Discovery deleteDiscovery;deleteDiscovery.decisions.emplace(shared,TargetDecision(shared,true));deleteDiscovery.targetConsumers[shared].insert({a});
+ replaced.clear();sources.clear();affected.clear();Require(EiemCompiledModWriter::MeshStructureSources(priorBoth,priorBothSelection,afterDelete,*removed,&deleteDiscovery,true,replaced,sources,affected),"deleted target source retirement was not isolated");
+ Require(replaced.size()==2&&replaced.count(EiemStaticSources::SourceFile(other,std::string(64,'a')))&&sources==std::set<std::string>{shared}&&affected.size()==1,
+  "deleting one target did not retire its PFB and rebuild the shared PFB");
+ auto emptyAuthor=TargetFixture({});auto removeLast=EiemCompiledModWriter::MeshStructureChanges(emptyAuthor,oldAuthor);Require(bool(removeLast),"last Mesh target deletion was not classified");
+ auto noTargets=TargetSelection({});EiemStaticSources::Discovery emptyDiscovery;replaced.clear();sources.clear();affected.clear();
+ Require(EiemCompiledModWriter::MeshStructureSources(old,prior,noTargets,*removeLast,&emptyDiscovery,true,replaced,sources,affected)&&replaced.size()==1&&sources.empty()&&affected.empty(),
+  "deleting the last target failed to retire sources without rebuilding");
+ auto emptyDelta=EiemCompiledModWriter::EmptyMeshStructureDelta(old);Require(emptyDelta.manifest.plan.inputs.empty()&&emptyDelta.manifest.plan.roots.empty()&&emptyDelta.manifest.plan.author==old.manifest.plan.author,
+  "empty structure delta retained stale PFB inputs or author seal");
+ std::cout<<"PASS Mesh target structure deltas: addExistingBundle=1 addNewPfb=1 deletePfb=1 sharedPfbRebuilt=1 deleteLastTarget=1 emptyDelta=1\n";return 0;
+}
+Package SubsetTargets(Package package,const std::set<Identity>& targets){
+ for(auto row=package.targetIndex.begin();row!=package.targetIndex.end();)if(!targets.count(row->first))row=package.targetIndex.erase(row);else ++row;
+ for(auto rule=package.rules.begin();rule!=package.rules.end();){for(auto target=rule->second.targets.begin();target!=rule->second.targets.end();)if(!targets.count(target->second))target=rule->second.targets.erase(target);else ++target;
+  if(rule->second.targets.empty())rule=package.rules.erase(rule);else ++rule;}return package;
+}
+std::set<Identity> TargetSet(const Package& package){std::set<Identity> result;for(const auto& row:package.targetIndex)result.insert(row.first);return result;}
+std::map<std::string,std::pair<std::string,size_t>> ViewSet(const Artifact& artifact){std::map<std::string,std::pair<std::string,size_t>> result;
+ for(size_t i=0;i<artifact.views.size();++i)Require(result.emplace(artifact.manifest.plan.originals.at(i).file,std::make_pair(artifact.views[i].startupHash,artifact.views[i].size)).second,"target delta source repeated");return result;}
+std::map<std::string,std::map<std::string,size_t>> MarkerSet(const Artifact& artifact){std::map<std::string,std::map<std::string,size_t>> result;
+ for(const auto& root:artifact.manifest.plan.roots)for(const auto& source:root.Assembly().sources)for(const auto& target:source.targets)if(!target.marker.empty())++result[root.path][target.marker];return result;}
+Artifact CompileStructureDelta(const Artifact& previous,const Package& author,const EiemStaticSources::Selection& selection,const std::set<std::string>& sources,
+ const std::set<std::string>& replaced,const std::set<std::string>& changedResources){
+ auto revised=std::make_shared<Artifact>(previous);Require(EiemCompiledModWriter::PrepareMeshStructureBaseline(*revised,author),"target fixture author baseline unsupported");
+ auto prepared=EiemPreparedPrefabCompiler::Prepare(revised,selection);std::optional<Artifact> combined;
+ for(const auto& source:sources){auto request=EiemSourceAdaptationJobs::Request{source,EiemSourceAdaptationCompiler::StampFor(author,selection,source)};auto compiled=EiemPreparedPrefabCompiler::Compile(prepared,request);
+  if(!compiled.artifact)continue;if(!combined)combined=*compiled.artifact;else combined=EiemCompiledArtifactAppend::Merge(*combined,*compiled.artifact);}
+ if(!combined)combined=EiemCompiledModWriter::EmptyMeshStructureDelta(*revised);auto& plan=combined->manifest.plan;const auto& base=revised->manifest.plan;
+ plan.parts=base.parts;plan.materials=base.materials;plan.meshParts=base.meshParts;plan.materialMatches=base.materialMatches;plan.textures=base.textures;plan.opaque=base.opaque;
+ plan.rendererBoundsHits=base.rendererBoundsHits;plan.rendererBoundsMisses=base.rendererBoundsMisses;plan.frameRecipes=base.frameRecipes;
+ Require(EiemCompiledModWriter::PrepareMeshStructureFrames(*revised,author,changedResources,prepared.schemas),"target fixture frames unsupported");
+ plan.frameRecipes=revised->manifest.plan.frameRecipes;
+ return EiemCompiledPrefabUpdate::ReplaceAuthorSources(previous,*combined,replaced,changedResources,revised.get());
+}
+int wmainTargetDelta(const std::filesystem::path& game,const std::filesystem::path& mod){
+ auto author=EiemDirectory::Load(mod);auto selection=EiemStaticSources::LoadMod(mod,game);auto allTargets=TargetSet(author);Require(allTargets.size()>=2,"real Mod fixture has fewer than two Mesh targets");
+ auto allDiscovery=EiemStaticSources::FindConsumers(selection,allTargets);std::map<Identity,std::set<std::string>> consumers;
+ for(const auto& row:allDiscovery.targetConsumers)for(const auto& target:row.second)consumers[target].insert(row.first);
+ std::optional<std::pair<Identity,Identity>> chosen;bool foundShared=false;for(const auto& a:consumers)for(const auto& b:consumers)if((a.first.path!=b.first.path||a.first.asset!=b.first.asset)&&
+   selection.assets.at(EiemStaticSources::Logical(a.first.path))==selection.assets.at(EiemStaticSources::Logical(b.first.path))){
+  bool shared=false,exclusive=false;for(const auto& source:a.second){shared=shared||b.second.count(source);exclusive=exclusive||!b.second.count(source);}for(const auto& source:b.second)exclusive=exclusive||!a.second.count(source);
+  if(shared&&exclusive){chosen=std::make_pair(a.first,b.first);foundShared=true;}else if(!chosen&&exclusive)chosen=std::make_pair(a.first,b.first);
+  if(foundShared)break;}
+ Require(chosen.has_value(),"real Mod fixture targets lack distinguishable PFB consumers");const auto first=chosen->first,second=chosen->second;
+ auto run=[&](const std::set<Identity>& beforeTargets,const std::set<Identity>& afterTargets,const char* label){
+  auto beforeAuthor=SubsetTargets(author,beforeTargets),afterAuthor=SubsetTargets(author,afterTargets);auto beforeDiscovery=EiemStaticSources::FindConsumers(selection,beforeTargets);
+  auto previous=EiemCompiledModWriter::Compile(beforeAuthor,selection,game,{},nullptr,&beforeDiscovery);auto delta=EiemCompiledModWriter::MeshStructureChanges(afterAuthor,beforeAuthor);Require(delta&& !delta->targets.empty(),std::string(label)+" author change was not classified");
+  auto afterDiscovery=EiemStaticSources::FindConsumers(selection,afterTargets);std::set<std::string> replaced,sources,affected;
+  std::string isolationReason;auto isolated=EiemCompiledModWriter::MeshStructureSources(previous,selection,selection,*delta,&afterDiscovery,true,replaced,sources,affected,&isolationReason);
+  Require(isolated,std::string(label)+" source closure was not safely isolated: "+isolationReason);
+  auto incremental=CompileStructureDelta(previous,afterAuthor,selection,sources,replaced,delta->resources);auto cold=EiemCompiledModWriter::Compile(afterAuthor,selection,game,{},nullptr,&afterDiscovery);
+  auto incrementalViews=ViewSet(incremental),coldViews=ViewSet(cold);if(incrementalViews!=coldViews){std::string detail=" incremental="+std::to_string(incrementalViews.size())+" cold="+std::to_string(coldViews.size());
+   for(const auto& row:coldViews){auto found=incrementalViews.find(row.first);if(found==incrementalViews.end()){
+    detail+=" missing:"+row.first;auto source=std::find_if(selection.inputs.begin(),selection.inputs.end(),[&](const auto& input){return EiemStaticSources::SourceFile(input.first,input.second.revision)==row.first;});
+    if(source!=selection.inputs.end()){detail+="["+source->first+" candidate="+std::to_string(selection.candidates.count(source->first))+" decision="+std::to_string(afterDiscovery.decisions.at(source->first).roots.size());
+     auto hits=afterDiscovery.targetConsumers.find(source->first);detail+=" changedTargetHit="+std::to_string(hits!=afterDiscovery.targetConsumers.end()&&std::any_of(hits->second.begin(),hits->second.end(),[&](const auto& target){return EiemStaticSources::Logical(target.path)==EiemStaticSources::Logical(second.path)&&target.asset==second.asset;}))+" rebuilt="+std::to_string(sources.count(source->first))+ "]";}}
+    else if(found->second!=row.second)detail+=" stale:"+row.first;}
+   for(const auto& row:incrementalViews)if(!coldViews.count(row.first))detail+=" extra:"+row.first;Require(false,std::string(label)+" target delta native views differ from cold compile"+detail);}
+  Require(MarkerSet(incremental)==MarkerSet(cold),std::string(label)+" target delta Renderer markers differ from cold compile");
+  std::cout<<"PASS real Mesh target "<<label<<": previousPfb="<<previous.views.size()<<" incrementalPfb="<<incremental.views.size()<<" coldPfb="<<cold.views.size()<<" replaced="<<replaced.size()<<" compiled="<<sources.size()<<" reused="<<(previous.views.size()>=replaced.size()?previous.views.size()-replaced.size():0)<<" coldEquivalent=1\n";
+ };
+ std::set<Identity> one{first},added{first,second};Require(first.path!=second.path||first.asset!=second.asset,"selected duplicate Mesh identity");run(one,added,"add");run(added,one,"delete");return 0;
+}
 int wmain(int argc,wchar_t** argv){try{
+ if(argc==2&&std::wstring(argv[1])==L"--mesh-target-delta-fixtures")return MeshTargetDeltaFixtures();
+ if(argc==4&&std::wstring(argv[1])==L"--mesh-target-delta-real")return wmainTargetDelta(std::filesystem::canonical(argv[2]),std::filesystem::canonical(argv[3]));
  if(argc==3&&std::wstring(argv[1])==L"--commit-fixture"){auto path=std::filesystem::absolute(argv[2]);auto previous=std::filesystem::exists(path)?EiemModUpdateStore::Read(path).generation:0;auto result=EiemModUpdateStore::Commit(path,previous,{{"discovery/test",Bytes{static_cast<unsigned char>(previous+1)}}});std::cout<<"COMMITTED "<<result.generation<<'\n';return 0;}
  if(argc==3&&std::wstring(argv[1])==L"--author-read-fixture"){auto path=std::filesystem::absolute(argv[2]);
   // The small storage fixture lacks runtime/common. Enter the real default
@@ -68,19 +169,19 @@ int wmain(int argc,wchar_t** argv){try{
  auto newPart=std::string("zz_structure_regression");while(structureAuthor.parts.count(newPart))newPart+="_x";structureAuthor.parts.emplace(newPart,structureAuthor.parts.at(rule->second.parts.front()));rule->second.parts.push_back(newPart);
  auto previousStore=EiemCompiledModStore::Load(mod/"compiled.bin",mod,game,true);Require(previousStore.selection.has_value(),"structure fixture source selection absent");auto structureSelection=*previousStore.selection;
  auto structureDelta=EiemCompiledModWriter::MeshStructureChanges(structureAuthor,original.manifest.package);Require(structureDelta&&!structureDelta->targets.empty(),"Part addition was not classified as a Mesh structure change");
- std::set<std::string> replaced;EiemStaticSources::Discovery structureDiscovery;Require(EiemCompiledModWriter::MeshStructureSources(original,structureSelection,structureDelta->targets,replaced,structureDiscovery),"structure fixture sources cannot be isolated");
+ std::set<std::string> replaced,structureSources,structureAffected;Require(EiemCompiledModWriter::MeshStructureSources(original,structureSelection,structureSelection,*structureDelta,nullptr,false,replaced,structureSources,structureAffected),"structure fixture sources cannot be isolated");
  auto prepareStructure=[](std::shared_ptr<const Artifact> baseline,const EiemStaticSources::Selection& current){return EiemPreparedPrefabCompiler::Encode(EiemPreparedPrefabCompiler::Prepare(std::move(baseline),current));};
  auto compileStructure=[](std::shared_ptr<const Artifact> baseline,const EiemStaticSources::Selection& current,const std::set<std::string>& sources,const std::function<void(const char*,double)>& cost)->std::optional<EiemCompiledModWriter::MeshStructureCompilation>{
   auto prepared=EiemPreparedPrefabCompiler::Prepare(baseline,current);std::optional<Artifact> combined;EiemConsumerUpdateRecords::Decisions decisions;
   for(const auto& source:sources){EiemSourceAdaptationJobs::Request request{source,EiemSourceAdaptationCompiler::StampFor(baseline->manifest.package,current,source)};auto compiled=EiemPreparedPrefabCompiler::Compile(prepared,request,cost);
    if(!compiled.artifact)return std::nullopt;Require(decisions.emplace(source,compiled.decision).second,"structure fixture source repeated");if(!combined)combined=*compiled.artifact;else combined=EiemCompiledArtifactAppend::Merge(*combined,*compiled.artifact);}
-  if(!combined)return std::nullopt;auto& plan=combined->manifest.plan;const auto& currentPlan=baseline->manifest.plan;plan.parts=currentPlan.parts;plan.materials=currentPlan.materials;
+  if(!combined)return EiemCompiledModWriter::MeshStructureCompilation{EiemCompiledModWriter::EmptyMeshStructureDelta(*baseline),{},std::move(prepared.schemas)};auto& plan=combined->manifest.plan;const auto& currentPlan=baseline->manifest.plan;plan.parts=currentPlan.parts;plan.materials=currentPlan.materials;
   plan.meshParts=currentPlan.meshParts;plan.materialMatches=currentPlan.materialMatches;plan.textures=currentPlan.textures;plan.opaque=currentPlan.opaque;
   plan.rendererBoundsHits=currentPlan.rendererBoundsHits;plan.rendererBoundsMisses=currentPlan.rendererBoundsMisses;plan.frameRecipes=currentPlan.frameRecipes;
   return EiemCompiledModWriter::MeshStructureCompilation{std::move(*combined),std::move(decisions),std::move(prepared.schemas)};
  };
  std::map<std::string,double> structureCosts;auto structureCost=[&](const char* name,double ms){structureCosts[name]+=ms;};
- EiemCompiledModWriter::Export(structureStage,game,structureCost,mod,&structureAuthor,&structureSelection,nullptr,prepareStructure,false,compileStructure);
+  EiemCompiledModWriter::Export(structureStage,game,structureCost,mod,&structureAuthor,&structureSelection,nullptr,prepareStructure,false,compileStructure);
  if(structureCosts["mesh-structure-incremental"]!=1){std::string detail;for(const auto& row:structureCosts)detail+=" "+row.first+"="+std::to_string(row.second);Require(false,"Part addition fell back to full compilation; costs:"+detail);}
  EiemCompiledModWriter::Export(structureCold,game,{}, {},&structureAuthor,&structureSelection,nullptr,prepareStructure,false);auto structureActual=EiemCompiledModStore::Load(structureStage/"compiled.bin",structureStage,game,true);
  auto structureExpected=EiemCompiledModStore::Load(structureCold/"compiled.bin",structureCold,game,true);Require(structureActual.artifact.manifest.plan.author==PackageDigest(structureAuthor)&&

@@ -11,6 +11,7 @@ import bpy
 from .format import safe_path
 from .layout import arrange_material
 from .alpha import resolve_alpha
+from .emission import STANDARD_PHASE_SHADERS, periodic2_enabled
 
 
 class MaterialBuilder:
@@ -181,7 +182,7 @@ class Graph:
     def first(self, names):
         return next((name for name in names if self.textures.get(name, {}).get("texture")), None)
 
-    def sample(self, prop, data=False, scroll=None, uv_override=None):
+    def sample(self, prop, data=False, scroll=None, uv_override=None, transform_binding=None):
         if not prop or not self.textures.get(prop, {}).get("texture"):
             return None
         if (prop, data) in self.sampled and scroll is None and uv_override is None:
@@ -199,8 +200,9 @@ class Graph:
         mapping = self.node("ShaderNodeMapping", prop + " scale / offset", -1100, uv.location.y)
         mapping.vector_type = "POINT"
         self.links.new(uv.outputs[0], mapping.inputs[0])
-        scale = binding.get("scale", [1, 1])
-        offset = binding.get("offset", [0, 0])
+        uv_binding = self.textures.get(transform_binding, {}) if transform_binding else binding
+        scale = uv_binding.get("scale", [1, 1])
+        offset = uv_binding.get("offset", [0, 0])
         # Uber effect shaders use explicit vectors in addition to TextureEnv ST.
         stem = {"_MainTexture": "_MainTexture", "_SecondTexture": "_SecondTexture",
             "_MaskTexture": "_MaskTexture", "_DistortTexture": "_Distort"}.get(prop)
@@ -241,7 +243,7 @@ class Graph:
             result["naraka_binding"] = node["naraka_binding"]
             if "naraka_array_slice" in node:
                 result["naraka_array_slice"] = node["naraka_array_slice"]
-        self.links.new(node.outputs["Color"], result.inputs[0])
+        self.links.new(node.outputs[0], result.inputs[0])
         return result.outputs
 
     def normal(self, prop):
@@ -361,10 +363,9 @@ class Graph:
         emission_prop = self.first(("_EmissionMap", "_EmissionTexture", "_EmissiveMap"))
         if emission_prop:
             linear = self.builder.manifest["textures"][self.textures[emission_prop]["texture"]]["linear"]
-            packed_periodic = ("periodic2" in shader or advanced) and (
-                self.floats.get("_MFX_EMISSIVE_PERIODIC_2", 0) or
-                self.keywords & {"_MFX_EMISSIVE_PERIODIC_2", "_MFX_EMISSIVE_PERIODIC_2_ON"})
-            texture = self.sample(emission_prop, True if packed_periodic else linear, uv_override=emission_uv if advanced else None)
+            packed_periodic = periodic2_enabled(shader, self.floats, self.keywords)
+            shared_st = "_MainTex" if packed_periodic and shader.rsplit("/", 1)[-1] in STANDARD_PHASE_SHADERS else None
+            texture = self.sample(emission_prop, True if packed_periodic else linear, uv_override=emission_uv if advanced else None, transform_binding=shared_st)
             emission_color = self.vectors.get("_EmissionColor", [1, 1, 1, 1])
             if packed_periodic:
                 emission = self.periodic_emission(texture, normal, advanced)

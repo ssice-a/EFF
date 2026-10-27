@@ -71,8 +71,10 @@ disable_camera_fade=true
 
 1. 使用 [AnimeStudio](https://github.com/ssice-a/AnimeStudio) 打开 VFS，选择 Prefab 并导出 EFF 源包。保留源包的字段模板、manifest 和作者索引。
 2. 安装 [EFF Blender 插件](https://github.com/ssice-a/EFF-blender)，导入源包 `mod.ini`，编辑并导出所选网格。首次导出选择全部资源；后续可仅更新 Mesh、材质与贴图或贴图。
-3. Blender 使用插件自带的作者核心、编译器和小型来源工具，按 INI 源 Mesh 离线找到全部 Prefab/Renderer 消费者，编译当前这一个 Mod。暂存结果完整验证后才发布，失败保留此前输出。
+3. Blender 从 EFF Release 获取共享作者工具，按 INI 源 Mesh 离线找到全部 Prefab/Renderer 消费者，编译当前这一个 Mod。工具按 SHA256 缓存到用户选择的资源根目录；暂存结果完整验证后才发布，失败保留此前输出。
 4. DLL 读取各 Mod 的编译结果，合并共用资源上的已编译修改，在游戏加载前应用字节规则；F10 使用同一规则并调用游戏模型生命周期。DLL 不编译作者资源，不查询全游戏索引，不全场景扫描 Renderer。
+
+四端共享工具、AnimeStudio 索引位置、用户可选存储路径与构建发布流程见[共享工具与索引](docs/shared-tools-and-indexes.md)。Blender 5.2 插件在 **N → EFF → AnimeStudio 解包索引**中选择索引位置；无需在插件安装时选择索引，也无需指定解包输出目录。
 
 导出到游戏 `plugin/mods/` 会自动识别安装路径；导出到其他目录请设置 `EFF_RELOAD_GAME`。玩家不需要作者索引、原游戏包快照或 Blender 工具。`mod.ini` 仍是唯一作者规则入口，`compiled.bin` 是它的派生编译结果。新贴图短名称与旧哈希名称都依各自 INI/manifest 解析。
 

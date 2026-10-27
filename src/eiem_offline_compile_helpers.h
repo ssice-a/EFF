@@ -10,7 +10,7 @@
 namespace EiemOfflineCompile {
 using namespace EiemDirectory;
 inline std::string Digest(const Bytes& bytes){auto h=Sha(bytes.data(),bytes.size());return Hex(h.data(),h.size());}
-inline void ParallelInputs(size_t count,const std::function<void(size_t)>& work,size_t maximum=8){
+inline void ParallelInputs(size_t count,const std::function<void(size_t)>& work,size_t maximum=12){
   if(!count)return;
   auto hardware=std::thread::hardware_concurrency();auto workers=std::min(count,std::max<size_t>(1,std::min(maximum,size_t(hardware?hardware:1))));
   if(workers==1){for(size_t i=0;i<count;++i)work(i);return;}

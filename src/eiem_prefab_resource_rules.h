@@ -23,7 +23,7 @@ struct Context {
  Context(std::shared_ptr<const Plan> p,Package author):plan(std::move(p)),package(std::move(author)){
   Require(plan&&plan->rulesOnly&&plan->originals.size()==plan->inputs.size(),"runtime rules source coverage differs");
   IndexSources();
-  if(plan->spanRecipes){Require(plan->memberRecipes.size()==plan->inputs.size(),"runtime member recipe coverage differs");for(const auto& frame:plan->frameRecipes)Require(frameBytes.emplace(frame.resource,EiemResourceRecipe::ExpandFrame(frame,package.resources.at(frame.resource)->bytes)).second,"duplicate runtime frame recipe");return;}
+  if(plan->spanRecipes){Require(plan->memberRecipes.size()==plan->inputs.size(),"runtime member recipe coverage differs");for(const auto& frame:plan->frameRecipes)Require(frameBytes.emplace(frame.resource,EiemResourceRecipe::ExpandFrame(frame,EiemResourceRecipe::ReadAuthorResource(*package.resources.at(frame.resource)))).second,"duplicate runtime frame recipe");return;}
   Require(plan->inputs.empty(),"replacement rules lack compiled member recipes; re-export the Mod with Blender");
  }
  Bytes Materialize(size_t index,bool isolated){

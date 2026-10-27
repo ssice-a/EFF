@@ -1,56 +1,29 @@
-# EFF 文档索引与当前状态
+# EFF Documentation
 
-2026-10-07。配套发布为 EFF v1.3.0、Blender v0.40.0、AnimeStudio v1.3.0。默认发布包使用已部署的 v35 布局，v36 另附供验证。作者 INI、静态来源描述、小型规则、加载前应用和游戏模型生命周期重载共用同一流程。
+This index points to the current user and developer documentation in the EFF main repository. Date-stamped reports and files under `diagnostics/` are historical evidence; use the current contracts below for present behavior.
 
-当前 v35 的 xiu/dou 显隐修正已有用户确认；连续世界/展示重载、归属、动画消费者及集合组合有回归。F10 更新完整 mods 集合，Ins 限制所选 Mod 的物理按键。其他角色/NPC 全部实机覆盖、多 Mod 性能及完整退休仍待验证，具体会话与历史贴图反馈见[热重载测试](hot-reload-testing.md)。
+## Users
 
-最新待处理反馈为 body 残影消失，当前 PNG/TEX 已恢复原图；优先冷启动检查权重 0 与非零形态下的平 A，并收集已准备的捕获观察。历史青绿色会话通过不代表此反馈已修复，见[残影复查](../diagnostics/body-afterimage-review-20261006/README.md)。
+- [Chinese Mod tutorial](../Mod%20Tutorial.md) and [English Mod tutorial](../Mod%20Tutorial_EN.md): install, unpack, edit and export.
+- [Shared Tools and Indexes](shared-tools-and-indexes.md): user-selected storage root, AnimeStudio index workspace, shared compiler package, and the division of work across four endpoints.
+- [Material and dynamic effects](../tools/Blender/docs/material-effects.md) and [dynamic material/effect testing](dynamic-material-effects-testing.md).
+- [Shape animation](../tools/Blender/docs/shape-animation.md) and [facial animation](../tools/Blender/docs/facial-animation.md).
+- [Effect authoring](../tools/Blender/docs/effects-editor.md).
 
-## 当前能力与验证边界
+## Architecture
 
-| 能力 | 当前实现 | 验证边界 |
-|---|---|---|
-| 作者与离线输入 | 格式 2 独立资源；Blender 全部/分资源导出调用配套离线编译器 | 来源、对象图、hash 和原生字段已有离线证据；不等于所有资源变化的实机验收 |
-| 首次替换 | 读取最新完整代际，沿游戏原加载入口提交保留原 CAB/Bundle 命名的输入；作者工具生成每个 Mod 的静态来源描述，编译器确认所有 Mesh 消费者 | LZY 已有样本；新的[静态来源发布](runtime-resource-discovery.md)已真实数据构建，实机验收另记 |
-| 完整候选加载 | 隔离命名的 Bundle/PFB、闭包与 Mesh/Material/Texture 核验 | v35c 世界 owner 无改动与贴图正向更新通过；其他变化待测 |
-| 装配身份 | v36 校验序列化 Renderer 地址、目标 marker 与逐 Mesh 骨骼；v35 使用 marker/骨骼校验 | v36 为源码及本地测试能力，未部署；0/1/N 完整迁移尚未验收 |
-| 实例迁移 | 现有实现使用已记录的游戏世界/展示 owner 重建及后续创建路由 | 世界贴图正向更新通过；展示、隐藏、池和所有消费者覆盖未完成 |
-| 按键、显隐与形态 | cycle/press/hold、表达式、Renderer 原生 enabled 仲裁、形态绑定与玩家数值持久化 | 历史按键/残影已有用户验收；新代际组合与反向重载仍需覆盖 |
-| 形态动画 | Shape Keys Action/KEY slot 离线采样、独立播放组、播放/暂停/停止、Ins 实时倍率与偏好保存 | 第一版已本地安装；Blender/原生控制/真实资源隔离编译通过，游戏画面及活跃动画性能待验收 |
-| Ins 控制面板 | 内置 Windows 面板、所选 Mod 按键限制、按键按钮与形态滑块、跨线程版本校验 | 两 Mod 同键隔离及真实控件消息测试通过（前台观察注入）；已部署 v35，游戏 UI/鼠标仍待验收 |
-| 缓存与多角色 Mod | 当前源码组合完整 0/1/N 作者集合；F10 提交增删/修改，Ins 只限制按键目标；集合缓存绑定 mods 目录 | 无对应 Mod 的角色保持原版；每个 Mod 自带来源描述，基线按需扩展；当前真实样本为 LZY；已部署 v35，实机待验收 |
-| 旧代退休 | 卸载 Bundle 容器时保留存活资源引用，未知所有权隔离 | 不宣称完整 native job fence、persistent pool 或多代资源回收已验证 |
-| Lua UI、Skeleton、Physics | 保留适配器及作者编解码 | 尚未接入当前生产宿主的完整运行链 |
+- [Code architecture](code-architecture.md): DLL, author compiler, source index and package ownership.
+- [Runtime resource discovery](runtime-resource-discovery.md): source inputs, renderer consumers and runtime matching.
+- [Offline resource package format](offline-resource-package-format.md): the compiled author package and protocol boundary.
+- [Mod INI format 2](mod-ini-resource-format-v2.md): author rules and resource references.
+- [Resource update workflows](update-workflows-20261015.md): game updates, extracted-source refresh and Mod repair.
+- [Release management](release-management.md): independent repositories, tool compatibility gates and local preflight.
 
-完整目标以[渲染装配契约](full-render-assembly-reload.md)为准。单项贴图成功不能替代部件增删改名、不同骨骼槽、多实例回滚和旧代引用退休。
+## Testing
 
-## 阅读顺序与文档职责
+- [Hot reload testing](hot-reload-testing.md): verified behavior and remaining in-game coverage.
+- [Scene performance testing](performance-scene-test.md): measurement points and scenario matrix.
+- [Blender scoped export](blender-scoped-resource-export.md): full and partial export behavior.
+- [AnimeStudio VFS layers](unpacker-vfs-layers.md): index construction and incremental updates.
 
-| 主题 | 入口 | 职责 |
-|---|---|---|
-| 项目术语 | [CONTEXT](../CONTEXT.md) | 作者、基线、代际、owner 和消费者边界 |
-| 离线导出提速 | [独立实施与验收](offline-export-performance-plan.md) | 当前编译后端和消费者覆盖保持，优化单次冷编译的解析、根归属及内存开销 |
-| 游戏更新修复 | [三端实现与验证](update-workflows-20261015.md)、[修复工具设计](eff-repair-tool-design.md) | 游戏外 Mod 修复；作者重新解包后可直接从旧工程导出，在线索引尚未发布；[原运行时探索](game-update-prefab-adaptation-plan.md)保留为历史 |
-| 代码与构建 | [代码架构](code-architecture.md)、[源码地图](../src/README.md) | 当前入口、模块职责、v35/v36 配套构建及回归命令 |
-| 实机进度 | [热重载测试](hot-reload-testing.md) | 已通过用例、安装版本与下一轮操作 |
-| 场景性能检查 | [测点与测试顺序](performance-scene-test.md) | 主线程/后台耗时、读取和形态快照、慢帧窗口；明确 Unity/GPU 未测边界 |
-| 解包资源版本 | [游戏目录与两层 VFS](unpacker-vfs-layers.md) | 基础/热更新来源、逐 Bundle 增量索引与旧索引迁移、预下载边界和编译器一致性 |
-| 形态动画 | [作者片段与播放控制](shape-animation-design.md) | 第一版已本地安装：Shape Keys Action、独立播放组、Mesh 配套导出与 Ins 速度倍率；游戏内待验收 |
-| 完整目标 | [渲染装配热重载](full-render-assembly-reload.md) | 0/1/N、登记切换、回滚、未来实例及退休契约 |
-| 离线包 | [包契约](offline-resource-package-format.md) | ABI、缓存发布、编译与原生加载 |
-| 作者声明 | [INI 格式 2](mod-ini-resource-format-v2.md) | Replace/Part、资源、表达式与二进制格式 |
-| 控制与偏好 | [资源输入按键](resource-input-key-controls.md) | 显隐、形态、数值状态及配置事务 |
-| Blender 导出 | [分资源导出](blender-scoped-resource-export.md) | 全部/仅 Mesh/材质与贴图/贴图及运行中发布 |
-| 源基线 | [导出基线](exporter-source-baseline.md) | pristine 来源与作者数据隔离；AnimeStudio 更新已有解包资源、Blender 接受来源更新 |
-| 顶点通道 | [顶点数据契约](vertex-data-contract.md) | 原生通道、形变布局与切线生成 |
-| 相机 | [反虚化契约](camera-fade.md) | CameraMono 原评估后的清理与验证边界 |
-| 后续物理 | [三端设计](physics-authoring-design.md)、[作者 v5](physics-authoring-v5.md)、[源图 v2](physics-authoring-v2.md) | 目标及作者文件，不能代替运行时能力 |
-| 仓库与工具 | [三仓库架构](repository-architecture.md)、[资源浏览器](../tools/README.md)、[Blender 插件](https://github.com/ssice-a/EFF-blender/blob/main/README.md) | 所有权、协议、开发与发布关系 |
-| 发布管理 | [三端发布流程](release-management.md) | 三仓库版本/提交跟踪、native base 固定、发布顺序与失败恢复 |
-
-## 维护规则
-
-1. 明确区分已实现、构建通过、已部署、游戏验收四种状态；历史版本成功不自动归属当前源码。
-2. 当前文档描述现有契约和边界；具体日志、哈希和失败尝试留在 `diagnostics/`。
-3. 已退休代码和文档不再作为现行入口，源码清理记录不证明游戏能力。
-4. 身份、装配及高频探针只在有明确问题和退出条件时启用；独立离线检查继续推进。
+Historical diagnostics and design records remain available for context. They may describe retired implementations or older local builds; do not treat their dated measurements as current release results.

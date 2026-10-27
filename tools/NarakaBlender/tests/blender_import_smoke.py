@@ -26,12 +26,38 @@ root, manifest = load_package(package)
 existing = set(bpy.data.objects)
 summary = import_package(package)
 created = set(bpy.data.objects) - existing
-meshes = [o for o in created if o.type == "MESH"]
+all_meshes = [o for o in created if o.type == "MESH"]
+meshes = [o for o in all_meshes if "naraka_renderer" in o]
+effect_renderers = [o for o in created if "naraka_effect_renderer" in o]
+effect_meshes = [o for o in created if "naraka_effect_mesh" in o]
+billboard_previews = [o for o in created if o.get("naraka_resource_kind") == "billboard-preview"]
 assert len(meshes) == len(manifest["renderers"])
+assert len(effect_renderers) == len(manifest.get("effectRenderers", []))
+assert len(effect_meshes) == len(manifest.get("effectMeshes", []))
+assert len(billboard_previews) == sum(p["renderModeName"] in ("Billboard", "Stretch", "HorizontalBillboard", "VerticalBillboard")
+    for p in manifest.get("particleSystems", []))
 assert all(o.type in ("MESH", "ARMATURE") for o in created)
 package_collection = bpy.data.collections[summary["collection"]]
 roles = {c.get("naraka_collection_role") for c in package_collection.children}
-assert roles == {"MESHES", "SKELETONS"}, roles
+assert roles == {"MESHES", "SKELETONS", "EFFECTS"}, roles
+effects_collection = next(c for c in package_collection.children if c.get("naraka_collection_role") == "EFFECTS")
+effect_collections = [c for c in effects_collection.children if c.get("naraka_collection_role") == "EFFECT_PREFAB"]
+assert len(effect_collections) == len(manifest.get("effects", []))
+assert all(any(c in obj.users_collection for c in effect_collections) for obj in effect_renderers + effect_meshes + billboard_previews)
+assert summary["effectMeshRenderers"] == len(effect_renderers)
+assert summary["effectMeshAssets"] == len(effect_meshes)
+assert summary["billboardPreviews"] == len(billboard_previews)
+inventory_text = bpy.data.texts[effects_collection["naraka_effect_inventory"]]
+effect_inventory = json.loads(inventory_text.as_string())
+assert len(effect_inventory) == len(manifest.get("effects", []))
+assert all("logicalPath" in texture for effect in effect_inventory for texture in effect["textures"])
+assert all("sourceGeometry" in particle for effect in effect_inventory for particle in effect["particleSystems"])
+for obj in billboard_previews:
+    assert obj["naraka_preview_only"] is True
+    assert "built-in billboard quad" in obj["naraka_source_mesh"]
+    assert len(obj.data.vertices) == 4 and len(obj.data.polygons) == 1
+    assert len(obj.data.uv_layers) == 1
+    assert all(slot.material for slot in obj.material_slots)
 world = []
 for node in manifest["nodes"]:
     local = local_matrix(node)
@@ -60,6 +86,16 @@ for renderer in manifest["renderers"]:
                 max_rest_error = max(max_rest_error, (a.co - b.co).length)
         finally:
             evaluated.to_mesh_clear()
+for renderer in manifest.get("effectRenderers", []):
+    obj = next(o for o in effect_renderers if o["naraka_effect_renderer"] == renderer["id"])
+    assert obj["naraka_resource_kind"] == "effect-mesh-renderer"
+    assert max(abs(obj.matrix_world[r][c] - world[renderer["node"]][r][c]) for r in range(4) for c in range(4)) < 1e-6
+    assert obj.users_collection[0].get("naraka_collection_role") == "EFFECT_PREFAB"
+for source_mesh in manifest.get("effectMeshes", []):
+    obj = next(o for o in effect_meshes if o["naraka_effect_mesh"] == source_mesh["id"])
+    assert obj["naraka_resource_kind"] == "effect-mesh-asset"
+    assert max(abs(obj.matrix_world[r][c] - world[source_mesh["node"]][r][c]) for r in range(4) for c in range(4)) < 1e-6
+    assert obj.users_collection[0].get("naraka_collection_role") == "EFFECT_PREFAB"
 assert max_rest_error < 0.001, max_rest_error
 summary["maxRestSkinError"] = max_rest_error
 assert all(image.has_data and all(v > 0 for v in image.size) for image in bpy.data.images if image.get("naraka_source"))
@@ -98,6 +134,23 @@ for material in bpy.data.materials:
             for b in nodes[i + 1:]:
                 bx, by, br, bb = bounds(b)
                 assert ar <= bx or br <= ax or ab >= by or bb >= ay, (material.name, a.label, b.label)
+
+for effect in manifest.get("effects", []):
+    for identity in effect.get("materials", []):
+        source = manifest["materials"][identity]
+        expected = {binding.get("source") or binding.get("texture") for binding in source.get("textures", {}).values()
+            if binding.get("source") or binding.get("texture")}
+        material = next(m for m in bpy.data.materials if m.get("naraka_source") == identity)
+        actual = {node.image.get("naraka_source") for node in recursive_nodes(material.node_tree)
+            if node.type == "TEX_IMAGE" and node.image}
+        assert expected <= actual, (source["name"], expected - actual)
+        if source["shader"].lower().endswith("fx_pyro_uber.shadergraph"):
+            assert "Main texture RGB preview" in material["naraka_material_preview_only"]
+            source_alpha = [node for node in material.node_tree.nodes if node.type == "TEX_IMAGE"
+                and node.get("naraka_binding") in {"_MainTextureTransmittance", "_MaskTexture"}]
+            assert len(source_alpha) == 2 and all(not node.outputs["Alpha"].is_linked for node in source_alpha)
+            status = json.loads(material["naraka_conversion_status_json"])
+            assert {"_MainTextureTransmittance", "_MaskTexture"} <= set(status["retainedTextureBindings"])
 
 # A rig object transform moves each mesh once; eliminating Empty parents must
 # not remove group movement or apply a second skin-space transformation.
@@ -184,7 +237,8 @@ with tempfile.TemporaryDirectory(prefix="naraka-transform-test-") as temporary:
     before_transformed = {kind: set(getattr(bpy.data, kind)) for kind in ("objects", "meshes", "armatures", "materials", "node_groups", "images", "collections", "texts")}
     import_package(manifest_path)
     bpy.context.view_layer.update()
-    actual = {o["naraka_renderer"]:o for o in set(bpy.data.objects)-before_transformed["objects"] if o.type == "MESH"}
+    actual = {o["naraka_renderer"]:o for o in set(bpy.data.objects)-before_transformed["objects"]
+        if o.type == "MESH" and "naraka_renderer" in o}
     for renderer in transformed["renderers"]:
         obj = actual[renderer["id"]]
         assert max(abs(obj.matrix_world[r][c] - expected_world[renderer["node"]][r][c]) for r in range(4) for c in range(4)) < 1e-6

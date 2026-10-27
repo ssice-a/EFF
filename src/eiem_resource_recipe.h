@@ -1,5 +1,6 @@
 #pragma once
 #include "eiem_mesh_frame_storage.h"
+#include "eiem_readonly_file_range.h"
 #include <unordered_map>
 
 // Offline-proven reconstruction. Large bytes remain in the game's members or
@@ -11,6 +12,11 @@ struct Span {Kind kind=Literal;std::string source;size_t offset=0,size=0;Bytes l
 struct Member {std::string name,hash;uint32_t flags=0;size_t size=0;std::vector<Span> spans;};
 struct Frame {std::string resource,hash;size_t offset=0,size=0,count=0;std::array<size_t,4> stride{},start{};};
 inline std::string Digest(const Bytes& bytes){auto hash=Sha(bytes.data(),bytes.size());return Hex(hash.data(),hash.size());}
+inline Bytes ReadAuthorResource(const Resource& resource){
+ if(!resource.bytes.empty())return resource.bytes;
+ Require(resource.mapped&&ResourceSize(resource),"recipe author resource backing absent");Bytes bytes(ResourceSize(resource));
+ std::memcpy(bytes.data(),resource.mapped->Data(),bytes.size());Require(Digest(bytes)==ResourceContentHash(resource),"mapped author resource content changed");return bytes;
+}
 inline Bytes ExpandFrame(const Frame& frame,const Bytes& resource){
  Require(frame.count&&frame.stride[0]==16&&frame.start[0]==0&&frame.offset<=resource.size()&&frame.size<=resource.size()-frame.offset,"recipe author frame range differs");
  MeshVertexLayout after;after.count=frame.count;after.stride[0]=40;
@@ -107,10 +113,11 @@ inline Member Describe(const EndfieldInput::Member& output,const Dictionary& ori
  }return member;
 }
 inline Bytes Apply(const Member& member,const std::map<std::string,const Bytes*>& originals,const Package& package,const std::map<std::string,Bytes>& frames,bool verify=true,const std::map<std::string,const Bytes*>* generated=nullptr){
- Bytes output;Require(member.size<=output.max_size(),"recipe output size cannot be represented");output.reserve(member.size);
+ Bytes output;std::map<std::string,Bytes> mappedAuthors;Require(member.size<=output.max_size(),"recipe output size cannot be represented");output.reserve(member.size);
  for(const auto& span:member.spans){Require(span.size&&span.size<=member.size-output.size(),"recipe output span extent differs");const Bytes* source=nullptr;
   switch(span.kind){case Original:Require(originals.count(span.source),"recipe original member absent");source=originals.at(span.source);break;
-   case Author:Require(package.resources.count(span.source),"recipe author resource absent");source=&package.resources.at(span.source)->bytes;break;
+   case Author:{Require(package.resources.count(span.source),"recipe author resource absent");const auto& resource=*package.resources.at(span.source);if(!resource.bytes.empty())source=&resource.bytes;else{
+    auto inserted=mappedAuthors.emplace(span.source,Bytes{});auto& bytes=inserted.first->second;if(bytes.empty())bytes=ReadAuthorResource(resource);source=&bytes;}break;}
    case ExpandedFrame:if(generated&&generated->count(span.source))source=generated->at(span.source);else{Require(frames.count(span.source),"recipe expanded frame absent");source=&frames.at(span.source);}break;
    case Literal:Require(span.offset==0&&span.source.empty()&&span.literal.size()==span.size,"recipe literal extent differs");source=&span.literal;break;
    default:Require(false,"recipe source kind differs");}

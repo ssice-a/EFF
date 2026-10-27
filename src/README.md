@@ -1,8 +1,8 @@
 # EFF source map
 
-The production DLL is one translation unit, `eiem_resource_entry.cpp`. Run `build.bat` (v35 by default) or `build.bat v36` for development against that serialized layout. Builds output the runtime DLL, two proxies and settings, and never deploy into the game. The Blender author compiler has its own build and distribution.
+The production DLL is one translation unit, `eiem_resource_entry.cpp`. Run `build.bat` for the single current package contract. The old `v35` and `v36` command arguments are compatibility aliases to the same build; builds output the runtime DLL, two proxies and settings, and never deploy into the game. The Blender author compiler has its own build and distribution.
 
-The default build excludes temporary performance/skin/material probes, VFS input capture, periodic observation counters and per-session diagnostic folders. Essential outcomes and failures use one `plugin/eff_log.txt`. `build.bat v35 capture` explicitly enables developer diagnostics and optional GPU capture; this is not a release artifact. Native attachment cleanup and configured idle/dash preloads remain production behavior.
+The default build excludes temporary performance/skin/material probes, VFS input capture, periodic observation counters and per-session diagnostic folders. Essential outcomes and failures use one `plugin/eff_log.txt`. `build.bat capture` explicitly enables developer diagnostics and optional GPU capture; this is not a release artifact. Native attachment cleanup and configured idle/dash preloads remain production behavior.
 
 | Module | Interface and implementation |
 |---|---|
@@ -22,7 +22,7 @@ The default build excludes temporary performance/skin/material probes, VFS input
 
 The compiler validates serialized changes in memory and publishes small compressed rules, without complete Prefab/resource files or duplicated author payloads. The DLL reads exact pristine game ranges, applies the same builders, verifies hashes and submits memory bundles before resource/instance creation. F10 prepares isolated bytes on a worker, checks consumers and asks the game to rebuild owners. Original materials are preserved as templates. This uses TypeTree codecs, not Unity Mesh/Material setters or private native memory patches.
 
-ABI v36 verifies the serialized Renderer address map and per-Mesh bone order. ABI v35 uses its manifest marker coverage and per-Mesh bone validation; it does not claim an address map is present. Current source composes 0/1/N original author packages, builds shared CAB/PFB inputs once, and binds the cache to the containing mods directory. F10 commits additions/removals/edits; original resources remain for characters without a Mod. Character baseline coverage is required, and the documented in-game evidence has specific coverage limits.
+The historical v35 manifest stored marker coverage; v36 added source/target Renderer addresses and bone-order evidence. Both are legacy reader dialects. The current writer always emits the self-described assembly manifest with Renderer addresses and per-Mesh bone order, regardless of the old command alias. Current source composes 0/1/N original author packages, builds shared CAB/PFB inputs once, and binds the cache to the containing mods directory. F10 commits additions/removals/edits; original resources remain for characters without a Mod. Character baseline coverage is required, and the documented in-game evidence has specific coverage limits.
 
 `eiem_lua_ui.h` is a reusable sandboxed Lua/ImGui adapter, with variables from `eiem_expression.h` and strict file paths from `eiem_file_io.h`. It is not wired into the current DLL host. The pure author codecs `eiem_skeleton_document.h`, `eiem_physics_document.h` and `eiem_physics_native_document.h` remain available for author tools; they create no runtime objects. The retired format 1 INI parser and runtime resource replacement entry have been removed.
 

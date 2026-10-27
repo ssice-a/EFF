@@ -5,7 +5,7 @@
 1. AnimeStudio 导出源包：manifest 保留准确路径、CAB/PathID、字段模板和引用身份；作者工作区保留已有资产索引。
 2. `mod.ini` 的 Replace 指定源 Mesh 身份，Part 指定作者 Mesh/材质。材质和贴图来源用于模板和构建依赖，不扩大替换目标。
 3. Blender 自带的来源工具复用现有索引，读取相关原始包范围，查找所有精确 Mesh 消费者。蒙皮 Renderer 直接引用 Mesh；静态 MeshFilter 通过同 GameObject 的 MeshRenderer 定位。所有匹配 PFB/Renderer 写入该 Mod 的 `source-inputs.bin`。不解析/保存全游戏原包，也不新增全局资源索引。
-4. Blender 自带的作者编译器只编译这个 Mod，生成 `compiled.bin` 的对象修改和复制/重定位规则。一个原 Renderer 可以展开为 0/1/N 作者 Part，未声明 Mesh 消费者不改变，材质模板克隆为独立作者对象。
+4. Blender obtains the shared EFF author compiler and compiles this Mod into `compiled.bin` object edits and copy/relocation rules. The verified tools are cached below the user-selected resource root. One source Renderer may expand to 0/1/N author Parts; undeclared Mesh consumers are unchanged and material templates are cloned into independent author objects.
 5. 暂存资源与编译结果全部完成后发布 Mod。来源声明未变化时复用来源描述；不读取当前游戏画面或扫描场景 Renderer。
 
 ## 运行时使用结果

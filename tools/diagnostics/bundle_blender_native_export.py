@@ -35,14 +35,12 @@ _protocol = _protocol_module._compiler_protocol
 
 
 
-def _choose_compiler(explicit=None, abi=35):
+def _choose_compiler(explicit=None):
     candidates = []
     if explicit:
         candidates.append(Path(explicit))
-    # Build aliases only influence preference; protocols are checked by fields.
     candidates.extend((
-        ROOT / ('bin/resource-pack-v35' if abi == 35 else 'bin/resource-pack') / 'eff_resource_pack.exe',
-        ROOT / ('bin/resource-pack' if abi == 35 else 'bin/resource-pack-v35') / 'eff_resource_pack.exe',
+        ROOT / 'bin/resource-pack/eff_resource_pack.exe',
         ROOT / 'tools/Blender/nativepack/eff_resource_pack.exe',
     ))
     seen = set()
@@ -62,11 +60,11 @@ def _choose_compiler(explicit=None, abi=35):
     raise ValueError('无法选择与生产 DLL 匹配的资源编译器：' + detail)
 
 
-def bundle(destination, compiler=None, abi=35):
+def bundle(destination, compiler=None):
     destination = Path(destination).resolve()
     if destination.exists():
         raise FileExistsError('Blender bundle exists: ' + str(destination))
-    compiler, protocol = _choose_compiler(compiler, abi)
+    compiler, protocol = _choose_compiler(compiler)
     if protocol.get('sourcePreparation') != _protocol_module.SOURCE_PREPARATION:
         raise ValueError('Build the compiler with in-process author source discovery')
     destination.mkdir(parents=True)
@@ -98,6 +96,10 @@ def bundle(destination, compiler=None, abi=35):
     if not (vendor / 'PIL').is_dir():
         raise FileNotFoundError(
             'Install Pillow for the target Blender Python into bin/author-core/vendor')
+    for abi in ('cp311', 'cp313'):
+        extension = vendor / 'PIL' / f'_imaging.{abi}-win_amd64.pyd'
+        if not extension.is_file():
+            raise FileNotFoundError('Pillow vendor is missing Blender ' + abi + ' extension: ' + str(extension))
     shutil.copytree(vendor, destination / 'vendor',
                     ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     return dict(
@@ -116,10 +118,8 @@ if __name__=='__main__':
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--compiler', type=Path,
                         help='显式指定声明兼容数据结构的 eff_resource_pack.exe')
-    parser.add_argument('--abi', type=int, choices=(35, 36), default=35,
-                        help='构建布局别名；仅决定默认查找顺序')
     args = parser.parse_args()
-    report = bundle(args.output, args.compiler, args.abi)
+    report = bundle(args.output, args.compiler)
     args.output.with_suffix('.bundle.json').write_text(
         json.dumps(report, indent=2, ensure_ascii=False) + '\n', 'utf-8')
     print(json.dumps(dict(path=report['path'], files=len(report['files']),

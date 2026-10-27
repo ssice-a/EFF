@@ -2,11 +2,12 @@
 import json
 
 from .advanced_cloth import VERIFIED_SHADERS
+from .emission import STANDARD_PHASE_SHADERS, phase_cloth_shader, periodic2_enabled
 
 
 def contract(source, binding, slice_index=None):
     shader=source['shader'].lower().replace('\\','/').rsplit('/',1)[-1]
-    cloth=shader in VERIFIED_SHADERS or 'periodic2' in shader
+    cloth=phase_cloth_shader(shader)
     skin=shader=='lx22standardcharacterskin.shader'
     title='原始绑定（用途待核对）'
     channels=['R · 原始数据','G · 原始数据','B · 原始数据','A · 原始数据']
@@ -36,7 +37,7 @@ def contract(source, binding, slice_index=None):
     if binding=='_TillingChannelMask' and shader in VERIFIED_SHADERS:
         title='四层细节覆盖 / Non-Color'
         channels=['R · 光学层1','G · 光学层2','B · 细节层3','A · 细节层4']
-    if binding=='_EmissionMap' and cloth:
+    if binding=='_EmissionMap' and periodic2_enabled(shader, source.get('floats',{}), source.get('keywords','').split()):
         title='流光数据 / Non-Color'
         channels=['R · 流光1区域','G · 流光1相位','B · 流光2区域','A · 流光2相位']
         selector=int(source.get('floats',{}).get('_EffectUvSelector',1))
@@ -44,7 +45,11 @@ def contract(source, binding, slice_index=None):
             chosen=['UV%d'%i for i in range(3) if selector & (1<<i)]
             uv='+'.join(chosen) if chosen else '零坐标'
             uv+=' · 固定采样，相位推进'
+        elif shader in STANDARD_PHASE_SHADERS:uv+=' · _MainTex缩放/偏移 · 固定采样，相位推进'
         else:uv+=' · 固定采样，相位推进'
+    elif binding=='_EmissionMap' and cloth:
+        title='普通发光 / 贴图原色彩空间'
+        channels=['R · 发光颜色R','G · 发光颜色G','B · 发光颜色B','A · 不用于表面透明度']
     if binding=='_DetailTillingArray':
         i=int(slice_index or 0)
         keywords=set(source.get('keywords','').split())

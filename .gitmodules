@@ -6,3 +6,7 @@
 	path = tools/Blender
 	url = https://github.com/ssice-a/EFF-blender.git
 	branch = main
+[submodule "EFF-Mod-Manager"]
+	path = EFF-Mod-Manager
+	url = https://github.com/ssice-a/EFF-Mod-Manager.git
+	branch = main

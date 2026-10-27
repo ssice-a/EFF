@@ -55,8 +55,10 @@ DLL updates require a game restart. Wait for active model loads to finish before
 
 1. Export an EFF source package using [AnimeStudio](https://github.com/ssice-a/AnimeStudio). Keep source templates, manifest and author index.
 2. Import its `mod.ini` with [EFF Blender](https://github.com/ssice-a/EFF-blender), edit and export selected Meshes. Start with all resources; partial exports update an existing complete Mod.
-3. Blender uses only its bundled author core, compiler and small source preparer. It resolves all consumers of the declared source Mesh offline and compiles this one staged Mod before publishing it.
+3. Blender obtains shared authoring tools from EFF Releases, resolves all consumers of the declared source Mesh offline and compiles this one staged Mod. Verified tools are cached under the user-selected resource root before publishing.
 4. EFF reads the independent results, combines compiled edits on shared inputs and applies proven byte recipes. It does not compile geometry/materials/textures, query the global asset index or scan scene Renderers.
+
+The four-endpoint ownership, user-selected resource root, AnimeStudio index location and build/release flow are described in [Shared Tools and Indexes](docs/shared-tools-and-indexes.md). Blender 5.2 users select the AnimeStudio unpack-index location in the add-on UI after installation; they do not select an extraction output directory.
 
 Exports under the game's `plugin/mods/` locate the installation automatically; other output directories require `EFF_RELOAD_GAME`. Players need neither author tools nor source snapshots. `mod.ini` remains the author rule entry; `compiled.bin` is derived output. Both short texture names and older hash names use their package's own references.
 

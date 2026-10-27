@@ -161,29 +161,40 @@ request completion or a returned release call is not a complete job fence.
 
 ## Build and verification
 
+`v35` and `v36` are historical serialized-manifest dialect labels, not current
+feature tiers. The old v35 manifest stored marker coverage and Mesh bone
+validation; v36 added source/target Renderer addresses and bone-order evidence.
+The current writer emits one self-described manifest with the assembly data, so
+a compile-time `v35` switch no longer selects a different algorithm or manifest
+layout. The reader still
+recognizes both old dialects. The remaining `abi=35` and compiler
+string in the offline compiler response are compatibility metadata; runtime
+acceptance compares declared structures. The old command arguments are kept as
+aliases only, and both build scripts produce one canonical compiler.
+
 ```powershell
-cmd /c build.bat v36
-cmd /c build.bat v35
+cmd /c build.bat
+cmd /c tools\build_resource_pack.cmd
 ```
 
-Each production output contains the DLL, protocol JSON, proxies
-and settings. Build commands alone do not change game files. The separately
-authorized deployment installed the v35 pair; v36 remains a local build.
+There is one production build. The historical `v35`/`v36` arguments now resolve
+to that same build; the `resource-directory-entry-v35` path remains for
+release-pipeline compatibility. The resource compiler output is `bin/resource-pack`.
+The protocol is checked by its declared fields,
+not that path or its old build label. Historical v35 marker-only and v36
+address-map manifests remain readable, while new manifests use the current
+self-described layout. Build commands alone do not change game files.
 
 Focused checks (build scripts for entry/full-reload fixtures compile only, so
 execute the resulting programs as shown):
 
 ```powershell
-cmd /c tools\diagnostics\build_entry_contract_smoke.cmd v36
-& .\bin\entry-contract-v36\entry_contract_smoke.exe
-cmd /c tools\diagnostics\build_entry_contract_smoke.cmd v35
-& .\bin\entry-contract-v35\entry_contract_smoke.exe
+cmd /c tools\diagnostics\build_entry_contract_smoke.cmd
+& .\bin\entry-contract-current\entry_contract_smoke.exe
 cmd /c tools\diagnostics\build_offline_cache_smoke.cmd
 cmd /c tools\diagnostics\build_control_panel_smoke.cmd
 & .\bin\resource-directory-entry\control_panel_smoke.exe --ui-smoke
-cmd /c tools\diagnostics\build_full_resource_reload_smoke.cmd v36
-& .\bin\resource-directory-entry\full_resource_reload_smoke.exe
-cmd /c tools\diagnostics\build_full_resource_reload_smoke.cmd v35
+cmd /c tools\diagnostics\build_full_resource_reload_smoke.cmd
 & .\bin\resource-directory-entry-v35\full_resource_reload_smoke.exe
 dotnet run --project tools/EndfieldVfsProbe/EndfieldVfsProbe.csproj --configuration Release -- --test-package-contracts
 ```

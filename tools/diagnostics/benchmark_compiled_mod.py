@@ -53,7 +53,18 @@ def compile_process(command):
 
 def files(root):
     return {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in root.rglob('*') if p.is_file() and p.name != 'compiled.bin'}
+            for p in root.rglob('*') if p.is_file()
+            and p.name != 'compiled.bin'
+            and p.name != 'source-inputs.bin'
+            and 'compiled.blocks' not in p.relative_to(root).parts}
+
+
+def block_files(root):
+    directory = root / 'compiled.blocks'
+    if not directory.is_dir():
+        return {}
+    return {p.relative_to(directory).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in directory.rglob('*') if p.is_file()}
 
 
 def main():
@@ -61,6 +72,12 @@ def main():
     parser.add_argument('game', type=Path)
     parser.add_argument('mod', type=Path)
     parser.add_argument('compiler', type=Path)
+    parser.add_argument('--source-index', type=Path,
+                        help='pass the same prepared source index as Blender export')
+    parser.add_argument('--previous-mod', type=Path,
+                        help='pass the previous committed Mod as Blender export does')
+    parser.add_argument('--temp-root', type=Path,
+                        help='place isolated staging output on the same volume as the target')
     parser.add_argument('--interactive', action='store_true')
     parser.add_argument('--compare', type=Path, action='append', default=[],
                         help='additional compiler on the same immutable author snapshot')
@@ -68,11 +85,11 @@ def main():
                         help='save measurements and exact-output checks as JSON')
     args = parser.parse_args()
     runs = []
-    with tempfile.TemporaryDirectory(prefix='eff-compile-benchmark-') as folder:
+    with tempfile.TemporaryDirectory(prefix='eff-compile-benchmark-', dir=args.temp_root) as folder:
         root = Path(folder)
         snapshot = root / 'snapshot' / args.mod.name
         shutil.copytree(args.mod, snapshot,
-                        ignore=shutil.ignore_patterns('compiled.bin', '*.tmp-*'))
+                        ignore=shutil.ignore_patterns('compiled.bin', 'compiled.blocks', '*.tmp-*'))
         snapshot_hashes = files(snapshot)
         baseline = None
 
@@ -85,24 +102,36 @@ def main():
             shutil.copytree(snapshot, destination, copy_function=lambda a, b:
                             __import__('os').link(a, b) or b)
             started = time.perf_counter()
-            returncode, stdout, stderr, peaks = compile_process([
-                str(compiler.resolve()), '--export-mod', str(destination), str(args.game.resolve())])
+            command = [str(compiler.resolve()), '--export-mod', str(destination), str(args.game.resolve())]
+            if args.source_index:
+                command.extend(['--source-index', str(args.source_index.resolve())])
+            if args.previous_mod:
+                command.extend(['--previous-mod', str(args.previous_mod.resolve())])
+            returncode, stdout, stderr, peaks = compile_process(command)
             elapsed = time.perf_counter() - started
             if returncode:
                 raise RuntimeError(stderr or stdout)
             artifact = (destination / 'compiled.bin').read_bytes()
+            blocks = block_files(destination)
             assert files(snapshot) == snapshot_hashes, 'compiler changed shared author files'
             assert files(destination) == snapshot_hashes, 'compiler changed author inputs'
             if baseline is None:
-                baseline = artifact
-            assert artifact == baseline, 'optimized compiler changed compiled.bin bytes'
+                baseline = (artifact, blocks)
+            assert artifact == baseline[0], 'optimized compiler changed compiled.bin bytes'
+            assert blocks == baseline[1], 'optimized compiler changed compiled.blocks payloads'
             costs = {row.split()[1]: float(row.split()[2])
                      for row in stdout.splitlines()
                      if row.startswith('COMPILED-MOD-COST ')}
+            block_index = ''.join(name + '\t' + digest + '\n'
+                                  for name, digest in sorted(blocks.items()))
             row = dict(compiler=str(compiler), compilerSHA256=compiler_hash,
                 wallSeconds=elapsed,
                 costsMs=costs, compiledBytes=len(artifact),
                 compiledSHA256=hashlib.sha256(artifact).hexdigest(),
+                compiledBlockCount=len(blocks),
+                compiledBlockBytes=sum((destination / 'compiled.blocks' / name).stat().st_size
+                                       for name in blocks),
+                compiledBlocksSHA256=hashlib.sha256(block_index.encode()).hexdigest(),
                 exactArtifactMatch=True, authorUnchanged=True, **peaks)
             runs.append(row)
             if args.report:

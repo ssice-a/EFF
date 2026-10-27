@@ -6,6 +6,7 @@
 #include "eiem_source_namespace_keys.h"
 #include "eiem_logical_source_routes.h"
 #include "eiem_input_retention.h"
+#include "eiem_semantic_renderer_replay.h"
 
 // Combines already compiled records. No resource builders, scene scans, game
 // resource queries or author-side executables are called by this path.
@@ -42,10 +43,12 @@ struct Set {
  std::map<std::filesystem::path,InputFileStamp> files;
  std::map<std::filesystem::path,Bytes> iniBytes;
  EiemLogicalSourceRoutes::Routes logicalSources;
+ std::map<std::pair<std::string,Identity>,NativeReference> semanticMeshes;
 };
 inline std::vector<std::pair<size_t,size_t>> Writers(const Set& set,size_t index){
  std::vector<std::pair<size_t,size_t>> result;for(const auto& contributor:set.contributors.at(index)){
-  const auto& a=*set.mods.at(contributor.first);if(a.manifest.plan.startupHashes.at(contributor.second)!=set.catalog.at(index).source.hash)result.push_back(contributor);
+  const auto& a=*set.mods.at(contributor.first);const auto& source=set.catalog.at(index).source;const auto& baseline=source.baselineHash.empty()?source.hash:source.baselineHash;
+  if(a.manifest.plan.startupHashes.at(contributor.second)!=baseline)result.push_back(contributor);
  }return result;
 }
 inline void EnsureCatalogProof(Catalog& catalog,bool retire=false){
@@ -116,6 +119,23 @@ inline Bytes Materialize(const Set& set,size_t index,bool isolated,PreparedNames
  if(prepared)prepared->clear();
  const auto& catalog=set.catalog.at(index);auto begin=std::chrono::steady_clock::now();auto input=ReadSource({},catalog.source);report("shared-source-read",begin);begin=std::chrono::steady_clock::now();auto original=EndfieldInput::Decode(input);report("shared-source-decode",begin);
  const auto writers=Writers(set,index);
+ if(catalog.source.runtimeChanged){
+  std::vector<SemanticOperation> operations;for(const auto& contributor:writers){const auto& artifact=*set.mods.at(contributor.first);const auto source=contributor.second;
+   Require(EiemResourceReloadPlan::SemanticCompleteAt(artifact.manifest.plan,source),
+    "game source changed and this Mod has no complete logical replay record; repair it offline from mod.ini and the current source index (a Blender project re-export is not required): "+catalog.source.logical);
+   const auto& rows=EiemResourceReloadPlan::SemanticOperationsAt(artifact.manifest.plan,source);operations.insert(operations.end(),rows.begin(),rows.end());
+  }
+  EiemSemanticRendererReplay::Stats stats;auto logical=catalog.source.logical;if(logical.empty()){auto route=set.logicalSources.find(catalog.source.file);Require(route!=set.logicalSources.end(),"changed source logical route absent");logical=route->second;}
+  EiemSemanticRendererReplay::Apply(original,logical,operations,[&](const std::string& bundle,const Identity& mesh){auto found=set.semanticMeshes.find({bundle,mesh});Require(found!=set.semanticMeshes.end(),"current logical Mesh reference was not prepared: "+bundle+" / "+mesh.path+"#"+mesh.asset);return found->second;},stats);
+  if(cost){cost("semantic-operations",double(operations.size()));cost("semantic-targets",double(stats.targets));cost("semantic-fields-missing",double(stats.missing));cost("semantic-fields-incompatible",double(stats.incompatible));}
+  Bytes startup=operations.empty()?input:EndfieldInput::Encode(input,original.members);
+  if(nativeLayout)*nativeLayout=EiemNativeInputOffsets::Describe(original.members);
+  if(prepared||isolated){PreparedNamespaces local;auto& recipes=prepared?*prepared:local;auto names=set.manifest.plan.names;
+   for(auto& member:original.members)if(Serialized(member.bytes)){EiemLoadingGeneration::Recipe proof;auto namespaced=EiemLoadingGeneration::PrepareSerialized(member.bytes,names,&proof);recipes.push_back({member.name,Hash(member.bytes),proof.patches});if(isolated)member.bytes=std::move(namespaced.bytes);}
+   if(isolated){for(auto& member:original.members)member.name=names.members.at(member.name);return EndfieldInput::Encode(startup,original.members);}
+  }
+  return startup;
+ }
  if(writers.empty()){
   if(nativeLayout)*nativeLayout=EiemNativeInputOffsets::Describe(original.members);
   for(auto& member:original.members)if(Serialized(member.bytes)){
@@ -301,6 +321,15 @@ inline std::shared_ptr<Set> Read(const std::filesystem::path& game,const std::sh
  if(std::filesystem::is_directory(game/"Endfield_Data/StreamingAssets/VFS")){
   std::vector<EiemResourceReloadPlan::Source> sources;for(const auto& entry:set->catalog)sources.push_back(entry.source);
   EiemLogicalSourceRoutes::Rebind(sources,set->logicalSources,game);for(size_t i=0;i<sources.size();++i)set->catalog[i].source=std::move(sources[i]);
+  std::set<std::pair<std::string,Identity>> requestedMeshes;
+  for(size_t i=0;i<set->catalog.size();++i)if(set->catalog[i].source.runtimeChanged)for(const auto& contributor:Writers(*set,i)){
+   const auto& artifact=*set->mods.at(contributor.first);auto source=contributor.second;if(!EiemResourceReloadPlan::SemanticCompleteAt(artifact.manifest.plan,source))continue;
+   for(const auto& operation:EiemResourceReloadPlan::SemanticOperationsAt(artifact.manifest.plan,source))requestedMeshes.emplace(operation.meshBundle,operation.mesh);
+  }
+  for(const auto& key:requestedMeshes){std::optional<Bytes> encoded;for(const auto& entry:set->catalog){auto route=set->logicalSources.find(entry.source.file);if(route!=set->logicalSources.end()&&route->second==key.first){encoded=ReadSource({},entry.source);break;}}
+   auto bytes=encoded?std::move(*encoded):EiemLogicalSourceRoutes::ReadLogicalBundle(game,key.first);auto bundle=EndfieldInput::Decode(bytes);
+   set->semanticMeshes.emplace(key,EiemSemanticRendererReplay::ResolveMesh(bundle,key.second));
+  }
  }
  report("catalog-membership",catalogStarted);auto namesStarted=std::chrono::steady_clock::now();
  std::map<std::string,size_t> memberInputs;for(size_t i=0;i<set->catalog.size();++i)for(const auto& member:set->catalog[i].members)Require(memberInputs.emplace(member.first,i).second,"compiled CAB has multiple input owners");
@@ -319,6 +348,13 @@ inline std::shared_ptr<Set> Read(const std::filesystem::path& game,const std::sh
  }
  for(const auto& mod:set->mods)for(const auto& member:mod->manifest.plan.names.members)if(!plan.names.members.count(member.first)){auto cab=member.first.substr(0,36);Require(member.first==cab+".resS"&&plan.names.members.count(cab),"compiled stream name lacks owning CAB");plan.names.members.emplace(member.first,plan.names.members.at(cab)+".resS");}
  if(previous)for(const auto& member:previous->manifest.plan.names.members)if(!plan.names.members.count(member.first)){auto cab=member.first.substr(0,36);if(member.first==cab+".resS"&&plan.names.members.count(cab))plan.names.members.emplace(member.first,plan.names.members.at(cab)+".resS");}
+ for(size_t i=0;i<set->catalog.size();++i)if(set->catalog[i].source.runtimeChanged){auto current=EndfieldInput::Decode(ReadSource({},set->catalog[i].source));
+  for(const auto& member:current.members)if(member.name.size()<5||member.name.compare(member.name.size()-5,5,".resS")!=0)
+   if(!plan.names.members.count(member.name))plan.names.members.emplace(member.name,"CAB-"+EiemLoadingGeneration::Token(namespaceKeys[i],member.name,32));
+  for(const auto& member:current.members)if(member.name.size()>=5&&member.name.compare(member.name.size()-5,5,".resS")==0&&!plan.names.members.count(member.name)){
+   auto cab=member.name.substr(0,member.name.size()-5);auto owner=plan.names.members.find(cab);if(owner!=plan.names.members.end())plan.names.members.emplace(member.name,owner->second+".resS");
+  }
+ }
  report("native-names",namesStarted);auto assemblyStarted=std::chrono::steady_clock::now();
  for(const auto& row:pristine){const auto& before=*row.second.first;Root root;root.path=before.path;root.input=row.second.second;root.cab=before.cab;root.source=before.source;const auto& variants=rootVariants[row.first];
   if(variants.empty()&&before.preparedAssembly)root.preparedAssembly=before.preparedAssembly;
@@ -361,14 +397,15 @@ inline std::shared_ptr<Set> Read(const std::filesystem::path& game,const std::sh
  }
  EiemOfflineCompile::ParallelInputs(plan.inputs.size(),[&](size_t i){
   auto writers=Writers(*set,i);auto contribution=writers.size()==1?writers.front():(writers.empty()&&!set->contributors[i].empty()?set->contributors[i].front():std::make_pair(SIZE_MAX,SIZE_MAX));
-  if(contribution.first!=SIZE_MAX&&writers.size()<=1){const auto& mod=set->mods.at(contribution.first);if(mod->views.size()==mod->manifest.plan.originals.size()&&!mod->views.empty()){
+  if(contribution.first!=SIZE_MAX&&writers.size()<=1&&!set->catalog[i].source.runtimeChanged){const auto& mod=set->mods.at(contribution.first);if(mod->views.size()==mod->manifest.plan.originals.size()&&!mod->views.empty()){
    auto begin=std::chrono::steady_clock::now();auto& buffers=viewBuffers[i];auto found=priorInputs.find(set->catalog[i].source.file);EiemCompiledInputView::Buffer original;viewSourceStamps[i]=FileStamp(set->catalog[i].source.physical);
    if(found!=priorInputs.end()){auto old=found->second;auto cached=previous->sourceBuffers.find(old);auto stamp=previous->sourceStamps.find(old);const auto& prior=previous->catalog[old].source;const auto& current=set->catalog[i].source;if(cached!=previous->sourceBuffers.end()&&stamp!=previous->sourceStamps.end()&&current.hash==prior.hash&&current.physical==prior.physical&&current.offset==prior.offset&&SameStamp(stamp->second,viewSourceStamps[i]))original=cached->second;}
    if(!original){const auto& source=set->catalog[i].source;auto mapped=std::make_shared<const EiemReadonlyFileRange::Range>(source.physical,source.offset,source.size);
     const auto& authored=mod->manifest.plan.originals.at(contribution.second);
     if(set->logicalSources.count(source.file)||source.physical!=authored.physical||source.offset!=authored.offset||!SameStamp(mapped->Stamp(),mod->verifiedSources.at(contribution.second))){auto hash=Sha(mapped->Data(),mapped->Size());Require(Hex(hash.data(),hash.size())==source.hash,"game source content changed; repair the Mod offline: "+(set->logicalSources.count(source.file)?set->logicalSources.at(source.file):source.file));}
     viewSourceStamps[i]=mapped->Stamp();original=EiemCompiledInputView::Buffer(std::move(mapped));}buffers.emplace(std::make_pair(EiemResourceRecipe::Original,std::string{}),original);
-   for(const auto& resource:mod->manifest.package.resources)buffers.emplace(std::make_pair(EiemResourceRecipe::Author,resource.first),std::shared_ptr<const Bytes>(resource.second,&resource.second->bytes));
+   for(const auto& resource:mod->manifest.package.resources){if(resource.second->mapped)buffers.emplace(std::make_pair(EiemResourceRecipe::Author,resource.first),EiemCompiledInputView::Buffer(resource.second->mapped));
+    else buffers.emplace(std::make_pair(EiemResourceRecipe::Author,resource.first),std::shared_ptr<const Bytes>(resource.second,&resource.second->bytes));}
    for(const auto& frame:mod->preparedFrames)buffers.emplace(std::make_pair(EiemResourceRecipe::ExpandedFrame,frame.first),std::shared_ptr<const Bytes>(mod,&frame.second));
    viewRecipes[i]=&mod->views.at(contribution.second);rawViews[i]=EiemCompiledInputView::Bind(*viewRecipes[i],buffers);report("view-bind-startup",begin);begin=std::chrono::steady_clock::now();
    plan.inputs[i].hash=plan.startupHashes[i]=mod->manifest.plan.startupHashes.at(contribution.second)==set->catalog[i].source.hash?set->catalog[i].source.hash:viewRecipes[i]->startupHash;report("view-startup-hash",begin);return;

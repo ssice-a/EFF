@@ -56,7 +56,7 @@ int main() {
     Require(std::filesystem::canonical(root).parent_path() == std::filesystem::canonical(std::filesystem::temp_directory_path()),
             "fixture cleanup escaped temporary directory");
     std::filesystem::remove_all(root);
-    std::cout << "PASS abi=" << EiemPackageProtocol::abi << " zero/multiple character Mod discovery, add/remove membership, default F10, config beyond 64 KiB, strict Lua file paths\n";
+    std::cout << "PASS current package contract, zero/multiple character Mod discovery, add/remove membership, default F10, config beyond 64 KiB, strict Lua file paths\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "FAIL " << error.what() << '\n';

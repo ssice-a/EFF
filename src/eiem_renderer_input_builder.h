@@ -229,14 +229,18 @@ struct RendererInputBuild {
   Bytes bytes;
   size_t matches = 0, skipped = 0, changedObjects = 0, addedObjects = 0, lodGroups = 0, preloadReferences = 0;
   std::vector<RendererPartWrite> parts;
+  std::vector<std::pair<std::string,MeshConsumer>> consumers;
 };
 using MaterialPreloadIndex = std::map<NativeReference, std::set<NativeReference>>;
 inline void AddMaterialPreloads(MaterialPreloadIndex& index,const Bytes& bytes,const std::string& cab,
     const SerializedLayout& layout,const std::vector<Asset>& assets,const Package& package) {
-    std::set<int64_t> selected,found;
+    std::map<SerializedAssetKey,NativeReference> selected;
+    std::set<SerializedAssetKey> found;
     for(const auto& asset:assets)
       if(asset.classId==21)for(const auto& material:package.materials)
-        if(material.second.source.path==asset.path&&material.second.source.asset==asset.asset)selected.insert(asset.pathId);
+        if(material.second.source.path==asset.path&&material.second.source.asset==asset.asset)
+          selected.emplace(SerializedAssetKey{SerializedAssetCabKey(asset.cab),asset.pathId},
+                           NativeReference{asset.cab,asset.pathId});
     if(selected.empty())return;
     for(const auto& row:layout.objects) {
       const auto& type=layout.types.at(row.second.type);if(type.classId!=142)continue;
@@ -244,24 +248,47 @@ inline void AddMaterialPreloads(MaterialPreloadIndex& index,const Bytes& bytes,c
       const auto& preloads=ConstArray(type,Child(type,value,"m_PreloadTable"));
       for(const auto& entry:ConstArray(type,Child(type,value,"m_Container")).children) {
         const auto& info=Child(type,entry,"second");
-        auto asset=NullableReference(type,Child(type,info,"asset"),layout,cab);
-        if(asset.first!=cab||!selected.count(asset.second))continue;
         auto first=Integer(Child(type,info,"preloadIndex")),count=Integer(Child(type,info,"preloadSize"));
         Require(first<=preloads.children.size()&&count<=preloads.children.size()-first,"Material source preload interval");
-        auto& dependencies=index[asset];found.insert(asset.second);
+        std::set<SerializedAssetKey> intervalMaterials;
+        auto root=NullableReference(type,Child(type,info,"asset"),layout,cab);
+        if(root.second) {
+          auto key=SerializedAssetKey{SerializedAssetCabKey(root.first),root.second};
+          if(selected.count(key))intervalMaterials.insert(std::move(key));
+        }
+        std::set<NativeReference> dependencies;
         for(size_t i=size_t(first);i<size_t(first+count);++i) {
           auto ref=NullableReference(type,preloads.children[i],layout,cab);
-          if(ref.second)dependencies.insert(std::move(ref));
+          if(!ref.second)continue;
+          auto key=SerializedAssetKey{SerializedAssetCabKey(ref.first),ref.second};
+          if(selected.count(key))intervalMaterials.insert(std::move(key));
+          dependencies.insert(std::move(ref));
+        }
+        // Materials are often preload-only assets under a Prefab container,
+        // rather than roots in m_Container. Inherit that entry's verified
+        // preload interval so their Texture/Shader references stay available.
+        for(const auto& key:intervalMaterials) {
+          auto material=selected.find(key);
+          auto& closure=index[material->second];
+          closure.insert(dependencies.begin(),dependencies.end());
+          found.insert(key);
         }
       }
     }
-    Require(found==selected,"Material source preload closure absent");
+    std::set<SerializedAssetKey> expected;
+    for(const auto& row:selected)expected.insert(row.first);
+    Require(found==expected,"Material source preload closure absent");
 }
+inline SerializedNamedAssets NamedSerializedAssets(const EndfieldInput::Bundle& bundle);
+inline std::vector<Asset> SerializedReferencedAssets(const Bytes& bytes,const std::string& cab,
+    const SerializedLayout& layout,const SerializedNamedAssets* named);
 inline void AddMaterialPreloads(MaterialPreloadIndex& index, const Bytes& input, const Package& package) {
   auto bundle=EndfieldInput::Decode(input);
+  const auto named=NamedSerializedAssets(bundle);
   for(const auto& member:bundle.members)if(SerializedHeader(member.bytes)) {
     auto layout=ParseSerialized(member.bytes);
-    AddMaterialPreloads(index,member.bytes,member.name,layout,SerializedAssets(member.bytes,member.name,layout),package);
+    auto assets=SerializedReferencedAssets(member.bytes,member.name,layout,&named);
+    AddMaterialPreloads(index,member.bytes,member.name,layout,assets,package);
   }
 }
 // Scoped to one immutable author Package/build. Skeleton pointers and palettes
@@ -409,7 +436,8 @@ class RendererMemberBuilder {
         auto owner = Local(Schema(id), Child(Schema(id), InspectHierarchy(id), "m_GameObject"), 1);
         const auto& name = Child(Schema(owner), InspectHierarchy(owner), "m_Name");
         auto text = Text(name.raw.data(), name.raw.size());
-        Require(!text.empty() && text.find('/') == text.npos, "ambiguous Transform path component");
+        // Preserve raw names here. Flattened paths are marked ambiguous below
+        // and rejected only if an authored bone lookup actually uses one.
         paths[id] = paths[parent].empty() ? text : paths[parent] + "/" + text;
         roots[id] = roots[parent];
       } else { roots[id] = id; paths[id] = ""; }
@@ -488,6 +516,7 @@ public:
     }
     std::set<NativeReference> references;for(const auto& row:selected)references.insert(row.first);
     auto matches=MeshConsumers(source,layout,cab,references);
+    for(const auto& match:matches)result.consumers.emplace_back(cab,match);
     Cost("renderer-consumers",start);
     if (matches.empty()) { result.bytes = source;if(outputOrigins)*outputOrigins=inputOrigins?*inputOrigins:AuthorByteSpans{};return result; }
     start=std::chrono::steady_clock::now();
@@ -889,6 +918,7 @@ inline RendererInputBuild BuildRendererInput(EndfieldInput::Bundle& bundle, cons
     result.changedObjects += rebuilt.changedObjects; result.addedObjects += rebuilt.addedObjects;
     result.lodGroups += rebuilt.lodGroups; result.preloadReferences += rebuilt.preloadReferences;
     result.parts.insert(result.parts.end(), rebuilt.parts.begin(), rebuilt.parts.end());
+    result.consumers.insert(result.consumers.end(),rebuilt.consumers.begin(),rebuilt.consumers.end());
     member.bytes = std::move(rebuilt.bytes);
   }
   return result;

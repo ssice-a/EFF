@@ -23,7 +23,12 @@ using namespace EiemNativeInput;
 inline bool Serialized(const Bytes& b){return EiemNativeInput::SerializedHeader(b);}
 inline std::string Hash(const Bytes& b){auto h=Sha(b.data(),b.size());return Hex(h.data(),h.size());}
 inline std::string Name(const Type& t,const Value& v){const auto& n=Child(t,v,"m_Name");return Text(n.raw.data(),n.raw.size());}
-struct Source {std::string file,hash;std::filesystem::path physical;uint64_t offset=0,size=0;};
+struct Source {
+ std::string file,hash;std::filesystem::path physical;uint64_t offset=0,size=0;
+ // Runtime-only routing state. file/hash remain the exported source identity;
+ // hash is rebound to the current payload after a game update.
+ std::string logical,baselineHash;uint64_t runtimeStampBytes=0,runtimeStampWritten=0;bool runtimeChanged=false;
+};
 inline Bytes ReadSource(const std::filesystem::path& directory,const Source& s){
  if(s.physical.empty())return Read(directory/"inputs"/s.file);
  auto before=FileStamp(s.physical);Require(s.offset<=INT64_MAX&&s.offset<=before.bytes&&s.size<=before.bytes-s.offset&&s.size<=SIZE_MAX,"rule source range differs");
@@ -31,7 +36,12 @@ inline Bytes ReadSource(const std::filesystem::path& directory,const Source& s){
  for(size_t p=0;p<bytes.size();){auto n=std::min<size_t>(1024*1024,bytes.size()-p);in.read((char*)bytes.data()+p,n);Require(size_t(in.gcount())==n,"rule source truncated");p+=n;}
  Require(SameStamp(before,FileStamp(s.physical))&&Hash(bytes)==s.hash,"rule source content changed");return bytes;
 }
-struct RendererRule {std::string cab;int64_t id=0;Identity mesh;};
+struct RendererRule {std::string cab;int64_t id=0;Identity mesh;std::string meshBundle;};
+struct SemanticOperation {
+ enum Kind : unsigned {MeshAsset=1,Renderer=2};
+ unsigned kind=0;Identity mesh;std::string meshBundle,cab;int64_t id=0;
+ Bytes beforeSchema,editedSchema,before,edited;std::vector<std::string> editedExternals;
+};
 inline void VerifySourceSnapshot(const std::filesystem::path& directory,const Source& source,const InputFileStamp& stamp){
  const auto path=source.physical.empty()?directory/"inputs"/source.file:source.physical;
  if(!SameStamp(stamp,FileStamp(path))){auto bytes=ReadSource(directory,source);Require(Hash(bytes)==source.hash,"reload pristine source changed during compilation");}
@@ -76,10 +86,17 @@ struct Plan {
  size_t namespaceHits=0,namespaceMisses=0;
  size_t appearanceHits=0,appearanceMisses=0,geometryInputHits=0,geometryInputMisses=0;
  bool composed=false;
- bool rulesOnly=false,resourceAddressed=false;std::vector<Source> originals;std::vector<std::vector<RendererRule>> rendererRules;std::vector<std::string> startupHashes;
+ bool rulesOnly=false,resourceAddressed=false;std::vector<Source> originals;std::vector<std::vector<RendererRule>> rendererRules;std::vector<std::vector<SemanticOperation>> semanticOperations;std::vector<bool> semanticComplete;std::vector<std::string> startupHashes;
  std::vector<std::vector<MemberNamespaceRecipe>> namespaceRecipes;
  bool spanRecipes=false;std::vector<EiemResourceRecipe::Frame> frameRecipes;std::vector<std::vector<EiemResourceRecipe::Member>> memberRecipes;
 };
+inline bool SemanticCompleteAt(const Plan& plan,size_t input){
+ return input<plan.semanticComplete.size()&&plan.semanticComplete[input];
+}
+inline const std::vector<SemanticOperation>& SemanticOperationsAt(const Plan& plan,size_t input){
+ static const std::vector<SemanticOperation> empty;
+ return input<plan.semanticOperations.size()?plan.semanticOperations[input]:empty;
+}
 inline std::vector<Source> ReadBaseline(const std::filesystem::path& directory,std::vector<std::string>& roots,const std::filesystem::path& game={}) {
  auto bytes=Read(directory/"baseline.tsv");std::istringstream lines(Text(bytes.data(),bytes.size()));
  std::string line;Require(bool(std::getline(lines,line)),"reload baseline header absent");if(!line.empty()&&line.back()=='\r')line.pop_back();
@@ -290,13 +307,15 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
   }
  }
   std::vector<Bytes> rebuilt;size_t marked=0;RendererBoundsCache boundsCache;
-  // Independent Mod exports need no encoded intermediate stages. Keep one
-  // editable bundle through geometry, appearance, metadata and proof building.
+   // Independent Mod exports need no encoded intermediate stages. Keep one
+   // editable bundle through geometry, appearance, metadata and proof building.
   const bool inMemoryBuild=rulesOnly&&geometryCache.empty();
   std::vector<EndfieldInput::Bundle> editedBundles(inMemoryBuild?sources.size():0);
   std::vector<unsigned char> inputChanged(inMemoryBuild?sources.size():0);
   if(stage)stage("resource",0,sources.size());
-  std::vector<Bytes> rendererInputs(sources.size());
+   std::vector<Bytes> rendererInputs(sources.size());
+   std::vector<std::vector<std::pair<std::string,MeshConsumer>>> rendererConsumers(sources.size());
+   std::vector<unsigned char> rendererConsumersReady(sources.size());
   phaseStart=std::chrono::steady_clock::now();
   if(geometryHit){
    for(size_t i=0;i<sources.size();++i){rendererInputs[i]=std::move(geometry.inputs[i]);plan.meshParts+=geometry.counts[i].first;plan.rendererParts+=geometry.counts[i].second;}
@@ -317,7 +336,8 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
      auto mesh=Measure(geometryCost,"mesh-source",[&]{return ownsMesh?BuildMeshInput(bundle,package):MeshInputBuild{};});
      bool changed=mesh.changedObjects!=0;
      changed=Measure(geometryCost,"physics",[&]{return EiemPhysicsInput::Build(bundle,package,assets,&physicsDocuments);})||changed;
-     auto renderer=Measure(geometryCost,"renderer",[&]{return BuildRendererInput(bundle,package,assets,meshParts,schemas,&boundsCache,&materialPreloads,geometryCost);});
+      auto renderer=Measure(geometryCost,"renderer",[&]{return BuildRendererInput(bundle,package,assets,meshParts,schemas,&boundsCache,&materialPreloads,geometryCost);});
+      rendererConsumers[i]=std::move(renderer.consumers);rendererConsumersReady[i]=1;
      changed=renderer.changedObjects!=0||changed;
      size_t localMarked=0;changed=Measure(geometryCost,"markers",[&]{return Mark(bundle,markers,localMarked);})||changed;
      inputChanged[i]=changed;output={{},mesh.parts.size(),renderer.parts.size(),localMarked};return;
@@ -328,7 +348,8 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
      if(ownsMesh)return BuildMeshInput(pristineInputs[i],package);MeshInputBuild unchanged;unchanged.bytes=pristineInputs[i];return unchanged;
     });
     auto physics=Measure(geometryCost,"physics",[&]{return EiemPhysicsInput::Build(mesh.bytes,package,assets,&physicsDocuments);});
-    auto renderer=Measure(geometryCost,"renderer",[&]{return BuildRendererInput(physics,package,assets,meshParts,schemas,&boundsCache,&materialPreloads,geometryCost);});
+     auto renderer=Measure(geometryCost,"renderer",[&]{return BuildRendererInput(physics,package,assets,meshParts,schemas,&boundsCache,&materialPreloads,geometryCost);});
+     rendererConsumers[i]=std::move(renderer.consumers);rendererConsumersReady[i]=1;
     size_t localMarked=0;auto bytes=Measure(geometryCost,"markers",[&]{return Mark(renderer.bytes,markers,localMarked);});
     output={std::move(bytes),mesh.parts.size(),renderer.parts.size(),localMarked};EiemOfflineCompile::WriteStage(inputCache,key,output);
    });
@@ -355,7 +376,7 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
   std::function<void(const char*,double)> appearanceCost;if(cost)appearanceCost=[&](const char* name,double elapsed){std::lock_guard<std::mutex> lock(appearanceCostMutex);cost(name,elapsed);};
   std::map<std::string,size_t> memberInput;std::map<NativeReference,Texture> textures;
   std::map<std::string,Material> materials;std::vector<std::tuple<std::string,std::vector<std::pair<std::string,NativeReference>>>> textureRefs;
-  std::map<Identity,std::vector<std::string>> materialCopies;
+  std::map<NativeReference,std::vector<std::string>> materialCopies;
   std::vector<std::shared_ptr<const std::vector<std::string>>> bonePalettes;
   std::unordered_map<size_t,std::vector<size_t>> bonePaletteBuckets;
   auto bonePaletteHash=[](const std::vector<std::string>& bones){
@@ -363,7 +384,7 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
    for(const auto& bone:bones){for(unsigned char c:bone){value^=c;value*=1099511628211ull;}value^=0xff;value*=1099511628211ull;}
    return value;
   };
-  for(const auto& material:package.materials)materialCopies[material.second.source].push_back(material.first);
+  for(const auto& material:package.materials){const auto& asset=assets.at(material.second.source);materialCopies[{asset.cab,asset.pathId}].push_back(material.first);}
   phaseStart=std::chrono::steady_clock::now();
   // Resource descriptors retain the root graph analysis until proof publish;
   // keep this stage bounded so several full PFB GraphData trees can run in
@@ -385,7 +406,11 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
    input.file=sources[i].file;input.path=destination/input.file;
    auto decoded=inMemoryBuild?EndfieldInput::Bundle{}:EndfieldInput::Decode(output.bytes);
    const auto& bundle=inMemoryBuild?editedBundles[i]:decoded;
-   EndfieldInput::Bundle originalBundle;bool originalLoaded=false;
+    EndfieldInput::Bundle originalBundle;bool originalLoaded=false;
+    auto originalSource=[&]() -> const EndfieldInput::Bundle& {
+     if(!originalLoaded){originalBundle=EndfieldInput::Decode(geometryHit?ReadSource(baseline,sources[i]):pristineInputs[i]);originalLoaded=true;}
+     return originalBundle;
+    };
    const auto named=NamedSerializedAssets(bundle);
    for(const auto& member:bundle.members){
     inventory.members.push_back(member.name);inventory.metadata.members.emplace(member.name,i);
@@ -402,13 +427,10 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
     std::shared_ptr<const EiemRenderAssemblyDescription::GraphData> beforeGraph,afterGraph;
     for(const auto& asset:nativeAssets)if(asset.classId==1&&std::find(rootPaths.begin(),rootPaths.end(),asset.path)!=rootPaths.end()){
      Root root;root.path=asset.path;root.input=i;root.cab=member.name;root.source=asset.pathId;
-     if(geometryHit&&!originalLoaded){originalBundle=EndfieldInput::Decode(ReadSource(baseline,sources[i]));originalLoaded=true;}
-     EndfieldInput::Bundle decodedOriginal;
-     if(!geometryHit)decodedOriginal=EndfieldInput::Decode(pristineInputs[i]);
-     const auto& originalSource=geometryHit?originalBundle:decodedOriginal;
-     auto original=std::find_if(originalSource.members.begin(),originalSource.members.end(),[&](const auto& x){return x.name==member.name;});Require(original!=originalSource.members.end(),"assembly pristine member absent");
-     if(!beforeGraph)beforeGraph=std::make_shared<const EiemRenderAssemblyDescription::GraphData>(original->bytes,member.name);
-     if(!afterGraph)afterGraph=std::make_shared<const EiemRenderAssemblyDescription::GraphData>(member.bytes,member.name,std::move(layout),beforeGraph.get(),&original->bytes);
+      const auto& original=originalSource();
+      auto originalMember=std::find_if(original.members.begin(),original.members.end(),[&](const auto& x){return x.name==member.name;});Require(originalMember!=original.members.end(),"assembly pristine member absent");
+      if(!beforeGraph)beforeGraph=std::make_shared<const EiemRenderAssemblyDescription::GraphData>(originalMember->bytes,member.name);
+      if(!afterGraph)afterGraph=std::make_shared<const EiemRenderAssemblyDescription::GraphData>(member.bytes,member.name,std::move(layout),beforeGraph.get(),&originalMember->bytes);
      EiemRenderAssemblyDescription::Graph before(beforeGraph,asset.pathId),after(afterGraph,asset.pathId);
      root.assembly=EiemRenderAssemblyDescription::Build(before,after,member.name,package,assets,markers);
      // The pristine assembly is rebuilt on demand during proof publication.
@@ -417,16 +439,13 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
      inventory.metadata.roots.push_back(std::move(root));
     }
     const auto& parsed=afterGraph?afterGraph->layout:layout;
-    std::set<std::string> materialMetadataSections;
-    for(const auto& asset:nativeAssets)if(asset.classId==21){
-     auto copies=materialCopies.find(Identity{asset.path,asset.asset});if(copies==materialCopies.end())continue;
+    for(const auto& object:parsed.objects){
+     auto copies=materialCopies.find({member.name,object.first});if(copies==materialCopies.end())continue;
      for(const auto& section:copies->second){
-      // A CAB may contain several native Material objects that reference the
-      // same logical source asset. Register that author section once per CAB;
-      // its texture references are identical and duplicate rows are invalid.
-      if(!materialMetadataSections.insert(section).second)continue;
       auto nativeId=AllocateMaterialId(member.name,package,section);
-      const auto& type=parsed.types.at(parsed.objects.at(nativeId).type);auto value=ObjectValue(member.bytes,parsed,nativeId);Material material;material.name=Name(type,value);
+      auto nativeObject=parsed.objects.find(nativeId);
+      if(nativeObject==parsed.objects.end())throw std::runtime_error("Material clone absent from owning CAB: section="+section+" member="+member.name+" pathID="+std::to_string(nativeId));
+      const auto& type=parsed.types.at(nativeObject->second.type);auto value=ObjectValue(member.bytes,parsed,nativeId);Material material;material.name=Name(type,value);
       std::vector<std::pair<std::string,NativeReference>> refs;
       for(const auto& property:ArrayValue(type,Child(type,Child(type,value,"m_SavedProperties"),"m_TexEnvs")).children){
        const auto& name=Child(type,property,"first");refs.push_back({Text(name.raw.data(),name.raw.size()),Reference(type,Child(type,Child(type,property,"second"),"m_Texture"),parsed,member.name)});
@@ -445,7 +464,7 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
    }
     return 0;
    });
-  },4);
+  },8);
   if(cost)cost("appearance-wall",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-phaseStart).count());
   for(size_t i=0;i<sources.size();++i){
    if(appearanceHits[i])++plan.appearanceHits;else ++plan.appearanceMisses;
@@ -510,12 +529,18 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
   plan.closure.assign(closure.begin(),closure.end());Require(!plan.closure.empty(),"reload root closure empty");
   std::filesystem::create_directories(destination);
   if(!rulesOnly)std::filesystem::create_directories(destination/"startup");
-  if(rulesOnly){plan.rendererRules.resize(sources.size());plan.startupHashes.resize(sources.size());plan.namespaceRecipes.resize(sources.size());std::map<NativeReference,Identity> targets;
+  if(rulesOnly){plan.rendererRules.resize(sources.size());plan.semanticOperations.resize(sources.size());plan.semanticComplete.resize(sources.size());plan.startupHashes.resize(sources.size());plan.namespaceRecipes.resize(sources.size());std::map<NativeReference,Identity> targets;
    for(const auto& target:package.targetIndex){const auto& asset=assets.at(target.first);targets.emplace(NativeReference{asset.cab,asset.pathId},target.first);}
    std::set<NativeReference> references;for(const auto& row:targets)references.insert(row.first);
-   EiemOfflineCompile::ParallelInputs(sources.size(),[&](size_t i){auto local=EndfieldInput::Decode(geometryHit?ReadSource(baseline,sources[i]):pristineInputs[i]);for(const auto& member:local.members)if(Serialized(member.bytes)){auto l=ParseSerialized(member.bytes);
-    for(const auto& consumer:MeshConsumers(member.bytes,l,member.name,references))plan.rendererRules[i].push_back({member.name,consumer.renderer,targets.at(consumer.mesh)});
-   }});
+   auto rulesStarted=std::chrono::steady_clock::now();
+   EiemOfflineCompile::ParallelInputs(sources.size(),[&](size_t i){
+    if(rendererConsumersReady[i]){for(const auto& row:rendererConsumers[i]){const auto& consumer=row.second;
+      plan.rendererRules[i].push_back({row.first,consumer.renderer,targets.at(consumer.mesh)});}return;}
+    auto local=EndfieldInput::Decode(geometryHit?ReadSource(baseline,sources[i]):pristineInputs[i]);for(const auto& member:local.members)if(Serialized(member.bytes)){auto l=ParseSerialized(member.bytes);
+     for(const auto& consumer:MeshConsumers(member.bytes,l,member.name,references))plan.rendererRules[i].push_back({member.name,consumer.renderer,targets.at(consumer.mesh)});
+    }
+   });
+   if(cost)cost("renderer-rules-wall",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-rulesStarted).count());
   }
   if(stage)stage("publish",0,rebuilt.size());
   // Every input is independent after metadata discovery. Run the expensive
@@ -548,10 +573,11 @@ inline Plan Build(const Package& authoredPackage,const std::filesystem::path& ba
    // ordinary resource load; the isolated variant below is used by F10.
    if(rulesOnly)plan.startupHashes[i]=Hash(rebuilt[i]);else Measure(workerCost,"startup-write",[&]{return SaveFromCache(destination/"startup"/sources[i].file,appearanceFiles[i],rebuilt[i]);});
    auto source=std::move(rebuilt[i]);
-   auto bundle=inMemoryBuild?std::move(editedBundles[i]):Measure(workerCost,"publish-source-decode",[&]{return EndfieldInput::Decode(source);});
-   if(rulesOnly)Measure(workerCost,"span-recipe",[&]{auto raw=geometryHit?ReadSource(baseline,sources[i]):pristineInputs[i];auto local=EndfieldInput::Decode(raw);const auto& original=local;std::vector<EiemResourceRecipe::Buffer> buffers;std::map<std::string,const Bytes*> members;
-    for(const auto& member:original.members){buffers.push_back({EiemResourceRecipe::Original,member.name,&member.bytes});Require(members.emplace(member.name,&member.bytes).second,"duplicate recipe original member");}EiemResourceRecipe::Dictionary spans(std::move(buffers));
-    if(describeInput)Measure(workerCost,"compiled-proof",[&]{describeInput(i,plan,raw,original,bundle,spans,*authorSpans,inventories[i].metadata.analysis);return 0;});
+    auto bundle=inMemoryBuild?std::move(editedBundles[i]):Measure(workerCost,"publish-source-decode",[&]{return EndfieldInput::Decode(source);});
+    if(rulesOnly)Measure(workerCost,"span-recipe",[&]{Bytes ownedRaw;const Bytes* raw=&pristineInputs[i];if(geometryHit){ownedRaw=Measure(workerCost,"proof-source-read",[&]{return ReadSource(baseline,sources[i]);});raw=&ownedRaw;}
+     auto local=Measure(workerCost,"proof-source-decode",[&]{return EndfieldInput::Decode(*raw);});const auto& original=local;std::vector<EiemResourceRecipe::Buffer> buffers;std::map<std::string,const Bytes*> members;
+     for(const auto& member:original.members){buffers.push_back({EiemResourceRecipe::Original,member.name,&member.bytes});Require(members.emplace(member.name,&member.bytes).second,"duplicate recipe original member");}EiemResourceRecipe::Dictionary spans(std::move(buffers));
+     if(describeInput)Measure(workerCost,"compiled-proof",[&]{describeInput(i,plan,*raw,original,bundle,spans,*authorSpans,inventories[i].metadata.analysis);return 0;});
     else for(const auto& member:bundle.members)plan.memberRecipes[i].push_back(EiemResourceRecipe::Describe(member,spans,*authorSpans));
     Require(plan.memberRecipes[i].size()==bundle.members.size(),"offline member recipe coverage differs");
     std::map<std::string,const Bytes*> generated;for(const auto& member:bundle.members)for(const auto& origin:member.origins)if(origin.resource.rfind("@bounds:",0)==0)generated.emplace(origin.resource,origin.bytes);

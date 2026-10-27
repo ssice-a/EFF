@@ -22,6 +22,8 @@ class BlenderRegistrationTests(unittest.TestCase):
             for source in (ROOT / "tools/Blender").glob("*.py"):
                 if source.name == "__init__.py" or source.name.startswith("eiem_"):
                     shutil.copy2(source, package / source.name)
+            shutil.copytree(ROOT / "tools/nativepack", package / "nativepack",
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "test_*.py", "*_experiment.py"))
             result = subprocess.run([
                 blender, "--background", "--factory-startup", "--python-exit-code", "1",
                 "--python", str(ROOT / "tools/Blender/test_eiem_registration.py"),

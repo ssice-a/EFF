@@ -23,11 +23,12 @@ inline Artifact Retire(const Artifact& previous,const std::set<std::string>& ret
  Require(found==retired&&(allowEmptyRoots||!retained.empty()),"retired Prefab identity absent or union loses all core inputs");
  for(auto i:retained)for(auto dependency:directories[i].dependencies)Require(dependency<mapped.size()&&mapped[dependency]!=SIZE_MAX,"retained input depends on retired Prefab; compile affected dependency batch first");
  Artifact result=previous;auto& p=result.manifest.plan;result.proofBlocks.reset();result.proofReader={};result.proofMutex=std::make_shared<std::mutex>();result.retainedProofBlocks.clear();result.retainedInputDirectories.clear();result.hydrated.clear();result.digest.clear();
- p.inputs.clear();p.originals.clear();p.startupHashes.clear();p.rendererRules.clear();p.memberRecipes.clear();p.namespaceRecipes.clear();p.inputDependencies.clear();p.closure.clear();p.roots.clear();result.pristine.clear();result.views.clear();result.inputMembers.clear();result.addedBundles.clear();result.verifiedSources.clear();
+ p.inputs.clear();p.originals.clear();p.startupHashes.clear();p.rendererRules.clear();p.semanticOperations.clear();p.semanticComplete.clear();p.memberRecipes.clear();p.namespaceRecipes.clear();p.inputDependencies.clear();p.closure.clear();p.roots.clear();result.pristine.clear();result.views.clear();result.inputMembers.clear();result.addedBundles.clear();result.verifiedSources.clear();
  auto reader=previous.proofReader;auto blocks=previous.proofBlocks;
  if(reader||blocks)result.proofReader=[reader=std::move(reader),blocks=std::move(blocks),retained](size_t i){auto oldIndex=retained.at(i);return reader?reader(oldIndex):blocks->at(oldIndex);};
  for(auto i:retained){auto directory=directories[i];for(auto& dependency:directory.dependencies)dependency=mapped.at(dependency);
   auto at=p.inputs.size();p.inputs.push_back(old.inputs.at(i));p.originals.push_back(old.originals.at(i));p.startupHashes.push_back(old.startupHashes.at(i));p.rendererRules.push_back(old.rendererRules.at(i));
+  p.semanticOperations.push_back(EiemResourceReloadPlan::SemanticOperationsAt(old,i));p.semanticComplete.push_back(EiemResourceReloadPlan::SemanticCompleteAt(old,i));
   p.memberRecipes.push_back(old.memberRecipes.at(i));p.namespaceRecipes.push_back(old.namespaceRecipes.at(i));p.inputDependencies.push_back(directory.dependencies);result.views.push_back(previous.views.at(i));
   result.inputMembers.push_back(directory.members);result.addedBundles.push_back(directory.addedBundles);
   if(previous.verifiedSources.size()==old.inputs.size())result.verifiedSources.push_back(previous.verifiedSources.at(i));
@@ -57,6 +58,11 @@ inline Artifact ReplaceAuthorSources(const Artifact& previous,const Artifact& de
  auto retained=Retire(previous,replaced,true);
  if(authorSnapshot)for(const auto& frame:authorSnapshot->manifest.plan.frameRecipes){auto found=authorSnapshot->preparedFrames.find(frame.resource);
   Require(found!=authorSnapshot->preparedFrames.end(),"updated author frame bytes absent");retained.preparedFrames[frame.resource]=found->second;}
- return EiemCompiledArtifactAppend::Merge(retained,delta,true,changedResources);
+ auto result=EiemCompiledArtifactAppend::Merge(retained,delta,true,changedResources);std::set<std::string> members,bundles;
+ for(const auto& input:result.manifest.plan.memberRecipes)for(const auto& member:input)members.insert(member.name);
+ for(const auto& input:result.manifest.plan.inputs)if(!input.bundle.empty())bundles.insert(input.bundle);
+ for(auto row=result.manifest.plan.names.members.begin();row!=result.manifest.plan.names.members.end();)if(!members.count(row->first))row=result.manifest.plan.names.members.erase(row);else ++row;
+ for(auto row=result.manifest.plan.names.bundles.begin();row!=result.manifest.plan.names.bundles.end();)if(!bundles.count(row->first))row=result.manifest.plan.names.bundles.erase(row);else ++row;
+ return result;
 }
 } // namespace EiemCompiledPrefabUpdate

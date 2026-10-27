@@ -253,11 +253,12 @@ inline void ResolveTextureTemplates(Package& package, const std::vector<Bytes>& 
     if (texture.second.source.path.empty()) authored.insert(texture.first);
   if (authored.empty()) return;
   std::map<TextureReference, Identity> identities;
-  std::map<Identity, std::vector<const Material*>> materialCopies;
+  std::map<TextureReference, std::vector<const Material*>> materialCopies;
   std::set<std::string> materialCabs;
   for (const auto& material : package.materials) {
-    materialCabs.insert(index.at(material.second.source).cab);
-    materialCopies[material.second.source].push_back(&material.second);
+    const auto& asset=index.at(material.second.source);
+    materialCabs.insert(asset.cab);
+    materialCopies[{asset.cab,asset.pathId}].push_back(&material.second);
   }
   for (const auto& asset : index)
     if (asset.second.classId == 28) identities.emplace(TextureReference{asset.second.cab, asset.second.pathId}, asset.first);
@@ -269,11 +270,12 @@ inline void ResolveTextureTemplates(Package& package, const std::vector<Bytes>& 
     for (const auto& member : bundle.members) {
       if (!materialCabs.count(member.name)) continue;
       auto layout = ParseSerialized(member.bytes);
-      for (const auto& asset : SerializedAssets(member.bytes, member.name, layout)) {
-        auto copies = materialCopies.find(Identity{asset.path, asset.asset});
+      for (const auto& object : layout.objects) {
+        auto copies = materialCopies.find({member.name,object.first});
         if (copies == materialCopies.end()) continue;
-        const auto& type = layout.types.at(layout.objects.at(asset.pathId).type);
-        auto value = ObjectValue(member.bytes, layout, asset.pathId);
+        const auto& type = layout.types.at(object.second.type);
+        Require(type.classId==21,"resolved Material template is not a Material");
+        auto value = ObjectValue(member.bytes, layout, object.first);
         TextureReference fallback;
         for (const auto& pair : ArrayValue(type, Child(type, Child(type, value, "m_SavedProperties"), "m_TexEnvs")).children) {
           const auto& slot=Child(type,Child(type,pair,"second"),"m_Texture");if(!Integer(Child(type,slot,"m_PathID")))continue;
@@ -313,39 +315,42 @@ inline TextureInputBuild BuildTextureInput(EndfieldInput::Bundle& bundle, const 
   for (const auto& member : bundle.members)
     Require(sourceStreams.emplace(member.name, member.bytes.size()).second,
             "duplicate current input member");
-  std::map<Identity, std::vector<std::pair<std::string, const Material*>>> materials;
-  std::map<Identity, std::vector<std::pair<std::string, const Texture*>>> textures;
+  std::map<TextureReference, std::vector<std::pair<std::string, const Material*>>> materials;
+  std::map<TextureReference, std::vector<std::pair<std::string, const Texture*>>> textures;
   TextureExpansion expansion;
-  for (const auto& material : package.materials)
-    materials[material.second.source].push_back({material.first, &material.second});
+  // Logical source paths can name a Prefab whose preload table owns the
+  // template. Use its already resolved CAB/PathID throughout the writer.
+  for (const auto& material : package.materials) {
+    auto asset=index.find(material.second.source);
+    Require(asset!=index.end()&&asset->second.classId==21,"Material identity absent from current input graph");
+    auto reference=TextureReference{asset->second.cab,asset->second.pathId};
+    materials[reference].push_back({material.first,&material.second});
+    expansion[reference].push_back(AllocateMaterialId(asset->second.cab,package,material.first));
+  }
   for (const auto& texture : package.textures) {
-    textures[texture.second.source].push_back({texture.first, &texture.second});
     auto asset = index.find(texture.second.source);
     Require(asset != index.end() && asset->second.classId == 28,
             "Texture identity absent from current input graph");
+    textures[{asset->second.cab,asset->second.pathId}].push_back({texture.first,&texture.second});
     expansion[{asset->second.cab, asset->second.pathId}].push_back(
         AllocateTextureId(asset->second.cab, package, texture.first, texture.second));
   }
-  for(const auto& material:package.materials){const auto& asset=index.at(material.second.source);expansion[{asset.cab,asset.pathId}].push_back(AllocateMaterialId(asset.cab,package,material.first));}
   for (auto& member : bundle.members) {
     if (!SerializedHeader(member.bytes)) continue;
     auto layout = ParseSerialized(member.bytes);
-    auto assets = SerializedAssets(member.bytes, member.name, layout);
     std::map<int64_t, Bytes> changes;
     std::map<int64_t, AuthorByteSpans> origins;
     std::vector<AddedObject> added;
     std::set<TextureReference> requiredPreloads, referencedPreloads;
-    std::set<int64_t> matched;
-    for (const auto& asset : assets) {
-      Identity identity{asset.path, asset.asset};
-      auto material = materials.find(identity);
-      auto texture = textures.find(identity);
+    for (const auto& entry : layout.objects) {
+      auto reference=TextureReference{member.name,entry.first};
+      auto material = materials.find(reference);
+      auto texture = textures.find(reference);
       if (material == materials.end() && texture == textures.end()) continue;
-      Require(asset.cab == member.name && matched.insert(asset.pathId).second,
-              "ambiguous/nonlocal Material/Texture target in current input");
-      const auto& object = layout.objects.at(asset.pathId);
+      const auto& object = entry.second;
       const auto& type = layout.types.at(object.type);
-      auto value = ObjectValue(member.bytes, layout, asset.pathId, &member.origins);
+      Require(type.classId==(material!=materials.end()?21:28),"resolved Material/Texture template class differs");
+      auto value = ObjectValue(member.bytes, layout, entry.first, &member.origins);
       if (material != materials.end()) {
         for (const auto& authored : material->second) {
         ++result.materialMatches;
@@ -360,7 +365,7 @@ inline TextureInputBuild BuildTextureInput(EndfieldInput::Bundle& bundle, const 
             layout, member.name, result.textureBindings), &origins[id]);
         Require(!layout.objects.count(id)&&std::none_of(added.begin(),added.end(),[&](const AddedObject& row){return row.id==id;}),"additional Material PathID collision");
         added.push_back({id,object.type,std::move(bytes)});++result.changedMaterials;
-        requiredPreloads.insert({member.name,asset.pathId});
+        requiredPreloads.insert(reference);
         }
       } else {
         // Preserve the original object and stream bytes for unedited users.
@@ -370,7 +375,7 @@ inline TextureInputBuild BuildTextureInput(EndfieldInput::Bundle& bundle, const 
           auto id = AllocateTextureId(member.name, package, authored.first, selected);
           Require(!layout.objects.count(id) && std::none_of(added.begin(), added.end(),
               [&](const AddedObject& row) { return row.id == id; }), "additional Texture PathID collision");
-          TextureWrite record{identity, member.name, "", id}; record.sourceId = asset.pathId;
+          TextureWrite record{selected.source, member.name, "", id}; record.sourceId = entry.first;
           auto clone = ApplyTexture(type, value, selected,
               *package.resources.at(selected.resource), member.name, bundle.members,
               sourceStreams, record);
@@ -380,7 +385,7 @@ inline TextureInputBuild BuildTextureInput(EndfieldInput::Bundle& bundle, const 
           Require(EncodeValue(type, DecodeValue(type, 0, bytes)) == bytes,
                   "rebuilt Texture TypeTree roundtrip differs");
           added.push_back({id, object.type, std::move(bytes)});
-          requiredPreloads.insert({member.name, asset.pathId});
+          requiredPreloads.insert(reference);
           result.textures.push_back(std::move(record));
         }
       }

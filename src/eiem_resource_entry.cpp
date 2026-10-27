@@ -1392,9 +1392,9 @@ DWORD StartImpl() {
 #if defined(EIEM_DIAGNOSTICS)
   logMirror = OpenLog(gameDirectory / "plugin" / "eff_log.txt");
 #endif
-  Log("[BUILD] resource-directory-entry %s %s pid=%lu abi=%u compiler=%s "
+  Log("[BUILD] resource-directory-entry %s %s pid=%lu package-contract=structures "
       "mode=serialized-loading-input startup=initializing replacement=not-yet-armed",
-      __DATE__, __TIME__, GetCurrentProcessId(), EiemPackageProtocol::abi, EiemPackageProtocol::compiler);
+      __DATE__, __TIME__, GetCurrentProcessId());
   Log("[ENTRY-LOG] path=%s diagnostics=%d readers=shared writers=exclusive",
       logPath.u8string().c_str(), !!logMirror);
   while (!GetModuleHandleW(L"GameAssembly.dll"))

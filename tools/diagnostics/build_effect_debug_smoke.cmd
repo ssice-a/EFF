@@ -15,7 +15,7 @@ for /f "usebackq tokens=*" %%i in (`"%effect_vswhere%" -latest -products * -requ
 call tools\build_imgui.cmd static
 if errorlevel 1 exit /b 1
 if not exist "%effect_output%" mkdir "%effect_output%"
-cl /nologo /utf-8 /O2 /MT /EHsc /std:c++17 /bigobj /DEIEM_STATIC_RUNTIME /DEFF_OFFLINE_PACKAGE_V35 %effect_perf% /Ideps\minhook_lib\include /Fo"%effect_output%\effect_debug_smoke.obj" tools\diagnostics\effect_debug_smoke.cpp deps\minhook_lib\lib\libMinHook.x64.lib /Fe"%effect_output%\effect_debug_smoke.exe" /link /NODEFAULTLIB:MSVCRT bcrypt.lib user32.lib
+cl /nologo /utf-8 /O2 /MT /EHsc /std:c++17 /bigobj /DEIEM_STATIC_RUNTIME %effect_perf% /Ideps\minhook_lib\include /Fo"%effect_output%\effect_debug_smoke.obj" tools\diagnostics\effect_debug_smoke.cpp deps\minhook_lib\lib\libMinHook.x64.lib /Fe"%effect_output%\effect_debug_smoke.exe" /link /NODEFAULTLIB:MSVCRT bcrypt.lib user32.lib
 set "effect_result=%errorlevel%"
 popd
 exit /b %effect_result%

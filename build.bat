@@ -2,35 +2,25 @@
 setlocal
 pushd "%~dp0"
 rem Production entry: serialized native inputs and generation reload only.
-rem Usage: build.bat [v36|v35] [capture|load-perf|effects-debug]. No deployment is performed.
-set "entry_abi=v35"
+rem Usage: build.bat [v35|v36] [capture|load-perf|effects-debug]. Version arguments are legacy aliases.
 set "entry_folder=bin\resource-directory-entry-v35"
-set "entry_define=/DEFF_OFFLINE_PACKAGE_V35=1"
 set "entry_capture="
 set "entry_effects="
-if /i "%~1"=="v35" (
- set "entry_abi=v35"
- set "entry_folder=bin\resource-directory-entry-v35"
- set "entry_define=/DEFF_OFFLINE_PACKAGE_V35=1"
-) else if /i "%~1"=="v36" (
- set "entry_abi=v36"
- set "entry_folder=bin\resource-directory-entry"
- set "entry_define="
-) else if not "%~1"=="" (
- echo [ERROR] Expected ABI v36 or v35.
+set "entry_option=%~1"
+if /i "%~1"=="v35" set "entry_option=%~2"
+if /i "%~1"=="v36" set "entry_option=%~2"
+if not "%entry_option%"=="" if /i not "%entry_option%"=="capture" if /i not "%entry_option%"=="load-perf" if /i not "%entry_option%"=="effects-debug" (
+ echo [ERROR] Expected capture, load-perf or effects-debug.
  goto entry_failed
 )
-if /i "%~2"=="capture" (
+if /i "%entry_option%"=="capture" (
  set "entry_capture=/DEIEM_DIAGNOSTICS /DEIEM_SHAPE_CAPTURE_GFXTRACE"
-) else if /i "%~2"=="load-perf" (
+) else if /i "%entry_option%"=="load-perf" (
  set "entry_capture=/DEIEM_LOAD_PERF"
  set "entry_folder=%entry_folder%-load-perf"
-) else if /i "%~2"=="effects-debug" (
+) else if /i "%entry_option%"=="effects-debug" (
  set "entry_effects=/DEIEM_EFFECTS_DEBUG"
  set "entry_folder=%entry_folder%-effects-debug"
-) else if not "%~2"=="" (
- echo [ERROR] The optional second argument must be capture, load-perf or effects-debug.
- goto entry_failed
 )
 where cl >nul 2>nul
 if errorlevel 1 (
@@ -44,7 +34,7 @@ if errorlevel 1 (
 )
 if not exist "%entry_folder%" mkdir "%entry_folder%"
 if errorlevel 1 goto entry_failed
-echo [1/5] Building production eff.dll for %entry_abi% ...
+echo [1/5] Building production eff.dll with the current self-described package contract ...
 rem Game installs may preload older app-local MSVC runtimes. Keep the plugin
 rem and its UI implementation self-contained instead of sharing that runtime.
 call tools\build_imgui.cmd static
@@ -52,7 +42,7 @@ if errorlevel 1 goto entry_failed
 rc /nologo /fo "%entry_folder%\version.res" src\version.rc
 if errorlevel 1 goto entry_failed
 cl /nologo /utf-8 /O2 /Zi /MT /LD /EHsc /std:c++17 /bigobj /W4 ^
- %entry_define% %entry_capture% %entry_effects% /DEIEM_STATIC_RUNTIME=1 /Ideps\minhook_lib\include ^
+ %entry_capture% %entry_effects% /DEIEM_STATIC_RUNTIME=1 /Ideps\minhook_lib\include ^
  /Fo"%entry_folder%\eff_resource_entry.obj" ^
  /Fd"%entry_folder%\eff_compile.pdb" ^
  src\eiem_resource_entry.cpp "%entry_folder%\version.res" ^
@@ -77,7 +67,7 @@ if errorlevel 1 goto entry_failed
 echo [5/5] Copying distribution configuration ...
 copy /y config\eff.ini "%entry_folder%\eff.ini" >nul
 if errorlevel 1 goto entry_failed
-echo [OK] %entry_folder% contains the %entry_abi% DLL, proxies and settings. No author tools are distributed.
+echo [OK] %entry_folder% contains the production DLL, proxies and settings. No author tools are distributed.
 echo [INFO] Build output only; installed DLL and configuration were not changed.
 popd
 exit /b 0
