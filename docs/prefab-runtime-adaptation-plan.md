@@ -196,7 +196,7 @@ F10 读取当前完整 mods 集合，只为实际受影响且已观察到的 Pre
 
 PID 27816 使用验证 DLL `19D0E91DEB46A9BDB7791C36EB759A577A2004A3145B0CA4CB713B091EFBAC45`，独立 Mesh 已在禁用候选副本中实际绑定一个 Renderer，顶点/形态/bindpose 检查通过，原骨骼数组与 rootBone 引用保持，原 Prefab 未改，观察的初始化次数为零。首次独立加载与验证为 252.722 ms。尚未发布该候选，也未证明无旧后端的完整装配。
 
-已新增作者侧 `eff_author_assets` 开发入口及 `assets.bin` 运行目录：Mesh 与 Texture2D 写成独立原生容器；目录只记录资源文件、摘要、原生计数、骨骼/形态路径、材质 typed 修改和贴图绑定，不包含消费者 PFB、游戏范围/偏移、旧 CAB 对象地址或 TypeTree。作者资源文件只保存一次，多个贴图声明共享同一文件；不同采样产生独立原生资产。临时的 author-templates.tsv 是作者机器已解包模板的输入表，由自动工具生成，不是玩家替换清单，不分发。
+当时新增作者侧 `eff_author_assets` 开发入口及 `assets.bin` 运行目录：Mesh 与 Texture2D 写成独立原生容器；目录只记录资源文件、摘要、原生计数、骨骼/形态路径、材质 typed 修改和贴图绑定，不包含消费者 PFB、游戏范围/偏移、旧 CAB 对象地址或 TypeTree。作者资源文件只保存一次，多个贴图声明共享同一文件；不同采样产生独立原生资产。早期临时 `author-templates.tsv` 输入表已于 2026-10-31 被内存 DLL ABI 取代，当前导出不再生成 TSV 或 Format 2 暂存目录。
 
 当前四个真实 Mod 的 Mesh/材质/贴图构建全部通过，正式 Mod 和模板未修改。记录为 `diagnostics/independent-author-assets-{LZY,Typhoea,ZFY,lino}-20261013.json`。LZY 纯构建 0.82 秒，15 Mesh/6 材质/14 贴图声明，实际 7 个 Texture 文件；Typhoea 0.68 秒，13 Mesh/6 材质/13 贴图声明，实际 9 个 Texture 文件。ZFY 与 lino 最后一轮分别约 1.53/4.97 秒，同时有测试编译负载，仅为功能样本，不作为稳定性能对照。以上不含 Blender 作者快照、PNG 转换、规则/控制迁移、新物理和完整发布，不能称为完整 Mod 导出已缩短到这些时间。新目录/typed 材质/共享贴图/损坏与越界拒绝回归通过，Blender 正式入口未切换。
 

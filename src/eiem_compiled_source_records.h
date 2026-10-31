@@ -149,7 +149,22 @@ inline Bytes Source(const Artifact& a,size_t i,const std::filesystem::path& game
  auto assemblies=WritePreparedAssemblies(w,local);w.N(local.pristine.size());for(size_t j=0;j<local.pristine.size();++j){const auto& root=local.pristine[j];w.S(root.path);w.S(root.cab);w.N(uint64_t(root.source));w.N(assemblies.pristine.at(j));}
  local.views={a.views.at(i)};WriteNativeViews(w,local);return Pack(w.b);
 }
-inline void ReadSourceRecord(const Bytes& packed,Artifact& a,const std::filesystem::path& game,const std::map<std::string,size_t>& order,size_t i){
+inline std::vector<SemanticOperation> ReadSemanticOperations(EiemOfflinePackage::Reader& r){
+ std::vector<SemanticOperation> operations;auto n=r.Count();std::set<std::tuple<unsigned,Identity,std::string,int64_t>> unique;
+ for(size_t j=0;j<n;++j){SemanticOperation operation;operation.kind=unsigned(r.N());operation.mesh=r.Id();operation.meshBundle=r.S();operation.cab=r.S();operation.id=int64_t(r.N());operation.beforeSchema=r.Blob();operation.editedSchema=r.Blob();operation.before=r.Blob();operation.edited=r.Blob();operation.editedExternals=r.Strings();
+  Require((operation.kind==SemanticOperation::MeshAsset||operation.kind==SemanticOperation::Renderer)&&!operation.meshBundle.empty()&&operation.id&&!operation.before.empty()&&!operation.edited.empty()&&unique.emplace(operation.kind,operation.mesh,operation.cab,operation.id).second,"semantic operation identity invalid");
+  EiemOfflinePackage::Reader beforeSchema{operation.beforeSchema},editedSchema{operation.editedSchema};auto beforeType=DecodeSchema(beforeSchema),editedType=DecodeSchema(editedSchema);Require(beforeSchema.p==operation.beforeSchema.size()&&editedSchema.p==operation.editedSchema.size()&&beforeType.classId==editedType.classId,"semantic operation TypeTree invalid");
+  Require(DecodeValue(beforeType,0,operation.before).node==0&&DecodeValue(editedType,0,operation.edited).node==0,"semantic operation object invalid");operations.push_back(std::move(operation));
+ }return operations;
+}
+template<class Targets> inline void SkipSemanticOperations(EiemOfflinePackage::Reader& r,const Targets& targets){
+ auto n=r.Count();std::set<std::tuple<unsigned,Identity,std::string,int64_t>> unique;
+ for(size_t j=0;j<n;++j){auto kind=unsigned(r.N());auto mesh=r.Id();auto bundle=r.S(),cab=r.S();auto id=int64_t(r.N());
+  Require((kind==SemanticOperation::MeshAsset||kind==SemanticOperation::Renderer)&&targets.count(mesh)&&!bundle.empty()&&id&&unique.emplace(kind,mesh,cab,id).second,"semantic operation identity invalid");
+  for(size_t k=0;k<4;++k){auto size=r.Size();Require(size&&size<=r.b.size()-r.p,"semantic operation payload truncated");r.p+=size;}r.Strings();
+ }
+}
+inline void ReadSourceRecord(const Bytes& packed,Artifact& a,const std::filesystem::path& game,const std::map<std::string,size_t>& order,size_t i,bool deferSemantic=false){
  auto bytes=Unpack(packed);EiemOfflinePackage::Reader r{bytes};auto structure=r.S();const bool semantic=structure=="EFF_COMPILED_SOURCE_RECORD/range+view+roots+identity-edges+semantic-renderer-v1/le64";
  Require(semantic||structure=="EFF_COMPILED_SOURCE_RECORD/range+view+roots+identity-edges/le64","source-record structure differs");auto& p=a.manifest.plan;
  EiemResourceReloadPlan::Source source;source.file=r.S();source.hash=r.S();auto path=std::filesystem::u8path(r.S());source.offset=r.N();source.size=r.N();InputFileStamp stamp{r.N(),r.N()};
@@ -160,12 +175,9 @@ inline void ReadSourceRecord(const Bytes& packed,Artifact& a,const std::filesyst
  auto members=r.Set(),added=r.Set();for(const auto& member:members)Require(p.names.members.count(member),"source-record member absent from routing");auto n=r.Count();std::vector<size_t> dependencies;std::set<size_t> unique;
  for(size_t j=0;j<n;++j){auto at=order.at(r.S());Require(at!=i&&unique.insert(at).second,"source-record dependency repeats/self-references");dependencies.push_back(at);}
  n=r.Count();std::vector<RendererRule> rules;std::set<std::pair<std::string,int64_t>> renderers;for(size_t j=0;j<n;++j){RendererRule rule;rule.cab=r.S();rule.id=int64_t(r.N());rule.mesh=r.Id();if(semantic)rule.meshBundle=r.S();Require(rule.id&&a.manifest.package.targetIndex.count(rule.mesh)&&renderers.emplace(rule.cab,rule.id).second,"source-record Renderer rule invalid");rules.push_back(std::move(rule));}
- bool semanticComplete=false;std::vector<SemanticOperation> semanticOperations;if(semantic){semanticComplete=r.B();n=r.Count();std::set<std::tuple<unsigned,Identity,std::string,int64_t>> unique;
-  for(size_t j=0;j<n;++j){SemanticOperation operation;operation.kind=unsigned(r.N());operation.mesh=r.Id();operation.meshBundle=r.S();operation.cab=r.S();operation.id=int64_t(r.N());operation.beforeSchema=r.Blob();operation.editedSchema=r.Blob();operation.before=r.Blob();operation.edited=r.Blob();operation.editedExternals=r.Strings();
-   Require((operation.kind==SemanticOperation::MeshAsset||operation.kind==SemanticOperation::Renderer)&&a.manifest.package.targetIndex.count(operation.mesh)&&!operation.meshBundle.empty()&&operation.id&&!operation.before.empty()&&!operation.edited.empty()&&unique.emplace(operation.kind,operation.mesh,operation.cab,operation.id).second,"semantic operation identity invalid");
-   EiemOfflinePackage::Reader beforeSchema{operation.beforeSchema},editedSchema{operation.editedSchema};auto beforeType=DecodeSchema(beforeSchema),editedType=DecodeSchema(editedSchema);Require(beforeSchema.p==operation.beforeSchema.size()&&editedSchema.p==operation.editedSchema.size()&&beforeType.classId==editedType.classId,"semantic operation TypeTree invalid");
-   Require(DecodeValue(beforeType,0,operation.before).node==0&&DecodeValue(editedType,0,operation.edited).node==0,"semantic operation object invalid");semanticOperations.push_back(std::move(operation));
-  }
+ bool semanticComplete=false;std::vector<SemanticOperation> semanticOperations;std::shared_ptr<DeferredSemanticOperations> deferred;if(semantic){semanticComplete=r.B();auto start=r.p;
+  if(deferSemantic){SkipSemanticOperations(r,a.manifest.package.targetIndex);if(Le(bytes,start,8)){deferred=std::make_shared<DeferredSemanticOperations>();deferred->load=[snapshot=packed,start]{auto plain=Unpack(snapshot);EiemOfflinePackage::Reader reader{plain};reader.p=start;return ReadSemanticOperations(reader);};}}
+  else {semanticOperations=ReadSemanticOperations(r);for(const auto&operation:semanticOperations)Require(a.manifest.package.targetIndex.count(operation.mesh),"semantic operation Mesh target absent");}
  }
  if(semanticComplete)for(const auto& rule:rules)Require(!rule.meshBundle.empty(),"complete semantic source record lacks a logical Mesh route");
  Artifact local;local.manifest.plan.originals={source};n=r.Count();std::set<std::string> rootPaths;
@@ -174,7 +186,7 @@ inline void ReadSourceRecord(const Bytes& packed,Artifact& a,const std::filesyst
  auto assemblies=ReadPreparedAssemblies(r,local.manifest.plan,&p);n=r.Count();std::set<std::string> pristine;
  for(size_t j=0;j<n;++j){Root root;root.path=r.S();root.cab=r.S();root.source=int64_t(r.N());root.preparedAssembly=assemblies.at(r.Size());Require(rootPaths.count(root.path)&&pristine.insert(root.path).second&&EiemLoadingGeneration::Cab(root.cab)&&root.source,"source-record pristine root invalid");local.pristine.push_back(std::move(root));}
  ReadNativeViews(r,local,&a.manifest.package);Require(r.p==bytes.size(),"source-record suffix differs: "+source.file);Require(pristine.size()==rootPaths.size(),"source-record pristine root coverage differs: "+source.file);Require(local.preparedFrames.empty(),"source-record embeds shared frames");
- p.originals.push_back(std::move(source));p.inputs.push_back(std::move(in));p.startupHashes.push_back(startup);p.rendererRules.push_back(std::move(rules));p.semanticOperations.push_back(std::move(semanticOperations));p.semanticComplete.push_back(semanticComplete);p.memberRecipes.emplace_back();p.namespaceRecipes.emplace_back();p.inputDependencies.push_back(std::move(dependencies));a.inputMembers.push_back(std::move(members));a.addedBundles.push_back(std::move(added));a.verifiedSources.push_back(stamp);a.views.push_back(std::move(local.views.at(0)));
+ p.originals.push_back(std::move(source));p.inputs.push_back(std::move(in));p.startupHashes.push_back(startup);p.rendererRules.push_back(std::move(rules));p.semanticOperations.push_back(std::move(semanticOperations));p.deferredSemanticOperations.push_back(std::move(deferred));p.semanticComplete.push_back(semanticComplete);p.memberRecipes.emplace_back();p.namespaceRecipes.emplace_back();p.inputDependencies.push_back(std::move(dependencies));a.inputMembers.push_back(std::move(members));a.addedBundles.push_back(std::move(added));a.verifiedSources.push_back(stamp);a.views.push_back(std::move(local.views.at(0)));
  for(auto root:local.manifest.plan.roots){root.input=i;p.roots.push_back(std::move(root));}for(auto root:local.pristine){root.input=i;a.pristine.push_back(std::move(root));}
 }
 } // namespace EiemCompiledSourceRecords

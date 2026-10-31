@@ -40,6 +40,29 @@ void SemanticReplayCompatibilityRegression(){
          "resource fast path did not force Mesh semantic records to refresh");
 }
 
+void DeferredSemanticRegression(){
+ using namespace EiemCompiledMod;using namespace EiemCompiledSourceRecords;
+ auto type=Schema(43,{{"UInt32","vertex",{}}});PrepareFixedWidths(type);auto schema=EncodeSchema(type);Identity mesh{"assets/test.mesh","Mesh"};
+ Writer w;w.N(1);w.N(SemanticOperation::MeshAsset);w.Id(mesh);w.S("bundles/test");w.S("CAB-"+std::string(32,'a'));w.N(7);w.Blob(schema);w.Blob(schema);w.Blob(Bytes{1,0,0,0});w.Blob(Bytes{2,0,0,0});w.Strings(std::vector<std::string>{});
+ auto encoded=w.b;std::set<Identity> targets{mesh};EiemOfflinePackage::Reader scan{encoded};SkipSemanticOperations(scan,targets);Require(scan.p==encoded.size(),"deferred semantic scan changed record boundaries");
+ auto packed=Pack(encoded);std::atomic<unsigned> loads{0};auto deferred=std::make_shared<DeferredSemanticOperations>();deferred->load=[packed,&loads]{++loads;auto plain=Unpack(packed);EiemOfflinePackage::Reader reader{plain};return ReadSemanticOperations(reader);};
+ EiemResourceReloadPlan::Plan plan;plan.semanticOperations.resize(1);plan.deferredSemanticOperations={deferred};plan.semanticComplete={true};auto copy=plan;
+ Require(loads==0&&EiemResourceReloadPlan::SemanticCompleteAt(plan,0),"unchanged source eagerly decoded its game-update fallback");
+ std::vector<std::thread> workers;for(int i=0;i<4;++i)workers.emplace_back([&]{const auto& operations=EiemResourceReloadPlan::SemanticOperationsAt(copy,0);Require(operations.size()==1&&operations.front().edited==Bytes({2,0,0,0}),"deferred semantic fallback changed Mesh replacement bytes");});for(auto&worker:workers)worker.join();Require(loads==1,"deferred semantic snapshot decoded more than once");
+ auto malformed=encoded;malformed.pop_back();Rejected([&]{EiemOfflinePackage::Reader reader{malformed};SkipSemanticOperations(reader,targets);});Rejected([&]{EiemOfflinePackage::Reader reader{encoded};SkipSemanticOperations(reader,std::set<Identity>{});});
+ auto invalid=std::make_shared<DeferredSemanticOperations>();invalid->load=[]()->std::vector<SemanticOperation>{throw std::runtime_error("invalid deferred source");};plan.deferredSemanticOperations={invalid};Rejected([&]{EiemResourceReloadPlan::SemanticOperationsAt(plan,0);});
+ std::cout<<"PASS deferred semantic fallback: source framing/targets validated, no eager payload decode, shared immutable snapshot, concurrent once-only access and corrupt fallback rejection\n";
+}
+
+void SharedLiteralViewRegression(){
+ using namespace EiemCompiledInputView;
+ auto owner=std::make_shared<Recipe>();auto before="CAB-"+std::string(32,'a'),after="CAB-"+std::string(32,'b');Bytes bytes(before.begin(),before.end());bytes.insert(bytes.begin(),{1,2,3});bytes.push_back(4);
+ owner->spans={{EiemResourceRecipe::Literal,{},0,bytes.size(),bytes}};owner->names={{0,3,before,false}};owner->size=bytes.size();
+ std::weak_ptr<Recipe> lifetime=owner;auto raw=Bind(*owner,{}, {},owner);EiemLoadingGeneration::Names names;names.members[before]=after;auto isolated=Relocate(*owner,raw,names);owner.reset();raw.reset();Require(!lifetime.expired(),"namespace overlay lost the shared literal owner");
+ Bytes actual(bytes.size());Require(isolated->ReadAt(0,actual.data(),actual.size())==actual.size(),"namespace overlay read incomplete");std::copy(after.begin(),after.end(),bytes.begin()+3);Require(actual==bytes,"namespace overlay changed bytes outside its name site");isolated.reset();Require(lifetime.expired(),"released namespace overlay leaked its literal owner");
+ std::cout<<"PASS shared literal view: sparse namespace replacement, backing lifetime through released preparation and complete ownership reclamation\n";
+}
+
 void AssemblySelectionRegression(){
  using namespace EiemRenderAssemblyDescription;using EiemResourceReloadPlan::Root;
  Root pristine;pristine.path="assets/shared.prefab";
@@ -355,6 +378,17 @@ void PreloadIntervalRegression(){
  std::map<size_t,const Object*> objectSites;for(const auto& object:layout.objects)objectSites.emplace(object.second.offset,&object.second);auto site=EiemCompiledModSet::RelocateSite(patch,source,layout,output,after,{},objectSites);Require(std::equal(patch.before.begin(),patch.before.end(),output.begin()+site),"Bundle namespace field moved after preload composition");
 }
 
+void LargePreloadRegression(size_t contributors=3){
+ using namespace EiemCompiledMod;Fixture f;auto& t=f.types[4];auto before=f.V(300);auto& list=ArrayValue(t,Child(t,before,"m_PreloadTable"));
+ const size_t count=50000;list.children.clear();list.children.reserve(count);for(size_t i=0;i<count;++i){auto pointer=ArrayElement(t,list);SetReference(t,pointer,{f.cab,int64_t(i%19000+1)},f.refs,f.cab);list.children.push_back(std::move(pointer));}list.count=count;
+ for(auto name:{"m_Container","m_HashContainer"})for(auto& row:ArrayValue(t,Child(t,before,name)).children){auto& info=Child(t,row,"second");SetInteger(t,Child(t,info,"preloadIndex"),0);SetInteger(t,Child(t,info,"preloadSize"),count);}SetInteger(t,Child(t,Child(t,before,"m_MainAsset"),"preloadSize"),count);
+ auto source=EncodeValue(t,before);std::vector<Bytes> variants;for(size_t m=0;m<contributors;++m){auto value=before;auto& pointers=ArrayValue(t,Child(t,value,"m_PreloadTable"));auto pointer=ArrayElement(t,pointers);SetReference(t,pointer,{f.cab,int64_t(1000000+m)},f.refs,f.cab);pointers.children.insert(pointers.children.begin()+25000,std::move(pointer));++pointers.count;for(auto name:{"m_Container","m_HashContainer"})for(auto& row:ArrayValue(t,Child(t,value,name)).children)SetInteger(t,Child(t,Child(t,row,"second"),"preloadSize"),count+1);SetInteger(t,Child(t,Child(t,value,"m_MainAsset"),"preloadSize"),count+1);variants.push_back(EncodeValue(t,value));}
+ // Discard construction trees before measuring the real shared-object seam.
+ before={};auto start=std::chrono::steady_clock::now();auto output=MergeObject(t,source,variants);auto ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+ auto value=DecodeValue(t,0,output);const auto& pointers=ArrayValue(t,Child(t,value,"m_PreloadTable"));Require(pointers.count==count+contributors,"large shared preload lost insertions");for(size_t i=0;i<pointers.count;++i){auto expected=i<25000?int64_t(i%19000+1):i<25000+contributors?int64_t(1000000+i-25000):int64_t((i-contributors)%19000+1);Require(NullableReference(t,pointers.children[i],f.refs,f.cab).second==expected,"large repeated preload order differs");}
+ for(const auto& row:ArrayValue(t,Child(t,value,"m_Container")).children)Require(Integer(Child(t,Child(t,row,"second"),"preloadSize"))==count+contributors,"large preload range lost a contributor");
+ std::cout<<"PASS large preload: original="<<count<<" contributors="<<contributors<<" mergeMs="<<ms<<" exactRepeatedPointers=1\n";
+}
 void ExternalDependencyRegression(){
  using namespace EiemCompiledMod;
  Fixture f;f.cab="CAB-"+std::string(32,'a');
@@ -414,6 +448,13 @@ void SharedInputRegression(){
  auto startup=EiemCompiledModSet::Materialize(set,0,false,&sites,&offsets);
  auto isolated=EiemNativeInputOffsets::Relocate(startup,offsets,sites,{},set.manifest.plan.names);
  Require(isolated==EiemCompiledModSet::Materialize(set,0,true),"direct byte relocation differs from full shared object replay");
+ auto isolatedInPlace=startup;EiemNativeInputOffsets::RelocateInPlace(isolatedInPlace,offsets,sites,{},set.manifest.plan.names);
+ Require(isolatedInPlace==isolated,"in-place native relocation differs from copy relocation");
+ auto isolatedOwner=std::make_shared<const Bytes>(isolated);auto startupView=EiemNativeInputOffsets::RelocateView(isolatedOwner,offsets,sites,set.manifest.plan.names,{});
+ Bytes restored(startupView->Size());for(size_t offset=0;offset<restored.size();){auto count=std::min<size_t>(37,restored.size()-offset);Require(startupView->ReadAt(offset,restored.data()+offset,count)==count,"native relocation view returned a short range");offset+=count;}
+ Require(restored==startup,"native relocation view differs from exact startup bytes");
+ auto identityView=EiemNativeInputOffsets::RelocateView(isolatedOwner,offsets,sites,set.manifest.plan.names,set.manifest.plan.names);Bytes identical(identityView->Size());
+ Require(identityView->ReadAt(0,identical.data(),identical.size())==identical.size()&&identical==isolated,"unchanged native relocation view lost source spans");
  Require(EiemNativeInputOffsets::Relocate(isolated,offsets,sites,set.manifest.plan.names,{})==startup,"startup relocation did not restore exact source identities");
  auto second=set.manifest.plan.names;second.members[f.cab]="CAB-"+std::string(32,'c');second.members[f.cab+".resS"]=second.members[f.cab]+".resS";
  Require(EiemNativeInputOffsets::Relocate(isolated,offsets,sites,set.manifest.plan.names,second)==EiemNativeInputOffsets::Relocate(startup,offsets,sites,{},second),"changed generation cannot reuse unchanged native input");
@@ -421,6 +462,11 @@ void SharedInputRegression(){
  auto truncated=offsets;--truncated.size;Rejected([&]{EiemNativeInputOffsets::Relocate(startup,truncated,sites,{},second);});
  auto bad=sites;Require(!bad.empty()&&!bad.front().patches.empty(),"namespace fixture has no byte sites");bad.front().patches.front().offset=startup.size();Rejected([&]{EiemNativeInputOffsets::Relocate(startup,offsets,bad,{},second);});
  auto retired=set;retired.contributors[0].clear();Require(EiemCompiledModSet::Materialize(retired,0,false)==original,"removing all Mods did not restore exact pristine input");
+ EiemCompiledModSet::PreparedNamespaces pristineSites;EiemNativeInputOffsets::Layout pristineOffsets;auto pristineStartup=EiemCompiledModSet::Materialize(retired,0,false,&pristineSites,&pristineOffsets);
+ retired.manifest.plan.startupHashes={Hash(pristineStartup)};
+ auto isolatedPristine=EiemCompiledModSet::IsolatePreparedInput(retired,0,pristineStartup,pristineSites);auto legacyPristine=EndfieldInput::Decode(pristineStartup);
+ for(auto& member:legacyPristine.members)member.name=retired.manifest.plan.names.members.at(member.name);
+ Require(isolatedPristine==EndfieldInput::Encode(pristineStartup,legacyPristine.members),"unchanged root relocation differs from legacy bundle rewrite");
  set.contributors[0].resize(1);auto one=EndfieldInput::Decode(EiemCompiledModSet::Materialize(set,0,false));Require(!ParseSerialized(one.members[0].bytes).objects.count(102),"removed Mod's compiled objects survived");
  Rejected([&]{MergeSequence(std::vector<int>{1,2},std::vector<std::vector<int>>{{3,2},{4,2}},[](int a,int b){return a==b;});});
 }
@@ -485,6 +531,7 @@ void SharedAuthorModelRegression(bool differentTemplates=false){
  for(bool isolated:{false,true})for(bool reverse:{false,true}){
   set.contributors[0]=reverse?std::vector<std::pair<size_t,size_t>>{{1,0},{0,0}}:std::vector<std::pair<size_t,size_t>>{{0,0},{1,0}};
   auto merged=EndfieldInput::Decode(EiemCompiledModSet::Materialize(set,0,isolated));auto& bytes=merged.members[0].bytes;auto layout=ParseSerialized(bytes);
+  if(!isolated){EiemSharedInputView::Prepared prepared;EiemCompiledModSet::PreparedNamespaces ns;EiemCompiledModSet::Materialize(set,0,false,&ns,nullptr,{},&prepared);auto view=EiemCompiledInputView::Bind(prepared.recipe,prepared.buffers);Bytes actual(view->Size());Require(view->ReadAt(0,actual.data(),actual.size())==actual.size()&&actual==EiemCompiledModSet::Materialize(set,0,false),"shared stream view differs from full native composition");auto namespaced=EiemCompiledInputView::Relocate(prepared.recipe,view,set.manifest.plan.names);actual.resize(namespaced->Size());Require(namespaced->ReadAt(0,actual.data(),actual.size())==actual.size()&&actual==EiemCompiledModSet::Materialize(set,0,true),"shared isolated stream view differs from native composition");}
   auto cab=isolated?set.manifest.plan.names.members.at(f.cab):f.cab;
   for(int mod=0;mod<2;++mod){auto renderer=mod?23:13;auto value=ObjectValue(bytes,layout,renderer);const auto& rt=layout.types.at(layout.objects.at(renderer).type);
    Require(Reference(rt,ArrayValue(rt,Child(rt,value,"m_Materials")).children.front(),layout,cab)==NativeReference{cab,materialIds[mod]},"same author model redirected another character's Material");
@@ -729,6 +776,36 @@ void ComparePrunedArtifacts(const std::filesystem::path& game,const std::filesys
  std::cout<<"PASS pruned artifact: beforeInputs="<<a.inputs.size()<<" afterInputs="<<b.inputs.size()<<" removedReadOnly="<<removed<<" roots="<<b.roots.size()<<" authorAndAssembliesAndEditedBytesUnchanged=1 roundtrip=1\n";
 }
 int main(int argc,char** argv){try{
+ if(argc==2&&std::string(argv[1])=="--target-overlap-object-smoke"){
+  using namespace EiemCompiledMod;using namespace EiemCompiledModSet;Fixture fixture;auto bytes=fixture.BytesOf();auto layout=ParseSerialized(bytes);Identity shared{"assets/static.mesh","Static"},solo{"assets/solo.mesh","Solo"};
+  EiemCompiledModSet::Set set;set.mods.resize(2);for(size_t i=0;i<2;++i){auto artifact=std::make_shared<Artifact>();artifact->manifest.package.id=i?"ModB":"ModA";artifact->manifest.plan.rendererRules.resize(1);artifact->manifest.plan.rendererRules[0].push_back({fixture.cab,13,shared});if(i)artifact->manifest.plan.rendererRules[0].push_back({fixture.cab,23,solo});set.mods[i]=std::move(artifact);}
+  set.contributors={{{0,0},{1,0}}};set.overlappingTargets={{shared}};auto targets=OverlappingTargetObjects(set,0,fixture.cab,bytes,layout);
+  Require(targets.count(13)&&targets.count(100)&&!targets.count(23)&&!targets.count(11),"overlap scope included an unrelated object or missed the actual Mesh/Renderer");
+  auto meshId=int64_t(100);const auto& meshType=layout.types.at(layout.objects.at(meshId).type);auto mesh=ObjectValue(bytes,layout,meshId),first=mesh,last=mesh;SetString(meshType,Child(meshType,first,"m_Name"),"first");SetString(meshType,Child(meshType,last,"m_Name"),"last");
+  auto merged=DecodeValue(meshType,0,MergeObject(meshType,EncodeValue(meshType,mesh),{EncodeValue(meshType,first),EncodeValue(meshType,last)},targets.count(meshId)!=0));
+  Require(Text(Child(meshType,merged,"m_Name").raw.data(),Child(meshType,merged,"m_Name").raw.size())=="last","overlapping target field precedence did not use the later Mod");
+  auto targetRendererId=int64_t(13);const auto& targetRendererType=layout.types.at(layout.objects.at(targetRendererId).type);auto targetRenderer=ObjectValue(bytes,layout,targetRendererId),targetFirst=targetRenderer,targetLast=targetRenderer;
+  SetReference(targetRendererType,Child(targetRendererType,targetFirst,"m_ProbeAnchor"),{fixture.cab,100},layout,fixture.cab);SetReference(targetRendererType,Child(targetRendererType,targetLast,"m_ProbeAnchor"),{fixture.cab,200},layout,fixture.cab);
+  auto targetRendererMerged=DecodeValue(targetRendererType,0,MergeObject(targetRendererType,EncodeValue(targetRendererType,targetRenderer),{EncodeValue(targetRendererType,targetFirst),EncodeValue(targetRendererType,targetLast)},targets.count(targetRendererId)!=0));
+  Require(NullableReference(targetRendererType,Child(targetRendererType,targetRendererMerged,"m_ProbeAnchor"),layout,fixture.cab).second==200,"overlapping target Renderer field precedence did not use the later Mod");
+  auto rendererId=int64_t(23);const auto& rendererType=layout.types.at(layout.objects.at(rendererId).type);auto renderer=ObjectValue(bytes,layout,rendererId),a=renderer,b=renderer;SetReference(rendererType,Child(rendererType,a,"m_ProbeAnchor"),{fixture.cab,100},layout,fixture.cab);SetReference(rendererType,Child(rendererType,b,"m_ProbeAnchor"),{fixture.cab,200},layout,fixture.cab);
+  Rejected([&]{MergeObject(rendererType,EncodeValue(rendererType,renderer),{EncodeValue(rendererType,a),EncodeValue(rendererType,b)},targets.count(rendererId)!=0);});
+  std::cout<<"PASS overlapping target object scope: target Mesh/Renderer use deterministic precedence; unrelated Renderer conflicts remain rejected\n";return 0;
+ }
+ if(argc==2&&std::string(argv[1])=="--large-preload-smoke"){PreloadIntervalRegression();LargePreloadRegression();LargePreloadRegression(80);return 0;}
+ if(argc==4&&std::string(argv[1])=="--runtime-view-audit"){
+  auto game=std::filesystem::u8path(argv[2]),mods=std::filesystem::u8path(argv[3]);auto set=EiemCompiledModSet::Read(game,{},mods);Require(bool(set),"runtime view audit has no compiled Mods");auto context=EiemCompiledModSet::Context(set);size_t changed=0,bytes=0;
+  for(const auto& row:set->startup){auto i=row.first;++changed;auto view=context->startupViews.find(i);Require(view!=context->startupViews.end(),"runtime startup view absent");auto actual=EiemInputSpanView::Digest(*view->second);
+   Require(actual==set->manifest.plan.startupHashes.at(i),"runtime startup view byte proof differs: "+set->catalog.at(i).source.file+" expected="+set->manifest.plan.startupHashes.at(i)+" actual="+actual);
+   auto materialized=EiemCompiledModSet::StartupInput(*set,i);Require(EiemOfflinePackage::Hash(materialized)==set->manifest.plan.startupHashes.at(i),"startup materializer byte proof differs");bytes+=row.second->size();}
+  auto isolatedViews=std::move(set->views),startupViews=std::move(set->startupViews);size_t shared=0,compared=0;Bytes chunk(1024*1024);
+  for(const auto&row:startupViews){auto i=row.first;if(EiemCompiledModSet::Writers(*set,i).size()<2)continue;
+   for(bool isolated:{false,true}){const auto&view=isolated?isolatedViews.at(i):row.second;auto expected=EiemCompiledModSet::Materialize(*set,i,isolated);Require(view->Size()==expected.size(),"shared native view extent differs from legacy composition");
+    for(size_t p=0;p<expected.size();){auto n=std::min(chunk.size(),expected.size()-p);Require(view->ReadAt(p,chunk.data(),n)==n&&std::equal(chunk.begin(),chunk.begin()+n,expected.begin()+p),"shared native view differs from legacy composition: "+set->catalog[i].source.file);p+=n;}compared+=expected.size();}
+   ++shared;std::cout<<"AUDIT shared="<<shared<<" input="<<set->catalog[i].source.file<<std::endl;}
+  set->views=std::move(isolatedViews);set->startupViews=std::move(startupViews);
+  Require(shared||changed,"runtime audit verified no changed inputs");std::cout<<"PASS runtime startup views: materializedInputs="<<changed<<" backingMiB="<<double(bytes)/1048576<<" sharedInputsByteCompared="<<shared<<" comparedMiB="<<double(compared)/1048576<<" startupAndIsolated=1\n";return 0;
+ }
  if(argc==4&&std::string(argv[1])=="--profile-set-early"){
   auto game=std::filesystem::u8path(argv[2]),mods=std::filesystem::u8path(argv[3]);auto set=EiemCompiledModSet::Read(game,{},mods);
   Require(bool(set),"profile has no compiled Mods");size_t shared=0;for(const auto& contributors:set->contributors)if(contributors.size()>1)++shared;
@@ -838,9 +915,9 @@ int main(int argc,char** argv){try{
  }
  if(argc==4&&std::string(argv[1])=="--refresh-controls"){
   auto game=std::filesystem::u8path(argv[2]),source=std::filesystem::u8path(argv[3]),parent=std::filesystem::weakly_canonical(std::filesystem::temp_directory_path());auto folder=parent/("eff-compiled-refresh-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));Require(std::filesystem::create_directory(folder),"refresh fixture exists");struct Cleanup{std::filesystem::path parent,folder;~Cleanup(){if(folder.parent_path()==parent)std::filesystem::remove_all(folder);}}cleanup{parent,folder};auto mods=folder/"mods",mod=mods/source.filename();std::filesystem::create_directories(mod);std::filesystem::copy(source,mod,std::filesystem::copy_options::recursive);
-  auto before=EiemCompiledModSet::Read(game,{},mods);Require(before&&!before->mods.empty()&&!before->startup.empty(),"refresh fixture has no compiled inputs");auto enabled=before->manifest.packages.front().keySwitchEnabled;auto ini=EiemNativeInput::Read(mod/"mod.ini");std::string text(ini.begin(),ini.end());auto changed=std::regex_replace(text,std::regex("key_switch_enabled[ \\t]*=[^\\r\\n]*"),enabled?"key_switch_enabled=0":"key_switch_enabled=1");Require(text!=changed,"refresh fixture lacks key switch setting");EiemOfflineCompile::AtomicSave(mod/"mod.ini",Bytes(changed.begin(),changed.end()));
+  auto before=EiemCompiledModSet::Read(game,{},mods);Require(before&&!before->mods.empty()&&(!before->startup.empty()||!before->startupViews.empty()),"refresh fixture has no compiled inputs");auto enabled=before->manifest.packages.front().keySwitchEnabled;auto ini=EiemNativeInput::Read(mod/"mod.ini");std::string text(ini.begin(),ini.end());auto changed=std::regex_replace(text,std::regex("key_switch_enabled[ \\t]*=[^\\r\\n]*"),enabled?"key_switch_enabled=0":"key_switch_enabled=1");Require(text!=changed,"refresh fixture lacks key switch setting");EiemOfflineCompile::AtomicSave(mod/"mod.ini",Bytes(changed.begin(),changed.end()));
   auto clock=std::chrono::steady_clock::now();auto after=EiemCompiledModSet::Read(game,before,mods);double elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-clock).count();Require(after->pointer==before->pointer&&after->manifest.packages.front().keySwitchEnabled!=enabled&&EiemCompiledModSet::Unchanged(*after,mods),"control-only INI edit changed resource identity or retained stale controls/stamps");
-  Require(after->startup==before->startup&&after->isolated==before->isolated,"control-only refresh rebuilt native resource payloads");before->isolated.clear();after->isolated.clear();auto released=EiemCompiledModSet::Read(game,after,mods);
+  Require(after->startup==before->startup&&after->isolated==before->isolated&&after->views==before->views&&after->startupViews==before->startupViews,"control-only refresh rebuilt native resource payloads");before->isolated.clear();after->isolated.clear();auto released=EiemCompiledModSet::Read(game,after,mods);
   std::vector<std::weak_ptr<const Bytes>> backing;for(const auto& row:after->startup){Require(released->isolated.at(row.first)==row.second,"control-only refresh duplicated the shared native backing");backing.push_back(row.second);}
   before->startup.clear();after->startup.clear();released->startup.clear();released->isolated.clear();for(const auto& row:backing)Require(row.expired(),"released preparation records retained native backing bytes");auto drained=EiemCompiledModSet::Read(game,released,mods);Require(drained->isolated.empty(),"refresh resurrected expired native byte ownership");
   auto resource=mod/std::filesystem::u8path(released->manifest.packages.front().resources.begin()->first);auto corrupt=EiemNativeInput::Read(resource);corrupt.back()^=1;EiemOfflineCompile::AtomicSave(resource,corrupt);Rejected([&]{EiemCompiledModSet::Read(game,released,mods);});Require(!EiemCompiledModSet::Unchanged(*released,mods),"real resource edit bypassed control-only refresh validation");
@@ -932,6 +1009,8 @@ int main(int argc,char** argv){try{
   }
   Require(preserved==artifact->manifest.package.materials.size(),"not all authored materials verified");std::cout<<"PASS preserved Shader/keywords/pass fields: materials="<<preserved<<" shaders="<<shaders.size()<<" exactRootAssemblies="<<assembly<<'\n';return 0;
  }
+ DeferredSemanticRegression();
+ SharedLiteralViewRegression();
  FixedWidthSkipRegression();
  AuthorSourceRegression();
  GenericResourceRegression();
@@ -965,10 +1044,14 @@ int main(int argc,char** argv){try{
  auto& ca=ArrayValue(type,Child(type,a,"m_Children"));auto value=ArrayElement(type,ca);SetReference(type,value,{fixture.cab,200},layout,fixture.cab);ca.children.push_back(value);ca.count=ca.children.size();
  auto& cb=ArrayValue(type,Child(type,b,"m_Children"));value=ArrayElement(type,cb);SetReference(type,value,{fixture.cab,300},layout,fixture.cab);cb.children.push_back(value);cb.count=cb.children.size();
  auto merged=MergeObject(type,EncodeValue(type,original),{EncodeValue(type,a),EncodeValue(type,b)});auto tree=DecodeValue(type,0,merged);Require(ArrayValue(type,Child(type,tree,"m_Children")).children.size()==ArrayValue(type,Child(type,original,"m_Children")).children.size()+2,"two Mods on same original Transform lost a child");
+ auto first=original,second=original;SetString(type,Child(type,first,"m_Name"),"first-mod");SetString(type,Child(type,second,"m_Name"),"later-mod");
+ auto override=DecodeValue(type,0,MergeObject(type,EncodeValue(type,original),{EncodeValue(type,first),EncodeValue(type,second)},true));
+ Require(Text(Child(type,override,"m_Name").raw.data(),Child(type,override,"m_Name").raw.size())=="later-mod","overlapping target field did not follow deterministic later-Mod precedence");
  if(argc==4&&(std::string(argv[1])=="--read-set"||std::string(argv[1])=="--namespace-replay-audit")){auto started=std::chrono::steady_clock::now();auto set=EiemCompiledModSet::Read(std::filesystem::u8path(argv[2]),{},std::filesystem::u8path(argv[3]));auto preparedMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();Require(set&&(!set->isolated.empty()||!set->views.empty()),"real set was not prepared");auto context=EiemCompiledModSet::Context(set);size_t cachedBytes=0;
  for(size_t i=0;i<set->catalog.size();++i){bool changed=set->manifest.plan.startupHashes[i]!=set->catalog[i].source.hash;Require((set->startup.count(i)+set->startupViews.count(i))==size_t(changed),"startup delivery coverage differs from modified inputs");if(changed){
-  if(set->startupViews.count(i)){Require(context->startupViews.at(i)==set->startupViews.at(i)&&EiemInputSpanView::Digest(*context->startupViews.at(i))==set->manifest.plan.startupHashes[i],"startup view binding changed prepared input");}
-  else {Require(context->startupInputs.at(i)==set->isolated.at(i)&&Hash(context->Materialize(i,false))==set->manifest.plan.startupHashes[i],"startup alias copied or changed prepared input");cachedBytes+=set->startup.at(i)->size();}}}
+  auto runtimeView=context->startupViews.find(i);Require(runtimeView!=context->startupViews.end(),"runtime startup view absent");
+  if(set->startupViews.count(i)){auto& compiledView=set->startupViews.at(i);auto viewHash=EiemInputSpanView::Digest(*compiledView);Require(context->startupViews.at(i)==compiledView&&viewHash==set->manifest.plan.startupHashes[i],"compiled startup view differs: input="+set->catalog.at(i).source.file+" expected="+set->manifest.plan.startupHashes[i]+" actual="+viewHash);}
+  else{Require(EiemInputSpanView::Digest(*runtimeView->second)==set->manifest.plan.startupHashes[i],"runtime startup view differs from prepared input");Require(context->startupInputs.at(i)==set->isolated.at(i)&&Hash(context->Materialize(i,false))==set->manifest.plan.startupHashes[i],"startup alias copied or changed prepared input");cachedBytes+=set->startup.at(i)->size();}}}
  std::cout<<"startupCacheMiB="<<double(cachedBytes)/1048576<<" changedInputs="<<set->startup.size()<<'\n';size_t added=0;for(const auto& row:*context->addedDependencies)added+=row.second.size();size_t shared=0;for(const auto& contributors:set->contributors)if(contributors.size()>1)++shared;std::cout<<"real compiled set: mods="<<set->mods.size()<<" inputs="<<set->catalog.size()<<" roots="<<set->manifest.plan.roots.size()<<" sharedInputs="<<shared<<" addedDependencySources="<<context->addedDependencies->size()<<" addedEdges="<<added<<" preparedMs="<<preparedMs<<'\n';
  if(std::string(argv[1])=="--namespace-replay-audit"){size_t verified=0;for(auto i:set->manifest.plan.closure){
   if(set->views.count(i)){auto writers=EiemCompiledModSet::Writers(*set,i);Require(writers.size()<=1&&!set->contributors[i].empty(),"bound view has no unique source proof");auto contributor=writers.empty()?set->contributors[i].front():writers.front();

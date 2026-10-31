@@ -225,15 +225,8 @@ void Counters() {
 bool Hook(const char* name,void* detour,void** original) {
   auto address=il2cpp_resolve_icall(name);
   if(!address || installed.count(address)){Log("[RELOAD-LOAD-HOOK] unavailable=%s address=%p",name,address);return false;}
-  auto status=MH_CreateHook(address,detour,original);
-  if(status==MH_OK) {
-    status=MH_EnableHook(address);
-    if(status!=MH_OK)MH_RemoveHook(address);
-  }
-  if(status!=MH_OK){*original=nullptr;Log("[RELOAD-LOAD-HOOK] failed=%s status=%d",name,int(status));return false;}
-  installed.insert(address);
-  Log("[RELOAD-LOAD-HOOK] installed=%s address=%p runtimeResolved=1 injectedAbi=0",name,address);
-  return true;
+  if(!Entry::InstallAddress(address,name,detour,original)){Log("[RELOAD-LOAD-HOOK] failed=%s",name);return false;}
+  Log("[RELOAD-LOAD-HOOK] installed=%s address=%p runtimeResolved=1 injectedAbi=0",name,address);return true;
 }
 void InstallOptional(void** assemblies,size_t count) {
   if(!ReloadObservation::enabled.load() || Active())return;

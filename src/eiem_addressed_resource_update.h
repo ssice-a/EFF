@@ -11,7 +11,7 @@ struct Bindings {
  std::map<std::string,Type> meshes;
  std::map<std::string,Bytes> generated;
 };
-inline constexpr const char* bindingStructure="EFF_RESOURCE_BINDINGS/stable-parts+explicit-fields+mesh-schemas/le64";
+inline constexpr const char* bindingStructure="EFF_RESOURCE_BINDINGS/stable-parts+explicit-fields+mesh-schemas+texture-aliases/le64";
 inline bool CurrentBindings(const Bytes& bytes){EiemOfflinePackage::Reader r{bytes};return r.S()==bindingStructure;}
 inline void Normalize(std::vector<Range>& ranges){
  std::sort(ranges.begin(),ranges.end());std::vector<Range> result;
@@ -59,7 +59,7 @@ inline Bytes Encode(const Bindings& bindings){
 inline Bindings Decode(const Bytes& bytes,const Package& author){
  EiemOfflinePackage::Reader r{bytes};Require(r.S()==bindingStructure,"resource binding structure differs");Bindings result;
  auto count=r.Count();for(size_t i=0;i<count;++i){auto name=r.S();Require(author.resources.count(name)&&!result.ranges.count(name),"resource binding identity absent/repeated");auto& ranges=result.ranges[name];auto n=r.Count();size_t end=0;
-  for(size_t j=0;j<n;++j){auto offset=r.Size(),size=r.Size();Require(size&&offset>=end&&offset<=author.resources.at(name)->bytes.size()&&size<=author.resources.at(name)->bytes.size()-offset,"resource binding extent differs");ranges.emplace_back(offset,size);end=AddSize(offset,size);}}
+  for(size_t j=0;j<n;++j){auto offset=r.Size(),size=r.Size(),extent=ResourceSize(*author.resources.at(name));Require(size&&offset>=end&&offset<=extent&&size<=extent-offset,"resource binding extent differs");ranges.emplace_back(offset,size);end=AddSize(offset,size);}}
  count=r.Count();SchemaReader schemas;for(size_t i=0;i<count;++i){auto name=r.S();auto layout=ReadLayout(r,schemas);Require(author.resources.count(name)&&layout.types.size()==1&&layout.types.front().classId==43&&layout.types.front().hash==author.resources.at(name)->type&&result.meshes.emplace(name,std::move(layout.types.front())).second,"resource binding Mesh schema differs");}
  Require(r.p==bytes.size(),"resource binding suffix differs");return result;
 }
@@ -74,16 +74,19 @@ inline void Finalize(Artifact& artifact,std::vector<Bindings>& inputs){
 }
 inline bool RecoverCompiledBindings(Artifact& artifact){
  if(artifact.explicitResources&&!artifact.resourceBindingBytes.empty()&&CurrentBindings(artifact.resourceBindingBytes))return true;
+ // A legacy snapshot with duplicated declarations needs object/PPtr rebuild,
+ // not relabelling its old recipes as a current alias-aware compilation.
+ for(const auto& row:artifact.manifest.package.textures)if(CanonicalTextureSection(artifact.manifest.package,row.first,row.second)!=row.first)return false;
  const auto& plan=artifact.manifest.plan;const auto& package=artifact.manifest.package;
  if(!plan.rulesOnly||!plan.spanRecipes||artifact.views.size()!=plan.inputs.size()||plan.memberRecipes.size()!=plan.inputs.size())return false;
  Bindings recovered;
  auto collect=[&](const auto& spans){for(const auto& span:spans)if(span.kind==EiemResourceRecipe::Author){
-  auto resource=package.resources.find(span.source);if(resource==package.resources.end()||span.offset>resource->second->bytes.size()||span.size>resource->second->bytes.size()-span.offset)return false;
+   auto resource=package.resources.find(span.source);if(resource==package.resources.end()||span.offset>ResourceSize(*resource->second)||span.size>ResourceSize(*resource->second)-span.offset)return false;
   if(span.size)recovered.ranges[span.source].emplace_back(span.offset,span.size);
  }return true;};
  for(const auto& view:artifact.views)if(!collect(view.spans))return false;
  for(const auto& input:plan.memberRecipes)for(const auto& member:input)if(!collect(member.spans))return false;
- for(const auto& frame:plan.frameRecipes){auto resource=package.resources.find(frame.resource);if(resource==package.resources.end()||frame.offset>resource->second->bytes.size()||frame.size>resource->second->bytes.size()-frame.offset)return false;recovered.ranges[frame.resource].emplace_back(frame.offset,frame.size);}
+  for(const auto& frame:plan.frameRecipes){auto resource=package.resources.find(frame.resource);if(resource==package.resources.end()||frame.offset>ResourceSize(*resource->second)||frame.size>ResourceSize(*resource->second)-frame.offset)return false;recovered.ranges[frame.resource].emplace_back(frame.offset,frame.size);}
  std::set<std::string> neededMeshes;for(const auto& row:package.meshes)neededMeshes.insert(row.second.resource);
  if(!neededMeshes.empty())for(size_t i=0;i<plan.inputs.size()&&!neededMeshes.empty();++i){
   HydrateInput(artifact,i);
@@ -102,17 +105,18 @@ inline bool RecoverCompiledBindings(Artifact& artifact){
  return true;
 }
 inline bool SameLayout(const Resource& a,const Resource& b){
- if(a.kind!=b.kind||a.type!=b.type||a.bytes.size()!=b.bytes.size()||a.blocks.size()!=b.blocks.size())return false;
+ if(a.kind!=b.kind||a.type!=b.type||ResourceSize(a)!=ResourceSize(b)||a.blocks.size()!=b.blocks.size())return false;
  for(const auto& row:a.blocks){auto found=b.blocks.find(row.first);if(found==b.blocks.end()||row.second.offset!=found->second.offset||row.second.size!=found->second.size)return false;}return true;
 }
 inline bool CoveredChanges(const Resource& previous,const Resource& next,const std::vector<Range>& ranges){
+ auto previousData=ResourceData(previous),nextData=ResourceData(next);if(ResourceSize(previous)!=ResourceSize(next))return false;
  size_t at=0;for(const auto& block:next.blocks){auto begin=block.second.offset,end=AddSize(begin,block.second.size);
   // Map iteration is by field name, so each block starts its own ordered search.
   at=size_t(std::lower_bound(ranges.begin(),ranges.end(),begin,[](const Range& range,size_t value){return range.first+range.second<=value;})-ranges.begin());
   for(size_t p=begin;p<end;){while(at<ranges.size()&&ranges[at].first+ranges[at].second<=p)++at;
    if(at<ranges.size()&&ranges[at].first<=p){p=std::min(end,ranges[at].first+ranges[at].second);continue;}
    auto stop=at<ranges.size()?std::min(end,ranges[at].first):end;
-   if(!std::equal(previous.bytes.begin()+p,previous.bytes.begin()+stop,next.bytes.begin()+p))return false;p=stop;
+    if(!std::equal(previousData+p,previousData+stop,nextData+p))return false;p=stop;
   }
  }return true;
 }

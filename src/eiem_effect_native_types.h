@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <functional>
+namespace EiemInputSpanView {class View;}
 namespace EiemEffectNative {
 using Bytes=std::vector<unsigned char>;
 // Check the actual game envelope before any Unity request is submitted.
@@ -31,6 +33,9 @@ struct Bundle {
  std::string file,hash;std::vector<size_t> dependencies;
  std::shared_ptr<const Bytes> bytes;
  std::shared_ptr<const void> backing;const unsigned char* data=nullptr;size_t size=0;
+ // New author packages open a pinned seekable input on actual effect demand.
+ // Legacy diagnostic packets can still supply immutable bytes above.
+ std::function<std::shared_ptr<const EiemInputSpanView::View>()> open;
  const unsigned char* Data()const{return bytes?bytes->data():data;}
  size_t Size()const{return bytes?bytes->size():size;}
  std::shared_ptr<const void> Owner()const{return bytes?std::shared_ptr<const void>(bytes):backing;}

@@ -91,6 +91,10 @@ jobs:
         if ($LASTEXITCODE -ne 0) { throw 'Resource compiler build failed' }
         cmd /c tools\build_source_index.cmd
         if ($LASTEXITCODE -ne 0) { throw 'Source index helper build failed' }
+        cmd /c tools\diagnostics\build_author_assets.cmd format3
+        if ($LASTEXITCODE -ne 0) { throw 'Format 3 author asset writer build failed' }
+        python tools/diagnostics/author_assets_abi_smoke.py bin/author-assets/eff_author_assets_format3.dll
+        if ($LASTEXITCODE -ne 0) { throw 'Format 3 author asset writer ABI validation failed' }
         New-Item -ItemType Directory -Force bin/release-artifacts | Out-Null
         python tools/diagnostics/package_shared_native_tools.py --output bin/release-artifacts --compiler bin/resource-pack/eff_resource_pack.exe --dll-protocol bin/resource-directory-entry-v35/package-protocol.json --framework-tag $env:RELEASE_TAG --manifest-output bin/release-artifacts/eff-native-tools.json
         if ($LASTEXITCODE -ne 0) { throw 'Shared authoring tools do not match the production DLL protocol' }

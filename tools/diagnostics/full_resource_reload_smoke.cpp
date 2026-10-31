@@ -1841,13 +1841,15 @@ void StartupDependencyListBindingRegression(){
   {{},".ctor","System.Void","Test.ObjectPool<Test.PooledList<System.UInt64>>",(void*)701,"System.Int32"},
   {{},"Allocate","Test.PooledList<System.UInt64>",nullptr,(void*)702},{{},"Dispose","System.Void",nullptr,(void*)701}};
  static unsigned allocated=0,disposed=0;allocated=disposed=0;static int pool;
- Reset();propertyElementWidth=8;auto oldApi=D::api;
+ Reset();propertyElementWidth=8;auto oldApi=D::api;std::map<void*,D::PoolBinding> oldPools;
+ {std::lock_guard<std::mutex> lock(D::poolMutex);oldPools=D::manifestPools;D::manifestPools.clear();}
  auto previous=std::make_tuple(il2cpp_class_get_methods,il2cpp_method_get_name,il2cpp_method_get_param_count,
   il2cpp_method_get_flags,il2cpp_method_get_return_type,il2cpp_method_get_param,il2cpp_type_get_name,
   il2cpp_object_new,il2cpp_value_box,il2cpp_runtime_invoke,il2cpp_class_get_parent,il2cpp_field_get_value,il2cpp_object_get_class);
  auto restore=[&]{std::tie(il2cpp_class_get_methods,il2cpp_method_get_name,il2cpp_method_get_param_count,
   il2cpp_method_get_flags,il2cpp_method_get_return_type,il2cpp_method_get_param,il2cpp_type_get_name,
-  il2cpp_object_new,il2cpp_value_box,il2cpp_runtime_invoke,il2cpp_class_get_parent,il2cpp_field_get_value,il2cpp_object_get_class)=previous;D::api=oldApi;dependencyLists.clear();Reset();};
+  il2cpp_object_new,il2cpp_value_box,il2cpp_runtime_invoke,il2cpp_class_get_parent,il2cpp_field_get_value,il2cpp_object_get_class)=previous;D::api=oldApi;
+  {std::lock_guard<std::mutex> lock(D::poolMutex);D::manifestPools=oldPools;}dependencyLists.clear();Reset();};
  il2cpp_class_get_methods=[](void* klass,void** it)->void*{auto index=uintptr_t(*it);while(index<std::size(rows)&&rows[index].klass!=klass)++index;if(index==std::size(rows))return nullptr;*it=(void*)(index+1);return &rows[index];};
  il2cpp_class_get_parent=[](void* klass)->void*{return klass==(void*)701?(void*)700:nullptr;};
  il2cpp_method_get_name=[](void* method)->const char*{return static_cast<MethodRow*>(method)->name;};
@@ -1890,10 +1892,12 @@ void StartupDependencyListBindingRegression(){
    D::BindListMethods(D::api.listClass,"System.UInt64");D::VerifyListApi(prototype);
    Require(D::api.boxedAdd==boxed&&!D::api.listCtor,"pooled list did not use inherited append and pool allocation");
   }
-  Require(allocated==2&&disposed==2&&dependencyLists.at(prototype)==std::vector<uint64_t>{91},"pooled dependency scratch lifecycle changed the game's input list");
+  static int manifest;D::RememberListPool(&manifest,prototype);
+  {auto scratch=D::NewListForManifest(&manifest);Require(D::ReadList(scratch.Get()).empty(),"manifest-owned pool scratch list was not initialized empty");}
+  Require(allocated==3&&disposed==3&&dependencyLists.at(prototype)==std::vector<uint64_t>{91},"pooled dependency scratch lifecycle changed the game's input list");
   bool badAppend=false;
   try{auto scratch=D::NewList(prototype);throw std::runtime_error("injected query failure");}catch(const std::exception&){badAppend=true;}
-  Require(badAppend&&allocated==3&&disposed==3,"scratch list was not recycled after query failure");
+  Require(badAppend&&allocated==4&&disposed==4,"scratch list was not recycled after query failure");
  }catch(...){rows[3].parameter="System.Object";restore();throw;}
  restore();
 }

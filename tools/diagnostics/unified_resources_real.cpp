@@ -156,6 +156,13 @@ void Run(const std::filesystem::path& game,const std::filesystem::path& baseline
 }
 } // namespace UnifiedReal
 int wmain(int argc,wchar_t** argv){try{
+ if(argc==4&&std::wstring(argv[1])==L"--validate-bindings"){
+  auto game=std::filesystem::canonical(argv[2]),mod=std::filesystem::canonical(argv[3]);auto loaded=EiemCompiledModStore::Load(mod/"compiled.bin",mod,game,true);
+  auto bindings=EiemAddressedResources::Decode(loaded.artifact.resourceBindingBytes,loaded.artifact.manifest.package);size_t mapped=0;
+  for(const auto& row:loaded.artifact.manifest.package.resources)if(row.second->mappedBytes&&row.second->bytes.empty())++mapped;
+  EiemNativeInput::Require(mapped>0,"diagnostic did not load any mapped author resources");
+  std::cout<<"PASS mapped store bindings resources="<<mapped<<" ranges="<<bindings.ranges.size()<<" meshes="<<bindings.meshes.size()<<std::endl;return 0;
+ }
  if(argc==4&&std::wstring(argv[1])==L"--metadata"){
   auto game=std::filesystem::canonical(argv[2]),mod=std::filesystem::canonical(argv[3]);auto before=UnifiedReal::PrivateBytes();UnifiedReal::PeakMemory memory;std::vector<std::pair<std::string,double>> costs;auto begin=std::chrono::steady_clock::now();auto loaded=EiemPublishedCompiledMod::Read(mod,game,[&](const char* stage,double value){costs.emplace_back(stage,value);},true,true);auto wall=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();auto peak=memory.Finish();
   std::cout<<"METADATA-READ wallMs="<<wall<<" privateStart="<<before<<" privatePeak="<<peak<<" sourceCount="<<loaded.artifact.views.size()<<" hydratedProofs="<<loaded.artifact.hydrated.size()<<" decodedMembers="<<loaded.artifact.members.size()<<" store="<<loaded.store<<" externalSnapshot="<<loaded.externalSnapshot<<'\n';

@@ -50,6 +50,7 @@ bin/
 # Accidental PowerShell/native DLL staging directory.
 /System.Management.Automation.Internal.Host.InternalHost/
 /workspace-cleanup-20261025/
+/workspace-cleanup-20261030/
 
 # Local game captures, compiled packages and profiling output (not source).
 /diagnostics/

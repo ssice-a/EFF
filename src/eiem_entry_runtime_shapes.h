@@ -722,6 +722,10 @@ void HelperInitialized(void* self,void* info) {
   PrefabAdaptationProbe::Initializing("EntityRenderHelper.InitAll");
 #endif
   originalHelperInit(self,info);
+#if defined(EIEM_MESH_TARGET_PROBE)
+  if(Main()&&helperRenderersField)try{void* list=nullptr;il2cpp_field_get_value(self,helperRenderersField,&list);MeshTargetProbe::ConsumerList(list,"helper-init-completed");}
+  catch(const std::exception& e){Log("[MESH-TARGET-GAP] phase=helper-renderer-list reason=%s",e.what());}
+#endif
   try {
     if(!enabled||registrationPaused||!helperRenderersField||!Main()||!CurrentGeneration())return;
     void* list=nullptr;il2cpp_field_get_value(self,helperRenderersField,&list);
@@ -739,6 +743,12 @@ void Update() {
   lastFrame = frame;
   entry.hit=true;
   EiemLoadPerformance::MainFrame(unsigned(frame));
+#if defined(EIEM_MESH_TARGET_PROBE)
+  MeshTargetProbe::Report(frame);
+#endif
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+  DemandLoadingProbe::Report(frame);
+#endif
   EiemLoadPerformance::Scope performance(EiemLoadPerformance::PluginFrame);
 #if defined(EIEM_DIAGNOSTICS)
   ReloadObservation::Frame(frame);
@@ -808,6 +818,9 @@ void FrameTick(void* self,void* info) {
   try { Update(); } catch(const std::exception& e) { Log("[SHAPE-RUNTIME-GAP] frameUpdate=%s",e.what()); }
 }
 void Init(void* self, void* renderers, void* configs, void* custom, bool skip, void* info) {
+#if defined(EIEM_MESH_TARGET_PROBE)
+  MeshTargetProbe::ConsumerList(renderers,"before-material-controller-init");
+#endif
 #if defined(EIEM_PREFAB_ADAPTATION_PROBE)
   PrefabAdaptationProbe::Initializing("EntityRenderHelperMaterialController.Init");
 #endif
@@ -926,8 +939,7 @@ void InstallOptional(void** assemblies,size_t count) {
     // managed getter wrapper. Only this getter is adapted inside a TLS scope.
     auto getter=il2cpp_resolve_icall("UnityEngine.SkinnedMeshRenderer::get_sharedMesh()");
     Require(getter && !installed.count(getter),"runtime capture shared Mesh getter unavailable");
-    Require(MH_CreateHook(getter,(void*)GetMesh,(void**)&originalMeshGetter)==MH_OK && MH_EnableHook(getter)==MH_OK,"runtime capture getter hook failed");
-    installed.insert(getter);
+    Require(Entry::InstallAddress(getter,"SkinnedMeshRenderer.get_sharedMesh",(void*)GetMesh,(void**)&originalMeshGetter),"runtime capture getter hook failed");
     // This adapter is required for shaped captures whose native renderer has
     // no matrix-provider job. It is independent of the optional debug marker.
     auto installIcall=[&](const char* name,void* hook,void** original) {
@@ -935,8 +947,7 @@ void InstallOptional(void** assemblies,size_t count) {
       if (!target && !strcmp(name,"UnityEngine.Renderer::set_enabled(System.Boolean)"))
         target=il2cpp_resolve_icall("UnityEngine.Renderer::set_enabled");
       Require(target && !installed.count(target),"capture public binding unavailable");
-      Require(MH_CreateHook(target,hook,original)==MH_OK && MH_EnableHook(target)==MH_OK,"capture public hook failed");
-      installed.insert(target);
+      Require(Entry::InstallAddress(target,name,hook,original),"capture public hook failed");
     };
     // Public enabled binding: self, bool; writes retain native intent.
     installIcall("UnityEngine.Renderer::set_enabled(System.Boolean)",(void*)SetEnabled,(void**)&originalEnabledSetter);

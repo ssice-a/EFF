@@ -1,6 +1,6 @@
 #pragma once
 #include "eiem_texture_input_builder.h"
-#include "eiem_mesh_input_builder.h"
+#include "eiem_renderer_input_builder.h"
 
 // Author-side construction. No consumer Prefabs, game install paths or
 // runtime Mesh setters are needed to emit an independently loadable Mesh.
@@ -11,6 +11,8 @@ struct Asset {
  std::string member,bundle,path,meshName;
  int64_t meshId=0;
  unsigned vertices=0,indices=0,bones=0,shapes=0;
+  EiemMeshBindingMetadata::Mesh binding;
+  std::vector<std::string> fields;
 };
 inline Bytes EnvelopeHeader(){
  Bytes b(49);EndfieldInput::Put(b,0,0x4A92F0CD,4);EndfieldInput::Put(b,4,0xD8B1E637,4);
@@ -92,6 +94,9 @@ inline Asset Build(const Package& package,const Identity& target,const std::stri
  auto label=package.id+"\n"+part+"\n"+target.path+"\n"+target.asset+"\n";
  auto payload=EncodeValue(type,mesh);payload.insert(payload.end(),label.begin(),label.end());auto hash=Sha(payload.data(),payload.size());
  auto asset=Isolate(source,sourceCab,meshId,target.path,mesh,Hex(hash.data(),hash.size()));
+  asset.binding=BuildMeshBindingMetadata(type,mesh,resource,m);
+  std::set<std::string> fields{"m_Name"};for(const auto& block:resource.blocks)if(!block.first.empty()&&block.first[0]!='@')fields.insert(block.first);
+  if(!m.shapes.empty())fields.insert("m_IsReadable");asset.fields.assign(fields.begin(),fields.end());
  asset.vertices=m.vertices;asset.indices=m.indices;asset.bones=unsigned(m.bones.size());asset.shapes=unsigned(m.shapes.size());return asset;
 }
 } // namespace EiemAuthorMeshBundle

@@ -1,5 +1,21 @@
 # EFF 领域模型
 
+## 当前设计权威（2026-10-30）
+
+本文件以下按日期记录的部署、验收和历史实现不可覆盖当前设计。当前 Mod 格式、DLL 运行时、Blender 往返、DDS 与 Mod Manager 迁移统一以 [ADR-0001](docs/adr/0001-authoritative-mod-directory.md) 和 [ADR-0002](docs/adr/0002-runtime-resource-files.md) 为准；旧格式文档已列入[归档索引](docs/archive/README.md)。
+
+当前目标为 format 3：`mod.ini` 是唯一关系清单，资源文件独立且自描述，DDS 保持标准文件原样；DLL 只跟随游戏真实请求匹配并局部改写，不读全局消费索引；Blender 负责离线资源生成与选择性往返；Mod Manager 事务式迁移 format 2。工作状态以 ADR 的验收要求和当前代码测试为准，历史“已部署/已通过”记录不表示 format 3 或完整按需链路已验收。
+
+2026-10-29 07:05 已修复并配对部署逻辑材质依赖开发 DLL 与八份作者目录，SHA-256 `4FE54C33C8CD35E2154D05B76D4119B8FC84D36EEB3EA8128E49F2CB23B903EA`。06:52 PID1788 实测确认多 Mod 消费者失败：任意来源 Material 的游戏贴图不在目标角色原依赖组、同一共享资源因不同消费者 categorySource 被误报键冲突；Chen 读回 98 bindpose/57 Renderer bones，liino 78/59，与部分提交后的撕裂一致。原 Renderer 槽位不限制作者骨骼，整份本地骨架解析和缺 palette 回退保持。新目录离线记录每个原游戏依赖的逻辑路径/名称/类型；DLL 仅查询已声明依赖、定位当前 CAB/PathID，并在地址变化时搬迁原生 PPtr/preload，不取目标材质做 donor、不扫描 PFB、不解码纹理。共享资源身份排除消费者 categorySource。新 DLL/目录已部署且哈希一致，194 Mesh/82 Material/197 Texture/1物理/3特效逐项审计、字段保留、地址变化与不变、共享冲突及骨架本地回归通过。回执 `bin/local-deployments/demand-logical-materials-20261029-070539/deployment.json`；用户实机画面和共享资源交付仍待重测，F10 关闭，全功能尚未验收。后续状态以此记录及主设计文末为准。
+
+2026-10-29 06:50 当前开发 acceptance DLL 与八份完整 Material 格式作者目录已配对部署到游戏 `plugin/eff.dll` 和 `plugin/eff-author-assets`，DLL SHA-256 `9BD1ED4BDE58E0708523E518DE59A94ADD4BFA9D1630A603CC2E3E1058D2E8D2`。部署后 194 Mesh、82 Material、197 Texture、1 份物理、3 个特效 Bundle 逐项打开审计通过；完整材质、Renderer 0/1/N 原槽数与单材质作者输出、palette/LOD/helper、共享依赖图本地回归通过。旧游戏 DLL 与作者目录曾未同步，新读取器明确拒绝旧结构；04:48 日志不能代表新构建。最新配套构建尚无实机运行证据，不能宣布材质、物理、特效或八 Mod 全部显示通过；F10 仍关闭。回执 `bin/local-deployments/demand-native-materials-20261029-064954/deployment.json`，当前状态以[主设计文末](docs/demand-driven-native-resource-loading.md)为准；下方旧部署、单身体与旧架构段落为历史。
+
+2026-10-28 17:05 创建前原生输入真替换已有实机证据：用户重启后确认模型已替换，PID 23792 的 Chen 身体读回为 14,552 顶点、2 个形态、98 个 bindpose 和 98 个 Renderer 骨骼槽。两个输入提交无缺口；单 Mesh carrier 准备 5.043 ms、消费者准备 12.169 ms，作者几何未解码、bounds 未运行时重算。当前仍为 Chen 身体 LOD0 专用验收 DLL，不代表完整材质/贴图、物理/特效、全部 LOD、F10 或多消费者原生共享已经实机通过。第14节后续记录为当前状态，下文等待实机的段落为历史。
+
+2026-10-28 原生输入验收阶段：新增 SerializedFile 区间写入计划，96 组差分、1 GiB 未改载荷零准备读取、文件删除替换与并发 cursor 租约回归通过。精确观察范围内的 chen 身体世界/UI 骨架绑定通过（原57槽、作者98槽），已实现独立 `native-acceptance` 构建：创建前改输入，原生 CAB/PathID 保持，游戏负责创建，保留源材质引用；未手工 new Mesh。尚待实机替换、metadata 运行表现和 native 对象共享证据；作者字段解码和消费者旧装配仍有临时成本，不能作为生产性能达标或全功能完成结论。09:44 已部署单身体验收 DLL（SHA F74E37DFB642D816AF0597EF10B3EFD5EE2A89D92B9B541502C785FAA0C5CDCF），等待用户新一轮世界/UI 反馈。详见主设计第14节。
+
+2026-10-28 新开发主设计：[跟随游戏加载的 Mesh 命中与共享原生资源](docs/demand-driven-native-resource-loading.md)。用户要求 PFB 消费者命中脱离离线枚举，随游戏实际请求和当前逻辑路径精确命中；共享作者资源跨 PFB 只创建一份，实例骨架/物理/粒子状态独立；保持完整 metadata、全量功能、按需 CPU/GPU 驻留及 Blender 冷/增量导出性能。允许重设格式，旧包由 Mod Manager 一次性转换，新 DLL 只读新格式。GPU 块压缩可离线编码，当前设计默认保持画质并由作者选择。已实现局部读取器与创建前请求关联探针，本地真实数据/身份/序列化回归通过；首轮实机确认目录 194/194 目标约 0.62 ms，但 helper 已变为 CHK 名，关联失败，且无关代理预建占满路由。已上移到 VFS 逻辑 hash 边界，仅保留候选，新增5万无关初始化回归；08:45 部署修正只读 DLL（SHA `F5EF793D54A30E73D60C0EE5DA10D6E03DCBA27F57E6A3C3235FAA686D81473E`），第二轮 PID 25528 已准确关联世界 chen/liino、NPC wulfa、UI chen：61 个输入、145 条精确 Renderer 引用，累计检查 88.623 ms、最大 12.954 ms、缺口为零；原始日志和摘要已归档 round2。局部改写视图的变长/压缩块保留/1 GiB 稀疏输入与序列化差分回归通过，但未接入游戏；Asset 细节额度缺口待下一轮修正。第二轮只读时显示原皮；后续单身体新链已接线但尚未实机验证真替换、共享对象或格式迁移；不继续手工 new Mesh。PFB 引用扫描实测约 4.6～14 ms，部分样本需读全部压缩块，不能据稀疏样本宣称生产性能达标。详见主设计第13节；下方旧路线/部署记录属于历史。
+
 2026-10-22 00:28 UI 花瓣消失根因已定位：PID 39412 日志显示 UIModelLoader 登记成功、精确命中花瓣挂点，但 inactive UI 克隆上的 `ParticleSystemRenderer.set_renderInUI(true)` 立即读回 false，原实现因此拒绝整个特效；UI 激活后仍需重试。现将该标志设为 best-effort，并在根对象激活后、粒子 Play 前重试，逐阶段写 accepted/rejected 日志。故障注入覆盖首次拒绝、激活后接受，特效挂载全回归、v35 普通 DLL、PE/静态 CRT 和宿主运行库隔离加载通过。已在 Endfield 退出后只替换 `plugin/eff.dll`，337 个受检 Mod/配置/协议/代理文件摘要保持；新 SHA256 `5c18d7f78975611101feb5f1499b3c7480519d676e450d29b171bc9ae7766c61`。当前需重启游戏验收 UI 实际画面；部署和日志标记见[UI 特效跟进](docs/effect-recovery-20261021.md#2026-10-22-ui-特效渲染恢复) 与 `bin/effect-ui-render-20261022/deployment.json`。
 
 2026-10-21 15:48 根据新游戏日志定位特效再次消失：运行时找不到精确的 `EntityRenderHelper.GetTransform()->UnityEngine.Transform` 签名，FullResourceReload 与特效 owner 生命周期因此拒绝启动。Blender 花瓣工程仍正常预览（frame 88 有38个粒子），未保存。Helper root 改从已验证的 `Component.get_gameObject()` 获取；effects-debug 生命周期 1401 项、v35 测量 DLL 构建/隔离加载通过。游戏退出后 DLL-only 部署，336 个受检 Mod/配置/协议/代理文件保持；新 DLL SHA256 `3838d2207fe61d38e1a340e9f9ef86fa44ef0381f4e89b5a721d089c8d7a6aff`。回退和部署见 `bin/effect-recovery-20261021/helper-signature-fix/deployment.json`，实机需重启后验收。见[特效跟进](docs/effect-recovery-20261021.md)。
@@ -96,7 +112,7 @@
 - PFB 通过资源引用使用 Mesh、材质与贴图；PFB 替换输出、独立 Mod 资源载荷和文件路由清单必须分别计量，不能把所有编译资源的总大小称为组织 PFB 的开销。当前真实 46 个 PFB 包未嵌入 Mesh/Texture2D 或原始 stream 数据。
 - 启动和 F10 根据完整当前 Mod 集合使用同一套命中、构建及资源发布规则。F10 再调用游戏对应的模型释放/加载流程刷新受影响的已加载实例；尚未加载的 Prefab 在之后加载时使用当前候选。
 
-当前源码支持一个原 Renderer 展开为多个作者 Part，材质从原来源克隆为作者对象。同来源且字段与贴图绑定相同的副本可以复用；配置不同的副本独立生成，Part 保留各自绑定，不能将共用模板当成替换冲突。原 Mesh 的重复目标仍拒绝。首次加载应用规则后直接提交内存 Bundle，F10 保留游戏原生 owner 重建与未来实例候选路由。静态 Mesh 沿 MeshFilter 的精确引用及同 GameObject 上的 MeshRenderer 适配相同 0/1/N 部件、材质、LOD 和显隐规则；无骨骼几何不伪造骨架。静态 Renderer 的运行时形态键、跨文件根及未知生命周期仍拒绝。构建、模拟回归和部署不证明静态 Mod 的实机显示与 F10 已通过。
+当前源码支持一个原 Renderer 展开为多个作者 Part，材质从原来源克隆为作者对象。同来源且字段与贴图绑定相同的副本可以复用；配置不同的副本独立生成，Part 保留各自绑定，不能将共用模板当成替换冲突。不同 Mod 声明同一精确 Mesh 目标时，按 Mod ID 顺序合并各自 Part，目标对象上的冲突字段由排序靠后的 Mod 决定；同一 Mod 内重复声明仍拒绝。编译装配只对重叠目标对应的 Mesh/Renderer 对象应用该优先级，不扩展至同输入的无关对象。首次加载应用规则后直接提交内存 Bundle，F10 保留游戏原生 owner 重建与未来实例候选路由。静态 Mesh 沿 MeshFilter 的精确引用及同 GameObject 上的 MeshRenderer 适配相同 0/1/N 部件、材质、LOD 和显隐规则；无骨骼几何不伪造骨架。静态 Renderer 的运行时形态键、跨文件根及未知生命周期仍拒绝。构建、模拟回归和部署不证明静态 Mod 的实机显示与 F10 已通过。
 
 ## 小型替换规则方向
 

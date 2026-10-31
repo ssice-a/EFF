@@ -35,6 +35,8 @@ D(const char *, il2cpp_field_get_name, void *);
 D(size_t, il2cpp_field_get_offset, void *);
 D(int, il2cpp_field_get_flags, void *);
 D(void, il2cpp_field_get_value, void *, void *, void *);
+D(void, il2cpp_field_set_value, void *, void *, void *);
+D(void, il2cpp_field_set_value_object, void *, void *, void *);
 D(uint32_t, il2cpp_method_get_flags, void *, uint32_t *);
 D(void, il2cpp_free, void *);
 D(uintptr_t, il2cpp_array_length, void *);
@@ -122,6 +124,8 @@ static bool Resolve() {
   R(il2cpp_field_get_offset);
   R(il2cpp_field_get_flags);
   R(il2cpp_field_get_value);
+  R(il2cpp_field_set_value);
+  R(il2cpp_field_set_value_object);
   R(il2cpp_method_get_flags);
   R(il2cpp_free);
   R(il2cpp_array_length);

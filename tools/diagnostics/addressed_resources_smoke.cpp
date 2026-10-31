@@ -111,6 +111,17 @@ void Fallbacks(){
  auto untouched=artifact;auto same=Rebind(untouched,setup.package);Require(same.compatible&&same.resources.empty()&&same.generated.empty(),"unchanged package did unnecessary resource regeneration");
  std::cout<<"PASS addressed fallback: unbound bytes, array count, generated TRS, layout, geometry/texture declarations and legacy artifact\n";
 }
+void MappedAuthorResources(){
+ Setup setup;auto edited=setup.Full(setup.package);auto artifact=setup.Compiled(edited);const auto name=std::string("resources/material.bin");
+ auto original=artifact.manifest.package.resources.at(name);auto backing=std::make_shared<Bytes>(original->bytes);auto mapped=std::make_shared<Resource>(*original);
+ Bytes{}.swap(mapped->bytes);mapped->mappedBytes=backing->data();mapped->byteSize=backing->size();artifact.manifest.package.resources[name]=mapped;
+ auto bindings=Decode(artifact.resourceBindingBytes,artifact.manifest.package);Require(bindings.ranges.count(name),"mapped author resource lost its explicit bindings");
+ auto incompatibleArtifact=artifact;auto layoutChange=setup.package;layoutChange.resources[name]=Repack(*layoutChange.resources.at(name),[](auto& blocks){blocks.emplace("new_field",Bytes{1,2,3,4});});
+ auto incompatible=Rebind(incompatibleArtifact,layoutChange);Require(!incompatible.compatible,"mapped resource layout change did not request a full rebuild");
+ auto next=setup.package;next.resources[name]=Repack(*next.resources.at(name),[](auto& blocks){float value=0.5f;memcpy(blocks.at("m_Custom").data(),&value,4);});
+ auto update=Rebind(artifact,next);Require(update.compatible&&update.resources==std::set<std::string>{name},"mapped author resource did not take the addressed update path");
+ std::cout<<"PASS mapped author resources: binding bounds, layout and uncovered-byte comparison use mapped storage\n";
+}
 void DuplicateGeneratedContexts(){
  Setup setup;auto edited=setup.Full(setup.package);auto artifact=setup.Compiled(edited);auto bindings=Decode(artifact.resourceBindingBytes,setup.package);Require(!bindings.meshes.empty(),"Mesh schema not persisted");
  std::vector<Bindings> inputs(2);Capture(inputs[0],edited);Capture(inputs[1],edited);auto duplicate=setup.Compiled(edited);Finalize(duplicate,inputs);
@@ -118,4 +129,6 @@ void DuplicateGeneratedContexts(){
  std::cout<<"PASS duplicate generated contexts: shared bounds across native inputs retain one deterministic payload\n";
 }
 } // namespace AddressedTest
-int main(){try{AddressedTest::MixedReplay();AddressedTest::Fallbacks();AddressedTest::DuplicateGeneratedContexts();return 0;}catch(const std::exception& e){std::cerr<<"FAIL addressed resources: "<<e.what()<<'\n';return 1;}}
+#ifndef EIEM_ADDRESSED_FIXTURE_ONLY
+int main(){try{AddressedTest::MixedReplay();AddressedTest::Fallbacks();AddressedTest::MappedAuthorResources();AddressedTest::DuplicateGeneratedContexts();return 0;}catch(const std::exception& e){std::cerr<<"FAIL addressed resources: "<<e.what()<<'\n';return 1;}}
+#endif

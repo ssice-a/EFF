@@ -113,11 +113,10 @@ inline Member Describe(const EndfieldInput::Member& output,const Dictionary& ori
  }return member;
 }
 inline Bytes Apply(const Member& member,const std::map<std::string,const Bytes*>& originals,const Package& package,const std::map<std::string,Bytes>& frames,bool verify=true,const std::map<std::string,const Bytes*>* generated=nullptr){
- Bytes output;std::map<std::string,Bytes> mappedAuthors;Require(member.size<=output.max_size(),"recipe output size cannot be represented");output.reserve(member.size);
+ Bytes output;Require(member.size<=output.max_size(),"recipe output size cannot be represented");output.reserve(member.size);
  for(const auto& span:member.spans){Require(span.size&&span.size<=member.size-output.size(),"recipe output span extent differs");const Bytes* source=nullptr;
   switch(span.kind){case Original:Require(originals.count(span.source),"recipe original member absent");source=originals.at(span.source);break;
-   case Author:{Require(package.resources.count(span.source),"recipe author resource absent");const auto& resource=*package.resources.at(span.source);if(!resource.bytes.empty())source=&resource.bytes;else{
-    auto inserted=mappedAuthors.emplace(span.source,Bytes{});auto& bytes=inserted.first->second;if(bytes.empty())bytes=ReadAuthorResource(resource);source=&bytes;}break;}
+   case Author:{Require(package.resources.count(span.source),"recipe author resource absent");const auto& resource=*package.resources.at(span.source);auto size=ResourceSize(resource);Require(span.offset<=size&&span.size<=size-span.offset,"recipe source span extent differs");auto data=ResourceData(resource);output.insert(output.end(),data+span.offset,data+span.offset+span.size);continue;}
    case ExpandedFrame:if(generated&&generated->count(span.source))source=generated->at(span.source);else{Require(frames.count(span.source),"recipe expanded frame absent");source=&frames.at(span.source);}break;
    case Literal:Require(span.offset==0&&span.source.empty()&&span.literal.size()==span.size,"recipe literal extent differs");source=&span.literal;break;
    default:Require(false,"recipe source kind differs");}

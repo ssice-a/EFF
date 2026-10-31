@@ -37,9 +37,11 @@ def verify_shared_tools(archive_path, dll_protocol_path, manifest_path,
     expected_layout = {
         'archiveRoot': 'EFF_Native_Tools',
         'compiler': 'nativepack/eff_resource_pack.exe',
+        'authorAssets': 'nativepack/eff_author_assets.dll',
         'indexUpdater': 'nativepack/eff_source_index.exe',
         'authorCore': 'nativepack/eff_author_core.dll',
         'protocol': 'nativepack/package-protocol.json',
+        'textureCompressor': 'nativepack/texconv.exe',
     }
     if any(manifest.get(key) != value for key, value in expected_layout.items()):
         raise ValueError('shared native tools manifest has an unsupported file layout')
@@ -67,8 +69,11 @@ def verify_shared_tools(archive_path, dll_protocol_path, manifest_path,
     required_files = {
         'EFF_Native_Tools/nativepack/package-protocol.json',
         'EFF_Native_Tools/nativepack/eff_resource_pack.exe',
+        'EFF_Native_Tools/nativepack/eff_author_assets.dll',
         'EFF_Native_Tools/nativepack/eff_author_core.dll',
         'EFF_Native_Tools/nativepack/eff_source_index.exe',
+        'EFF_Native_Tools/nativepack/texconv.exe',
+        'EFF_Native_Tools/nativepack/THIRD_PARTY_NOTICES',
         'EFF_Native_Tools/vendor/PIL/__init__.py',
         'EFF_Native_Tools/vendor/PIL/_imaging.cp311-win_amd64.pyd',
         'EFF_Native_Tools/vendor/PIL/_imaging.cp313-win_amd64.pyd',

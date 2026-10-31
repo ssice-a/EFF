@@ -2,7 +2,7 @@
 #include "eiem_serialized_writer.h"
 
 namespace EiemNativeInput {
-// Pixel conversion is an export-time task. This writer consumes RGBA32/mips
+// Pixel conversion is an export-time task. This writer consumes RGBA32 or BCn/mips
 // described by TEX metadata and preserves existing stream prefixes.
 using AssetIndex = std::map<Identity, Asset>;
 inline void AddAsset(AssetIndex& index, Asset asset) {
@@ -50,10 +50,18 @@ struct TextureInputBuild {
   std::vector<TextureWrite> textures;
   bool changedPreloads = false;
 };
+inline const std::string& CanonicalTextureSection(const Package& package,const std::string& section,const Texture& texture){
+ // Share only one author dependency and one exact native template. Equal
+ // pixels in independent files/Mods can diverge on the next resource update.
+ if(texture.source.path.empty())return section;
+ for(const auto& row:package.textures){if(row.first>=section)break;const auto& other=row.second;
+  if(other.resource==texture.resource&&other.source.path==texture.source.path&&other.source.asset==texture.source.asset&&
+     other.width==texture.width&&other.height==texture.height&&other.mips==texture.mips&&other.filter==texture.filter&&other.wrap==texture.wrap&&other.aniso==texture.aniso&&other.linear==texture.linear&&other.bias==texture.bias)return row.first;
+ }return section;
+}
 inline int64_t AllocateTextureId(const std::string& cab, const Package& package,
                                  const std::string& section, const Texture& texture) {
-  (void)texture;
-  auto label = cab + ":" + package.id + ":texture:" + section;
+  auto label = cab + ":" + package.id + ":texture:" + CanonicalTextureSection(package,section,texture);
   auto hash = Sha((const unsigned char*)label.data(), label.size());
   uint64_t id = 0;
   for (size_t i = 0; i < 8; ++i) id |= uint64_t(hash[i]) << (8 * i);
@@ -216,9 +224,12 @@ inline Value ApplyTexture(const Type& type, Value value, const Texture& texture,
   size_t expected = 0;
   unsigned width = texture.width, height = texture.height;
   for (unsigned i = 0; i < texture.mips; ++i) {
-    expected = AddSize(expected,MultiplySize(MultiplySize(width,height),4));
-    width = std::max(1u, width / 2);
-    height = std::max(1u, height / 2);
+    size_t mipBytes = texture.format == 4
+        ? MultiplySize(MultiplySize(width, height), 4)
+        : MultiplySize(MultiplySize(std::max(1u, (width + 3) / 4),
+                                    std::max(1u, (height + 3) / 4)), 16);
+    expected = AddSize(expected, mipBytes);
+    width = std::max(1u, width / 2); height = std::max(1u, height / 2);
   }
   Require(expected == pixels.size, "Texture pixels differ from INI mip size");
   size_t offset = AlignSize(member->bytes.size(),16);
@@ -229,7 +240,7 @@ inline Value ApplyTexture(const Type& type, Value value, const Texture& texture,
   EiemAuthorBytes::Append(member->origins, EiemAuthorBytes::MakeRange(texture.resource, resource.bytes, pixels.offset, pixels.size, offset));
   const std::pair<const char*, uint64_t> fields[] = {
       {"m_Width", texture.width}, {"m_Height", texture.height}, {"m_CompleteImageSize", pixels.size},
-      {"m_MipsStripped", 0}, {"m_TextureFormat", 4}, {"m_MipCount", texture.mips},
+      {"m_MipsStripped", 0}, {"m_TextureFormat", texture.format}, {"m_MipCount", texture.mips},
       {"m_IsPreProcessed", 0}, {"m_StreamingMipmaps", 0}, {"m_ColorSpace", texture.linear ? 0u : 1u}};
   for (const auto& field : fields) SetInteger(type, Child(type, value, field.first), field.second);
   auto& settings = Child(type, value, "m_TextureSettings");
@@ -332,8 +343,8 @@ inline TextureInputBuild BuildTextureInput(EndfieldInput::Bundle& bundle, const 
     Require(asset != index.end() && asset->second.classId == 28,
             "Texture identity absent from current input graph");
     textures[{asset->second.cab,asset->second.pathId}].push_back({texture.first,&texture.second});
-    expansion[{asset->second.cab, asset->second.pathId}].push_back(
-        AllocateTextureId(asset->second.cab, package, texture.first, texture.second));
+    auto& copies=expansion[{asset->second.cab,asset->second.pathId}];auto id=AllocateTextureId(asset->second.cab,package,texture.first,texture.second);
+    if(std::find(copies.begin(),copies.end(),id)==copies.end())copies.push_back(id);
   }
   for (auto& member : bundle.members) {
     if (!SerializedHeader(member.bytes)) continue;
@@ -373,6 +384,8 @@ inline TextureInputBuild BuildTextureInput(EndfieldInput::Bundle& bundle, const 
         for (const auto& authored : texture->second) {
           const auto& selected = *authored.second;
           auto id = AllocateTextureId(member.name, package, authored.first, selected);
+          auto shared=std::find_if(result.textures.begin(),result.textures.end(),[&](const auto& row){return row.cab==member.name&&row.id==id;});
+          if(shared!=result.textures.end()){auto record=*shared;record.target=selected.source;result.textures.push_back(std::move(record));requiredPreloads.insert(reference);continue;}
           Require(!layout.objects.count(id) && std::none_of(added.begin(), added.end(),
               [&](const AddedObject& row) { return row.id == id; }), "additional Texture PathID collision");
           TextureWrite record{selected.source, member.name, "", id}; record.sourceId = entry.first;
@@ -380,7 +393,7 @@ inline TextureInputBuild BuildTextureInput(EndfieldInput::Bundle& bundle, const 
               *package.resources.at(selected.resource), member.name, bundle.members,
               sourceStreams, record);
           SetString(type, Child(type, clone, "m_Name"),
-              selected.source.asset + "__EFF_" + package.id + "_" + authored.first);
+              selected.source.asset + "__EFF_" + package.id + "_" + CanonicalTextureSection(package,authored.first,selected));
           auto bytes = EncodeValue(type, clone, &origins[id]);
           Require(EncodeValue(type, DecodeValue(type, 0, bytes)) == bytes,
                   "rebuilt Texture TypeTree roundtrip differs");

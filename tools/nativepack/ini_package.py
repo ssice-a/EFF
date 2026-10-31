@@ -29,6 +29,11 @@ def visibility(bindings):
     return " && ".join(terms) if terms else "true"
 
 
+def part_resource_id(part_id):
+    part_id = identifier(part_id)
+    return identifier("Part" + part_id.removeprefix("Mesh"))
+
+
 def ini_document(root):
     ini = configparser.ConfigParser(interpolation=None, delimiters=("=",), comment_prefixes=(";", "#"), strict=True)
     ini.optionxform = str
@@ -37,9 +42,13 @@ def ini_document(root):
 
 
 def save_ini(root, ini):
+    (Path(root) / 'mod.ini').write_bytes(serialize_ini(ini))
+
+
+def serialize_ini(ini):
     text = io.StringIO()
     ini.write(text, space_around_delimiters=False)
-    (Path(root) / 'mod.ini').write_text('; EFF resource-input Mod format 2\n' + text.getvalue(), encoding='utf-8')
+    return ('; EFF resource-input Mod format 2\n' + text.getvalue()).encode('utf-8')
 
 
 def texture_section(texture):
@@ -97,7 +106,7 @@ def texture_output_paths(root, ini, textures, materials=(), _payloads=None):
     return paths
 
 
-def texture_sections(root, ini, textures, paths=None):
+def texture_sections(root, ini, textures, paths=None, memory_resources=None):
     payloads = {}
     paths = texture_output_paths(root, ini, textures, _payloads=payloads) if paths is None else paths
     ids, sections = {}, set()
@@ -111,10 +120,14 @@ def texture_sections(root, ini, textures, paths=None):
         data = _texture_payload(texture, payloads)
         relative = paths[texture['id']]
         path = resource_path(root, relative)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        texture['_written'] = relative not in written and not (texture.get('retained') and path.is_file() and path.read_bytes() == data)
+        texture['_written'] = relative not in written and (memory_resources is not None or
+            not (texture.get('retained') and path.is_file() and path.read_bytes() == data))
         if texture['_written']:
-            path.write_bytes(data)
+            if memory_resources is None:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+            else:
+                memory_resources[relative] = data
         written.add(relative)
         values = {'path': relative}
         settings = {'linear': ('true' if texture['colorSpace'] == 0 else 'false', 'false'),
@@ -190,7 +203,7 @@ def update_directory(root, *, parts=(), materials=(), textures=(), texture_only=
     return read_package(root, resource_cache)
 
 
-def apply_animations(root, ini, parts, partial=False):
+def apply_animations(root, ini, parts, partial=False, memory_resources=None):
     from . import shape_animation
     from .resource_file import read_resource
     selected_vars=set(); mapping={}; planned={}
@@ -227,16 +240,23 @@ def apply_animations(root, ini, parts, partial=False):
     for cid,(clip,tracks) in planned.items():
         variable='$anim_speed_'+identifier(cid);clip['speedVariable']=variable
         ini['Constants']['persist '+variable]=str(clip['speed'])
-        relative='resources/shape_animation_'+cid+'.bin';path=resource_path(root,relative);path.parent.mkdir(parents=True,exist_ok=True)
-        # Private atomic replacement also preserves any previous hard-linked export.
-        temp=path.with_name(path.name+'.tmp');temp.write_bytes(shape_animation.encode(ini['Mod']['id'],clip,list(tracks.items())));temp.replace(path)
+        relative='resources/shape_animation_'+cid+'.bin';path=resource_path(root,relative)
+        data=shape_animation.encode(ini['Mod']['id'],clip,list(tracks.items()))
+        if memory_resources is None:
+            path.parent.mkdir(parents=True,exist_ok=True)
+            # Private atomic replacement also preserves any previous hard-linked export.
+            temp=path.with_name(path.name+'.tmp');temp.write_bytes(data);temp.replace(path)
+        else:
+            memory_resources[relative]=data
         ini['ShapeAnimation'+cid]={'path':relative}
 
 
 def export_directory(root, *, mod_id, parts, materials, textures, rules, switches, resource_cache=None,
-                     key_switch_enabled=True, material_clips=None, effects=None):
+                     key_switch_enabled=True, material_clips=None, effects=None,
+                     memory_only=False):
     root = Path(root)
-    require(root.is_dir() and not any(root.iterdir()), "publication output must be empty")
+    require(root.is_dir() and (memory_only or not any(root.iterdir())), "publication output must be empty")
+    memory_resources = {} if memory_only else None
     identifier(mod_id)
     ini = configparser.ConfigParser(interpolation=None, delimiters=("=",), comment_prefixes=(";", "#"), strict=True)
     ini.optionxform = str
@@ -287,13 +307,16 @@ def export_directory(root, *, mod_id, parts, materials, textures, rules, switche
                 section("KeyShape" + str(index) + direction, {"key": control[key], "type": "hold",
                         "speed": control["hotkey_speed"], variable: value})
 
-    texture_ids = texture_sections(root, ini, textures)
+    texture_ids = texture_sections(root, ini, textures, memory_resources=memory_resources)
 
     for material in materials:
         mid = identifier(material["id"])
         require(mid.startswith("Material"), "material section prefix")
         relative = "materials/" + mid + ".mat"
-        write_resource(root, relative, MATERIAL, material["nativeTypeHash"], material["fieldData"])
+        if memory_only:
+            memory_resources[relative] = encode_resource(MATERIAL, material["nativeTypeHash"], material["fieldData"])
+        else:
+            write_resource(root, relative, MATERIAL, material["nativeTypeHash"], material["fieldData"])
         values = {"path": relative, "source.path": material["sourcePath"], "source.asset": material["sourceAsset"]}
         for edit in material["textureEdits"]:
             require(edit["texture"] in texture_ids, "missing material texture")
@@ -307,7 +330,7 @@ def export_directory(root, *, mod_id, parts, materials, textures, rules, switche
     for part in parts:
         mesh_id = identifier(part["object"])
         require(mesh_id.startswith("Mesh"), "mesh section prefix")
-        pid = identifier("Part" + identifier(part["partId"]).removeprefix("Mesh"))
+        pid = part_resource_id(part["partId"])
         require(part["partId"] not in part_ids, "duplicate part ID")
         part_ids[part["partId"]] = pid
         relative = "meshes/" + mesh_id + ".mesh"
@@ -317,7 +340,10 @@ def export_directory(root, *, mod_id, parts, materials, textures, rules, switche
         blocks["@shapes"] = encode_strings(part["shapeNames"])
         previous = written_meshes.get(mesh_id)
         if previous is None:
-            write_resource(root, relative, MESH, part["nativeTypeHash"], blocks)
+            if memory_only:
+                memory_resources[relative] = encode_resource(MESH, part["nativeTypeHash"], blocks)
+            else:
+                write_resource(root, relative, MESH, part["nativeTypeHash"], blocks)
             section(mesh_id, dict(path=relative))
             written_meshes[mesh_id] = (part["nativeTypeHash"], blocks)
         else:
@@ -351,10 +377,22 @@ def export_directory(root, *, mod_id, parts, materials, textures, rules, switche
         require(0 in levels, "LOD0 target is required")
         section("Replace" + rule["sourceAsset"], values)
 
-    apply_animations(root, ini, parts)
+    apply_animations(root, ini, parts, memory_resources=memory_resources)
     if material_clips is not None or effects is not None:
         from .runtime_controls import apply
-        apply(root,ini,material_clips,effects)
+        apply(root,ini,material_clips,effects,memory_resources=memory_resources)
+    if memory_only:
+        return dict(_memory_ini=serialize_ini(ini), _memory_resources=memory_resources,
+                    _ini=ini, rules=[dict(id='Replace' + rule['sourceAsset'],
+                                         sourcePath=rule['sourcePath'],
+                                         sourceAsset=rule['sourceAsset'],
+                                         hidden=rule['hidden'],
+                                         parts=[part_ids[pid] for pid in rule['parts']],
+                                         targets=[dict(sourcePath=target['sourcePath'],
+                                                       sourceAsset=target['sourceAsset'],
+                                                       level=target['level'])
+                                                  for target in rule['targets']])
+                                     for rule in rules])
     save_ini(root, ini)
     # The reader is also the publication gate. There is no legacy JSON fallback.
     from .ini_reader import read_package

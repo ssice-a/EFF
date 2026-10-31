@@ -54,7 +54,7 @@ for proxy in ('d3dcompiler_47.dll', 'vulkan-1.dll'):
 for marker in (
     b"[DEBUG-", b"[ENTRY-CAPTURE]", b"[ENTRY-SNAPSHOT]", b"[ENTRY-SNAPSHOT-SELECTION]",
     b"[ENTRY-COUNTERS]", b"[CAPTURE-ELIGIBILITY]", b"[RELOAD-LOAD-SUBMITTED]",
-    b"resource-input-diagnostics", b"snapshot-ranges.tsv", b"[ADAPT-PROBE-", b"[CATALOG-SURVEY-",
+    b"resource-input-diagnostics", b"snapshot-ranges.tsv", b"[ADAPT-PROBE-", b"[CATALOG-SURVEY-", b"[MESH-TARGET-", b"[MESH-NATIVE-", b"[DEMAND-PROBE-", b"[DEMAND-NATIVE-",
 ):
     assert marker not in checked, f"Production DLL contains diagnostic marker: {marker!r}"
 for marker in (

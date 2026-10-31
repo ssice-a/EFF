@@ -133,7 +133,10 @@ bool Step(Generation& g){
  }
  if(g.phase==Phase::Bundles){
   for(size_t i=0;i<g.bundles.size();++i){auto& b=g.bundles[i];if(b.done)continue;
-   if(!b.request.Get()){const auto& source=g.manifest->bundles[i];Require(EiemEffectNative::Archive(source.Data(),source.Size()),"effect requires the game native archive envelope; rebuild with the updated AnimeStudio");b.request=Ref::Make(NativeBundle::LoadBytes(source.Data(),source.Size(),source.Owner(),0,true),false);Require(b.request.Get(),"effect async Bundle submission returned null");return true;}
+   if(!b.request.Get()){const auto& source=g.manifest->bundles[i];
+    if(source.open){auto view=source.open();Require(view&&view->Size()==source.Size(),"effect lazy native view extent differs");b.request=Ref::Make(NativeBundle::LoadView(view,0,true),false);}
+    else{Require(EiemEffectNative::Archive(source.Data(),source.Size()),"effect requires the game native archive envelope; rebuild with the updated AnimeStudio");b.request=Ref::Make(NativeBundle::LoadBytes(source.Data(),source.Size(),source.Owner(),0,true),false);}
+    Require(b.request.Get(),"effect async Bundle submission returned null");return true;}
    if(!RuntimeShapes::Scalar<unsigned char>(NativeBundle::api.done,b.request.Get()))continue;
    b.object=Ref::Make(Call(NativeBundle::api.bundle,b.request.Get()),false);b.done=true;
    Require(RuntimeShapes::Alive(b.object.Get()),"effect native Bundle load returned null: bundle="+std::to_string(i)+" file="+g.manifest->bundles[i].file);b.id=FullResourceReload::Id(b.object.Get());

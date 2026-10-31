@@ -1,8 +1,8 @@
 #pragma once
 #include "eiem_renderer_input_builder.h"
 
-// Offline compiler only. Runtime applies the resulting serialized object edits;
-// it has no knowledge of cloth fields or authored bone chains.
+// Assemble authored bones and cloth as native serialized input. Both the author
+// compiler and demand loader use this before the game creates any components.
 namespace EiemPhysicsInput {
 using namespace EiemNativeInput;
 constexpr const char* structure="EFF_NEW_BONE_CLOTH/path+trs+mesh-consumers+native-templates/le64";
@@ -46,8 +46,14 @@ class MemberBuilder {
  std::vector<AddedObject> added;std::vector<Bytes> types,scripts;std::map<std::pair<std::string,size_t>,size_t> imported;
  std::set<std::pair<int64_t,std::string>> movingBones;
  std::map<int64_t,std::vector<NativeReference>> preloads;
+ using Project=std::function<Value(int64_t,const std::set<std::string>&)>;
+ Project project;
+ std::function<Value(int64_t)> decode;
+ std::map<int64_t,Bytes> encodedChanges;
+ bool built=false;
+ static const Bytes& EmptySource(){static const Bytes value;return value;}
  const Type& Schema(int64_t id)const{return layout.types.at(typeIds.at(id));}
- Value& Tree(int64_t id){auto f=values.find(id);if(f==values.end())f=values.emplace(id,ObjectValue(bytes,layout,id,sourceOrigins)).first;return f->second;}
+ Value& Tree(int64_t id){auto f=values.find(id);if(f==values.end())f=values.emplace(id,decode?decode(id):ObjectValue(bytes,layout,id,sourceOrigins)).first;return f->second;}
  int64_t Pointer(int64_t id,const char* name){auto ref=NullableReference(Schema(id),Child(Schema(id),Tree(id),name),layout,cab);Require(ref.first==cab,"Physics hierarchy must be local");return ref.second;}
  int64_t Allocate(int64_t anchor,const std::string& identity,const char* kind){auto id=RendererObjectId(cab,package,kind,anchor,identity);Require(id&&!typeIds.count(id),"Physics PathID collision");return id;}
  int64_t Add(int64_t id,size_t type,Value value){Require(typeIds.emplace(id,type).second,"Physics object identity collision");values.emplace(id,std::move(value));added.push_back({id,type,{}});return id;}
@@ -90,7 +96,7 @@ class MemberBuilder {
   auto type=donor.layout.types.at(index);auto record=type.nativeRecord;auto script=int16_t(Le(record,5,2));
   if(script>=0){EiemNativeInput::Reader reader(donor.bytes,donor.layout.tableEnd,false,48+donor.layout.metadataSize);auto count=reader.Count();Require(size_t(script)<count,"Physics native script registration absent");reader.Skip(size_t(script)*12);auto file=reader.Get(4);auto id=int64_t(reader.Get(8));Require(file&&file<=donor.layout.externals.size(),"Physics donor script must resolve to a registered external MonoScript");
    Value pointer;auto ptrType=Type{};ptrType.nodes={{"PPtr<Object>","script",false,{1,2}},{"int","m_FileID",false,{}},{"SInt64","m_PathID",false,{}}};pointer=EmptyValue(ptrType,0);SetReference(ptrType,pointer,{donor.layout.externals.at(size_t(file)-1),id},layout,cab);
-   EiemNativeInput::Reader targetReader(bytes,layout.tableEnd,false,48+layout.metadataSize);auto old=targetReader.Count();auto mapped=old+scripts.size();Require(mapped<=INT16_MAX,"Physics script index cannot fit native field");scripts.push_back(EncodeValue(ptrType,pointer));WriteInteger(record,5,mapped,2);
+   auto mapped=AddSize(layout.scriptCount,scripts.size());Require(mapped<=INT16_MAX,"Physics script index cannot fit native field");scripts.push_back(EncodeValue(ptrType,pointer));WriteInteger(record,5,mapped,2);
   }
   auto mapped=layout.types.size();imported.emplace(key,mapped);layout.types.push_back(type);types.push_back({});
   for(size_t p=type.dependencyOffset;p<record.size();p+=4){auto dep=Le(record,p,4);Require(dep<donor.layout.types.size(),"Physics TypeTree dependency absent");auto next=Import(donor,size_t(dep));WriteInteger(record,p,next,4);}
@@ -125,14 +131,20 @@ class MemberBuilder {
   }}
  public:
  MemberBuilder(const Bytes& b,const std::string& c,const Package& p,const AssetIndex& a,const std::vector<Document>& d,const std::set<Identity>* selectedTargets=nullptr):bytes(b),cab(c),package(p),assets(a),documents(d),relevantTargets(selectedTargets),layout(ParseSerialized(b)){for(const auto& o:layout.objects)typeIds[o.first]=o.second.type;}
- Bytes Build(const AuthorByteSpans* inputOrigins=nullptr,AuthorByteSpans* outputOrigins=nullptr){sourceOrigins=inputOrigins;std::set<NativeReference> refs;std::map<NativeReference,Identity> targets;for(const auto& d:documents)for(const auto& g:d.groups)for(const auto& target:g.targets){if(relevantTargets&&!relevantTargets->count(target))continue;Require(package.targetIndex.count(target)&&assets.count(target),"Physics Mesh is not a current INI replacement target");const auto& asset=assets.at(target);targets[{asset.cab,asset.pathId}]=target;refs.insert({asset.cab,asset.pathId});}
-  auto consumers=MeshConsumers(bytes,layout,cab,refs);if(consumers.empty()){if(outputOrigins)*outputOrigins=inputOrigins?*inputOrigins:AuthorByteSpans{};return bytes;}Hierarchy();
+ MemberBuilder(SerializedLayout metadata,const std::string& c,const Package& p,const AssetIndex& a,const std::vector<Document>& d,Project fields,std::function<Value(int64_t)> object,const std::set<Identity>* selectedTargets=nullptr):bytes(EmptySource()),cab(c),package(p),assets(a),documents(d),relevantTargets(selectedTargets),layout(std::move(metadata)),project(std::move(fields)),decode(std::move(object)){Require(project&&decode,"projected Physics source absent");for(const auto& o:layout.objects)typeIds[o.first]=o.second.type;}
+ Bytes Build(const AuthorByteSpans* inputOrigins=nullptr,AuthorByteSpans* outputOrigins=nullptr){Require(!built,"Physics member builder reused");built=true;Require(!project||(!inputOrigins&&!outputOrigins),"projected Physics cannot use full input provenance");sourceOrigins=inputOrigins;std::set<NativeReference> refs;std::map<NativeReference,Identity> targets;for(const auto& d:documents)for(const auto& g:d.groups)for(const auto& target:g.targets){if(relevantTargets&&!relevantTargets->count(target))continue;Require(package.targetIndex.count(target)&&assets.count(target),"Physics Mesh is not a current INI replacement target");const auto& asset=assets.at(target);auto reference=CanonicalSerializedAssetReference({asset.cab,asset.pathId});targets[reference]=target;refs.insert(reference);}
+  auto consumers=ProjectedMeshConsumers(layout,cab,refs,[&](int64_t id,const std::set<std::string>& fields){return project?project(id,fields):ObjectFields(bytes,layout,id,fields);},SerializedAssetCabKey);if(consumers.empty()){if(outputOrigins)*outputOrigins=inputOrigins?*inputOrigins:AuthorByteSpans{};return bytes;}Hierarchy();
   for(const auto& d:documents){std::map<int64_t,std::pair<int64_t,std::vector<const Group*>>> scopes;
-   for(const auto& consumer:consumers)for(const auto& g:d.groups)if(g.targets.count(targets.at(consumer.mesh))){auto anchor=Anchor(consumer.renderer,d,g);auto& scope=scopes[anchor];if(!scope.first)scope.first=consumer.renderer;if(std::find(scope.second.begin(),scope.second.end(),&g)==scope.second.end())scope.second.push_back(&g);}
+   for(const auto& consumer:consumers)for(const auto& g:d.groups)if(g.targets.count(targets.at(CanonicalSerializedAssetReference(consumer.mesh)))){auto anchor=Anchor(consumer.renderer,d,g);auto& scope=scopes[anchor];if(!scope.first)scope.first=consumer.renderer;if(std::find(scope.second.begin(),scope.second.end(),&g)==scope.second.end())scope.second.push_back(&g);}
    for(const auto& scope:scopes)Populate(scope.first,scope.second.first,d,scope.second.second);
   }
-  Preloads();std::map<int64_t,Bytes> replacements;std::map<int64_t,AuthorByteSpans> objectOrigins;for(auto id:changed)replacements[id]=EncodeValue(Schema(id),Tree(id),outputOrigins?&objectOrigins[id]:nullptr);for(auto& object:added)object.bytes=EncodeValue(Schema(object.id),Tree(object.id),outputOrigins?&objectOrigins[object.id]:nullptr);return BuildSerialized(bytes,layout,replacements,added,{},types,scripts,inputOrigins,&objectOrigins,outputOrigins);
+  Preloads();std::map<int64_t,AuthorByteSpans> objectOrigins;for(auto id:changed)encodedChanges[id]=EncodeValue(Schema(id),Tree(id),outputOrigins?&objectOrigins[id]:nullptr);for(auto& object:added)object.bytes=EncodeValue(Schema(object.id),Tree(object.id),outputOrigins?&objectOrigins[object.id]:nullptr);if(project)return {};return BuildSerialized(bytes,layout,encodedChanges,added,{},types,scripts,inputOrigins,&objectOrigins,outputOrigins);
  }
+ const SerializedLayout& OutputLayout()const{Require(built,"Physics metadata requested before Build");return layout;}
+ const std::vector<Bytes>& AddedTypes()const{return types;}
+ const std::vector<Bytes>& AddedScripts()const{return scripts;}
+ std::map<int64_t,Bytes> TakeChanges(){Require(built,"Physics changes requested before Build");return std::move(encodedChanges);}
+ std::vector<AddedObject> TakeAdded(){Require(built,"Physics additions requested before Build");return std::move(added);}
 };
 inline bool Build(EndfieldInput::Bundle& bundle,const Package& package,const AssetIndex& assets,const std::vector<Document>* prepared=nullptr,const std::set<Identity>* relevantTargets=nullptr){auto local=prepared?std::vector<Document>{}:Documents(package);const auto& documents=prepared?*prepared:local;if(documents.empty())return false;bool changed=false;for(auto& member:bundle.members)if(SerializedHeader(member.bytes)){auto built=MemberBuilder(member.bytes,member.name,package,assets,documents,relevantTargets).Build(&member.origins,&member.origins);if(built!=member.bytes){member.bytes=std::move(built);changed=true;}}return changed;}
 inline Bytes Build(const Bytes& input,const Package& package,const AssetIndex& assets,const std::vector<Document>* prepared=nullptr,const std::set<Identity>* relevantTargets=nullptr){auto local=prepared?std::vector<Document>{}:Documents(package);const auto& documents=prepared?*prepared:local;if(documents.empty())return input;auto bundle=EndfieldInput::Decode(input);return Build(bundle,package,assets,&documents,relevantTargets)?EndfieldInput::Encode(input,bundle.members):input;}

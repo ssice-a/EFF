@@ -1,5 +1,9 @@
 # DLL architecture
 
+> This document describes the current legacy compiled-set runtime. The accepted replacement design is [ADR-0001](adr/0001-authoritative-mod-directory.md), with implementation status tracked in [the demand-driven design](demand-driven-native-resource-loading.md). Keep this document as migration and behavior evidence until the new DLL path is complete.
+
+2026-10-28 development direction: [demand-driven native resource loading](demand-driven-native-resource-loading.md) moves Mesh-consumer discovery out of offline PFB compilation, follows actual game requests, and shares native author resources across consumers. A bounded random-access reader and creation-before observation DLL are implemented and locally tested; the second observation DLL trace on 2026-10-28 confirmed creation-before routing for world, NPC and UI inputs (61 inspected inputs, 145 exact Renderer references, 88.623 ms aggregate inspection). A splice-view foundation passes byte-level differential tests but is not wired to native submission. Candidate Asset detail logging needs a separate bounded allowance. A separate single-Mesh native-input acceptance build is now wired and locally verified for chen body/world/UI input bytes; real replacement, native sharing and metadata behavior still await a game run. Full migration is not implemented; the production path described below remains the comparison baseline. Old-package migration belongs to Mod Manager; the new runtime will read only the new format.
+
 The production translation unit is `src/eiem_resource_entry.cpp`. The retired
 `eiem.cpp`, base-resource setter backend, render executor and restore ledger are
 no longer part of the working tree or production build. On 2026-10-06 the game
@@ -32,7 +36,16 @@ AnimeStudio source exchange + existing author index
 | Observation | `eiem_entry_loading_observation.h`, `eiem_entry_reload_observation.h` | Optional evidence; observers do not establish completion fences |
 | Author bridge | `eiem_author_core.cpp` | Source-schema interface for author tools |
 
-Author builders are used only by `eiem_compiled_mod_writer.h` through the Blender compiler. The DLL uses `eiem_compiled_mod_set.h` to combine already compiled records and `eiem_prefab_resource_rules.h` to apply byte recipes. It neither runs author executables nor generates Mesh/Material/Texture records. Shared headers provide codecs; author builders are not called by the runtime. Complete original Prefabs and duplicate author payloads are not persisted in Mod outputs.
+Author builders are used only by `eiem_compiled_mod_writer.h` through the Blender compiler. The DLL uses `eiem_compiled_mod_set.h` to combine already compiled records and `eiem_prefab_resource_rules.h` to apply byte recipes. It neither runs author executables nor generates Mesh/Material/Texture records. Shared headers provide codecs; author builders are not called by the runtime. Game-update semantic records currently retain before/edited object payloads, including Mesh data; this overlaps author geometry and remains an offline format cost.
+
+For unchanged multi-writer inputs, `eiem_shared_input_view.h` composes stream
+ranges over immutable source and author buffers instead of rebuilding full
+pixel streams. `eiem_compiled_input_view.h` shares literal owners and overlays
+namespace strings for the isolated generation. Native envelope encoding is
+shared with the offline writer; this does not invoke author resource builders.
+Block-store semantic fallbacks retain their verified compressed snapshot until
+current-source replay requests it. Preparation still visits all compiled inputs;
+these changes do not establish demand-only loading or engine/GPU residency bounds.
 The compiled path also accepts opaque `Resource` payloads without author Mesh
 parts. `eiem_compiled_object_merge.h` merges proven native type/script
 registrations and object additions/deletions for shared members; existing
@@ -49,7 +62,7 @@ physical Mod keys pause while open and otherwise affect only the selected Mod.
 
 ## Startup and reload
 
-Blender compiles each Mod independently before publication. Startup and F10 read the full installed 0/1/N compiled set. Shared input edits compose against pristine records and exact original list positions; conflicting Mesh targets or field edits are rejected. Player key state remains per Mod. Old current.tsv publications remain read-only compatibility inputs; new exports do not use the game-side compiler/cache.
+Blender compiles each Mod independently before publication. Startup and F10 read the full installed 0/1/N compiled set. Shared input edits compose against pristine records and exact original list positions. When multiple Mods target the same `path+asset`, their authored parts are combined in ascending Mod-ID order; conflicting fields on the shared native objects use the lexically greatest Mod ID, while unrelated targets continue to compose independently. Player key state remains per Mod. Old current.tsv publications remain read-only compatibility inputs; new exports do not use the game-side compiler/cache.
 
 Startup loads the latest complete manifest and its loading table, validates the
 field structures and source/output hashes, then submits substituted inputs along

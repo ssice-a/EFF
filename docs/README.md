@@ -12,12 +12,16 @@ This index points to the current user and developer documentation in the EFF mai
 
 ## Architecture
 
-- [Code architecture](code-architecture.md): DLL, author compiler, source index and package ownership.
-- [Runtime resource discovery](runtime-resource-discovery.md): source inputs, renderer consumers and runtime matching.
-- [Offline resource package format](offline-resource-package-format.md): the compiled author package and protocol boundary.
-- [Mod INI format 2](mod-ini-resource-format-v2.md): author rules and resource references.
-- [Resource update workflows](update-workflows-20261015.md): game updates, extracted-source refresh and Mod repair.
+- [ADR-0001: Authoritative Mod Directory and Demand-Driven Resources](adr/0001-authoritative-mod-directory.md): accepted directory, DDS, runtime, round-trip, migration and timing contract.
+- [ADR-0002: Self-Describing Runtime Resource Files](adr/0002-runtime-resource-files.md): format 3 manifest, resource files, DDS split, lazy runtime reads and migration acceptance.
+- [Demand-driven runtime design](demand-driven-native-resource-loading.md): implementation evidence and acceptance gaps for the new route.
+- [Format 3 transition status](format3-transition-status.md): what is wired into normal DLL, Blender, and Manager paths versus isolated acceptance tooling.
+- [Runtime resource discovery](runtime-resource-discovery.md): historical source-input discovery and runtime matching evidence.
 - [Release management](release-management.md): independent repositories, tool compatibility gates and local preflight.
+
+## Archived Contracts
+
+The old compiled-package and format-2 documents describe superseded runtime and authoring contracts. Keep them for migration and historical debugging; do not use them to define new output. See the [archive index](archive/README.md) for status and replacement references.
 
 ## Testing
 
@@ -27,3 +31,11 @@ This index points to the current user and developer documentation in the EFF mai
 - [AnimeStudio VFS layers](unpacker-vfs-layers.md): index construction and incremental updates.
 
 Historical diagnostics and design records remain available for context. They may describe retired implementations or older local builds; do not treat their dated measurements as current release results.
+
+The format 3 transition is still in development. As of 2026-10-30, the
+development DLL has a format 3 runtime/F10 path and has passed native request,
+resource, physics, shared-dependency, and real-directory smoke tests. Blender
+full export writes format 3; import restores Mesh, Material, DDS, Physics, and
+Effect author data. Partial-resource export and Mod Manager migration remain
+incomplete, and Blender 5.2 plus in-game format 3 acceptance are outstanding.
+Do not deploy a format 3-only DLL against the installed format 2 Mods.

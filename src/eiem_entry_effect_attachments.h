@@ -30,10 +30,17 @@ void AddStamps(AttachmentStamps& result,unsigned source,const std::string& packa
 AttachmentStamps CaptureStamps(){AttachmentStamps result;auto graph=RuntimeControls::controlGraph;if(graph)for(const auto& p:*graph){AddStamps(result,0,p.id,p.effects,false);AddStamps(result,1,p.id,Effects(p),true);}if(standalone)for(const auto& p:*standalone)AddStamps(result,2,p.id,Effects(p),true);return result;}
 void PrepareDiskReload(bool force=true){try{
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::EffectDisk);
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+ // New-format declarations already own lazy native inputs. Do not read old
+ // effect containers or search the enabled Mods for alternate resource graphs.
+ auto own=std::make_shared<const std::vector<Package>>();std::map<std::string,std::map<std::string,EffectAttachment>> attached;
+ auto graph=std::atomic_load(&published);if(graph)for(const auto& p:*graph)attached[p.id]=p.effects;
+#else
  StandaloneEffects::PublishReadLock publication(gameDirectory/"plugin/mods");
  auto own=std::make_shared<const std::vector<Package>>(StandaloneEffects::ReadAll(gameDirectory));std::map<std::string,std::map<std::string,EffectAttachment>> attached;auto config=settings.Get();
  for(const auto& p:*own)for(const auto& key:p.bindings)Require(key.key.vk!=config.reload.vk&&key.key.vk!=config.gui.vk&&key.key.vk!=config.effectsReload.vk,"effect Mod key overlaps global shortcut");
  auto graph=std::atomic_load(&published);if(graph)for(const auto& p:*graph)attached[p.id]=StandaloneEffects::ReadAttached(p);
+#endif
  std::lock_guard<std::mutex> lock(reloadMutex);pendingStandalone=std::move(own);pendingEffects=std::move(attached);pendingForceReload=pendingForceReload||force;reloadPending=true;
  performance.hit=true;Log("[EFFECT-RELOAD] prepared=1 modelRebuilds=0");
  }catch(const std::exception& e){{std::lock_guard<std::mutex> lock(reloadMutex);pendingStandalone.reset();pendingEffects.clear();pendingForceReload=false;reloadPending=false;}Log("[EFFECT-RELOAD-REJECT] reason=%s oldEffectsRetained=1",e.what());}}

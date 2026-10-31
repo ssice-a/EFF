@@ -147,6 +147,12 @@ InstantiateFn originalInstantiate=nullptr;InstantiateParentFn originalInstantiat
 CloneParentFn originalInstantiateImmediate=nullptr;InstantiateAsyncFn originalInstantiateAsync=nullptr;
 thread_local Attempt* rebuilding=nullptr;
 void* Routed(void* source,const char* entry="clone") noexcept {
+#if defined(EIEM_MESH_TARGET_PROBE)
+ MeshTargetProbe::BeforeClone(source,entry);
+#endif
+#if defined(EIEM_MESH_NATIVE_ACCEPTANCE)
+ if(auto replacement=MeshNativeAcceptance::Route(source,entry);replacement!=source)return replacement;
+#endif
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::InstantiationRoute);
  try{
   if(proxyContext&&source==proxySource&&RuntimeShapes::Alive(proxyUIOverride.Get())){
@@ -728,6 +734,9 @@ void ProxyPreload(void* self,bool asynchronous,void* info){
 #if defined(EIEM_PREFAB_ADAPTATION_PROBE)
     PrefabAdaptationProbe::ObserveProxy(source,proxyPathHash,asset);
 #endif
+#if defined(EIEM_MESH_TARGET_PROBE)
+    MeshTargetProbe::ObserveProxy(source,proxyPathHash,asset);
+#endif
     proxyContext=true;proxyUIOverride=CandidateUIProxy(self,proxyPathHash);}}}
  catch(const std::exception& e){proxyContext=false;Log("[FULL-RELOAD-PROXY-GAP] reason=%s gameFlowPreserved=1",e.what());}
  originalProxyPreload(self,asynchronous,info);
@@ -736,6 +745,9 @@ void* ResourceGet(void* self,void* info){
  auto source=originalResourceGet(self,info);if(readingSource||!enabled||!RuntimeShapes::Main()||!source)return source;
 #if defined(EIEM_PREFAB_ADAPTATION_PROBE)
  PrefabAdaptationProbe::ObserveHandle(self,source);
+#endif
+#if defined(EIEM_MESH_TARGET_PROBE)
+ MeshTargetProbe::ObserveHandle(self,source);
 #endif
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::Prefab);
  try{

@@ -42,6 +42,16 @@ struct SemanticOperation {
  unsigned kind=0;Identity mesh;std::string meshBundle,cab;int64_t id=0;
  Bytes beforeSchema,editedSchema,before,edited;std::vector<std::string> editedExternals;
 };
+// Unchanged sources use the native view directly. Keep their game-update
+// fallback compressed until a current-source semantic replay actually needs it.
+struct DeferredSemanticOperations {
+ mutable std::once_flag once;
+ mutable std::function<std::vector<SemanticOperation>()> load;
+ mutable std::vector<SemanticOperation> operations;
+ const std::vector<SemanticOperation>& Get()const{
+  std::call_once(once,[this]{operations=load();load={};});return operations;
+ }
+};
 inline void VerifySourceSnapshot(const std::filesystem::path& directory,const Source& source,const InputFileStamp& stamp){
  const auto path=source.physical.empty()?directory/"inputs"/source.file:source.physical;
  if(!SameStamp(stamp,FileStamp(path))){auto bytes=ReadSource(directory,source);Require(Hash(bytes)==source.hash,"reload pristine source changed during compilation");}
@@ -87,6 +97,7 @@ struct Plan {
  size_t appearanceHits=0,appearanceMisses=0,geometryInputHits=0,geometryInputMisses=0;
  bool composed=false;
  bool rulesOnly=false,resourceAddressed=false;std::vector<Source> originals;std::vector<std::vector<RendererRule>> rendererRules;std::vector<std::vector<SemanticOperation>> semanticOperations;std::vector<bool> semanticComplete;std::vector<std::string> startupHashes;
+ std::vector<std::shared_ptr<const DeferredSemanticOperations>> deferredSemanticOperations;
  std::vector<std::vector<MemberNamespaceRecipe>> namespaceRecipes;
  bool spanRecipes=false;std::vector<EiemResourceRecipe::Frame> frameRecipes;std::vector<std::vector<EiemResourceRecipe::Member>> memberRecipes;
 };
@@ -95,6 +106,7 @@ inline bool SemanticCompleteAt(const Plan& plan,size_t input){
 }
 inline const std::vector<SemanticOperation>& SemanticOperationsAt(const Plan& plan,size_t input){
  static const std::vector<SemanticOperation> empty;
+ if(input<plan.deferredSemanticOperations.size()&&plan.deferredSemanticOperations[input])return plan.deferredSemanticOperations[input]->Get();
  return input<plan.semanticOperations.size()?plan.semanticOperations[input]:empty;
 }
 inline std::vector<Source> ReadBaseline(const std::filesystem::path& directory,std::vector<std::string>& roots,const std::filesystem::path& game={}) {

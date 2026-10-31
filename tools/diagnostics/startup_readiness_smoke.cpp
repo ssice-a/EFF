@@ -1,10 +1,14 @@
 // Exercise production hook orchestration without patching or loading Unity.
 #define MH_CreateHook FixtureCreateHook
 #define MH_EnableHook FixtureEnableHook
+#define MH_QueueEnableHook FixtureQueueEnableHook
+#define MH_ApplyQueued FixtureApplyQueued
 #define MH_RemoveHook FixtureRemoveHook
 #include "../../src/eiem_resource_entry.cpp"
 #undef MH_CreateHook
 #undef MH_EnableHook
+#undef MH_QueueEnableHook
+#undef MH_ApplyQueued
 #undef MH_RemoveHook
 #include <iostream>
 
@@ -16,12 +20,16 @@ struct Class { const char* ns; const char* name; std::vector<Method> methods; };
 std::vector<Class> classes;
 unsigned nativeCalls=0, fileHooks=0, unreadyFileHooks=0;
 std::set<void*> publicFiles;
+std::vector<void*> queuedHookTargets;
+unsigned applyHookBatches=0;
 std::vector<std::unique_ptr<Bytes>> allocations;
 std::map<uint32_t,void*> roots;
 uint32_t nextRoot=0;
 void* streamObject=(void*)0xC100;void* createRequest=(void*)0xC200;void* bundleObject=(void*)0xC300;
 void* backingArray=nullptr;bool requestDone=false,bundleAlive=true;unsigned streamCalls=0,rawMemoryCalls=0;
 unsigned char doneValue=0,aliveValue=1;
+void FakeUnload(void*,bool){bundleAlive=false;}
+void* FakeUnloadAsync(void*,bool){bundleAlive=false;return nullptr;}
 void* StreamLoad(void* stream,uint32_t crc,uint32_t bufferSize) {
   Require(stream==streamObject&&crc==0&&bufferSize==0,"stream native argument ABI differs");
   Require(backingArray&&!memcmp((char*)backingArray+32,"game-package",12),"stream lost its seekable package bytes");
@@ -79,7 +87,14 @@ void Bind() {
   il2cpp_type_get_object=[](void* p)->void* {return p;};
   il2cpp_object_new=[](void*)->void* {++nativeCalls;return nullptr;};
   il2cpp_resolve_icall=[](const char* name)->void* {
-    return !strcmp(name,"UnityEngine.AssetBundle::LoadFromStreamInternal")||!strcmp(name,"UnityEngine.AssetBundle::LoadFromStreamAsyncInternal")?(void*)StreamLoad:nullptr;
+    if(!strcmp(name,"UnityEngine.AssetBundle::LoadFromStreamInternal")||!strcmp(name,"UnityEngine.AssetBundle::LoadFromStreamAsyncInternal"))return (void*)StreamLoad;
+    if(!strcmp(name,"UnityEngine.AssetBundle::Unload(System.Boolean)"))return (void*)FakeUnload;
+    if(!strcmp(name,"UnityEngine.AssetBundle::UnloadAsync(System.Boolean)"))return (void*)FakeUnloadAsync;
+    if(!strcmp(name,"UnityEngine.SkinnedMeshRenderer::get_sharedMesh()"))return (void*)0x900300;
+    if(!strcmp(name,"UnityEngine.Renderer::set_enabled(System.Boolean)"))return (void*)0x900400;
+    if(!strcmp(name,"UnityEngine.Renderer::get_enabled()"))return (void*)0x900500;
+    if(!strcmp(name,"UnityEngine.SkinnedMeshRenderer::RequestCurrentFrameSkinMatrices"))return (void*)0x900600;
+    return nullptr;
   };
   // The shape bridge has completed metadata preparation, as in the real log.
   // Its completion hook remains uninstalled until production orchestration runs.
@@ -87,6 +102,7 @@ void Bind() {
   PREPARED(originalCapture);PREPARED(originalRelease);PREPARED(originalReset);
   PREPARED(originalTick);PREPARED(originalFrameTick);PREPARED(originalInit);
   PREPARED(originalMeshGetter);PREPARED(originalMatrixRequest);PREPARED(originalEnabledSetter);
+  PREPARED(originalEnabledGetter);PREPARED(originalHelperInit);
 #undef PREPARED
   CaptureObservation::afterFinished=RuntimeShapes::Finished;
   CaptureObservation::originalFinished=nullptr;
@@ -112,6 +128,12 @@ void BindStreamCalls() {
   il2cpp_resolve_icall=[](const char* name)->void* {
     if(!strcmp(name,"UnityEngine.AssetBundle::LoadFromMemory_Internal"))return (void*)0x900000;
     if(!strcmp(name,"UnityEngine.AssetBundle::LoadFromStreamAsyncInternal")||!strcmp(name,"UnityEngine.AssetBundle::LoadFromStreamInternal"))return (void*)StreamLoad;
+    if(!strcmp(name,"UnityEngine.AssetBundle::Unload(System.Boolean)"))return (void*)FakeUnload;
+    if(!strcmp(name,"UnityEngine.AssetBundle::UnloadAsync(System.Boolean)"))return (void*)FakeUnloadAsync;
+    if(!strcmp(name,"UnityEngine.SkinnedMeshRenderer::get_sharedMesh()"))return (void*)0x900300;
+    if(!strcmp(name,"UnityEngine.Renderer::set_enabled(System.Boolean)"))return (void*)0x900400;
+    if(!strcmp(name,"UnityEngine.Renderer::get_enabled()"))return (void*)0x900500;
+    if(!strcmp(name,"UnityEngine.SkinnedMeshRenderer::RequestCurrentFrameSkinMatrices"))return (void*)0x900600;
     return nullptr;
   };
   RuntimeShapes::api.alive=(void*)0xA110;
@@ -140,14 +162,25 @@ extern "C" MH_STATUS WINAPI FixtureEnableHook(LPVOID target) {
   }
   return MH_OK;
 }
+extern "C" MH_STATUS WINAPI FixtureQueueEnableHook(LPVOID target) {
+  StartupFixture::queuedHookTargets.push_back(target);return MH_OK;
+}
+extern "C" MH_STATUS WINAPI FixtureApplyQueued() {
+  using namespace StartupFixture;++applyHookBatches;
+  auto queued=std::move(queuedHookTargets);queuedHookTargets.clear();
+  for(auto target:queued)if(FixtureEnableHook(target)!=MH_OK)return MH_ERROR_MEMORY_ALLOC;
+  return MH_OK;
+}
 extern "C" MH_STATUS WINAPI FixtureRemoveHook(LPVOID) {return MH_OK;}
 int main(int argc,char**) {
   using namespace Entry;using namespace StartupFixture;
   try {
     Files files;Bind();if(argc>1)BindStreamCalls();void* assembly=(void*)1;
     InstallHooks(&assembly,1);
+    Require(applyHookBatches==1&&queuedHookTargets.empty()&&queuedEntryHooks==installed.size(),
+        "startup did not enable its queued hook batch exactly once");
     Require(CaptureObservation::originalFinished,"production startup did not install capture completion");
-    Require(RuntimeShapes::enabled,"production startup left prepared controls disabled");
+    Require(RuntimeShapes::enabled,"production startup left prepared controls disabled: capture="+std::to_string(bool(RuntimeShapes::originalCapture))+" release="+std::to_string(bool(RuntimeShapes::originalRelease))+" reset="+std::to_string(bool(RuntimeShapes::originalReset))+" tick="+std::to_string(bool(RuntimeShapes::originalTick))+" frame="+std::to_string(bool(RuntimeShapes::originalFrameTick))+" init="+std::to_string(bool(RuntimeShapes::originalInit))+" mesh="+std::to_string(bool(RuntimeShapes::originalMeshGetter))+" matrices="+std::to_string(bool(RuntimeShapes::originalMatrixRequest))+" setter="+std::to_string(bool(RuntimeShapes::originalEnabledSetter))+" getter="+std::to_string(bool(RuntimeShapes::originalEnabledGetter))+" helper="+std::to_string(bool(RuntimeShapes::originalHelperInit))+" after="+std::to_string(bool(CaptureObservation::afterFinished))+" completed="+std::to_string(bool(CaptureObservation::originalFinished)));
     Require(NativeBundle::enabled&&NativeBundle::api.streamIcall&&NativeBundle::api.streamAsyncIcall,
         "production startup left rule memory submission disabled");
     Require(fileHooks==2&&!unreadyFileHooks,"file hooks became active before resource submission was ready");
@@ -159,7 +192,7 @@ int main(int argc,char**) {
       NativeBundle::CollectMemory();Require(std::any_of(roots.begin(),roots.end(),[](const auto& r){return r.second==streamObject;}),"in-flight archive stream root lost");
       requestDone=true;NativeBundle::CollectMemory();
       Require(std::any_of(roots.begin(),roots.end(),[](const auto& r){return r.second==streamObject;}),"stream released at request completion while Bundle still needs seek/read");
-      bundleAlive=false;NativeBundle::CollectMemory();Require(roots.empty(),"unloaded Bundle retained its archive stream");
+      NativeBundle::Unload(bundleObject,false);NativeBundle::CollectMemory();Require(roots.empty(),"unloaded Bundle retained its archive stream");
       std::cout<<"PASS rule stream transport: archive entry, readonly seekable bytes, async and lazy Bundle lifetime; no raw Memory decoder\n";return 0;
     }
     std::cout<<"PASS production startup: controls and memory submission ready before file hooks; native requests=0\n";

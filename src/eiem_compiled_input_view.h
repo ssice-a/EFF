@@ -34,7 +34,7 @@ inline std::string Identity(const Recipe& recipe,const EiemLoadingGeneration::Na
  auto hash=Sha((const unsigned char*)value.data(),value.size());return Hex(hash.data(),hash.size());
 }
 inline std::shared_ptr<const EiemInputSpanView::View> Bind(const Recipe& recipe,const Buffers& sources,
- const EiemLoadingGeneration::Names& names={}){
+ const EiemLoadingGeneration::Names& names={},std::shared_ptr<const void> literalOwner={}){
  std::vector<Buffer> buffers;std::map<std::pair<unsigned,std::string>,size_t> ids;
  auto add=[&](unsigned kind,const std::string& name){auto found=ids.find({kind,name});if(found!=ids.end())return found->second;auto bytes=sources.at({kind,name});Require(bool(bytes),"compiled view buffer ownership absent");auto id=buffers.size();buffers.push_back(std::move(bytes));ids.emplace(std::make_pair(kind,name),id);return id;};
  // Index name sites once rather than scanning every site for every literal span.
@@ -45,7 +45,9 @@ inline std::shared_ptr<const EiemInputSpanView::View> Bind(const Recipe& recipe,
   switch(source.kind){
   case EiemResourceRecipe::Original:Require(source.source.empty(),"compiled view original source identity differs");span.source=add(source.kind,source.source);break;
   case EiemResourceRecipe::Author:case EiemResourceRecipe::ExpandedFrame:span.source=add(source.kind,source.source);break;
-  case EiemResourceRecipe::Literal:{auto bytes=std::make_shared<Bytes>(source.literal);Require(source.source.empty()&&!source.offset&&bytes->size()==source.size,"compiled view literal extent differs");
+  case EiemResourceRecipe::Literal:{Require(source.source.empty()&&!source.offset&&source.literal.size()==source.size,"compiled view literal extent differs");
+   if(literalOwner&&names.members.empty()&&names.bundles.empty()){for(size_t n=heads[i];n!=SIZE_MAX;n=next[n]){const auto&site=recipe.names[n];Require(site.offset<=source.size&&site.before.size()<=source.size-site.offset,"compiled view namespace extent differs");for(size_t j=0;j<site.before.size();++j){auto mask=site.directory?uint8_t(j^0x97):uint8_t(0);Require(source.literal[site.offset+j]==(uint8_t(site.before[j])^mask),"compiled view namespace preimage differs");}}span.literal=std::shared_ptr<const Bytes>(literalOwner,&source.literal);break;}
+   auto bytes=std::make_shared<Bytes>(source.literal);
    for(size_t n=heads[i];n!=SIZE_MAX;n=next[n]){const auto& site=recipe.names[n];auto after=Remap(site.before,names);Require(after.size()==site.before.size()&&site.offset<=bytes->size()&&site.before.size()<=bytes->size()-site.offset,"compiled view namespace extent differs");
     for(size_t j=0;j<site.before.size();++j){auto mask=site.directory?uint8_t(j^0x97):uint8_t(0);Require((*bytes)[site.offset+j]==(uint8_t(site.before[j])^mask),"compiled view namespace preimage differs");(*bytes)[site.offset+j]=uint8_t(after[j])^mask;}
    }span.literal=std::move(bytes);break;}
@@ -56,5 +58,21 @@ inline std::shared_ptr<const EiemInputSpanView::View> Bind(const Recipe& recipe,
  for(const auto& site:recipe.names)Require(site.span<recipe.spans.size()&&recipe.spans[site.span].kind==EiemResourceRecipe::Literal,"compiled view namespace must address literal bytes");
  std::vector<size_t> sizes;for(const auto& buffer:buffers)sizes.push_back(buffer.Size());
  return std::make_shared<const EiemInputSpanView::View>(std::move(spans),sizes,[buffers=std::move(buffers)](size_t source,size_t offset,unsigned char* output,size_t count){buffers.at(source).Read(offset,output,count);});
+}
+// The isolated generation changes only equal-width namespace strings. Keep
+// its metadata/pixels shared with the startup view and overlay those strings.
+inline std::shared_ptr<const EiemInputSpanView::View> Relocate(const Recipe& recipe,
+ std::shared_ptr<const EiemInputSpanView::View> startup,const EiemLoadingGeneration::Names& names){
+ Require(startup&&startup->Size()==recipe.size,"compiled namespace view extent differs");
+ std::vector<size_t> starts;size_t position=0;for(const auto&span:recipe.spans){starts.push_back(position);position=AddSize(position,span.size);}Require(position==recipe.size,"compiled namespace recipe coverage differs");
+ std::map<size_t,Bytes> patches;
+ for(const auto&site:recipe.names){Require(site.span<recipe.spans.size(),"compiled namespace span absent");const auto&span=recipe.spans[site.span];auto after=Remap(site.before,names);Require(span.kind==EiemResourceRecipe::Literal&&after.size()==site.before.size()&&site.offset<=span.size&&after.size()<=span.size-site.offset,"compiled namespace overlay range differs");
+  if(after==site.before)continue;auto offset=AddSize(starts[site.span],site.offset);Bytes expected(after.size()),patch(after.size());for(size_t j=0;j<after.size();++j){auto mask=site.directory?uint8_t(j^0x97):uint8_t(0);expected[j]=uint8_t(site.before[j])^mask;patch[j]=uint8_t(after[j])^mask;}
+  Bytes actual(expected.size());Require(startup->ReadAt(offset,actual.data(),actual.size())==actual.size()&&actual==expected,"compiled namespace overlay preimage differs");auto existing=patches.find(offset);if(existing!=patches.end())Require(existing->second==patch,"compiled namespace overlay conflict");else patches.emplace(offset,std::move(patch));
+ }
+ std::vector<EiemInputSpanView::Span> spans;position=0;
+ for(auto&patch:patches){Require(patch.first>=position,"compiled namespace overlay overlaps");if(patch.first>position)spans.push_back({0,position,patch.first-position,{}});auto size=patch.second.size();spans.push_back({EiemInputSpanView::literalSource,0,size,std::make_shared<const Bytes>(std::move(patch.second))});position=AddSize(patch.first,size);}
+ if(position<recipe.size)spans.push_back({0,position,recipe.size-position,{}});
+ return std::make_shared<const EiemInputSpanView::View>(std::move(spans),std::vector<size_t>{recipe.size},[startup=std::move(startup)](size_t,size_t offset,unsigned char* output,size_t count){Require(startup->ReadAt(offset,output,count)==count,"compiled namespace backing read incomplete");});
 }
 } // namespace EiemCompiledInputView

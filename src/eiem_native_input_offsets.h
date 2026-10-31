@@ -1,5 +1,7 @@
 #pragma once
 #include "eiem_loading_generation.h"
+#include "eiem_input_span_view.h"
+#include <cstring>
 
 // The offline member spans and namespace sites also describe the uncompressed
 // native envelope. Relocation needs no object parsing or stream reconstruction.
@@ -28,7 +30,7 @@ inline std::string Name(const std::string& before,const Names& names){
  auto bundle=names.bundles.find(before);if(bundle!=names.bundles.end())return bundle->second;
  return EiemLoadingGeneration::RemapPath(before,names);
 }
-template<class Recipes> inline Bytes Relocate(const Bytes& bytes,const Layout& layout,const Recipes& recipes,const Names& from,const Names& to){
+template<class Recipes> inline std::vector<EiemLoadingGeneration::Patch> Patches(const Bytes& bytes,const Layout& layout,const Recipes& recipes,const Names& from,const Names& to){
  auto header=EndfieldInput::ReadHeader(bytes);
  Require(header.flags==0x240&&header.bytes==bytes.size()&&bytes.size()==layout.size&&header.compressedInfo==layout.infoSize&&header.decodedInfo==layout.infoSize,"native offset envelope differs");
  std::map<std::string,const Member*> members;for(const auto& member:layout.members)Require(members.emplace(member.name,&member).second,"native offset duplicate member");
@@ -41,8 +43,29 @@ template<class Recipes> inline Bytes Relocate(const Bytes& bytes,const Layout& l
   for(size_t j=0;j<before.size();++j){before[j]=char((unsigned char)before[j]^(unsigned char)(j^0x97));after[j]=char((unsigned char)after[j]^(unsigned char)(j^0x97));}
   patches.push_back({member.nameOffset,std::move(before),std::move(after)});
  }
+ return patches;
+}
+template<class Recipes> inline Bytes Relocate(const Bytes& bytes,const Layout& layout,const Recipes& recipes,const Names& from,const Names& to){
+ auto patches=Patches(bytes,layout,recipes,from,to);
  // Immutable input ownership establishes the content hash; all exact field
  // preimages, widths and overlap still get checked before writing a new copy.
  return EiemLoadingGeneration::ApplySites(bytes,std::move(patches));
+}
+template<class Recipes> inline void RelocateInPlace(Bytes& bytes,const Layout& layout,const Recipes& recipes,const Names& from,const Names& to){
+ auto patches=Patches(bytes,layout,recipes,from,to);EiemLoadingGeneration::ApplySitesInPlace(bytes,std::move(patches));
+}
+template<class Recipes> inline std::shared_ptr<const EiemInputSpanView::View> RelocateView(
+ const std::shared_ptr<const Bytes>& bytes,const Layout& layout,const Recipes& recipes,const Names& from,const Names& to){
+ Require(bool(bytes),"native offset view backing absent");auto patches=Patches(*bytes,layout,recipes,from,to);EiemLoadingGeneration::ValidateSites(*bytes,patches);
+ std::vector<EiemInputSpanView::Span> spans;spans.reserve(patches.size()*2+1);auto literals=std::make_shared<Bytes>();size_t literalSize=0;
+ for(const auto& patch:patches)if(patch.before!=patch.after)literalSize=AddSize(literalSize,patch.after.size());literals->reserve(literalSize);
+ size_t position=0;
+ for(const auto& patch:patches){if(patch.before==patch.after)continue;if(patch.offset>position){EiemInputSpanView::Span span;span.source=0;span.offset=position;span.size=patch.offset-position;spans.push_back(std::move(span));}
+  if(!patch.after.empty()){EiemInputSpanView::Span span;span.source=EiemInputSpanView::literalSource;span.offset=literals->size();span.size=patch.after.size();literals->insert(literals->end(),patch.after.begin(),patch.after.end());span.literal=literals;spans.push_back(std::move(span));}
+  position=patch.offset+patch.before.size();
+ }
+ if(position<bytes->size()){EiemInputSpanView::Span span;span.source=0;span.offset=position;span.size=bytes->size()-position;spans.push_back(std::move(span));}
+ std::vector<size_t> sourceSizes{bytes->size()};auto read=[bytes](size_t source,size_t offset,unsigned char* output,size_t count){Require(source==0&&offset<=bytes->size()&&count<=bytes->size()-offset,"native offset view source range differs");std::memcpy(output,bytes->data()+offset,count);};
+ auto view=std::make_shared<const EiemInputSpanView::View>(std::move(spans),sourceSizes,std::move(read));Require(view->Size()==bytes->size(),"native offset view extent differs");return view;
 }
 } // namespace EiemNativeInputOffsets

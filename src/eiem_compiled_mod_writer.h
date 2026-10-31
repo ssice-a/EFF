@@ -159,7 +159,7 @@ inline Artifact Compile(const Package& author,const EiemStaticSources::Selection
   const auto retained=std::move(compact.retainedInputs);std::vector<size_t> remap(compact.inputs.size(),SIZE_MAX);
   for(size_t i=0;i<retained.size();++i)remap.at(retained[i])=i;
   auto select=[&](auto& values){using Values=std::decay_t<decltype(values)>;Values result;result.reserve(retained.size());for(auto old:retained)result.push_back(std::move(values.at(old)));values=std::move(result);};
-  select(compact.inputs);select(compact.originals);select(compact.startupHashes);select(compact.rendererRules);select(compact.semanticOperations);select(compact.semanticComplete);select(compact.namespaceRecipes);select(compact.memberRecipes);select(artifact.views);
+  select(compact.inputs);select(compact.originals);select(compact.startupHashes);select(compact.rendererRules);select(compact.semanticOperations);if(!compact.deferredSemanticOperations.empty())select(compact.deferredSemanticOperations);select(compact.semanticComplete);select(compact.namespaceRecipes);select(compact.memberRecipes);select(artifact.views);
   for(auto& root:compact.roots){Require(remap.at(root.input)!=SIZE_MAX,"retention removed a Prefab root");root.input=remap[root.input];}
   for(auto& root:artifact.pristine){Require(remap.at(root.input)!=SIZE_MAX,"retention removed a pristine root");root.input=remap[root.input];}
   std::vector<size_t> closure;for(auto old:compact.closure)if(remap.at(old)!=SIZE_MAX)closure.push_back(remap[old]);compact.closure=std::move(closure);

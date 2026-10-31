@@ -1,5 +1,7 @@
 # 独立 Mod 编译结果与资源契约
 
+> 历史实现契约：描述现行旧式 `compiled.bin` / `compiled.blocks` 加载路线。新格式与资源组织以 [ADR-0001](adr/0001-authoritative-mod-directory.md) 为准；本文保留作迁移输入和行为对照，不应作为新 Mod 发布格式。
+
 `mod.ini` 是唯一作者规则入口，独立 `.mesh/.mat/.tex` 是作者载荷。Blender 的配套工具生成 `source-inputs.bin` 和 `compiled.bin`；DLL 读取后者，不调用作者工具。兼容性依据 `eiem_package_protocol.h` 的实际字段与 `eiem_compiled_mod.h` 的结构声明判断，不按版本号。
 
 ## 输出布局

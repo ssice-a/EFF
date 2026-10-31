@@ -12,6 +12,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from nativepack.ini_reader import read_package
+from nativepack.texture_fields import UNITY_FORMATS
 
 
 def require(ok, message):
@@ -61,7 +62,7 @@ def verify(descriptors, package, graph, generation, shared_plan):
                 'author texture clone not resolved: ' + texture['id'])
         require(all_objects[key(original)] == original, 'original texture was modified: ' + texture['id'])
         for field, declared in [('m_Width', texture['width']), ('m_Height', texture['height']),
-                                ('m_TextureFormat', 4), ('m_MipCount', texture['mipCount']),
+                                ('m_TextureFormat', UNITY_FORMATS[texture['format']]), ('m_MipCount', texture['mipCount']),
                                 ('m_ColorSpace', texture['colorSpace'])]:
             require(actual[field] == declared, 'custom texture descriptor differs: ' + texture['id'] + '/' + field)
         require(actual['stream']['sha256'] == texture['sha256'] and

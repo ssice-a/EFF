@@ -10,7 +10,7 @@ using InitFn=void(*)(void*,uint64_t,void*,void*);
 using ClearFn=void(*)(void*,void*);
 Query originalAll=nullptr,originalDirect=nullptr;InitFn originalInit=nullptr;ClearFn originalClear=nullptr;
 struct Api {
- void *bundleName=nullptr,*listClass=nullptr,*listCtor=nullptr,*listAdd=nullptr,*allInfo=nullptr;
+ void *bundleName=nullptr,*listClass=nullptr,*listCtor=nullptr,*listHeapCtor=nullptr,*listHeapCapacityCtor=nullptr,*listAdd=nullptr,*allInfo=nullptr;
  void *managerManifest=nullptr,*proxyManagerField=nullptr,*listItems=nullptr,*listSize=nullptr;
  void *scalarClass=nullptr,*poolField=nullptr,*poolClass=nullptr,*poolAllocate=nullptr,*listDispose=nullptr;
  void *manifestData=nullptr,*bundles=nullptr,*mappedBase=nullptr,*mappedLength=nullptr,*mappedData=nullptr,*bundleClass=nullptr;
@@ -21,6 +21,9 @@ struct Snapshot {Ref proxy,manifest;uint64_t hash=0;std::shared_ptr<const Names>
 struct Index {Ref manifest,data;uintptr_t address=0;int64_t length=0;bool ready=false;std::weak_ptr<const Names> graph;Keys keys;std::set<std::pair<uint64_t,bool>> logged;};
 std::mutex mutex;std::map<void*,Snapshot> snapshots;std::map<std::pair<void*,const Names*>,std::shared_ptr<Index>> indexes;
 std::map<std::pair<void*,uint64_t>,void*> snapshotKeys;
+struct PoolBinding {Ref manifest,pool;};
+std::mutex poolMutex;std::map<void*,PoolBinding> manifestPools;
+std::atomic<unsigned> poolCaptureGaps{0};
 std::atomic<bool> enabled{false};
 std::string TypeName(const void* type){auto value=il2cpp_type_get_name((void*)type);Require(value,"dependency API type name absent");std::string name=value;il2cpp_free((void*)value);return name;}
 void* Field(void* klass,const char* name){
@@ -95,6 +98,8 @@ std::vector<uint64_t> ReadList(void* list){
 void BindListMethods(void* klass,const std::string& scalar){
  api.capacityCtor=api.boxedAdd=false;
  api.listCtor=nullptr;
+ api.listHeapCtor=Exact(klass,".ctor",{},"System.Void",false);
+ api.listHeapCapacityCtor=Exact(klass,".ctor",{"System.Int32"},"System.Void",false);
  if(!api.poolAllocate){api.listCtor=Exact(klass,".ctor",{},"System.Void",false);
   if(!api.listCtor){api.listCtor=Exact(klass,".ctor",{"System.Int32"},"System.Void",false);api.capacityCtor=true;}}
  api.listAdd=Inherited(klass,"Add",{scalar.c_str()},"System.Void");
@@ -127,6 +132,41 @@ Scratch NewList(void* prototype=nullptr){
  auto list=Ref::Make(il2cpp_object_new(api.listClass),false);Require(list.Get(),"dependency scratch list allocation failed");
  int capacity=0;void* args[]={&capacity};Call(api.listCtor,list.Get(),api.capacityCtor?args:nullptr);return Scratch(std::move(list),false);
 }
+void RememberListPool(void* manifest,void* prototype) noexcept {
+ if(!api.poolAllocate||!manifest||!prototype)return;
+ try{
+  {std::lock_guard<std::mutex> lock(poolMutex);auto found=manifestPools.find(manifest);
+   if(found!=manifestPools.end()&&found->second.manifest.Get()==manifest&&found->second.pool.Get())return;
+   if(found!=manifestPools.end())manifestPools.erase(found);}
+  void* pool=nullptr;il2cpp_field_get_value(prototype,api.poolField,&pool);
+  Require(pool&&il2cpp_object_get_class(pool)==api.poolClass,"game dependency list pool type differs");
+  PoolBinding binding{Ref::Make(manifest,true),Ref::Make(pool,false)};
+  {std::lock_guard<std::mutex> lock(poolMutex);auto found=manifestPools.find(manifest);
+   if(found!=manifestPools.end()&&found->second.manifest.Get()==manifest&&found->second.pool.Get())return;
+   for(auto it=manifestPools.begin();it!=manifestPools.end();)if(!it->second.manifest.Get())it=manifestPools.erase(it);else ++it;
+   manifestPools.insert_or_assign(manifest,std::move(binding));}
+  Log("[STARTUP-DEPENDENCY-POOL-CAPTURED] manifest=%p pool=%p source=game-query-list",manifest,pool);
+ }catch(const std::exception& e){auto count=++poolCaptureGaps;if(count<=8)Log("[STARTUP-DEPENDENCY-GAP] lifecycle=capture-pool reason=%s",e.what());}
+  catch(...){auto count=++poolCaptureGaps;if(count<=8)Log("[STARTUP-DEPENDENCY-GAP] lifecycle=capture-pool reason=unknown");}
+}
+Scratch NewListForManifest(void* manifest){
+ if(!api.poolAllocate)return NewList();
+ Ref pool;
+ {std::lock_guard<std::mutex> lock(poolMutex);auto found=manifestPools.find(manifest);
+  if(found!=manifestPools.end()&&found->second.manifest.Get()==manifest)pool=found->second.pool;
+  else if(found!=manifestPools.end())manifestPools.erase(found);}
+ Require(pool.Get(),"game dependency list pool has not been observed for this manifest");
+ auto value=Ref::Make(Call(api.poolAllocate,pool.Get()),false);
+ Require(value.Get()&&il2cpp_object_get_class(value.Get())==api.listClass,"native dependency pool returned a different list type");
+ return Scratch(std::move(value),true);
+}
+Scratch NewHeapList(){
+ Require(api.listHeapCtor||api.listHeapCapacityCtor,"dependency query scratch-list constructor absent");
+ auto list=Ref::Make(il2cpp_object_new(api.listClass),false);Require(list.Get(),"dependency query scratch-list allocation failed");
+ if(api.listHeapCtor)Call(api.listHeapCtor,list.Get());
+ else{int capacity=0;void* args[]={&capacity};Call(api.listHeapCapacityCtor,list.Get(),args);}
+ return Scratch(std::move(list),false);
+}
 void Append(void* list,uint64_t value){
  if(api.boxedAdd){auto boxed=Ref::Make(il2cpp_value_box(api.scalarClass,&value),false);Require(boxed.Get(),"dependency key boxing failed");void* args[]={boxed.Get()};Call(api.listAdd,list,args);}
  else{void* args[]={&value};Call(api.listAdd,list,args);}
@@ -145,6 +185,9 @@ void RecordInit(void* proxy,uint64_t hash,void* manager){
  std::lock_guard<std::mutex> lock(mutex);auto old=snapshots.find(proxy);if(old!=snapshots.end())snapshotKeys.erase({old->second.manifest.Get(),old->second.hash});snapshotKeys[{manifest,hash}]=proxy;snapshots[proxy]=std::move(snapshot);
 }
 void Init(void* self,uint64_t hash,void* manager,void* info){
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+ if(enabled)try{auto manifest=Call(api.managerManifest,manager);if(manifest)DemandLoadingProbe::BundleRequest(manifest,hash,"proxy-init-enter");}catch(const std::exception& e){Log("[DEMAND-PROBE-GAP] phase=proxy-init reason=%s",e.what());}
+#endif
  originalInit(self,hash,manager,info);
  if(!enabled)return;
  try{RecordInit(self,hash,manager);}catch(const std::exception& e){Log("[STARTUP-DEPENDENCY-GAP] lifecycle=init reason=%s",e.what());}
@@ -153,7 +196,18 @@ void Clear(void* self,void* info){
  // The game's ClearAll may release its dependencies. Keep the snapshot until
  // that release completes, then permit the pooled proxy's next Init to bind
  // the current Mod graph.
- originalClear(self,info);std::lock_guard<std::mutex> lock(mutex);auto old=snapshots.find(self);if(old!=snapshots.end()){snapshotKeys.erase({old->second.manifest.Get(),old->second.hash});snapshots.erase(old);}
+ originalClear(self,info);
+#if defined(EIEM_MESH_TARGET_PROBE) || defined(EIEM_DEMAND_LOADING_PROBE)
+ // Publish the lifecycle observation outside the snapshot registry lock.
+ Ref clearedManifest;uint64_t clearedHash=0;
+ {std::lock_guard<std::mutex> lock(mutex);auto old=snapshots.find(self);if(old!=snapshots.end()){clearedManifest=old->second.manifest;clearedHash=old->second.hash;}}
+#if defined(EIEM_MESH_TARGET_PROBE)
+ if(clearedManifest.Get())MeshTargetProbe::BundleCleared(clearedManifest.Get(),clearedHash);
+#else
+ if(clearedManifest.Get())DemandLoadingProbe::Retire(clearedManifest.Get(),clearedHash);
+#endif
+#endif
+ std::lock_guard<std::mutex> lock(mutex);auto old=snapshots.find(self);if(old!=snapshots.end()){snapshotKeys.erase({old->second.manifest.Get(),old->second.hash});snapshots.erase(old);}
 }
 std::shared_ptr<const Names> GraphFor(void* manifest,uint64_t hash){
  std::lock_guard<std::mutex> lock(mutex);
@@ -195,14 +249,44 @@ bool Augment(void* manifest,uint64_t hash,void* list,bool direct,bool originalRe
 #include "eiem_entry_catalog_survey.h"
 #endif
 bool All(void* self,uint64_t hash,void* list,void* info){
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+ RememberListPool(self,list);
+#endif
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+ bool sharedResult=false;if(DemandLoadingProbe::SharedDependencies(self,hash,list,false,sharedResult))return sharedResult;
+#endif
  auto result=originalAll(self,hash,list,info);
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+ DemandLoadingProbe::Dependencies(self,hash,list,result,false);
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+ result=DemandLoadingProbe::AppendSharedDependencies(self,hash,list,false,result);
+#endif
+#endif
+#if defined(EIEM_MESH_TARGET_PROBE)
+ MeshTargetProbe::Dependencies(self,hash,list,true);
+#endif
 #if defined(EIEM_CATALOG_SURVEY)
  CatalogSurvey::Observe(self,list);
 #endif
  try{return Augment(self,hash,list,false,result);}catch(const std::exception& e){Log("[STARTUP-DEPENDENCY-GAP] query=all reason=%s originalPreserved=1",e.what());return result;}
 }
 bool Direct(void* self,uint64_t hash,void* list,void* info){
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+ RememberListPool(self,list);
+#endif
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+ bool sharedResult=false;if(DemandLoadingProbe::SharedDependencies(self,hash,list,true,sharedResult))return sharedResult;
+#endif
  auto result=originalDirect(self,hash,list,info);
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+ DemandLoadingProbe::Dependencies(self,hash,list,false,true);
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+ result=DemandLoadingProbe::AppendSharedDependencies(self,hash,list,true,result);
+#endif
+#endif
+#if defined(EIEM_MESH_TARGET_PROBE)
+ MeshTargetProbe::Dependencies(self,hash,list,false);
+#endif
 #if defined(EIEM_CATALOG_SURVEY)
  CatalogSurvey::Observe(self,list);
 #endif

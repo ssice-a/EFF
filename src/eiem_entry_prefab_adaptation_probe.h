@@ -137,7 +137,7 @@ void VerifyTextureAndMaterial(void* candidate){
  for(const auto& r:FullResourceReload::Components(candidate)){
   auto materials=Ref::Make(Call(FullResourceReload::api.materials,r.Get()),false);auto values=FullResourceReload::ReferenceArray(materials.Get());
   if(values.empty()||!RuntimeShapes::Alive(values.front()))continue;
-  auto donor=values.front();EiemRuntimeAuthorDirectory::MaterialEntry material;material.id="private-validation";
+  auto donor=values.front();EiemMaterialOperations::Edits material;
   auto slots=Ref::Make(Call(FullResourceReload::api.textureIds,donor),false);size_t count=0;
   Require(ArrayLength(slots.Get(),&count),"Material Texture property IDs absent");if(!count)continue;int32_t id=0;
   Require(CopyRaw((char*)slots.Get()+32,&id,sizeof(id)),"Material Texture property ID read failed");

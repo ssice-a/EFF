@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # import it, and an old bundle silently failed only when an export first
 # touched a SHA-256 path.
 MODULES = (
-    'author_source', 'serialized_file', 'type_tree', 'mesh', 'delta_apply',
+    'author_source', 'author_format3', 'serialized_file', 'type_tree', 'mesh', 'delta_apply',
     'resource_file', 'ini_package', 'ini_reader', 'texture_fields',
     'state_rules', 'payload', 'hashing', 'physics', 'shape_animation', 'runtime_controls', 'mod_directory',
 )

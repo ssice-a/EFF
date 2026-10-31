@@ -38,12 +38,12 @@ void MaterialApplicationRegression(){
  auto create=il2cpp_object_new;il2cpp_object_new=[](void*)->void*{return Test::candidate;};
  M::api.klass=Test::gameObjectClass;M::api.clone=(void*)600;M::api.has=(void*)601;M::api.setFloat=(void*)602;M::api.setInteger=(void*)603;M::api.setColor=(void*)604;
  M::api.setScale=(void*)605;M::api.setOffset=(void*)606;M::api.enableKeyword=(void*)607;M::api.disableKeyword=(void*)608;M::api.setTag=(void*)609;M::api.setQueue=(void*)610;M::api.setTexture=(void*)611;M::api.destroy=(void*)613;
- EiemRuntimeAuthorDirectory::MaterialEntry entry;entry.edits.floats["_UseEmission"]=1;entry.edits.integers["_Mode"]=-2;entry.edits.colors["_EmissionColor"]={1,0,0,1};
- entry.edits.scales["_MainTex"]={2,1};entry.edits.offsets["_MainTex"]={0.25,0};entry.edits.keywords["_EMISSION"]=true;entry.edits.keywords["_ALPHATEST_ON"]=false;entry.edits.tags["RenderType"]="Transparent";entry.edits.queue=2999;entry.textures["_MainTex"]="diffuse";
- std::map<std::string,RuntimeShapes::Ref> textures{{"diffuse",RuntimeShapes::Ref::Make(Test::newTexture,false)}};materialCalls.clear();
+ EiemMaterialOperations::Edits entry;entry.floats["_UseEmission"]=1;entry.integers["_Mode"]=-2;entry.colors["_EmissionColor"]={1,0,0,1};
+ entry.scales["_MainTex"]={2,1};entry.offsets["_MainTex"]={0.25,0};entry.keywords["_EMISSION"]=true;entry.keywords["_ALPHATEST_ON"]=false;entry.tags["RenderType"]="Transparent";entry.queue=2999;
+ std::map<std::string,RuntimeShapes::Ref> textures{{"_MainTex",RuntimeShapes::Ref::Make(Test::newTexture,false)}};materialCalls.clear();
  {auto copy=M::Create(Test::material,entry,textures);Require(copy.Get()==Test::candidate,"private Material copy absent");}
  for(uintptr_t method=600;method<=611;++method)Require(std::find(materialCalls.begin(),materialCalls.end(),method)!=materialCalls.end(),"typed author Material operation was omitted");
- auto empty=EiemRuntimeAuthorDirectory::MaterialEntry{};materialCalls.clear();{auto copy=M::Create(Test::material,empty,{});}
+ auto empty=EiemMaterialOperations::Edits{};materialCalls.clear();{auto copy=M::Create(Test::material,empty,{});}
  Require(materialCalls==std::vector<uintptr_t>{600},"unmodified Material default was overwritten instead of inherited");
  materialPropertyPresent=false;failedMaterialCleanup=0;bool rejected=false;
  try{M::Create(Test::material,entry,textures);}catch(const std::exception&){rejected=true;}

@@ -164,7 +164,8 @@ def _publish_effect_mod(destination,label,effects):
     finally:
         if staging.exists():shutil.rmtree(staging)
 
-def apply(root, ini, material_clips=None, effects=None, material_ids=(), merge_effects=False):
+def apply(root, ini, material_clips=None, effects=None, material_ids=(), merge_effects=False,
+          memory_resources=None):
     """Modify only the supplied domain; unrelated partial exports preserve it."""
     from .ini_package import save_ini
     from .resource_file import read_resource
@@ -173,7 +174,11 @@ def apply(root, ini, material_clips=None, effects=None, material_ids=(), merge_e
         if rows is None:continue
         for section in list(ini.sections()):
             if not section.startswith(prefix):continue
-            prior=decode(read_resource(resource_path(root,ini[section]['path']),kind))
+            relative=ini[section]['path']
+            prior_resource=(decode_resource(memory_resources[relative],kind)
+                            if memory_resources is not None and relative in memory_resources
+                            else read_resource(resource_path(root,relative),kind))
+            prior=decode(prior_resource)
             if kind==EFFECT and merge_effects and prior['id'] not in {row['id'] for row in rows}:continue
             if kind==MATERIAL and material_ids and not any(t['material'] in material_ids for t in prior['targets']):continue
             if kind==MATERIAL and material_ids:require(all(t['material'] in material_ids for t in prior['targets']),'partial export must include every material in the animation')
@@ -182,9 +187,13 @@ def apply(root, ini, material_clips=None, effects=None, material_ids=(), merge_e
                 for key in (variable,'persist '+variable):ini['Constants'].pop(key,None)
                 for control in list(ini.sections()):
                     if control.startswith(('ShapeControl','KeyRuntime')) and (ini[control].get('variable')==variable or variable in ini[control]):ini.remove_section(control)
-            resource_path(root,ini[section]['path']).unlink();ini.remove_section(section)
+            if memory_resources is not None:
+                memory_resources.pop(relative,None)
+            else:
+                resource_path(root,relative).unlink()
+            ini.remove_section(section)
         for row in rows:
-            cid=identifier(row['id']);relative='resources/'+prefix.lower()+'_'+cid+'.bin';path=resource_path(root,relative);path.parent.mkdir(parents=True,exist_ok=True)
+            cid=identifier(row['id']);relative='resources/'+prefix.lower()+'_'+cid+'.bin';path=resource_path(root,relative)
             if kind==MATERIAL:
                 row=dict(row,speedVariable='$mat_speed_'+cid)
                 data=material_encode(ini['Mod']['id'],row);decoded=material_decode(decode_resource(data,kind))
@@ -197,5 +206,11 @@ def apply(root, ini, material_clips=None, effects=None, material_ids=(), merge_e
                 data=effect_encode(ini['Mod']['id'],row);variable='$fx_'+cid;ini['Constants']['persist '+variable]=str(int(row.get('autoplay',True)))
                 ini['ShapeControlRuntime'+variable[1:]]=dict(variable=variable,label=row['label'],min='0',max='1')
                 if row.get('key'):ini['KeyRuntime'+cid]={'key':row['key'],'type':'cycle',variable:'0,1'}
-            temp=path.with_suffix('.tmp');temp.write_bytes(data);temp.replace(path);ini[prefix+cid]={'path':relative}
-    save_ini(root,ini)
+            if memory_resources is None:
+                path.parent.mkdir(parents=True,exist_ok=True)
+                temp=path.with_suffix('.tmp');temp.write_bytes(data);temp.replace(path)
+            else:
+                memory_resources[relative]=data
+            ini[prefix+cid]={'path':relative}
+    if memory_resources is None:
+        save_ini(root,ini)

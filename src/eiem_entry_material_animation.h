@@ -65,10 +65,10 @@ void Install(void** assemblies,size_t count){try{
  api.propertyId=method(FindClass("UnityEngine","Shader",assemblies,count),"PropertyToID",{"System.String"},"System.Int32",true);
  api.setFloat=method(api.blockClass,"SetFloat",{"System.Int32","System.Single"},"System.Void",false);api.setVector=method(api.blockClass,"SetVector",{"System.Int32","UnityEngine.Vector4"},"System.Void",false);api.setColor=method(api.blockClass,"SetColor",{"System.Int32","UnityEngine.Color"},"System.Void",false);
  auto slot=il2cpp_resolve_icall("UnityEngine.Renderer::Internal_SetPropertyBlockMaterialIndex"),global=il2cpp_resolve_icall("UnityEngine.Renderer::Internal_SetPropertyBlock");Require(slot&&global&&!installed.count(slot)&&!installed.count(global),"material animation native block setters unavailable");
- Require(MH_CreateHook(slot,(void*)SetSlot,(void**)&originalSlot)==MH_OK&&MH_EnableHook(slot)==MH_OK,"material slot override hook failed");installed.insert(slot);
- Require(MH_CreateHook(global,(void*)SetGlobal,(void**)&originalGlobal)==MH_OK&&MH_EnableHook(global)==MH_OK,"material global override hook failed");installed.insert(global);revision=RuntimeControls::revision;
+ Require(Entry::InstallAddress(slot,"Renderer.Internal_SetPropertyBlockMaterialIndex",(void*)SetSlot,(void**)&originalSlot),"material slot override hook failed");
+ Require(Entry::InstallAddress(global,"Renderer.Internal_SetPropertyBlock",(void*)SetGlobal,(void**)&originalGlobal),"material global override hook failed");revision=RuntimeControls::revision;
  auto getter=il2cpp_resolve_icall("UnityEngine.Renderer::Internal_GetPropertyBlockMaterialIndex");Require(getter&&!installed.count(getter),"material block native read binding unavailable");
- Require(MH_CreateHook(getter,(void*)GetSlot,(void**)&originalGetSlot)==MH_OK&&MH_EnableHook(getter)==MH_OK,"material block game read hook failed");installed.insert(getter);enabled=true;
+ Require(Entry::InstallAddress(getter,"Renderer.Internal_GetPropertyBlockMaterialIndex",(void*)GetSlot,(void**)&originalGetSlot),"material block game read hook failed");enabled=true;
  Log("[MATERIAL-ANIMATION-READY] rendererSlotOwnership=1 gameBlockPreserved=1 workerUnityCalls=0");
  }catch(const std::exception& e){enabled=false;Log("[MATERIAL-ANIMATION-GAP] install=%s existingModStartupPreserved=1",e.what());}}
 }

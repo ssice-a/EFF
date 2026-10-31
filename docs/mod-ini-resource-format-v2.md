@@ -1,5 +1,7 @@
 # INI 与独立资源目录格式 v2
 
+> 历史格式说明：v2 的 `.tex`、`.mesh`、`.mat` 和离线编译细节将由 [ADR-0001](adr/0001-authoritative-mod-directory.md) 替代。此文保留用于识别和迁移旧 Mod，不定义新 DDS/资源文件格式。
+
 ## Mod 目录发现
 
 `plugin/mods` 下递归扫描包含 `mod.ini` 的目录，包括已有 Mod 内的独立子 Mod。例如 `mods/lx/mod.ini` 与 `mods/lx/petals/mod.ini` 分别表示角色包和独立花瓣包；只有分组文件夹、没有 `mod.ini` 的层级也可继续向下扫描。启动、F10 的人物集合与 F9 的独立特效使用同一发现入口。点号开头的目录、目录链接和 junction 不参与发现，结果按完整路径排序。

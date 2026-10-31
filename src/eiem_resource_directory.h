@@ -32,6 +32,7 @@ namespace EiemReadonlyFileRange { class Range; }
 namespace EiemDirectory {
 using Bytes = std::vector<unsigned char>;
 using Digest = std::array<unsigned char, 32>;
+struct InputBytes { const unsigned char* data = nullptr; size_t size = 0; };
 inline void Require(bool ok, const std::string& message) {
   if (!ok) throw std::runtime_error(message);
 }
@@ -346,7 +347,7 @@ struct Material {
 struct Texture {
   std::string resource;
   Identity source;
-  unsigned width = 0, height = 0, mips = 0, filter = 0, wrap = 0, aniso = 0;
+  unsigned width = 0, height = 0, mips = 0, format = 4, filter = 0, wrap = 0, aniso = 0;
   bool linear = false;
   double bias = 0;
 };
@@ -435,10 +436,12 @@ inline std::filesystem::path DiskPath(const std::filesystem::path& root,
           "resource escaped Mod folder");
   return path;
 }
-inline Package Load(const std::filesystem::path& directory,const Package* verified=nullptr) {
+inline Package LoadImpl(const std::filesystem::path& directory,const Package* verified,
+                        const Bytes* inputIni,
+                        const std::map<std::string,InputBytes>* inputResources) {
   Package p;
-  p.root = std::filesystem::canonical(directory);
-  auto ini = Read(p.root / "mod.ini");
+  p.root = inputIni ? std::filesystem::weakly_canonical(directory) : std::filesystem::canonical(directory);
+  auto ini = inputIni ? *inputIni : Read(p.root / "mod.ini");
   auto sections = ParseIni(ini);
   p.iniHash = Sha(ini.data(), ini.size());
   std::set<std::string> allowed{"mod.ini"};
@@ -476,6 +479,15 @@ inline Package Load(const std::filesystem::path& directory,const Package* verifi
     if(verified){auto cached=verified->resources.find(relative);if(cached!=verified->resources.end()){
       Require(!kind||cached->second->kind==kind,"verified resource alias kind");resource=cached->second;
     }}
+    if(!resource&&inputResources){
+      auto input=inputResources->find(relative);
+      Require(input!=inputResources->end()&&input->second.data&&input->second.size,
+              "in-memory author resource is absent");
+      auto path=DiskPath(p.root,relative,kind);
+      (void)path;
+      resource=std::make_shared<Resource>(
+          Decode(Bytes(input->second.data,input->second.data+input->second.size),kind));
+    }
     if(!resource)resource=std::make_shared<Resource>(Decode(Read(DiskPath(p.root,relative,kind)),kind));
     allowed.insert(relative);
     p.resources.emplace(relative, resource);
@@ -559,10 +571,14 @@ inline Package Load(const std::filesystem::path& directory,const Package* verifi
       };
       if (r.blocks.count("@texture")) {
         const auto& spec = r.blocks.at("@texture");
-        Require(spec.size == 20 &&
-                    ResourceLe(r, spec.offset + 12, 4) == 4, "unsupported TEX metadata structure/pixel encoding");
+        auto version = ResourceLe(r, spec.offset, 4);
+        Require((version == 1 && spec.size == 20 && ResourceLe(r, spec.offset + 12, 4) == 4) ||
+                    (version == 2 && spec.size == 52 &&
+                     (ResourceLe(r, spec.offset + 12, 4) == 25 || ResourceLe(r, spec.offset + 12, 4) == 27)),
+                "unsupported TEX metadata structure/pixel encoding");
         t.width = (unsigned)ResourceLe(r, spec.offset + 4, 4);
         t.height = (unsigned)ResourceLe(r, spec.offset + 8, 4);
+        t.format = (unsigned)ResourceLe(r, spec.offset + 12, 4);
         t.mips = (unsigned)ResourceLe(r, spec.offset + 16, 4);
       } else {
         Require(v.count("width") && v.count("height") && v.count("mip_count") &&
@@ -576,7 +592,8 @@ inline Package Load(const std::filesystem::path& directory,const Package* verifi
       Require(setting("linear", "false") == "true" || setting("linear", "false") == "false",
               "unsupported texture encoding/color");
       t.linear = setting("linear", "false") == "true";
-      Require(t.width && t.height && t.mips && t.filter <= 2 && t.wrap <= 3 && t.aniso <= 16 &&
+      Require(t.width && t.height && t.width <= INT_MAX && t.height <= INT_MAX && t.mips &&
+                  t.filter <= 2 && t.wrap <= 3 && t.aniso <= 16 &&
                   std::abs(t.bias) <= 3.402823466e38,
               "invalid texture declaration range");
       size_t size = 0;
@@ -584,8 +601,15 @@ inline Package Load(const std::filesystem::path& directory,const Package* verifi
       for (unsigned n = std::max(w, h); n > 1; n >>= 1) ++maxMips;
       Require(t.mips <= maxMips, "too many mip levels");
       for (unsigned i = 0; i < t.mips; ++i) {
-        Require(uint64_t(w) * h <= UINT_MAX / 4, "texture layer exceeds native size field");
-        size += (size_t)w * h * 4;
+        size_t mipBytes;
+        if (t.format == 4) {
+          Require(uint64_t(w) * h <= UINT_MAX / 4, "texture layer exceeds native size field");
+          mipBytes = (size_t)w * h * 4;
+        } else {
+          auto blocks = MultiplySize(std::max(1u, (w + 3) / 4), std::max(1u, (h + 3) / 4));
+          mipBytes = MultiplySize(blocks, 16);
+        }
+        size = AddSize(size, mipBytes);
         Require(size <= UINT_MAX, "texture exceeds native size field");
         w = std::max(1u, w / 2);
         h = std::max(1u, h / 2);
@@ -739,10 +763,13 @@ inline Package Load(const std::filesystem::path& directory,const Package* verifi
   static const std::regex compiledBlob("compiled\\.blocks/[0-9A-Fa-f]{64}\\.bin");
   static const std::regex compiledTemporary("(?:compiled\\.bin|compiled\\.blocks/[0-9A-Fa-f]{64}\\.bin)\\.tmp-[0-9]+-[0-9]+-[0-9]+");
   std::set<std::string> actual;
-  for (const auto& file : EiemModDirectory::Files(p.root)) {
+  if(inputResources){
+    actual.insert("mod.ini");
+    for(const auto& file:*inputResources)actual.insert(file.first);
+  }else for (const auto& file : EiemModDirectory::Files(p.root)) {
       auto relative=file.lexically_relative(p.root).generic_u8string();
       // Player preferences are not author resources and are excluded from the
-      // package digest. A concurrent atomic save can expose its temporary file.
+      // package digest. A concurrent atomic save can expose a temporary file.
       if (relative=="state.ini" || std::regex_match(relative,std::regex("state\\.ini\\.tmp-[0-9]+"))) continue;
       if (AuthorAuxiliary(file)) continue;
       if (std::regex_match(relative,compiledTemporary)) continue;
@@ -753,5 +780,12 @@ inline Package Load(const std::filesystem::path& directory,const Package* verifi
   }
   Require(actual == allowed, "unreferenced/source files in Mod directory");
   return p;
+}
+inline Package Load(const std::filesystem::path& directory,const Package* verified=nullptr) {
+  return LoadImpl(directory,verified,nullptr,nullptr);
+}
+inline Package LoadMemory(const std::filesystem::path& directory,const Bytes& ini,
+                          const std::map<std::string,InputBytes>& resources) {
+  return LoadImpl(directory,nullptr,&ini,&resources);
 }
 }  // namespace EiemDirectory

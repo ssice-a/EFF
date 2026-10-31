@@ -1,114 +1,116 @@
-"""Measure source-independent Mesh/Material export on a read-only real Mod.
-
-The template table is a temporary author input, not a player replacement
-manifest. Generated assets are removed with the benchmark's own directory.
-"""
+"""Measure full format-3 author export through the in-memory DLL ABI."""
 import argparse
 import configparser
 import hashlib
 import json
 from pathlib import Path
-import subprocess
 import shutil
+import sys
 import tempfile
 import time
 
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'tools'))
+sys.path.insert(0, str(ROOT / 'tools' / 'Blender'))
+
+from nativepack import author_format3
+from eiem_native_export import write_format3_native_assets
+
 
 def hashes(root):
-    return {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in root.rglob('*') if p.is_file()}
+    return {path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in root.rglob('*') if path.is_file()}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mod', type=Path)
-    parser.add_argument('sources', type=Path)
-    parser.add_argument('compiler', type=Path)
+    parser.add_argument('mod', type=Path, help='complete format-2 author Mod')
+    parser.add_argument('sources', type=Path, help='directory containing EFFSOURCE packages')
+    parser.add_argument('author_snapshots', type=Path,
+                        help='editable snapshot files named by Part/Material/Resource ID')
+    parser.add_argument('writer_dll', type=Path)
     parser.add_argument('--report', type=Path)
     parser.add_argument('--probe-sample', type=Path,
-                        help='retain directory and first native texture for game acceptance')
+                        help='copy the complete candidate for independent acceptance')
+    parser.add_argument('--retain-output', type=Path,
+                        help='retain the complete format-3 candidate outside the inputs')
     args = parser.parse_args()
-    before = hashes(args.mod)
-    ini = configparser.ConfigParser(interpolation=None, strict=False)
+
+    mod = args.mod.resolve()
+    source_root = args.sources.resolve()
+    before_mod, before_sources = hashes(mod), hashes(source_root)
+    ini_bytes = (mod / 'mod.ini').read_bytes()
+    ini = configparser.ConfigParser(interpolation=None, delimiters=('=',), strict=True)
     ini.optionxform = str
-    ini.read(args.mod/'mod.ini', encoding='utf-8-sig')
-    wanted = {}
+    ini.read_string(ini_bytes.decode('utf-8-sig', 'strict'))
+
+    resources = {}
     for section in ini.sections():
-        row = ini[section]
-        if section.startswith('Replace') and row.get('handling') != 'skip':
-            wanted[(row['target.path'], row['target.asset'])] = 'Mesh'
-        if section.startswith('Material'):
-            wanted[(row['source.path'], row['source.asset'])] = 'Material'
-    found = {}
-    texture_template = None
-    for source in args.sources.glob('*.eff'):
-        path = source/'source/manifest.json'
+        relative = ini[section].get('path')
+        if not relative:
+            continue
+        path = (mod / Path(*relative.split('/'))).resolve()
+        if not path.is_relative_to(mod) or not path.is_file():
+            raise ValueError('Declared format-2 resource is absent or escapes the Mod: ' + relative)
+        resources[relative] = path.read_bytes()
+
+    author_files = {}
+    for path in sorted(args.author_snapshots.rglob('*')):
         if not path.is_file():
             continue
-        manifest = json.loads(path.read_text('utf-8-sig'))
-        files = {f['cab']: f for f in manifest['serializedFiles']}
-        for asset in manifest['resources']:
-            if texture_template is None and asset['type'] == 'Texture2D':
-                native = asset['native']
-                row = files[native['cab']]
-                if not row.get('externals'):
-                    texture_template = ['Texture2D',asset['logicalPath'],asset['name'],native['cab'],str(native['pathId']),str((source/row['snapshot']['file']).resolve()),row['snapshot']['sha256']]
-            identity = (asset['logicalPath'], asset['name'])
-            if identity not in wanted or asset['type'] != wanted[identity] or identity in found:
-                continue
-            native = asset['native']
-            row = files[native['cab']]
-            snapshot = (source/row['snapshot']['file']).resolve()
-            if not snapshot.is_relative_to(source.resolve()):
-                raise ValueError('Template snapshot escapes EFFSOURCE')
-            found[identity] = [wanted[identity], *identity, native['cab'],
-                               str(native['pathId']), str(snapshot), row['snapshot']['sha256']]
-    if found.keys() != wanted.keys():
-        raise ValueError('Missing exact author templates: '+str(wanted.keys()-found.keys()))
-    with tempfile.TemporaryDirectory(prefix='eff-independent-author-') as folder:
-        root = Path(folder)
-        table = root/'author-templates.tsv'
-        rows = ['EFF_AUTHOR_TEMPLATES/exact-assets+native-snapshots/tsv']
-        for identity in sorted(found):
-            row = found[identity]
-            if any(any(c in value for c in '\r\n\t') for value in row):
-                raise ValueError('Template identity cannot be represented by TSV')
-            rows.append('\t'.join(row))
-        if texture_template is not None:
-            rows.append('\t'.join(texture_template))
-        table.write_text('\n'.join(rows)+'\n', encoding='utf-8')
+        relative = path.relative_to(args.author_snapshots).as_posix()
+        if '/' in relative:
+            raise ValueError('Editable author snapshots must be flat: ' + relative)
+        author_files[relative] = path.read_bytes()
+    if not author_files:
+        raise ValueError('Editable author snapshot directory is empty')
+
+    sources = sorted(source_root.glob('*.eff'), key=lambda path: path.name.casefold())
+    if not sources:
+        raise ValueError('No EFFSOURCE packages found under ' + str(source_root))
+    templates = author_format3.resolve_templates(None, sources, ini_bytes=ini_bytes)
+    before_author = hashes(args.author_snapshots.resolve())
+
+    with tempfile.TemporaryDirectory(prefix='eff-memory-author-benchmark-') as folder:
+        candidate = Path(folder) / 'format3'
         started = time.perf_counter()
-        p = subprocess.run([str(args.compiler.resolve()), str(args.mod.resolve()),
-                            str(table), str(root/'assets')], capture_output=True,
-                           encoding='utf-8', errors='replace',
-                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-        elapsed = time.perf_counter()-started
-        if p.returncode:
-            raise RuntimeError(p.stderr or p.stdout)
-        output = hashes(root/'assets')
-        report = dict(mod=args.mod.name, wallSeconds=elapsed,
-                      compilerResult=p.stdout.strip(), outputFiles=len(output),
-                      outputBytes=sum(p.stat().st_size for p in (root/'assets').rglob('*') if p.is_file()),
-                      assetsDirectoryBytes=(root/'assets/assets.bin').stat().st_size,
-                      outputSHA256=output, authorUnchanged=hashes(args.mod)==before,
-                      texturesMigrated=True, physicsMigrated=False,
-                      completeModExport=False, consumerPrefabSearch=False)
-        assert report['authorUnchanged'], 'Author/Mod inputs changed'
+        writer_report = write_format3_native_assets(
+            args.writer_dll, ini_bytes, templates, resources, author_files, candidate)
+        elapsed = time.perf_counter() - started
+        package = author_format3.read_format3_directory(candidate)
+        output = hashes(candidate)
+        files = package['_files']
+        report = dict(mod=mod.name, wallSeconds=elapsed, writerResult=writer_report,
+                      format=3, format3Files=len(output),
+                      outputBytes=sum((candidate / name).stat().st_size for name in output),
+                      meshCount=sum(name.startswith('native/meshes/') for name in files),
+                      materialCount=sum(name.startswith('native/materials/') for name in files),
+                      textureCount=sum(name.startswith('textures/') and name.endswith('.dds') for name in files),
+                      physicsCount=sum(name.startswith('native/physics/') for name in files),
+                      outputSHA256=output, modUnchanged=hashes(mod) == before_mod,
+                      sourcesUnchanged=hashes(source_root) == before_sources,
+                      authorSnapshotsUnchanged=hashes(args.author_snapshots.resolve()) == before_author,
+                      completeModExport=True)
+        assert report['modUnchanged'] and report['sourcesUnchanged'] and report['authorSnapshotsUnchanged'], \
+            'Read-only benchmark input changed'
+
+        def retain(destination, copy):
+            destination = destination.resolve()
+            inputs = (mod, source_root, args.author_snapshots.resolve())
+            if any(destination == root or destination.is_relative_to(root) for root in inputs):
+                raise ValueError('Retained output must be outside author/source inputs')
+            if destination.exists():
+                raise ValueError('Retained output already exists')
+            copy(destination)
+
+        if args.retain_output:
+            retain(args.retain_output, lambda destination: shutil.copytree(candidate, destination))
         if args.probe_sample:
-            sample = args.probe_sample.resolve()
-            if sample.is_relative_to(args.mod.resolve()) or sample.is_relative_to(args.sources.resolve()):
-                raise ValueError('Probe sample must stay outside authors and source')
-            sample.mkdir(parents=True,exist_ok=True)
-            shutil.copy2(root/'assets/assets.bin',sample/'assets.bin')
-            textures = sorted((root/'assets/textures').glob('*.tex'))
-            if not textures:
-                raise ValueError('Probe sample requires one authored texture')
-            (sample/'textures').mkdir(exist_ok=True)
-            shutil.copy2(textures[0],sample/'textures'/textures[0].name)
-            print('PROBE_TEXTURE_SAMPLE '+textures[0].name)
+            retain(args.probe_sample, lambda destination: shutil.copytree(candidate, destination))
         if args.report:
-            args.report.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
-        print(json.dumps({k:v for k,v in report.items() if k!='outputSHA256'},ensure_ascii=False))
+            args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+        print(json.dumps({key: value for key, value in report.items() if key != 'outputSHA256'},
+                         ensure_ascii=False))
 
 
 if __name__ == '__main__':

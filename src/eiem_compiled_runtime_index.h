@@ -15,7 +15,7 @@ inline size_t ReadLayoutDeltaValue(EiemOfflinePackage::Reader& r,size_t before){
 inline SerializedLayout ReadDeltaLayout(EiemOfflinePackage::Reader& r,const SerializedLayout& before,const SchemaReader& schemas){
  SerializedLayout after;after.metadataSize=ReadLayoutDeltaValue(r,before.metadataSize);after.dataOffset=ReadLayoutDeltaValue(r,before.dataOffset);after.countOffset=ReadLayoutDeltaValue(r,before.countOffset);after.tableStart=ReadLayoutDeltaValue(r,before.tableStart);after.tableEnd=ReadLayoutDeltaValue(r,before.tableEnd);
  Require(after.countOffset>=48&&after.tableStart>=after.countOffset+4&&after.tableEnd<=AddSize(48,after.metadataSize)&&after.dataOffset>=AddSize(48,after.metadataSize),"compiled delta object metadata extent differs");
- auto prefix=r.Size();Require(prefix<=before.types.size(),"compiled delta schema prefix invalid");after.types.assign(before.types.begin(),before.types.begin()+prefix);auto n=r.Count();for(size_t i=0;i<n;++i)after.types.push_back(schemas.types.at(r.Size()));
+ auto prefix=r.Size();Require(prefix<=before.types.size(),"compiled delta schema prefix invalid");after.types.assign(before.types.begin(),before.types.begin()+prefix);auto n=r.Count();for(size_t i=0;i<n;++i)after.types.push_back(schemas.At(r.Size()));
  auto count=r.Count();for(size_t i=0;i<count;++i){Object object;auto original=r.N();
   if(original){Require(original<=before.order.size(),"compiled delta original object ordinal absent");object.id=before.order[size_t(original-1)];const auto& old=before.objects.at(object.id);object.offset=ReadLayoutDeltaValue(r,old.offset);object.size=ReadLayoutDeltaValue(r,old.size);object.type=ReadLayoutDeltaValue(r,old.type);}
   else {object.id=int64_t(r.N());object.offset=r.Size();object.size=r.Size();object.type=r.Size();Require(!before.objects.count(object.id),"compiled delta new object reuses an original ID");}
@@ -46,7 +46,7 @@ inline void HydrateInput(const Artifact& a,size_t input){
  // A source merged into a lazily loaded artifact can have its own retained
  // block while the callback still addresses the older store's directory.
  // Prefer that explicit block; its index may not exist in the old reader.
- auto plain=Unpack(retained!=a.retainedProofBlocks.end()?retained->second:(a.proofBlocks?a.proofBlocks->at(input):a.proofReader(input)));EiemOfflinePackage::Reader r{plain};SchemaReader schemas;schemas.types=a.sharedSchemas;
+ auto plain=Unpack(retained!=a.retainedProofBlocks.end()?retained->second:(a.proofBlocks?a.proofBlocks->at(input):a.proofReader(input)));EiemOfflinePackage::Reader r{plain};SchemaReader schemas;schemas.shared=&a.sharedSchemas;
  auto markerBytes=std::strlen(sharedProofStructure);bool delta=!a.sharedSchemas.empty()&&plain.size()>=8+markerBytes&&Le(plain,0,8)==markerBytes&&std::memcmp(plain.data()+8,sharedProofStructure,markerBytes)==0;if(delta)r.S();
  std::map<std::string,MemberProof> proofs;auto n=r.Count();for(size_t i=0;i<n;++i){auto name=r.S();MemberProof p;p.before=ReadLayout(r,schemas);p.after=delta?ReadDeltaLayout(r,p.before,schemas):ReadLayout(r,schemas);
   Require(ExternalPrefix(p.before.externals,p.after.externals),"compiled deferred external order differs");auto count=r.Count();for(size_t j=0;j<count;++j){StreamSite site;site.object=int64_t(r.N());site.offset=r.Size();site.width=r.Size();site.member=r.S();site.value=r.N();auto object=p.after.objects.find(site.object);

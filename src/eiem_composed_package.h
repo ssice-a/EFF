@@ -1,6 +1,7 @@
 #pragma once
 #include "eiem_loading_input_substitution.h"
 #include "eiem_runtime_shape_identity.h"
+#include "eiem_target_mod_precedence.h"
 
 // Compose declarations BEFORE writing any native input. Shared CABs, Prefabs,
 // preload lists and namespaces are consequently built exactly once.
@@ -62,6 +63,11 @@ inline Package Compose(const std::vector<Package>& authors,bool forceSet=false,b
     ordered.push_back(&p);
   }
   std::sort(ordered.begin(),ordered.end(),[](auto a,auto b){return a->id<b->id;});
+  std::vector<EiemTargetModPrecedence::Claim> targetClaims;
+  for(const auto* p:ordered)for(const auto& rule:p->rules)for(const auto& target:rule.second.targets)
+    targetClaims.push_back({{target.second.path,target.second.asset},p->id});
+  const auto targetSelection=EiemTargetModPrecedence::Resolve(targetClaims);
+  std::map<EiemTargetModPrecedence::Identity,std::map<std::string,std::pair<std::string,Rule>>> targetRules;
   std::string identity="EFF_COMPOSED_AUTHOR_1\n";
   std::map<std::string,std::string> textureAliases;
   std::map<std::pair<Identity,std::string>,std::string> materialCopies;
@@ -79,11 +85,10 @@ inline Package Compose(const std::vector<Package>& authors,bool forceSet=false,b
     }
     for(const auto& m:p.materials) {
       auto copy=m.second;copy.resource=resourceName(copy.resource);
-      std::string fingerprint=ResourceDigest(*p.resources.at(m.second.resource));
+      std::string fingerprint=reuseCopies?ResourceDigest(*p.resources.at(m.second.resource)):prefix+m.first;
       for(auto& slot:copy.textures) {slot.second=textures.at(slot.second);fingerprint+='\n'+slot.first+":"+slot.second;}
       // A source Material is a clone template. Only identical authored
       // copies may share an object; different part bindings stay independent.
-      if(!reuseCopies)fingerprint+=prefix+m.first;
       auto candidate=prefix+m.first;auto alias=materialCopies.emplace(std::make_pair(copy.source,fingerprint),candidate);
       materials[m.first]=alias.first->second;
       if(alias.second) result.materials.emplace(candidate,std::move(copy));
@@ -96,15 +101,25 @@ inline Package Compose(const std::vector<Package>& authors,bool forceSet=false,b
     }
     for(const auto& rule:p.rules) {
       auto copy=rule.second;for(auto& part:copy.parts) part=prefix+part;
-      for(const auto& target:copy.targets)
-        Require(result.targetIndex.emplace(target.second,prefix+rule.first).second,
-                "conflicting Mesh path+asset: "+target.second.path+" / "+target.second.asset+" (Mod "+p.id+")");
+      for(const auto& target:copy.targets) {
+        const EiemTargetModPrecedence::Identity key{target.second.path,target.second.asset};
+        targetRules[key].emplace(p.id,std::make_pair(prefix+rule.first,copy));
+      }
       result.rules.emplace(prefix+rule.first,std::move(copy));
     }
     for(const auto& v:p.defaults) result.defaults.emplace("$"+prefix+v.first.substr(1),v.second);
     for(const auto& v:p.persistent) result.persistent.insert("$"+prefix+v.substr(1));
     for(const auto& c:p.controls) result.controls.emplace("$"+prefix+c.first.substr(1),c.second);
     for(auto binding:p.bindings) {binding.id=prefix+binding.id;binding.variable="$"+prefix+binding.variable.substr(1);result.bindings.push_back(std::move(binding));}
+  }
+  for(const auto& row:targetSelection.claimants){
+    const auto& key=row.first;const auto& claims=targetRules.at(key);
+    if(row.second.size()==1){const auto& claim=claims.at(row.second.front());result.targetIndex.emplace(Identity{key.first,key.second},claim.first);continue;}
+    const auto& top=claims.at(targetSelection.winner.at(key)).second;Rule combined;combined.skip=top.skip;
+    if(!combined.skip)for(const auto& mod:row.second){const auto& rule=claims.at(mod).second;if(!rule.skip)combined.parts.insert(combined.parts.end(),rule.parts.begin(),rule.parts.end());}
+    auto label=key.first+"\n"+key.second;auto digest=Sha(reinterpret_cast<const unsigned char*>(label.data()),label.size());auto ruleId="EFF_TARGET_"+Hex(digest.data(),digest.size());
+    combined.targets.emplace(0,Identity{key.first,key.second});Require(result.rules.emplace(ruleId,std::move(combined)).second,"composed overlapping target rule id collision");
+    result.targetIndex.emplace(Identity{key.first,key.second},std::move(ruleId));
   }
   result.iniHash=Sha(reinterpret_cast<const unsigned char*>(identity.data()),identity.size());return result;
 }

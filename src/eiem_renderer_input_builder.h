@@ -1,6 +1,7 @@
 #pragma once
 #include "eiem_mesh_input_builder.h"
 #include "eiem_texture_input_builder.h"
+#include "eiem_mesh_binding_metadata.h"
 #include <cfloat>
 #include <functional>
 #include <chrono>
@@ -40,29 +41,42 @@ inline NativeReference NullableReference(const Type& type, const Value& value,
   return {file ? layout.externals[(size_t)file - 1] : cab,
           (int64_t)Integer(Child(type, value, "m_PathID"))};
 }
+inline NativeReference CanonicalSerializedAssetReference(NativeReference reference) {
+  reference.first = SerializedAssetCabKey(std::move(reference.first));
+  return reference;
+}
 struct MeshConsumer {int64_t renderer=0,filter=0;NativeReference mesh;};
+inline std::vector<NativeReference> RendererMaterials(const Type& type,const Value& renderer,
+    const SerializedLayout& layout,const std::string& cab) {
+  std::vector<NativeReference> result;const auto& materials=ConstArray(type,Child(type,renderer,"m_Materials"));
+  for(const auto& entry:materials.children){auto material=NullableReference(type,entry,layout,cab);if(material.second)result.push_back(std::move(material));}
+  return result;
+}
 // Static Mesh references belong to MeshFilter. Pair only the components that
 // the owning GameObject actually references; names and scene state play no role.
-inline std::vector<MeshConsumer> MeshConsumers(const Bytes& bytes,const SerializedLayout& layout,
-    const std::string& cab,const std::set<NativeReference>& selected,std::string (*canonical)(std::string)=nullptr) {
+template<class Project> inline std::vector<MeshConsumer> ProjectedMeshConsumers(const SerializedLayout& layout,
+    const std::string& cab,const std::set<NativeReference>& selected,const Project& project,
+    std::string (*canonical)(std::string)=nullptr) {
+  std::set<NativeReference> lookup=selected;
+  if(canonical){lookup.clear();for(auto reference:selected){reference.first=canonical(std::move(reference.first));lookup.insert(std::move(reference));}}
   std::vector<MeshConsumer> result;
   for(auto id:layout.order){const auto& type=layout.types.at(layout.objects.at(id).type);
     if(type.classId!=137&&type.classId!=33)continue;
-    auto value=ObjectFields(bytes,layout,id,{"m_Mesh","m_GameObject"});auto mesh=NullableReference(type,Child(type,value,"m_Mesh"),layout,cab);
+    auto value=project(id,{"m_Mesh","m_GameObject"});auto mesh=NullableReference(type,Child(type,value,"m_Mesh"),layout,cab);
     auto key=mesh;if(canonical)key.first=canonical(key.first);
-    if(!mesh.second||!selected.count(key))continue;
+    if(!mesh.second||!lookup.count(key))continue;
     if(type.classId==137){result.push_back({id,0,mesh});continue;}
     auto owner=NullableReference(type,Child(type,value,"m_GameObject"),layout,cab);
     Require(owner.first==cab&&owner.second&&layout.objects.count(owner.second),"static MeshFilter has no local GameObject");
     const auto& gt=layout.types.at(layout.objects.at(owner.second).type);Require(gt.classId==1,"static MeshFilter owner is not a GameObject");
-    auto go=ObjectFields(bytes,layout,owner.second,{"m_Component"});int64_t renderer=0;size_t filters=0,renderers=0;
+    auto go=project(owner.second,{"m_Component"});int64_t renderer=0;size_t filters=0,renderers=0;
     for(const auto& entry:ConstArray(gt,Child(gt,go,"m_Component")).children){auto ref=NullableReference(gt,Child(gt,entry,"component"),layout,cab);
       // Unrelated missing/script references are preserved. Only the selected
       // visual pair needs locally resolvable components.
       if(ref.first!=cab||!ref.second||!layout.objects.count(ref.second))continue;
       const auto& ct=layout.types.at(layout.objects.at(ref.second).type);
       if(ct.classId!=23&&ct.classId!=33)continue;
-      auto component=ObjectFields(bytes,layout,ref.second,{"m_GameObject"});
+      auto component=project(ref.second,{"m_GameObject"});
       Require(NullableReference(ct,Child(ct,component,"m_GameObject"),layout,cab)==owner,"static component/GameObject ownership differs");
       if(ct.classId==33){++filters;Require(ref.second==id,"static GameObject has another MeshFilter");}
       else {++renderers;renderer=ref.second;}
@@ -72,6 +86,12 @@ inline std::vector<MeshConsumer> MeshConsumers(const Bytes& bytes,const Serializ
     Require(renderers==1,"static MeshFilter has multiple referenced MeshRenderers");
     result.push_back({renderer,id,mesh});
   }return result;
+}
+inline std::vector<MeshConsumer> MeshConsumers(const Bytes& bytes,const SerializedLayout& layout,
+    const std::string& cab,const std::set<NativeReference>& selected,std::string (*canonical)(std::string)=nullptr) {
+  return ProjectedMeshConsumers(layout,cab,selected,[&](int64_t id,const std::set<std::string>& fields){
+    return ObjectFields(bytes,layout,id,fields);
+  },canonical);
 }
 inline double FloatValue(const Type& type, const Value& value) {
   Require(type.nodes.at(value.node).type == "float" && value.raw.size() == 4,
@@ -136,12 +156,11 @@ inline Value AuthorField(const Type& type, const Value& source,
   Bytes bytes(resource.bytes.begin() + block.offset, resource.bytes.begin() + block.offset + block.size);
   return DecodeValue(type, Child(type, source, name).node, bytes);
 }
-inline std::pair<Vector3, Vector3> PartBounds(const Type& type, const Value& source,
-                                              const Resource& resource, const Mesh& mesh,
-                                              size_t rootSlot,const AffineMatrix& boneToRoot=AffineIdentity()) {
+struct MeshEnvelope {std::vector<Vector3> lower,upper;};
+inline MeshEnvelope PartEnvelope(const Type& type,const Value& source,const Resource& resource,const Mesh& mesh) {
   auto vertex = AuthorField(type, source, resource, "m_VertexData");
   const auto& channels = ConstArray(type, Child(type, vertex, "m_Channels"));
-  Require(channels.children.size() == 14 && mesh.vertices && rootSlot < mesh.bones.size(),
+  Require(channels.children.size() == 14 && mesh.vertices,
           "Renderer bounds geometry/palette count");
   const auto& position = channels.children[0];
   Require(Integer(Child(type, position, "stream")) == 0 &&
@@ -193,32 +212,36 @@ inline std::pair<Vector3, Vector3> PartBounds(const Type& type, const Value& sou
     for (size_t i = 0; i < mesh.vertices; ++i)
       for (size_t axis = 0; axis < 3; ++axis) { lower[i][axis] += low[i][axis]; upper[i][axis] += high[i][axis]; }
   }
+  return {std::move(lower),std::move(upper)};
+}
+inline std::pair<Vector3,Vector3> EnvelopeBounds(const MeshEnvelope& envelope,const AffineMatrix& matrix) {
+  Require(!envelope.lower.empty()&&envelope.lower.size()==envelope.upper.size(),"Mesh bounds envelope count differs");
+  Vector3 minimum{DBL_MAX, DBL_MAX, DBL_MAX}, maximum{-DBL_MAX, -DBL_MAX, -DBL_MAX};
+  for(size_t i=0;i<envelope.lower.size();++i)for(size_t axis=0;axis<3;++axis){double center=matrix[axis*4+3],radius=0;
+    for(size_t k=0;k<3;++k){center+=matrix[axis*4+k]*((envelope.lower[i][k]+envelope.upper[i][k])*.5);radius+=std::abs(matrix[axis*4+k])*((envelope.upper[i][k]-envelope.lower[i][k])*.5);}
+    minimum[axis]=std::min(minimum[axis],center-radius);maximum[axis]=std::max(maximum[axis],center+radius);
+  }
+  Vector3 center,extent;for(size_t i=0;i<3;++i){center[i]=(minimum[i]+maximum[i])*.5;extent[i]=(maximum[i]-minimum[i])*.5;}return {center,extent};
+}
+inline AffineMatrix RootBindPose(const Type& type,const Value& bindposes,size_t rootSlot) {
+  const auto& palette=ConstArray(type,bindposes);Require(rootSlot<palette.count,"Renderer root bindpose slot absent");
+  AffineMatrix matrix{};for(size_t r=0;r<4;++r)for(size_t c=0;c<4;++c)matrix[r*4+c]=FloatValue(type,Child(type,palette.children[rootSlot],"e"+std::to_string(r)+std::to_string(c)));
+  Require(matrix[12]==0&&matrix[13]==0&&matrix[14]==0&&matrix[15]==1,"Renderer bounds requires affine root bindpose");return matrix;
+}
+inline std::pair<Vector3, Vector3> PartBounds(const Type& type, const Value& source,
+    const Resource& resource,const Mesh& mesh,size_t rootSlot,const AffineMatrix& boneToRoot=AffineIdentity()) {
+  auto envelope=PartEnvelope(type,source,resource,mesh);
   auto bindposes = AuthorField(type, source, resource, "m_BindPose");
   const auto& palette = ConstArray(type, bindposes);
   Require(palette.count == mesh.bones.size(), "Renderer bounds bindpose count");
-  double matrix[4][4];
-  for (size_t row = 0; row < 4; ++row)
-    for (size_t column = 0; column < 4; ++column)
-      matrix[row][column] = FloatValue(type, Child(type, palette.children[rootSlot],
-          "e" + std::to_string(row) + std::to_string(column)));
-  Require(matrix[3][0] == 0 && matrix[3][1] == 0 && matrix[3][2] == 0 && matrix[3][3] == 1,
-          "Renderer bounds requires affine root bindpose");
-  AffineMatrix bind{};for(size_t r=0;r<4;++r)for(size_t c=0;c<4;++c)bind[r*4+c]=matrix[r][c];
-  bind=AffineMultiply(boneToRoot,bind);for(size_t r=0;r<4;++r)for(size_t c=0;c<4;++c)matrix[r][c]=bind[r*4+c];
-  Vector3 minimum{DBL_MAX, DBL_MAX, DBL_MAX}, maximum{-DBL_MAX, -DBL_MAX, -DBL_MAX};
-  for (size_t i = 0; i < mesh.vertices; ++i)
-    for (size_t axis = 0; axis < 3; ++axis) {
-      double center = matrix[axis][3], radius = 0;
-      for (size_t k = 0; k < 3; ++k) {
-        center += matrix[axis][k] * ((lower[i][k] + upper[i][k]) * .5);
-        radius += std::abs(matrix[axis][k]) * ((upper[i][k] - lower[i][k]) * .5);
-      }
-      minimum[axis] = std::min(minimum[axis], center - radius);
-      maximum[axis] = std::max(maximum[axis], center + radius);
-    }
-  Vector3 center, extent;
-  for (size_t i = 0; i < 3; ++i) { center[i] = (minimum[i] + maximum[i]) * .5; extent[i] = (maximum[i] - minimum[i]) * .5; }
-  return {center, extent};
+  return EnvelopeBounds(envelope,AffineMultiply(boneToRoot,RootBindPose(type,bindposes,rootSlot)));
+}
+inline EiemMeshBindingMetadata::Mesh BuildMeshBindingMetadata(const Type& type,const Value& source,const Resource& resource,const Mesh& mesh) {
+  EiemMeshBindingMetadata::Mesh result;if(mesh.bones.empty())return result;
+  result.hashes=BoneHashes(type,AuthorField(type,source,resource,"m_BoneNameHashes"));
+  auto envelope=PartEnvelope(type,source,resource,mesh);auto poses=AuthorField(type,source,resource,"m_BindPose");
+  for(size_t i=0;i<mesh.bones.size();++i)result.boneBounds.push_back(EnvelopeBounds(envelope,RootBindPose(type,poses,i)));
+  EiemMeshBindingMetadata::Validate(result,mesh.bones.size());return result;
 }
 struct RendererPartWrite {
   std::string cab, rule, part, meshCab, materialCab;
@@ -232,6 +255,8 @@ struct RendererInputBuild {
   std::vector<std::pair<std::string,MeshConsumer>> consumers;
 };
 using MaterialPreloadIndex = std::map<NativeReference, std::set<NativeReference>>;
+using RendererMaterialKey = std::pair<int64_t, std::string>;
+using RendererMaterialReferences = std::map<RendererMaterialKey, NativeReference>;
 inline void AddMaterialPreloads(MaterialPreloadIndex& index,const Bytes& bytes,const std::string& cab,
     const SerializedLayout& layout,const std::vector<Asset>& assets,const Package& package) {
     std::map<SerializedAssetKey,NativeReference> selected;
@@ -311,6 +336,15 @@ class RendererMemberBuilder {
   const Package& package;
   const AssetIndex& assets;
   const std::vector<BuiltMeshPart>& meshes;
+  using Project = std::function<Value(int64_t,const std::set<std::string>&)>;
+  Project project;
+  std::function<Value(int64_t)> decode;
+  std::map<int64_t,Bytes> encodedChanges;
+  bool built = false;
+  static const Bytes& EmptySource() { static const Bytes bytes; return bytes; }
+  Value FieldsOf(int64_t id,const std::set<std::string>& fields) const {
+    return project?project(id,fields):ObjectFields(source,layout,id,fields);
+  }
   const AuthorByteSpans* sourceOrigins = nullptr;
   bool trackOrigins = false;
   std::map<int64_t, AuthorByteSpans> objectOrigins;
@@ -323,6 +357,11 @@ class RendererMemberBuilder {
   std::map<int64_t, std::vector<int64_t>> rendererExpansion;
   std::map<int64_t, std::vector<NativeReference>> preloadExpansion;
   const MaterialPreloadIndex* materialPreloads = nullptr;
+  bool retainSourceMaterials = false;
+  const std::map<std::string,EiemMeshBindingMetadata::Mesh>* authorMetadata = nullptr;
+  const std::map<std::string,std::string>* authorMarkers = nullptr;
+  const RendererMaterialReferences* materialReferences = nullptr;
+  const MaterialPreloadIndex* materialClosures = nullptr;
   std::map<int64_t, std::map<uint32_t,int64_t>> skeletonBindings;
   std::set<int64_t> changed, allocated;
   std::vector<AddedObject> added;
@@ -340,7 +379,7 @@ class RendererMemberBuilder {
     auto found = values.find(id);
     if (found == values.end()) {
       auto start=std::chrono::steady_clock::now();
-      found = values.emplace(id, ObjectValue(source, layout, id, sourceOrigins)).first;
+      found = values.emplace(id, decode?decode(id):ObjectValue(source, layout, id, sourceOrigins)).first;
       Cost("renderer-object-decode",start);
     }
     return found->second;
@@ -348,7 +387,7 @@ class RendererMemberBuilder {
   const Value& InspectHierarchy(int64_t id) {
     auto edited=values.find(id);if(edited!=values.end())return edited->second;
     auto found=hierarchyValues.find(id);if(found==hierarchyValues.end())
-      found=hierarchyValues.emplace(id,ObjectFields(source,layout,id,{"m_GameObject","m_Name","m_Children","m_Father",
+      found=hierarchyValues.emplace(id,FieldsOf(id,{"m_GameObject","m_Name","m_Children","m_Father",
           "m_LocalPosition","m_LocalRotation","m_LocalScale"})).first;
     return found->second;
   }
@@ -371,8 +410,10 @@ class RendererMemberBuilder {
       const Mesh& mesh,const std::vector<uint32_t>& sourceHashes,const std::vector<int64_t>& nativeBones) const {
     std::map<size_t,int64_t> original;
     if(!sourceHashes.empty()){
-      const auto& resource=*package.resources.at(mesh.resource);auto model=EmptyValueForMesh(resource);
-      auto hashes=AuthorField(model.first,model.second,resource,"m_BoneNameHashes");auto author=BoneHashes(model.first,hashes);
+      std::vector<uint32_t> author;
+      if(authorMetadata)author=authorMetadata->at(mesh.resource).hashes;
+      else {const auto& resource=*package.resources.at(mesh.resource);auto model=EmptyValueForMesh(resource);
+        author=BoneHashes(model.first,AuthorField(model.first,model.second,resource,"m_BoneNameHashes"));}
       Require(author.size()==mesh.bones.size(),"author Mesh bone hash count differs");
       original=OriginalBoneBinding(sourceHashes,nativeBones,author);
       // Lower LOD palettes may omit a bone used by the authored LOD0 Mesh.
@@ -503,7 +544,19 @@ public:
   RendererMemberBuilder(const Bytes& bytes, const std::string& name, const Package& mod,
                           const AssetIndex& graph, const std::vector<BuiltMeshPart>& meshParts)
       : source(bytes), cab(name), package(mod), assets(graph), meshes(meshParts), layout(ParseSerialized(bytes)) {}
+  // Native demand inputs provide objects and fields on demand. This path never
+  // reads or allocates the complete SerializedFile, including unrelated Meshes
+  // or inline pixel data that may share the consumer's member.
+  RendererMemberBuilder(SerializedLayout metadata, const std::string& name, const Package& mod,
+                          const AssetIndex& graph, const std::vector<BuiltMeshPart>& meshParts,
+                          Project fields, std::function<Value(int64_t)> object)
+      : source(EmptySource()), cab(name), package(mod), assets(graph), meshes(meshParts),
+        project(std::move(fields)), decode(std::move(object)), layout(std::move(metadata)) {
+    Require(project&&decode,"Renderer projected object source absent");
+  }
   RendererInputBuild Build(const AuthorByteSpans* inputOrigins=nullptr,AuthorByteSpans* outputOrigins=nullptr) {
+    Require(!built,"Renderer member builder reused");built=true;
+    Require(!project||(!inputOrigins&&!outputOrigins),"Renderer projected input cannot use full-file provenance");
     sourceOrigins=inputOrigins;trackOrigins=outputOrigins!=nullptr;
     auto start=std::chrono::steady_clock::now();
     std::map<NativeReference, Identity> selected;
@@ -511,11 +564,11 @@ public:
       auto found = assets.find(target.first);
       if (found == assets.end()) continue;
       Require(found->second.classId == 43, "Renderer target is not a Mesh");
-      Require(selected.emplace(NativeReference{found->second.cab, found->second.pathId}, target.first).second,
+      Require(selected.emplace(CanonicalSerializedAssetReference({found->second.cab, found->second.pathId}), target.first).second,
               "Renderer target aliases are ambiguous");
     }
     std::set<NativeReference> references;for(const auto& row:selected)references.insert(row.first);
-    auto matches=MeshConsumers(source,layout,cab,references);
+    auto matches=ProjectedMeshConsumers(layout,cab,references,[&](int64_t id,const std::set<std::string>& fields){return FieldsOf(id,fields);},SerializedAssetCabKey);
     for(const auto& match:matches)result.consumers.emplace_back(cab,match);
     Cost("renderer-consumers",start);
     if (matches.empty()) { result.bytes = source;if(outputOrigins)*outputOrigins=inputOrigins?*inputOrigins:AuthorByteSpans{};return result; }
@@ -524,7 +577,7 @@ public:
     Cost("renderer-hierarchy",start);start=std::chrono::steady_clock::now();
     for(const auto& matched:matches) {
       if(matched.filter)continue;
-      const auto& target=selected.at(matched.mesh);
+      const auto& target=selected.at(CanonicalSerializedAssetReference(matched.mesh));
       auto part=std::find_if(meshes.begin(),meshes.end(),[&](const BuiltMeshPart& p){return !(p.target<target)&&!(target<p.target);});
       if(part==meshes.end()||part->sourceBoneHashes.empty())continue;
       const auto& type=Schema(matched.renderer);const auto& renderer=Tree(matched.renderer);
@@ -543,7 +596,7 @@ public:
     Cost("renderer-native-palettes",start);start=std::chrono::steady_clock::now();
     for (const auto& matched : matches) {
       auto rid = matched.renderer;
-      const auto& target = selected.at(matched.mesh);
+      const auto& target = selected.at(CanonicalSerializedAssetReference(matched.mesh));
       const bool skinned=matched.filter==0;
       const auto& ruleId = package.targetIndex.at(target);
       const auto& rule = package.rules.at(ruleId);
@@ -581,17 +634,27 @@ public:
       for (size_t i = 0; i < rule.parts.size(); ++i) {
         const auto& pid = rule.parts[i];
         const auto& part = package.parts.at(pid);
-        const auto rendererMarker=RuntimePartName(package,pid,target);
+        const auto rendererMarker=authorMarkers?authorMarkers->at(pid):RuntimePartName(package,pid,target);
         const auto& mesh = package.meshes.at(part.mesh);
         auto nativeMesh = std::find_if(meshes.begin(), meshes.end(), [&](const BuiltMeshPart& item) {
           return item.part == pid && !(item.target < target) && !(target < item.target);
         });
         Require(nativeMesh != meshes.end(), "Renderer Mesh dependency not rebuilt");
         auto sourceMesh = assets.find(target);
-        Require(sourceMesh != assets.end() && sourceMesh->second.type == package.resources.at(mesh.resource)->type,
+        Require(sourceMesh != assets.end() && (authorMetadata || sourceMesh->second.type == package.resources.at(mesh.resource)->type),
                 "Renderer author Mesh schema differs from current target");
-        auto material = assets.find(package.materials.at(part.material).source);
-        Require(material != assets.end() && material->second.classId == 21, "Renderer Material dependency absent from current graph");
+        NativeReference materialSource,materialReference;std::vector<NativeReference> retainedMaterials;
+        if(retainSourceMaterials){
+          retainedMaterials=RendererMaterials(type,original,layout,cab);if(!retainedMaterials.empty())materialReference=retainedMaterials.front();
+        }else if(materialReferences){
+          auto variant=materialReferences->find({rid,pid});
+          Require(variant!=materialReferences->end(),"Renderer material variant missing for source Renderer/Part");
+          materialReference=variant->second;
+        }
+        else{auto material=assets.find(package.materials.at(part.material).source);
+          Require(material!=assets.end()&&material->second.classId==21,"Renderer Material dependency absent from current graph");
+          materialSource={material->second.cab,material->second.pathId};
+          materialReference={material->second.cab,AllocateMaterialId(material->second.cab,package,part.material)};}
         Require(skinned||(mesh.bones.empty()&&mesh.shapes.empty()&&part.shapes.empty()),
                 "static MeshRenderer parts require unskinned geometry without runtime shape channels");
         auto bones = skinned?ResolveBones(tid, rootBone, mesh,nativeMesh->sourceBoneHashes,nativeBones):std::vector<int64_t>{};
@@ -651,10 +714,9 @@ public:
           }
         }
         auto& materials = ArrayValue(type, Child(type, renderer, "m_Materials"));
-        auto materialPointer = ArrayElement(type, materials);
-        auto materialId=AllocateMaterialId(material->second.cab,package,part.material);
-        SetReference(type, materialPointer, {material->second.cab, materialId}, layout, cab);
-        materials.children = {materialPointer}; materials.count = 1;
+        auto materialId=materialReference.second;
+        if(!retainSourceMaterials){auto materialPointer=ArrayElement(type,materials);SetReference(type,materialPointer,materialReference,layout,cab);
+          materials.children={std::move(materialPointer)};materials.count=1;}
         if(skinned){auto& palette = ArrayValue(type, Child(type, renderer, "m_Bones"));
         palette.children.clear();
         for (auto id : bones) {
@@ -691,13 +753,20 @@ public:
         if (i) Add(newRid, rid, renderer);
         else { Tree(rid) = std::move(renderer); changed.insert(rid); }
         rendererExpansion[rid].push_back(newRid);
-        dependencies.insert({nativeMesh->cab, nativeMesh->id}); dependencies.insert({material->second.cab, materialId});
-        if(materialPreloads) {
-          auto closure=materialPreloads->find({material->second.cab,material->second.pathId});
-          Require(closure!=materialPreloads->end(),"Renderer borrowed Material preload closure absent");
+        dependencies.insert({nativeMesh->cab, nativeMesh->id});
+        if(retainSourceMaterials)dependencies.insert(retainedMaterials.begin(),retainedMaterials.end());
+        else dependencies.insert(materialReference);
+        if(materialClosures) {
+          auto closure=materialClosures->find(materialReference);
+          Require(closure!=materialClosures->end(),"Renderer author Material preload closure absent");
           dependencies.insert(closure->second.begin(),closure->second.end());
+        } else if(materialPreloads) {
+          const auto& sources=retainSourceMaterials?retainedMaterials:std::vector<NativeReference>{materialSource};
+          for(const auto& sourceMaterial:sources){auto closure=materialPreloads->find(sourceMaterial);
+            Require(closure!=materialPreloads->end(),"Renderer Material preload closure absent");
+            dependencies.insert(closure->second.begin(),closure->second.end());}
         }
-        result.parts.push_back({cab, ruleId, pid, nativeMesh->cab, material->second.cab,
+        result.parts.push_back({cab, ruleId, pid, nativeMesh->cab, materialReference.first,
             rid, newRid, gid, newTid, tid, nativeMesh->id, materialId, std::move(bones)});
       }
       preloadExpansion[rid] = {dependencies.begin(), dependencies.end()};
@@ -747,13 +816,15 @@ public:
       Require(bundles == 1, "Renderer expansion requires one current AssetBundle");
     }
     Cost("renderer-preloads",start);start=std::chrono::steady_clock::now();
-    std::map<int64_t, Bytes> replacements;
-    for (auto id : changed) replacements.emplace(id, EncodeValue(Schema(id), Tree(id),trackOrigins?&objectOrigins[id]:nullptr));
-    result.changedObjects = replacements.size(); result.addedObjects = added.size();
-    result.bytes = BuildSerialized(source, layout, replacements, added,{},{},{},inputOrigins,&objectOrigins,outputOrigins);
+    for (auto id : changed) encodedChanges.emplace(id, EncodeValue(Schema(id), Tree(id),trackOrigins?&objectOrigins[id]:nullptr));
+    result.changedObjects = encodedChanges.size(); result.addedObjects = added.size();
+    if(!project)result.bytes = BuildSerialized(source, layout, encodedChanges, added,{},{},{},inputOrigins,&objectOrigins,outputOrigins);
     Cost("renderer-serialize",start);
     return result;
   }
+  const SerializedLayout& OutputLayout() const {Require(built,"Renderer edits requested before Build");return layout;}
+  std::map<int64_t,Bytes> TakeChanges() {Require(built,"Renderer edits requested before Build");return std::move(encodedChanges);}
+  std::vector<AddedObject> TakeAdded() {Require(built,"Renderer additions requested before Build");return std::move(added);}
 private:
   // Supplied by the caller from the selected current Mesh input schema.
   const MeshSchemaIndex* meshSchemas = nullptr;
@@ -773,6 +844,14 @@ private:
     }return result;
   }
   std::pair<Vector3,Vector3> Bounds(const Resource& resource, const Mesh& mesh, size_t rootSlot,const AffineMatrix& boneToRoot) {
+    if(authorMetadata){
+      const auto& bounds=authorMetadata->at(mesh.resource).boneBounds.at(rootSlot);
+      if(boneToRoot==AffineIdentity())return bounds;
+      Vector3 center{},extent{};
+      for(size_t i=0;i<3;++i){center[i]=boneToRoot[i*4+3];for(size_t k=0;k<3;++k){
+        center[i]+=boneToRoot[i*4+k]*bounds.first[k];extent[i]+=std::abs(boneToRoot[i*4+k])*bounds.second[k];}}
+      return {center,extent};
+    }
     Require(boundsCache,"Renderer bounds cache absent");std::lock_guard<std::mutex> lock(boundsCache->mutex);
     Require(boundsCache && (!boundsCache->package || boundsCache->package == &package), "Renderer bounds cache author scope differs");boundsCache->package=&package;
     auto key=std::make_tuple(mesh.resource,rootSlot,boneToRoot);auto found=boundsCache->values.find(key);
@@ -783,8 +862,24 @@ private:
     boundsCache->computeMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();return bounds;
   }
 public:
+  void SetAuthorMetadata(const std::map<std::string,EiemMeshBindingMetadata::Mesh>& metadata) {
+    Require(!built,"Renderer author metadata supplied after Build");
+    std::set<std::string> checked;
+    for(const auto& targetMesh:meshes){
+      const auto& part=package.parts.at(targetMesh.part);const auto& mesh=package.meshes.at(part.mesh);
+      if(!checked.insert(mesh.resource).second)continue;
+      auto binding=metadata.find(mesh.resource);
+      Require(binding!=metadata.end(),"Renderer author Mesh metadata is absent: "+mesh.resource);
+      EiemMeshBindingMetadata::Validate(binding->second,mesh.bones.size());
+    }
+    authorMetadata=&metadata;
+  }
+  void SetAuthorMarkers(const std::map<std::string,std::string>& markers) {authorMarkers=&markers;}
+  void SetMaterialReferences(const RendererMaterialReferences& references) {materialReferences=&references;}
+  void SetMaterialClosures(const MaterialPreloadIndex& closures) {materialClosures=&closures;}
   void SetCost(const std::function<void(const char*,double)>& callback) {cost=callback;}
   void SetMaterialPreloads(const MaterialPreloadIndex& preloads) { materialPreloads = &preloads; }
+  void UseSourceMaterials() { retainSourceMaterials = true; }
   void SetMeshSchemas(const MeshSchemaIndex& schemas) { meshSchemas = &schemas; }
   void SetBoundsCache(RendererBoundsCache& cache) {
     std::lock_guard<std::mutex> lock(cache.mutex);

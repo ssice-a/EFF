@@ -2,10 +2,18 @@
 #include "../../src/eiem_offline_cache.h"
 #include <iostream>
 using namespace EiemOfflinePackage;
+std::shared_ptr<Resource> FixtureResource(unsigned kind,unsigned char marker){
+ auto resource=std::make_shared<Resource>();resource->kind=kind;resource->bytes.assign(80,0);
+ memcpy(resource->bytes.data(),"EFFRES",6);resource->bytes[6]='1';
+ for(size_t i=0;i<resource->type.size();++i)resource->type[i]=marker+static_cast<unsigned char>(i);
+ memcpy(resource->bytes.data()+24,resource->type.data(),resource->type.size());
+ WriteInteger(resource->bytes,12,kind,4);WriteInteger(resource->bytes,40,resource->bytes.size(),8);
+ auto body=Sha(resource->bytes.data()+80,0);memcpy(resource->bytes.data()+48,body.data(),body.size());return resource;
+}
 Manifest Fixture(){
  Manifest m;m.baseline=std::string(64,'B');auto& p=m.package;p.id="LZY";p.root="mods/LZY";
- auto mesh=std::make_shared<Resource>();mesh->kind=1;mesh->bytes={1,2,3,4};p.resources.emplace("meshes/body.mesh",mesh);
- auto material=std::make_shared<Resource>();material->kind=2;material->bytes={5,6,7,8};p.resources.emplace("materials/body.mat",material);
+ auto mesh=FixtureResource(1,1);p.resources.emplace("meshes/body.mesh",mesh);
+ auto material=FixtureResource(2,5);p.resources.emplace("materials/body.mat",material);
  p.meshes.emplace("body",Mesh{"meshes/body.mesh",2,3,{"Root/Bip/Bone"},{"Shape"}});
  p.materials.emplace("body",EiemDirectory::Material{"materials/body.mat",{"assets/body.mat","body"},{}});
  p.defaults.emplace("$switch",0);p.defaults.emplace("$shape",.25);p.persistent={"$switch","$shape"};p.controls.emplace("$shape",Control{"Shape",0,1});
@@ -37,7 +45,18 @@ Bytes LegacyBytes(const Manifest& v,const std::string& tag){
  auto bytes=Encode(v,false);EiemOfflinePackage::Reader header{bytes};header.S();header.B();header.B();header.S();
  Writer old;old.S(tag);old.S(std::string(64,'A'));old.Raw(bytes.data()+header.p,bytes.size()-header.p);return old.b;
 }
-int main(){try{
+int main(int argc,char** argv){try{
+ if(argc==2&&std::string(argv[1])=="--target-precedence-smoke"){
+  auto authors=SetFixture(2).packages;authors[1].rules=authors[0].rules;auto composed=EiemComposedPackage::Compose(authors,true);
+  auto target=Identity{"assets/body.asset","body"};auto winner=EiemComposedPackage::Name(authors[1].id,"body");
+  Require(composed.targetIndex.at(target)!=winner&&composed.rules.at(composed.targetIndex.at(target)).parts==std::vector<std::string>{EiemComposedPackage::Name(authors[0].id,"body"),EiemComposedPackage::Name(authors[1].id,"body")},"same-target Mod parts did not compose in deterministic Mod-ID order");
+  std::reverse(authors.begin(),authors.end());auto reordered=EiemComposedPackage::Compose(authors,true);
+  Require(reordered.rules.at(reordered.targetIndex.at(target)).parts==composed.rules.at(composed.targetIndex.at(target)).parts,"same-target composition depends on Mod directory order");
+  std::vector<EiemTargetModPrecedence::Claim> claims={{{"assets/body.asset","body"},"LZY"},{{"assets/body.asset","body"},"OtherCharacter1"},{{"assets/other.asset","other"},"LZY"}};
+  auto precedence=EiemTargetModPrecedence::Resolve(claims);Require(precedence.overlappingTargets==1&&precedence.winner.at({"assets/body.asset","body"})=="OtherCharacter1"&&precedence.winner.at({"assets/other.asset","other"})=="LZY","target winner selection is not deterministic or isolated per target");
+  bool duplicateRejected=false;try{EiemTargetModPrecedence::Resolve({{{"assets/body.asset","body"},"LZY"},{{"assets/body.asset","body"},"LZY"}});}catch(const std::exception&){duplicateRejected=true;}Require(duplicateRejected,"duplicate target declaration inside one Mod was accepted");
+  std::cout<<"PASS target precedence: overlap uses greatest Mod ID, unrelated targets stay independent, duplicate declarations within one Mod remain invalid\n";return 0;
+ }
  auto m=Fixture();auto bytes=Encode(m);auto roundtrip=Decode(bytes,"candidate","mods");Require(Encode(roundtrip)==bytes,"manifest changed during roundtrip");
  Require(roundtrip.package.parts.at("body").visible->Evaluate({{"$switch",0}})==1&&roundtrip.package.parts.at("body").visible->Evaluate({{"$switch",1}})==0,"compiled expression behavior changed");
  Require(roundtrip.package.root==std::filesystem::path("mods/LZY")&&roundtrip.plan.parts.at("marker").bones==m.plan.parts.at("marker").bones&&roundtrip.package.persistent==m.package.persistent&&roundtrip.package.bindings.front().key.vk==VK_NUMPAD1&&roundtrip.package.bindings.front().label==u8"衣装切换组","compiled author metadata lost");
@@ -116,7 +135,7 @@ int main(){try{
  try{EiemNativeInput::Inspect(malformedBundle);}catch(const std::exception&){rejected=true;}Require(rejected,"truncated UnityFS structure accepted");
  auto authors=SetFixture(2).packages;auto composed=EiemComposedPackage::Compose(authors,true);
  Require(composed.materials.size()==1&&composed.meshes.size()==2&&composed.targetIndex.size()==2,"distinct character targets/shared Material not composed once");
- auto collision=authors;collision[1].materials.at("body").resource="materials/different.mat";auto resource=std::make_shared<Resource>();resource->kind=2;resource->bytes={9};collision[1].resources.emplace("materials/different.mat",resource);
+ auto collision=authors;collision[1].materials.at("body").resource="materials/different.mat";auto resource=FixtureResource(2,9);collision[1].resources.emplace("materials/different.mat",resource);
  auto independent=EiemComposedPackage::Compose(collision,true);
  auto firstPart=EiemComposedPackage::Name(collision[0].id,"body"),secondPart=EiemComposedPackage::Name(collision[1].id,"body");
  auto firstMaterial=independent.parts.at(firstPart).material,secondMaterial=independent.parts.at(secondPart).material;
@@ -137,7 +156,16 @@ int main(){try{
  clothing.parts.emplace("original",clothing.parts.at("body"));clothing.parts.at("original").material="original";clothing.rules.at("body").parts.push_back("original");
  auto sameMod=EiemComposedPackage::Compose({clothing},true);
  Require(sameMod.materials.size()==2&&sameMod.parts.at(EiemComposedPackage::Name(clothing.id,"body")).material!=sameMod.parts.at(EiemComposedPackage::Name(clothing.id,"original")).material,"original/edited clothing Material copies rejected or aliased in one Mod");
- collision=authors;collision[1].rules=collision[0].rules;bool conflict=false;try{EiemComposedPackage::Compose(collision,true);}catch(const std::exception&){conflict=true;}Require(conflict,"conflicting native Mesh targets silently replaced");
+ auto placeholders=clothing;for(auto& resource:placeholders.resources)resource.second=std::make_shared<const Resource>();
+ auto forcedSingle=EiemComposedPackage::Compose({placeholders},true,false);auto forcedPrefix=EiemComposedPackage::Prefix(placeholders.id);
+ Require(forcedSingle.meshes.count(forcedPrefix+"body")&&forcedSingle.parts.count(forcedPrefix+"body")&&
+   forcedSingle.parts.at(forcedPrefix+"body").material!=forcedSingle.parts.at(forcedPrefix+"original").material,
+   "single author placeholder composition lost prefixed keys or merged Material variants");
+ collision=authors;collision[1].rules=collision[0].rules;auto overlapping=EiemComposedPackage::Compose(collision,true);
+ auto sharedTarget=Identity{"assets/body.asset","body"};auto overlapRule=overlapping.targetIndex.at(sharedTarget);
+ Require(overlapRule.rfind("EFF_TARGET_",0)==0&&overlapping.rules.at(overlapRule).parts==std::vector<std::string>{EiemComposedPackage::Name(collision[0].id,"body"),EiemComposedPackage::Name(collision[1].id,"body")},"same-target Mods did not compose all parts in deterministic Mod-ID order");
+ std::vector<EiemTargetModPrecedence::Claim> claims={{{"assets/body.asset","body"},"LZY"},{{"assets/body.asset","body"},"OtherCharacter1"},{{"assets/other.asset","other"},"LZY"}};
+ auto precedence=EiemTargetModPrecedence::Resolve(claims);Require(precedence.overlappingTargets==1&&precedence.winner.at({"assets/body.asset","body"})=="OtherCharacter1"&&precedence.winner.at({"assets/other.asset","other"})=="LZY","target winner selection is not deterministic or isolated per target");
  auto cache=std::filesystem::temp_directory_path()/("eff-offline-smoke-"+std::to_string(GetCurrentProcessId()));auto folder=cache/"generations"/m.plan.key;std::filesystem::create_directories(folder);Save(folder/"manifest.bin",bytes);Pointer pointer{m.plan.key,Hash(bytes)};Publish(cache,pointer);
  Require(ReadCurrent(cache)==pointer&&ReadManifest(cache,pointer,"mods").plan.author==m.plan.author,"atomic publication not readable");bad=bytes;bad.back()^=1;Save(folder/"manifest.bin",bad);rejected=false;try{ReadManifest(cache,pointer,"mods");}catch(const std::exception&){rejected=true;}Require(rejected&&ReadCurrent(cache)==pointer,"changed payload bypassed published SHA");
  Save(folder/"manifest.bin",bytes);auto author=m.package;author.root=cache/"mods/LZY";std::filesystem::create_directories(author.root);
@@ -157,7 +185,7 @@ int main(){try{
  malformedRules=rules;malformedRules.plan.namespaceRecipes[0][0].patches[0].after=oldCab;rejectRules(malformedRules);
  malformedRules=rules;malformedRules.plan.namespaceRecipes[0].push_back(malformedRules.plan.namespaceRecipes[0][0]);rejectRules(malformedRules);
  malformedRules=rules;malformedRules.plan.namespaceRecipes.emplace_back();rejectRules(malformedRules);
- auto copyRules=rules;copyRules.plan.spanRecipes=true;EiemResourceRecipe::Member member;member.name=oldCab;member.flags=4;member.size=6;Bytes rebuilt={2,3,7,8,9,10};member.hash=Hash(rebuilt);
+ auto copyRules=rules;copyRules.plan.spanRecipes=true;EiemResourceRecipe::Member member;member.name=oldCab;member.flags=4;auto fixtureMesh=copyRules.package.resources.at("meshes/body.mesh")->bytes;Bytes rebuilt(fixtureMesh.begin()+1,fixtureMesh.begin()+3);rebuilt.insert(rebuilt.end(),{7,8,9,10});member.size=rebuilt.size();member.hash=Hash(rebuilt);
  member.spans={{EiemResourceRecipe::Author,"meshes/body.mesh",1,2,{}},{EiemResourceRecipe::Literal,{},0,4,{7,8,9,10}}};copyRules.plan.memberRecipes={{member}};
  auto copied=Decode(Encode(copyRules),folder,cache/"mods");Require(copied.plan.spanRecipes&&Encode(copied)==Encode(copyRules)&&EiemResourceRecipe::Apply(copied.plan.memberRecipes[0][0],{},copied.package,{})==rebuilt,"compressed copy recipe roundtrip/output differs");
  malformedRules=copyRules;malformedRules.plan.memberRecipes[0][0].spans[0].offset=SIZE_MAX;rejectRules(malformedRules);

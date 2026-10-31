@@ -1,5 +1,9 @@
 #define _CRT_SECURE_NO_WARNINGS
 #define NOMINMAX
+#if defined(EIEM_FORMAT3_RUNTIME)
+#define EIEM_DEMAND_LOADING_PROBE 1
+#define EIEM_DEMAND_NATIVE_ACCEPTANCE 1
+#endif
 #include <fcntl.h>
 #include <io.h>
 #include <share.h>
@@ -20,11 +24,33 @@
 #include "eiem_prefab_resource_rules.h"
 #include "eiem_loading_input_substitution.h"
 #include "eiem_resource_directory.h"
+#if defined(EIEM_MESH_TARGET_PROBE) || defined(EIEM_DEMAND_LOADING_PROBE)
+#include "eiem_mesh_target_directory.h"
+#endif
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+#if defined(EIEM_DIAGNOSTICS) || defined(EIEM_MESH_TARGET_PROBE)
+#error Demand loading probe must be isolated from other native loading probes.
+#endif
+#include "eiem_native_random_access.h"
+#include "eiem_demand_request_registry.h"
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+#include "eiem_demand_mesh_preparation.h"
+#include "eiem_demand_material_assembly.h"
+#include "eiem_demand_material_build.h"
+#include "eiem_demand_dependency_source.h"
+#include "eiem_demand_shared_graph.h"
+#endif
+#endif
 #if defined(EIEM_CATALOG_SURVEY)
 #include "eiem_static_resource_sources.h"
 #include "eiem_mounted_source_identity.h"
 #endif
-#if defined(EIEM_PREFAB_ADAPTATION_PROBE)
+#if defined(EIEM_MESH_NATIVE_ACCEPTANCE)
+#include <future>
+#include <psapi.h>
+#include "eiem_runtime_resource_payload.h"
+#endif
+#if defined(EIEM_PREFAB_ADAPTATION_PROBE) || defined(EIEM_MESH_NATIVE_ACCEPTANCE)
 #include "eiem_runtime_author_directory.h"
 #include "eiem_prefab_bone_binding.h"
 #endif
@@ -44,11 +70,59 @@
 #define APPLEPIE_PLUGIN_IMPL
 #include "applepie_mgr.h"
 
-// Base resources are replaced only through serialized loading inputs. The
-// optional shape path copies geometry for the capture consumer, through public
+// Production base resources are replaced through serialized loading inputs. The
+// separate Mesh-target acceptance build measures an uncompiled matching route.
+// The optional shape path copies geometry for the capture consumer, through public
 // Mesh bindings; it does not include retired base replacement/private fields.
 namespace Entry {
 using namespace EiemDirectory;
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+namespace DemandLoadingProbe {
+void ReadInstalledTargets();void Install(void**,size_t);
+void BundleRequest(void*,uint64_t,const char*) noexcept;
+void RememberListPool(void*,void*) noexcept;
+void Dependencies(void*,uint64_t,void*,bool,bool) noexcept;
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+std::shared_ptr<const std::vector<Package>> ReadInstalledPackages();
+std::shared_ptr<const std::vector<Package>> PrepareInstalledPackages();
+void PublishPreparedInstalledPackages();
+void DiscardPreparedInstalledPackages() noexcept;
+bool SharedDependencies(void*,uint64_t,void*,bool,bool&) noexcept;
+bool AppendSharedDependencies(void*,uint64_t,void*,bool,bool) noexcept;
+bool SharedVfsLoad(uint64_t,uint32_t,bool,void*&) noexcept;
+void Watchdog() noexcept;
+#endif
+void Retire(void*,uint64_t) noexcept;
+uint64_t BeginVfs(uint64_t) noexcept;uint64_t BeginHelper(void*,void*) noexcept;void EndHelper(uint64_t) noexcept;
+uint64_t BeforeFile(void*,uint64_t,bool) noexcept;
+bool SubmitCurrentHelper(uint32_t,bool,void*&) noexcept;
+void Submitted(uint64_t,void*,bool) noexcept;void Completed(void*,void*) noexcept;
+void UnsupportedInput(const char*) noexcept;void Report(int) noexcept;
+}
+#endif
+#if defined(EIEM_MESH_TARGET_PROBE)
+namespace MeshTargetProbe {
+void* LoadedAsset(const EiemDirectory::Identity&,void*);
+void ReadInstalledTargets();
+void Dependencies(void*,uint64_t,void*,bool) noexcept;
+void BundleCleared(void*,uint64_t) noexcept;
+void ObserveHandle(void*,void*) noexcept;
+void ObserveProxy(void*,uint64_t,void*) noexcept;
+void BeforeClone(void*,const char*) noexcept;
+void ConsumerList(void*,const char*) noexcept;
+void Report(int) noexcept;
+void Install(void**,size_t);
+}
+#if defined(EIEM_MESH_NATIVE_ACCEPTANCE)
+namespace MeshNativeAcceptance {
+void Matched(void*,void*,void*,const EiemMeshTargetDirectory::Target&,const std::string&);
+void* Route(void*,const char*) noexcept;
+void Consumer(void*,const char*) noexcept;
+void Frame(int) noexcept;
+void Install(void**,size_t);
+}
+#endif
+#endif
 static_assert(sizeof(void *) == 8,
               "Resource entry observers require Windows x64");
 FILE *OpenLog(const std::filesystem::path &path, bool exclusive = false) {
@@ -407,10 +481,26 @@ bool LoaderPosAbi(void *klass) {
   return valid;
 }
 std::set<void *> installed;
+size_t queuedEntryHooks=0;
+bool entryHookBatchApplied=false;
+double entryHookLookupMs=0.0,entryHookPatchMs=0.0;
+std::vector<std::string> entryHookNames;
+bool InstallAddress(void* address,const char* name,void* detour,void** original) {
+  if(!address){*original=nullptr;return false;}
+  if(installed.count(address)){*original=nullptr;return false;}
+  auto patchBegin=std::chrono::steady_clock::now();auto status=MH_CreateHook(address,detour,original);
+  if(status==MH_OK){status=entryHookBatchApplied?MH_EnableHook(address):MH_QueueEnableHook(address);
+    if(status!=MH_OK)MH_RemoveHook(address);else if(!entryHookBatchApplied)++queuedEntryHooks;}
+  entryHookPatchMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-patchBegin).count();
+  if(status!=MH_OK){*original=nullptr;return false;}
+  installed.insert(address);entryHookNames.emplace_back(name?name:"native-icall");return true;
+}
 bool Install(void *klass, const char *name,
              std::initializer_list<const char *> args, const char *result,
              bool isStatic, void *detour, void **original) {
+  auto lookupBegin=std::chrono::steady_clock::now();
   auto method = Exact(klass, name, args, result, isStatic);
+  entryHookLookupMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-lookupBegin).count();
   if (!method) {
     Log("[ENTRY-HOOK] absent or incompatible %s argc=%zu static=%d", name,
         args.size(), isStatic);
@@ -422,21 +512,22 @@ bool Install(void *klass, const char *name,
         address);
     return false;
   }
-  auto status = MH_CreateHook(address, detour, original);
-  if (status == MH_OK) {
-    status = MH_EnableHook(address);
-    if (status != MH_OK)
-      MH_RemoveHook(address);
-  }
-  if (status != MH_OK) {
+  if(!InstallAddress(address,name,detour,original)){
     *original = nullptr;
-    Log("[ENTRY-HOOK] failed %s status=%d", name, (int)status);
+    Log("[ENTRY-HOOK] failed %s", name);
     return false;
   }
-  installed.insert(address);
-  Log("[ENTRY-HOOK] installed %s static=%d address=%p", name, isStatic,
-      address);
   return true;
+}
+void ApplyEntryHookBatch(){
+  if(entryHookBatchApplied)return;
+  auto begin=std::chrono::steady_clock::now();auto status=MH_ApplyQueued();
+  if(status!=MH_OK){Log("[ENTRY-HOOK-BATCH-GAP] queued=%zu status=%d",queuedEntryHooks,int(status));
+    throw std::runtime_error("MinHook queued entry hook batch failed");}
+  entryHookBatchApplied=true;
+  std::string names;for(const auto& name:entryHookNames){if(!names.empty())names+=',';names+=name;}
+  Log("[ENTRY-HOOK-BATCH] queued=%zu enabled=1 lookupMs=%.3f patchMs=%.3f applyMs=%.3f names=%s",queuedEntryHooks,
+    entryHookLookupMs,entryHookPatchMs,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count(),names.c_str());
 }
 std::vector<std::filesystem::path> DiscoverModRoots() {
   return EiemComposedPackage::Roots(gameDirectory/"plugin/mods");
@@ -448,6 +539,17 @@ bool initialComposed=false;
 void LoadInitialPackages() {
   auto config=EiemEntrySettings::Read(gameDirectory);
   std::shared_ptr<const std::vector<Package>> next;
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+  next=DemandLoadingProbe::ReadInstalledPackages();
+#else
+  DemandLoadingProbe::ReadInstalledTargets();
+  next=std::make_shared<const std::vector<Package>>();
+#endif
+#elif defined(EIEM_MESH_TARGET_PROBE)
+  MeshTargetProbe::ReadInstalledTargets();
+  next=std::make_shared<const std::vector<Package>>();
+#else
   auto roots=DiscoverModRoots();
   if(!roots.empty()){
    try{
@@ -461,6 +563,7 @@ void LoadInitialPackages() {
    }
    catch(const std::exception& e){Log("[ENTRY-STARTUP-PENDING] reason=%s compiledModPreparationFailed=1",e.what());}
   }
+#endif
   if(!next)next=std::make_shared<const std::vector<Package>>();
   for(const auto& p:*next) for(const auto& key:p.bindings)
     Require(key.key.vk!=config.reload.vk && key.key.vk!=config.gui.vk&&key.key.vk!=config.effectsReload.vk,"Mod key overlaps reserved global shortcut: "+p.id+"/"+key.id);
@@ -469,6 +572,33 @@ void LoadInitialPackages() {
   ++generation;
   Log("[ENTRY-GENERATION] initial=%u mods=%zu",generation.load(),next->size());
 }
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+void ReloadDemandPackages() {
+  const auto started=std::chrono::steady_clock::now();
+  try {
+    auto config=EiemEntrySettings::Read(gameDirectory);
+    auto next=DemandLoadingProbe::PrepareInstalledPackages();
+    Require(bool(next),"format 3 reload candidate is absent");
+    for(const auto& package:*next)for(const auto& key:package.bindings)
+      Require(key.key.vk!=config.reload.vk&&key.key.vk!=config.gui.vk&&key.key.vk!=config.effectsReload.vk,
+        "Mod key overlaps reserved global shortcut: "+package.id+"/"+key.id);
+    settings.Publish(config);
+    std::atomic_store(&published,next);
+    DemandLoadingProbe::PublishPreparedInstalledPackages();
+    const auto nextGeneration=++generation;
+    Log("[DEMAND-RELOAD-COMMIT] generation=%u mods=%zu elapsedMs=%.3f oldRequestsKeepGeneration=1 loadedOwnersRefreshOnNextGameRequest=1",
+      nextGeneration,next->size(),std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count());
+  } catch(const std::exception& error) {
+    DemandLoadingProbe::DiscardPreparedInstalledPackages();
+    Log("[DEMAND-RELOAD-REJECT] elapsedMs=%.3f previousGenerationPreserved=1 reason=%s",
+      std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count(),error.what());
+  } catch(...) {
+    DemandLoadingProbe::DiscardPreparedInstalledPackages();
+    Log("[DEMAND-RELOAD-REJECT] elapsedMs=%.3f previousGenerationPreserved=1 reason=unknown",
+      std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count());
+  }
+}
+#endif
 void PrepareInputSubstitutions() {
   Log("[ENTRY-PREFAB-RULES] startup=1 compiledNativeViews=%d authorCompilation=0",int(bool(std::atomic_load(&resourceRules))));
 }
@@ -683,30 +813,57 @@ struct VfsLoadWitness {void* instance=nullptr;int64_t hash=0;};
 thread_local VfsLoadWitness lastVfsSync;
 
 void *__fastcall Vfs(void *self, int64_t path, void *info) {
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+  struct Scope{uint64_t previous;Scope(uint64_t h):previous(DemandLoadingProbe::BeginVfs(h)){}~Scope(){DemandLoadingProbe::EndHelper(previous);}} scope{uint64_t(path)};
+#endif
 #if defined(EIEM_DIAGNOSTICS)
   ++vfsCalls;
   std::string text;
   Observe([&] { text = HashEvent("VFS.sync", path, hashLoadSamples); });
   Context c(text.c_str());
 #endif
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+  void* sharedResult=nullptr;
+  if(DemandLoadingProbe::SharedVfsLoad(uint64_t(path),0,false,sharedResult)){
+    if(sharedResult)lastVfsSync={self,path};return sharedResult;
+  }
+#endif
   auto result=vfs(self, path, info);
   if(result)lastVfsSync={self,path};
   return result;
 }
 void *__fastcall VfsAsync(void *self, int64_t path, void *info) {
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+  struct Scope{uint64_t previous;Scope(uint64_t h):previous(DemandLoadingProbe::BeginVfs(h)){}~Scope(){DemandLoadingProbe::EndHelper(previous);}} scope{uint64_t(path)};
+#endif
+#if defined(EIEM_DIAGNOSTICS)
   ++vfsCalls;
   std::string text;
   Observe([&] { text = HashEvent("VFS.async", path, hashLoadSamples); });
   Context c(text.c_str());
+#endif
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+  void* sharedResult=nullptr;
+  if(DemandLoadingProbe::SharedVfsLoad(uint64_t(path),0,true,sharedResult))return sharedResult;
+#endif
   return vfsAsync(self, path, info);
 }
 void *__fastcall VfsPos(void *self, int64_t path, void *pos, uint32_t crc,
                         void *info) {
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+  struct Scope{uint64_t previous;Scope(uint64_t h):previous(DemandLoadingProbe::BeginVfs(h)){}~Scope(){DemandLoadingProbe::EndHelper(previous);}} scope{uint64_t(path)};
+#endif
 #if defined(EIEM_DIAGNOSTICS)
   ++vfsCalls;
   std::string text;
   Observe([&] { text = HashEvent("VFS.syncPos", path, hashLoadSamples); });
   Context c(text.c_str());
+#endif
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+  void* sharedResult=nullptr;
+  if(DemandLoadingProbe::SharedVfsLoad(uint64_t(path),crc,false,sharedResult)){
+    if(sharedResult)lastVfsSync={self,path};return sharedResult;
+  }
 #endif
   auto result=vfsPos(self, path, pos, crc, info);
   if(result)lastVfsSync={self,path};
@@ -714,10 +871,19 @@ void *__fastcall VfsPos(void *self, int64_t path, void *pos, uint32_t crc,
 }
 void *__fastcall VfsAsyncPos(void *self, int64_t path, void *pos, uint32_t crc,
                              void *info) {
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+  struct Scope{uint64_t previous;Scope(uint64_t h):previous(DemandLoadingProbe::BeginVfs(h)){}~Scope(){DemandLoadingProbe::EndHelper(previous);}} scope{uint64_t(path)};
+#endif
+#if defined(EIEM_DIAGNOSTICS)
   ++vfsCalls;
   std::string text;
   Observe([&] { text = HashEvent("VFS.asyncPos", path, hashLoadSamples); });
   Context c(text.c_str());
+#endif
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+  void* sharedResult=nullptr;
+  if(DemandLoadingProbe::SharedVfsLoad(uint64_t(path),crc,true,sharedResult))return sharedResult;
+#endif
   return vfsAsyncPos(self, path, pos, crc, info);
 }
 bool __fastcall HashMap(void *self, int64_t hash, void **path, void *info) {
@@ -826,6 +992,9 @@ void *__fastcall FileAsync(void *path, uint32_t crc, uint64_t offset,
 template <class F>
 void *ObserveHelper(const char *kind, size_t index, void *dir, void *name,
                     uint64_t offset, int pos, uint32_t crc, F call) {
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+  struct Scope {uint64_t previous;Scope(void* d,void* n):previous(DemandLoadingProbe::BeginHelper(d,n)){}~Scope(){DemandLoadingProbe::EndHelper(previous);}} scope(dir,name);
+#endif
   auto sequence = ++helperCalls[index];
   std::string directory, filename, context;
   bool observed = false;
@@ -889,6 +1058,9 @@ void *__fastcall HelperPersistAsync(void *dir, void *name, uint64_t offset,
 void *ObservePublicFile(const char *kind, size_t index, FileFn call, void *path,
                         uint32_t crc, uint64_t offset, void *info) {
   ++publicFileCalls;
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+  auto demandToken=DemandLoadingProbe::BeforeFile(path,offset,bool(index%2));
+#endif
 #if defined(EIEM_DIAGNOSTICS)
   auto sequence = ++publicFileSamples[index];
   std::string text, context;
@@ -935,6 +1107,9 @@ void *ObservePublicFile(const char *kind, size_t index, FileFn call, void *path,
   bool ruleMatched=false;void* ruleResult=nullptr;
   Observe([&]{if(active.load())ruleResult=LoadRuleInput(path,crc,offset,bool(index%2),ruleMatched);});
   auto result = ruleMatched?ruleResult:call(selectedPath, crc, selectedOffset, info);
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+  DemandLoadingProbe::Submitted(demandToken,result,bool(index%2));
+#endif
   Observe([&] {
     if (!selectedInput.empty()) {
       Log("[ENTRY-SUBMIT-RETURN] input=%s result=%p async=%d "
@@ -961,6 +1136,9 @@ void *ObservePublicFile(const char *kind, size_t index, FileFn call, void *path,
 void* __fastcall RequestBundle(void* self, void* info) {
   auto result = requestBundle(self, info);
   CompleteRuleInput(self,result);
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+  DemandLoadingProbe::Completed(self,result);
+#endif
   Observe([&] {
 #if defined(EIEM_DIAGNOSTICS)
     if(LoadingObservation::Active()){LoadingObservation::Completed(self,result,"managed.get_assetBundle");return;}
@@ -1011,11 +1189,23 @@ void *__fastcall FileAsyncPublic(void *path, uint32_t crc, uint64_t offset,
                            path, crc, offset, info);
 }
 void *__fastcall Memory(void *array, uint32_t crc, void *info) {
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+  void* replacement=nullptr;
+  if(DemandLoadingProbe::SubmitCurrentHelper(crc,false,replacement))return replacement;
+  DemandLoadingProbe::UnsupportedInput("memory-sync");
+#else
   Observe([&] { CaptureMemory("Unity.LoadFromMemory", array); });
+#endif
   return memory(array, crc, info);
 }
 void *__fastcall MemoryAsync(void *array, uint32_t crc, void *info) {
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+  void* replacement=nullptr;
+  if(DemandLoadingProbe::SubmitCurrentHelper(crc,true,replacement))return replacement;
+  DemandLoadingProbe::UnsupportedInput("memory-async");
+#else
   Observe([&] { CaptureMemory("Unity.LoadFromMemoryAsync", array); });
+#endif
   return memoryAsync(array, crc, info);
 }
 void *__fastcall Stream(void *input, uint32_t crc, uint32_t bufferSize,
@@ -1027,6 +1217,11 @@ void *__fastcall Stream(void *input, uint32_t crc, uint32_t bufferSize,
           "readBuffer=%u context=%s",
           input, crc, bufferSize, bundleContext ? bundleContext : "<none>");
   });
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+  void* replacement=nullptr;
+  if(DemandLoadingProbe::SubmitCurrentHelper(crc,false,replacement))return replacement;
+  DemandLoadingProbe::UnsupportedInput("stream-sync");
+#endif
   return stream(input, crc, bufferSize, info);
 }
 void *__fastcall StreamAsync(void *input, uint32_t crc, uint32_t bufferSize,
@@ -1038,6 +1233,11 @@ void *__fastcall StreamAsync(void *input, uint32_t crc, uint32_t bufferSize,
           "readBuffer=%u context=%s",
           input, crc, bufferSize, bundleContext ? bundleContext : "<none>");
   });
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+  void* replacement=nullptr;
+  if(DemandLoadingProbe::SubmitCurrentHelper(crc,true,replacement))return replacement;
+  DemandLoadingProbe::UnsupportedInput("stream-async");
+#endif
   return streamAsync(input, crc, bufferSize, info);
 }
 
@@ -1083,6 +1283,15 @@ void* LoadRuleInput(void* path,uint32_t callerCrc,uint64_t offset,bool asynchron
  }return nullptr;
 }
 #include "eiem_entry_full_resource_reload.h"
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+#include "eiem_entry_demand_loading_probe.h"
+#endif
+#if defined(EIEM_MESH_TARGET_PROBE)
+#include "eiem_entry_mesh_target_probe.h"
+#endif
+#if defined(EIEM_MESH_NATIVE_ACCEPTANCE)
+#include "eiem_entry_mesh_native_acceptance.h"
+#endif
 #if defined(EIEM_PREFAB_ADAPTATION_PROBE)
 #include "eiem_entry_prefab_adaptation_probe.h"
 #endif
@@ -1100,6 +1309,16 @@ void InstallHooks(void **assemblies, size_t count) {
   RuntimeShapes::Arm();
   NativeBundle::Install(assemblies,count);
   StartupDependencies::Install(assemblies,count);
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+  auto demandVfs=FindClass("Beyond.VFS","VirtualFileSystem",assemblies,count);
+  auto demandHash=FindClass("Beyond.Resource","StringPathHash",assemblies,count);
+  if(HashAbi(demandHash)) {
+    Install(demandVfs,"LoadBundleFromFile",{vfsPathType},"UnityEngine.AssetBundle",false,(void*)Vfs,(void**)&vfs);
+    Install(demandVfs,"LoadBundleFromFileAsync",{vfsPathType},"UnityEngine.AssetBundleCreateRequest",false,(void*)VfsAsync,(void**)&vfsAsync);
+    Install(demandVfs,"LoadBundleFromFile",{vfsPathType,"Beyond.VFS.EFileLoaderPosType&","System.UInt32"},"UnityEngine.AssetBundle",false,(void*)VfsPos,(void**)&vfsPos);
+    Install(demandVfs,"LoadBundleFromFileAsync",{vfsPathType,"Beyond.VFS.EFileLoaderPosType&","System.UInt32"},"UnityEngine.AssetBundleCreateRequest",false,(void*)VfsAsyncPos,(void**)&vfsAsyncPos);
+  }
+#endif
   auto bundleClass = FindClass("UnityEngine", "AssetBundle", assemblies, count);
   auto requestClass = FindClass("UnityEngine", "AssetBundleCreateRequest", assemblies, count);
 #if defined(EIEM_DIAGNOSTICS)
@@ -1111,6 +1330,8 @@ void InstallHooks(void **assemblies, size_t count) {
       FindClass("Beyond.Resource", "StringPathHash", assemblies, count);
   auto mappingClass =
       FindClass("Beyond.Resource", "StringPathHashBinary", assemblies, count);
+#endif
+#if defined(EIEM_DIAGNOSTICS) || defined(EIEM_DEMAND_LOADING_PROBE)
   auto helperClass =
       FindClass("Beyond.VFS", "UnityFileLoaderHelper", assemblies, count);
   auto helperStreamClass =
@@ -1119,12 +1340,14 @@ void InstallHooks(void **assemblies, size_t count) {
       FindClass("Beyond.VFS", "UnityPersistFileHelper", assemblies, count);
   auto posClass =
       FindClass("Beyond.VFS", "EFileLoaderPosType", assemblies, count);
+#if defined(EIEM_DIAGNOSTICS)
   Inventory(vfsClass, "VirtualFileSystem");
   Inventory(readClass, "VFSFileReadStream");
   Inventory(bundleClass, "AssetBundle");
   Inventory(helperClass, "UnityFileLoaderHelper");
   Inventory(helperStreamClass, "UnityStreamingFileHelper");
   Inventory(helperPersistClass, "UnityPersistFileHelper");
+#endif
   if (LoaderPosAbi(posClass)) {
     Install(helperClass, "ReadAssetBundle",
             {"System.String", "System.String", "System.UInt64",
@@ -1154,6 +1377,8 @@ void InstallHooks(void **assemblies, size_t count) {
         persist ? (void *)HelperPersistAsync : (void *)HelperStreamAsync,
         persist ? (void **)&helperPersistAsync : (void **)&helperStreamAsync);
   }
+#endif
+#if defined(EIEM_DIAGNOSTICS)
   if (HashAbi(hashClass)) {
     Install(hashClass, "get_path", {}, "System.String", false,
             (void *)HashGetPath, (void **)&hashGetPath);
@@ -1209,7 +1434,7 @@ void InstallHooks(void **assemblies, size_t count) {
           (void*)RequestBundle, (void**)&requestBundle);
   Install(bundleClass, "LoadAsset", {"System.String", "System.Type"}, "UnityEngine.Object", false,
           (void*)LoadAsset, (void**)&loadAsset);
-#if defined(EIEM_DIAGNOSTICS)
+#if defined(EIEM_DIAGNOSTICS) || defined(EIEM_DEMAND_LOADING_PROBE)
   Install(bundleClass, "LoadFromMemory_Internal",
           {"System.Byte[]", "System.UInt32"}, "UnityEngine.AssetBundle", true,
           (void *)Memory, (void **)&memory);
@@ -1243,6 +1468,15 @@ void InstallHooks(void **assemblies, size_t count) {
   LoadingObservation::InstallOptional(assemblies,count);
 #endif
   FullResourceReload::Install(assemblies,count);
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+  DemandLoadingProbe::Install(assemblies,count);
+#endif
+#if defined(EIEM_MESH_TARGET_PROBE)
+  MeshTargetProbe::Install(assemblies,count);
+#endif
+#if defined(EIEM_MESH_NATIVE_ACCEPTANCE)
+  MeshNativeAcceptance::Install(assemblies,count);
+#endif
   EffectDebug::Install(assemblies,count);
   RuntimeMaterials::Install(assemblies,count);
 #if defined(EIEM_PREFAB_ADAPTATION_PROBE)
@@ -1256,9 +1490,15 @@ void InstallHooks(void **assemblies, size_t count) {
   auto armed = std::atomic_load(&substitutions);
   auto rules = std::atomic_load(&resourceRules);
   const bool ruleArmed = rules && NativeBundle::enabled;
+#if defined(EIEM_DEMAND_LOADING_PROBE) && defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+  const bool demandReplacementArmed=DemandLoadingProbe::enabled.load()&&DemandLoadingProbe::sharedInputsEnabled.load();
+#else
+  const bool demandReplacementArmed=false;
+#endif
+  ApplyEntryHookBatch();
   Log("[ENTRY-READY] installed=%zu vfs=%d memory=%d file=%d stream=%d read=%d "
       "publicFile=%d helper=%d "
-      "replacementArmed=%d controlArmed=%d ruleMemoryArmed=%d "
+      "replacementArmed=%d demandReplacementArmed=%d controlArmed=%d ruleMemoryArmed=%d "
       "RenderDocRequested=0",
       installed.size(), !!vfsPos || !!vfs, !!memory || !!memoryAsync,
       !!file || !!fileAsync || !!filePublic || !!fileAsyncPublic,
@@ -1266,12 +1506,27 @@ void InstallHooks(void **assemblies, size_t count) {
       !!filePublic || !!fileAsyncPublic,
       !!helper || !!helperAsync || !!helperStream || !!helperStreamAsync ||
           !!helperPersist || !!helperPersistAsync,
-      (armed && armed->control.empty()) || ruleArmed,
+      (armed && armed->control.empty()) || ruleArmed || demandReplacementArmed,
+      int(demandReplacementArmed),
       armed && !armed->control.empty(), int(ruleArmed));
 }
 DWORD WINAPI ProcessJobs(void *) {
   for (;;) {
     WaitForSingleObject(queueEvent, 1000);
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+    DemandLoadingProbe::Watchdog();
+#endif
+    effectsReload=false;
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+    if(reload.exchange(false))ReloadDemandPackages();
+#else
+    if(reload.exchange(false))Log("[DEMAND-PROBE-TEST] reloadRequested=1 compiledBackendDisabled=1 replacementApplied=0");
+#endif
+#elif defined(EIEM_MESH_TARGET_PROBE)
+    effectsReload=false;
+    if(reload.exchange(false))Log("[MESH-TARGET-TEST] reloadRequested=1 compiledBackendDisabled=1 replacementApplied=0");
+#else
     if(effectsReload.exchange(false))RuntimeAttachments::PrepareDiskReload(true);
     if (reload.exchange(false)) {
       if(FullResourceReload::configured) {
@@ -1280,6 +1535,7 @@ DWORD WINAPI ProcessJobs(void *) {
       } else {Log("[FULL-RELOAD-REJECT] phase=trigger reason=nativeReloadNotConfigured");}
     }
     if(FullResourceReload::configured) FullResourceReload::PollOffline();
+#endif
 #if defined(EIEM_DIAGNOSTICS)
     for (;;) {
       Job job;
@@ -1393,7 +1649,17 @@ DWORD StartImpl() {
   logMirror = OpenLog(gameDirectory / "plugin" / "eff_log.txt");
 #endif
   Log("[BUILD] resource-directory-entry %s %s pid=%lu package-contract=structures "
+#if defined(EIEM_FORMAT3_RUNTIME)
+      "mode=format3-runtime compiledBackend=disabled replacementApplied=before-deserialize",
+#elif defined(EIEM_DEMAND_LOADING_PROBE) && defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+      "mode=demand-native-acceptance compiledBackend=disabled replacementApplied=before-deserialize",
+#elif defined(EIEM_DEMAND_LOADING_PROBE)
+      "mode=demand-loading-observation compiledBackend=disabled replacementApplied=0",
+#elif defined(EIEM_MESH_TARGET_PROBE)
+      "mode=mesh-target-matching compiledBackend=disabled replacementApplied=0",
+#else
       "mode=serialized-loading-input startup=initializing replacement=not-yet-armed",
+#endif
       __DATE__, __TIME__, GetCurrentProcessId());
   Log("[ENTRY-LOG] path=%s diagnostics=%d readers=shared writers=exclusive",
       logPath.u8string().c_str(), !!logMirror);
@@ -1457,7 +1723,9 @@ DWORD StartImpl() {
     CloseHandle(worker);
   else
     Log("[ENTRY-FATAL] evidence worker failed err=%lu", GetLastError());
+#if !defined(EIEM_MESH_TARGET_PROBE) && (!defined(EIEM_DEMAND_LOADING_PROBE) || defined(EIEM_DEMAND_NATIVE_ACCEPTANCE))
   RuntimeAttachments::PrepareDiskReload(false);
+#endif
   EiemControlPanel::Shortcut reloadKey, guiKey,effectsKey;
 #if defined(EIEM_DIAGNOSTICS)
   ULONGLONG report = GetTickCount64();

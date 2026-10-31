@@ -257,6 +257,57 @@ inline Value ArrayElement(const Type& type,const Value& array){
   return EmptyValue(type,type.nodes[array.node].children[1]);
 }
 inline const Value& ConstArray(const Type& type,const Value& value){return ArrayValue(type,value);}
+struct SerializedMetadata {
+  Bytes prefix;
+  size_t table = 0, dataOffset = 0;
+};
+inline std::vector<std::string> OriginalExternals(const Bytes& source,const SerializedLayout& layout) {
+  Reader reader(source,layout.tableEnd,false,AddSize(48,layout.metadataSize));
+  auto scripts=reader.Count();reader.Skip(MultiplySize(scripts,12));
+  auto count=reader.Count();std::vector<std::string> result;
+  for(size_t i=0;i<count;++i){reader.Z();reader.Skip(20);auto path=reader.Z();auto slash=path.find_last_of("/\\");result.push_back(slash==path.npos?path:path.substr(slash+1));}
+  Require(ExternalPrefix(result,layout.externals),"serialized original external order changed");return result;
+}
+// Metadata construction is shared by the full writer and the range writer.
+// It needs only the original metadata prefix, never unchanged object payloads.
+inline SerializedMetadata BuildSerializedMetadata(const Bytes& source,const SerializedLayout& layout,
+    size_t count,const std::vector<Bytes>& addedTypes={},const std::vector<Bytes>& addedScripts={}) {
+  Require(layout.countOffset>=48&&layout.tableEnd<=AddSize(48,layout.metadataSize)&&
+      layout.tableStart>=AddSize(layout.countOffset,4)&&AddSize(48,layout.metadataSize)<=source.size(),"serialized writer metadata range");
+  Require(count<=UINT32_MAX,"serialized object count field overflow");
+  Reader externalReader(source,layout.tableEnd,false,48+layout.metadataSize);
+  auto scripts=externalReader.Count();externalReader.Skip(MultiplySize(scripts,12));
+  auto externalCountOffset=externalReader.p;auto externalCount=externalReader.Count();
+  for(size_t i=0;i<externalCount;++i){externalReader.Z();externalReader.Skip(20);externalReader.Z();}
+  OriginalExternals(source,layout);
+  Bytes metadata(source.begin()+48,source.begin()+layout.countOffset);
+  size_t typeShift=0;for(const auto& record:addedTypes){typeShift=AddSize(typeShift,record.size());metadata.insert(metadata.end(),record.begin(),record.end());}
+  if(!addedTypes.empty()){
+    Require(layout.typeCountOffset>=48&&AddSize(layout.typeCountOffset,4)<=layout.countOffset&&layout.types.size()<=INT_MAX,"serialized appended type extent differs");
+    WriteInteger(metadata,layout.typeCountOffset-48,layout.types.size(),4);
+  }
+  metadata.insert(metadata.end(),source.begin()+layout.countOffset,source.begin()+layout.countOffset+4);
+  WriteInteger(metadata,layout.countOffset-48+typeShift,count,4);
+  if(count)metadata.resize(AlignSize(metadata.size(),4));
+  auto table=metadata.size();metadata.resize(AddSize(table,MultiplySize(count,24)));
+  auto tail=metadata.size(),scriptEnd=layout.tableEnd+4+MultiplySize(scripts,12);
+  metadata.insert(metadata.end(),source.begin()+layout.tableEnd,source.begin()+scriptEnd);
+  Require(AddSize(scripts,addedScripts.size())<=INT_MAX,"serialized script count overflow");
+  WriteInteger(metadata,tail,scripts+addedScripts.size(),4);
+  size_t scriptShift=0;for(const auto& record:addedScripts){Require(record.size()==12,"serialized script record width differs");metadata.insert(metadata.end(),record.begin(),record.end());scriptShift=AddSize(scriptShift,record.size());}
+  metadata.insert(metadata.end(),source.begin()+scriptEnd,source.begin()+externalReader.p);
+  Require(layout.externals.size()<=INT_MAX,"serialized external count field overflow");
+  WriteInteger(metadata,tail+externalCountOffset-layout.tableEnd+scriptShift,layout.externals.size(),4);
+  for(size_t i=externalCount;i<layout.externals.size();++i){
+    metadata.resize(AddSize(metadata.size(),21));
+    auto path="archive:/"+layout.externals[i]+"/"+layout.externals[i];
+    metadata.insert(metadata.end(),path.begin(),path.end());metadata.push_back(0);
+  }
+  metadata.insert(metadata.end(),source.begin()+externalReader.p,source.begin()+48+layout.metadataSize);
+  SerializedMetadata result;result.table=AddSize(48,table);result.dataOffset=AlignSize(AddSize(48,metadata.size()),16);
+  result.prefix.assign(source.begin(),source.begin()+48);result.prefix.insert(result.prefix.end(),metadata.begin(),metadata.end());result.prefix.resize(result.dataOffset);
+  WriteInteger(result.prefix,20,metadata.size(),4,true);WriteInteger(result.prefix,32,result.dataOffset,8,true);return result;
+}
 inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout,
                               const std::map<int64_t, Bytes>& replacements,
                               const std::vector<AddedObject>& added = {},
@@ -268,12 +319,7 @@ inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout
                               AuthorByteSpans* outputOrigins = nullptr) {
   AuthorByteSpans resultOrigins;
   if(sourceOrigins&&outputOrigins)EiemAuthorBytes::Validate(source,*sourceOrigins);
-  Reader externalReader(source,layout.tableEnd,false,48+layout.metadataSize);
-  auto scripts=externalReader.Count();externalReader.Skip(MultiplySize(scripts,12));
-  auto externalCountOffset=externalReader.p;auto externalCount=externalReader.Count();
-  std::vector<std::string> originalExternals;
-  for(size_t i=0;i<externalCount;++i){externalReader.Z();externalReader.Skip(20);auto path=externalReader.Z();auto slash=path.find_last_of("/\\");originalExternals.push_back(slash==path.npos?path:path.substr(slash+1));}
-  Require(ExternalPrefix(originalExternals,layout.externals),"serialized original external order changed");
+  auto originalExternals=OriginalExternals(source,layout);
   if (replacements.empty() && added.empty() && removed.empty() && addedTypes.empty() && addedScripts.empty() && originalExternals==layout.externals){if(outputOrigins)*outputOrigins=sourceOrigins?*sourceOrigins:AuthorByteSpans{};return source;}
   Require(layout.countOffset >= 48 && layout.tableEnd <= 48 + layout.metadataSize &&
               layout.tableStart >= layout.countOffset + 4, "serialized writer metadata range");
@@ -282,38 +328,13 @@ inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout
   for(auto id:removed)Require(layout.objects.count(id),"serialized deleted PathID absent");
   size_t count = AddSize(layout.order.size()-removed.size(),added.size());
   Require(count <= UINT32_MAX, "serialized object count field overflow");
-  Bytes metadata(source.begin() + 48, source.begin() + layout.countOffset);
-  size_t typeShift=0;for(const auto& record:addedTypes){typeShift=AddSize(typeShift,record.size());metadata.insert(metadata.end(),record.begin(),record.end());}
-  if(!addedTypes.empty()){
-    Require(layout.typeCountOffset>=48&&layout.typeCountOffset+4<=layout.countOffset&&layout.types.size()<=INT_MAX,"serialized appended type extent differs");
-    WriteInteger(metadata,layout.typeCountOffset-48,layout.types.size(),4);
-  }
-  metadata.insert(metadata.end(),source.begin()+layout.countOffset,source.begin()+layout.countOffset+4);
-  WriteInteger(metadata, layout.countOffset - 48 + typeShift, count, 4);
-  if(count)metadata.resize((metadata.size() + 3) & ~size_t(3));
-  size_t table = metadata.size();
-  metadata.resize(AddSize(table,MultiplySize(count,24)));
-  auto tail=metadata.size();
-  auto scriptEnd=layout.tableEnd+4+MultiplySize(scripts,12);
-  metadata.insert(metadata.end(),source.begin()+layout.tableEnd,source.begin()+scriptEnd);
-  Require(AddSize(scripts,addedScripts.size())<=INT_MAX,"serialized script count overflow");
-  WriteInteger(metadata,tail,scripts+addedScripts.size(),4);
-  size_t scriptShift=0;for(const auto& record:addedScripts){Require(record.size()==12,"serialized script record width differs");metadata.insert(metadata.end(),record.begin(),record.end());scriptShift=AddSize(scriptShift,record.size());}
-  metadata.insert(metadata.end(),source.begin()+scriptEnd,source.begin()+externalReader.p);
-  Require(layout.externals.size()<=INT_MAX,"serialized external count field overflow");
-  WriteInteger(metadata,tail+externalCountOffset-layout.tableEnd+scriptShift,layout.externals.size(),4);
-  for(size_t i=externalCount;i<layout.externals.size();++i){
-    // Preserve all existing GUID/type/path records. New bundle members use
-    // Unity's archive reference grammar and the native zero GUID/type form.
-    metadata.resize(AddSize(metadata.size(),21));
-    auto path="archive:/"+layout.externals[i]+"/"+layout.externals[i];
-    metadata.insert(metadata.end(),path.begin(),path.end());metadata.push_back(0);
-  }
-  metadata.insert(metadata.end(),source.begin()+externalReader.p,source.begin()+48+layout.metadataSize);
-  size_t dataOffset = (48 + metadata.size() + 15) & ~size_t(15);
-  Bytes output(source.begin(), source.begin() + 48);
-  output.insert(output.end(), metadata.begin(), metadata.end());
-  output.resize(dataOffset);
+  auto prepared=BuildSerializedMetadata(source,layout,count,addedTypes,addedScripts);
+  auto dataOffset=prepared.dataOffset,table=prepared.table;
+  size_t outputSize=dataOffset;
+  for(auto id:layout.order){if(removed.count(id))continue;auto change=replacements.find(id);outputSize=AddSize(AlignSize(outputSize,8),change==replacements.end()?layout.objects.at(id).size:change->second.size());}
+  for(const auto& object:added)outputSize=AddSize(AlignSize(outputSize,8),object.bytes.size());
+  Bytes output=std::move(prepared.prefix);
+  output.reserve(outputSize);
   std::map<int64_t, size_t> ids;
   auto append = [&](size_t index, int64_t id, size_t type, const Bytes& bytes,
                     size_t begin, size_t size,const AuthorByteSpans* origins) {
@@ -322,7 +343,7 @@ inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout
     Require(begin <= bytes.size() && size <= bytes.size() - begin,
             "serialized output payload range");
     output.resize((output.size() + 7) & ~size_t(7));
-    size_t offset = output.size() - dataOffset, row = 48 + table + index * 24;
+    size_t offset = output.size() - dataOffset, row = table + index * 24;
     WriteInteger(output, row, (uint64_t)id, 8);
     WriteInteger(output, row + 8, offset, 8);
     WriteInteger(output, row + 16, size, 4);
@@ -344,12 +365,11 @@ inline Bytes BuildSerialized(const Bytes& source, const SerializedLayout& layout
   for (const auto& object : added)
     append(index++, object.id, object.type, object.bytes, 0, object.bytes.size(),objectOrigins&&objectOrigins->count(object.id)?&objectOrigins->at(object.id):nullptr);
   // Native loading requires signed PathID order. Keep every payload offset intact.
-  Bytes records(output.begin() + 48 + table, output.begin() + 48 + table + count * 24);
+  Bytes records(output.begin() + table, output.begin() + table + count * 24);
   size_t sortedIndex = 0;
   for (const auto& row : ids)
     std::copy_n(records.begin() + row.second * 24, 24,
-                output.begin() + 48 + table + sortedIndex++ * 24);
-  WriteInteger(output, 20, metadata.size(), 4, true);
+                output.begin() + table + sortedIndex++ * 24);
   WriteInteger(output, 24, output.size(), 8, true);
   WriteInteger(output, 32, dataOffset, 8, true);
   // Original external records, ref types and user info remain byte-for-byte;

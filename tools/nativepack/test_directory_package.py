@@ -15,6 +15,20 @@ from nativepack.state_rules import Condition, apply_key
 
 
 class ResourceTests(unittest.TestCase):
+    def test_compressed_texture_resource_round_trip(self):
+        from nativepack.texture_fields import texture_blocks, texture_metadata, texture_byte_size
+        from nativepack.resource_file import PIXELS
+        for format_name in ('BC5', 'BC7'):
+            texture = dict(width=5, height=7, format=format_name, mipCount=3,
+                           colorSpace=0, filter=1, wrap=0, aniso=1, mipBias=0.0,
+                           sourcePixelsHash='ab' * 32, pixels=bytes(96))
+            self.assertEqual(texture_byte_size(texture), 96)
+            resource = decode_resource(encode_resource(PIXELS, '12' * 16, texture_blocks(texture)), PIXELS)
+            metadata = texture_metadata(resource, {})
+            self.assertEqual(metadata['format'], format_name)
+            self.assertEqual(metadata['sourcePixelsHash'], 'AB' * 32)
+            self.assertEqual((metadata['width'], metadata['height'], metadata['mipCount']), (5, 7, 3))
+
     def test_blocks_and_empty_material(self):
         blocks = {"native": bytes(range(23)), "@bones": encode_strings(["Root/骨骼", "Root/Bone"]), "empty": b""}
         encoded = encode_resource(MESH, "12" * 16, blocks)
@@ -88,6 +102,62 @@ def fixture():
 
 
 class DirectoryTests(unittest.TestCase):
+    def test_memory_only_export_emits_complete_input_without_staging_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / 'staging'
+            root.mkdir()
+            memory = export_directory(root, **fixture(), memory_only=True)
+            self.assertEqual(list(root.iterdir()), [])
+            self.assertIn('[Mod]', memory['_memory_ini'].decode('utf-8'))
+            self.assertEqual(set(memory['_memory_resources']), {
+                'meshes/MeshBody.mesh', 'materials/MaterialBody.mat', 'textures/body.tex',
+            })
+            published = Path(folder) / 'published'
+            published.mkdir()
+            (published / 'mod.ini').write_bytes(memory['_memory_ini'])
+            for relative, data in memory['_memory_resources'].items():
+                path = published / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+            package = read_package(published)
+            self.assertEqual(package['modId'], 'Test')
+            self.assertEqual(package['rules'], memory['rules'])
+
+    def test_memory_only_export_keeps_material_animation_in_memory(self):
+        clip = dict(id='matflow', label='Emission flow', key='F6', duration=1, speed=1,
+                    loop=True, autoplay=True,
+                    targets=[dict(variable='$matflow_0', material='MaterialBody',
+                                  property='_Emission', kind='FLOAT', component=0,
+                                  samples=[0, .5, 1])])
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / 'staging'
+            root.mkdir()
+            memory = export_directory(root, **fixture(), material_clips=[clip], memory_only=True)
+            self.assertEqual(list(root.iterdir()), [])
+            self.assertIn('resources/materialanimation_matflow.bin', memory['_memory_resources'])
+            published = Path(folder) / 'published'
+            published.mkdir()
+            (published / 'mod.ini').write_bytes(memory['_memory_ini'])
+            for relative, data in memory['_memory_resources'].items():
+                path = published / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+            package = read_package(published)
+            self.assertEqual(package['materialAnimations'][0]['tracks']['$matflow_0'], (0, .5, 1))
+
+    def test_editable_mesh_snapshot_id_matches_manifest_part_id(self):
+        from nativepack.ini_package import part_resource_id
+        data = fixture()
+        data['parts'][0]['partId'] = 'MeshBody.001'
+        data['rules'][0]['parts'] = [data['parts'][0]['partId']]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            export_directory(root, **data)
+            manifest = ini_document(root)
+            part_id = part_resource_id(data['parts'][0]['partId'])
+            self.assertIn(part_id, manifest)
+            self.assertEqual(part_id, 'PartBody.001')
+
     def test_nested_mod_has_independent_resource_scope(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)/'lx'
@@ -381,6 +451,16 @@ class DirectoryTests(unittest.TestCase):
         self.assertEqual(updated['textures'], [])
         self.assertEqual(updated['states'], self.package['states'])
         self.assertEqual(updated['shapeControls'], self.package['shapeControls'])
+
+    def test_format3_staging_accepts_sparse_material_without_native_fields(self):
+        material = dict(fixture()['materials'][0], nativeTypeHash='00' * 16,
+                        fieldData={}, textureEdits=[])
+        update_directory(self.root, materials=[material])
+        loaded = read_package(self.root)
+        self.assertEqual(loaded['materials'][0]['nativeTypeHash'], '00' * 16)
+        self.assertEqual(loaded['materials'][0]['nativeFields'], [])
+        self.assertEqual(loaded['_resources']['materials/MaterialBody.mat']['blocks'], {})
+        self.assertEqual(loaded['materials'][0]['textureEdits'], [])
 
     def test_different_images_with_same_filename_report_conflict(self):
         inputs = fixture()

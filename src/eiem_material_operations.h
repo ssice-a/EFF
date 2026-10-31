@@ -9,7 +9,8 @@ struct Edits {
  std::map<std::string,std::array<double,2>> scales,offsets;
  std::map<std::string,bool> keywords;
  std::map<std::string,std::string> tags;
+ std::map<std::string,std::set<std::string>> removed;
  std::optional<int32_t> queue;
- bool Empty()const{return floats.empty()&&integers.empty()&&colors.empty()&&scales.empty()&&offsets.empty()&&keywords.empty()&&tags.empty()&&!queue;}
+ bool Empty()const{return floats.empty()&&integers.empty()&&colors.empty()&&scales.empty()&&offsets.empty()&&keywords.empty()&&tags.empty()&&removed.empty()&&!queue;}
 };
 }

@@ -10,6 +10,7 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
+TEXCONV_SHA256 = 'DCFDEC10244E02CF5037FBA089C55FB7E1326B1C8181742D77D15FA5CB5EEF06'
 sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(ROOT / 'tools/Blender'))
 import eiem_offline_reload as offline
@@ -53,8 +54,10 @@ def package(output, compiler=None, dll_protocol=None,
         raise FileExistsError('Shared tools archive already exists: ' + str(archive))
     source_files = {
         'nativepack/eff_resource_pack.exe': compiler,
+        'nativepack/eff_author_assets.dll': ROOT / 'bin/author-assets/eff_author_assets_format3.dll',
         'nativepack/eff_source_index.exe': ROOT / 'bin/source-index-helper/eff_source_index.exe',
         'nativepack/eff_author_core.dll': ROOT / 'bin/author-core/eff_author_core.dll',
+        'nativepack/texconv.exe': ROOT / 'bin/texconv/texconv.exe',
     }
     vendor = ROOT / 'bin/author-core/vendor'
     if not (vendor / 'PIL/__init__.py').is_file():
@@ -66,11 +69,15 @@ def package(output, compiler=None, dll_protocol=None,
     for name, source in source_files.items():
         if not source.is_file():
             raise FileNotFoundError('Missing shared native tool: ' + str(source))
+    if _digest(source_files['nativepack/texconv.exe']).upper() != TEXCONV_SHA256:
+        raise ValueError('DirectXTex texconv.exe version/hash differs from the pinned May 2026 build')
 
     with tempfile.TemporaryDirectory(prefix='.eff-shared-tools-', dir=output) as temp:
         package_root = Path(temp) / 'EFF_Native_Tools'
         for name, source in source_files.items():
             _write_file(package_root / name, source)
+        _write_file(package_root / 'nativepack/THIRD_PARTY_NOTICES',
+                    ROOT / 'THIRD_PARTY_NOTICES')
         protocol_path = package_root / 'nativepack/package-protocol.json'
         protocol_path.write_text(json.dumps(protocol, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         shutil.copytree(vendor, package_root / 'vendor',
@@ -89,9 +96,11 @@ def package(output, compiler=None, dll_protocol=None,
         'sha256': digest,
         'archiveRoot': 'EFF_Native_Tools',
         'compiler': 'nativepack/eff_resource_pack.exe',
+        'authorAssets': 'nativepack/eff_author_assets.dll',
         'indexUpdater': 'nativepack/eff_source_index.exe',
         'authorCore': 'nativepack/eff_author_core.dll',
         'protocol': 'nativepack/package-protocol.json',
+        'textureCompressor': 'nativepack/texconv.exe',
     }
     manifest_path = Path(manifest_output) if manifest_output else output / 'eff-native-tools.json'
     manifest_path.write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')

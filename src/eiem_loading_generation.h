@@ -49,12 +49,18 @@ inline std::string RemapPath(const std::string& path, const Names& names) {
   return "archive:/" + replacement + "/" + found->second;
 }
 struct Patch { size_t offset = 0; std::string before, after; };
-inline Bytes ApplySites(const Bytes& bytes,std::vector<Patch> patches){
+inline void ValidateSites(const Bytes& bytes,std::vector<Patch>& patches){
   std::sort(patches.begin(),patches.end(),[](const auto& a,const auto& b){return a.offset<b.offset;});size_t end=0;
   for(const auto& patch:patches){
     Require(patch.before.size()==patch.after.size()&&patch.offset>=end&&patch.offset<=bytes.size()&&patch.before.size()<=bytes.size()-patch.offset,"namespace recipe patch range/width/overlap differs");
     Require(std::equal(patch.before.begin(),patch.before.end(),bytes.begin()+patch.offset,[](char expected,unsigned char actual){return (unsigned char)expected==actual;}),"namespace recipe original field differs at byte "+std::to_string(patch.offset));end=patch.offset+patch.before.size();
   }
+}
+inline void ApplySitesInPlace(Bytes& bytes,std::vector<Patch> patches){
+  ValidateSites(bytes,patches);for(const auto& patch:patches)std::copy(patch.after.begin(),patch.after.end(),bytes.begin()+patch.offset);
+}
+inline Bytes ApplySites(const Bytes& bytes,std::vector<Patch> patches){
+  ValidateSites(bytes,patches);
   Bytes result=bytes;for(const auto& patch:patches)std::copy(patch.after.begin(),patch.after.end(),result.begin()+patch.offset);return result;
 }
 inline Bytes ApplyProven(const Bytes& bytes,const std::string& hash,std::vector<Patch> patches,bool verify=true){

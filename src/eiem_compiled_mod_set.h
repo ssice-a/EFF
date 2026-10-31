@@ -7,6 +7,7 @@
 #include "eiem_logical_source_routes.h"
 #include "eiem_input_retention.h"
 #include "eiem_semantic_renderer_replay.h"
+#include "eiem_shared_input_view.h"
 
 // Combines already compiled records. No resource builders, scene scans, game
 // resource queries or author-side executables are called by this path.
@@ -34,6 +35,7 @@ struct Set {
  std::vector<Catalog> catalog;
  std::vector<std::string> sourceNamespaceKeys;
  std::vector<std::vector<std::pair<size_t,size_t>>> contributors;
+ std::vector<std::set<Identity>> overlappingTargets;
  mutable std::map<size_t,std::shared_ptr<const Bytes>> isolated;
  std::map<size_t,std::weak_ptr<const Bytes>> isolatedRefs;
  std::map<size_t,std::shared_ptr<const Bytes>> startup;
@@ -49,7 +51,24 @@ inline std::vector<std::pair<size_t,size_t>> Writers(const Set& set,size_t index
  std::vector<std::pair<size_t,size_t>> result;for(const auto& contributor:set.contributors.at(index)){
   const auto& a=*set.mods.at(contributor.first);const auto& source=set.catalog.at(index).source;const auto& baseline=source.baselineHash.empty()?source.hash:source.baselineHash;
   if(a.manifest.plan.startupHashes.at(contributor.second)!=baseline)result.push_back(contributor);
- }return result;
+ }std::sort(result.begin(),result.end(),[&](const auto& a,const auto& b){return set.mods.at(a.first)->manifest.package.id<set.mods.at(b.first)->manifest.package.id;});return result;
+}
+inline std::set<int64_t> OverlappingTargetObjects(const Set& set,size_t input,const std::string& member,
+    const Bytes& bytes,const SerializedLayout& layout){
+ const auto& overlapping=set.overlappingTargets.at(input);
+ std::map<Identity,std::set<int64_t>> renderers;
+ for(const auto& contributor:set.contributors.at(input)){
+  const auto& artifact=*set.mods.at(contributor.first);const auto source=contributor.second;
+  if(source>=artifact.manifest.plan.rendererRules.size())continue;
+  for(const auto& rule:artifact.manifest.plan.rendererRules[source]){
+   if(overlapping.count(rule.mesh)&&rule.cab==member)renderers[rule.mesh].insert(rule.id);
+  }
+ }
+ std::set<int64_t> result;
+ for(const auto& target:overlapping){auto found=renderers.find(target);if(found!=renderers.end())result.insert(found->second.begin(),found->second.end());}
+ if(!overlapping.empty())for(const auto& asset:SerializedAssets(bytes,member,layout))
+  if(asset.classId==43&&overlapping.count({asset.path,asset.asset}))result.insert(asset.pathId);
+ return result;
 }
 inline void EnsureCatalogProof(Catalog& catalog,bool retire=false){
  bool missing=false;for(const auto& member:catalog.members)missing=missing||!member.second;
@@ -104,21 +123,23 @@ inline size_t RelocateSite(const EiemLoadingGeneration::Patch& patch,const Bytes
  }}
  throw std::runtime_error("compiled namespace site lacks exact metadata/object ownership");
 }
-inline EndfieldInput::Bundle Replay(const Artifact& a,size_t index,const EndfieldInput::Bundle& original,const std::map<std::string,Bytes>& frames){
+inline EndfieldInput::Bundle Replay(const Artifact& a,size_t index,const EndfieldInput::Bundle& original,const std::map<std::string,Bytes>& frames,bool recordsOnly=false){
  HydrateInput(a,index);
- std::map<std::string,const Bytes*> members;for(const auto& m:original.members)members.emplace(m.name,&m.bytes);EndfieldInput::Bundle output=original;output.members.clear();
+ std::map<std::string,const Bytes*> members;for(const auto& m:original.members)members.emplace(m.name,&m.bytes);EndfieldInput::Bundle output;output.header=original.header;
  for(const auto& recipe:a.manifest.plan.memberRecipes.at(index)){
+  if(recordsOnly&&!a.members.count(recipe.name))continue;
   auto bytes=EiemResourceRecipe::Apply(recipe,members,a.manifest.package,frames,!a.explicitResources);auto proof=a.members.find(recipe.name);
   if(proof!=a.members.end()&&(a.genericResources||GenericObjectChanges(proof->second.before,proof->second.after)))VerifyObjectReferences(bytes,proof->second.before,ParseSerialized(bytes),*members.at(recipe.name));
   output.members.push_back({recipe.name,recipe.flags,std::move(bytes)});
  }return output;
 }
-inline Bytes Materialize(const Set& set,size_t index,bool isolated,PreparedNamespaces* prepared=nullptr,EiemNativeInputOffsets::Layout* nativeLayout=nullptr,const std::function<void(const char*,double)>& cost={}){
+inline Bytes Materialize(const Set& set,size_t index,bool isolated,PreparedNamespaces* prepared=nullptr,EiemNativeInputOffsets::Layout* nativeLayout=nullptr,const std::function<void(const char*,double)>& cost={},EiemSharedInputView::Prepared* sharedView=nullptr){
  auto report=[&](const char* stage,std::chrono::steady_clock::time_point begin){if(cost)cost(stage,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count());};
  const auto& ready=isolated?set.views:set.startupViews;auto view=ready.find(index);if(view!=ready.end()){Bytes bytes(view->second->Size());Require(view->second->ReadAt(0,bytes.data(),bytes.size())==bytes.size(),"prepared native view read incomplete");return bytes;}
  if(prepared)prepared->clear();
  const auto& catalog=set.catalog.at(index);auto begin=std::chrono::steady_clock::now();auto input=ReadSource({},catalog.source);report("shared-source-read",begin);begin=std::chrono::steady_clock::now();auto original=EndfieldInput::Decode(input);report("shared-source-decode",begin);
  const auto writers=Writers(set,index);
+ const bool streamView=sharedView&&prepared&&!isolated&&!catalog.source.runtimeChanged&&writers.size()>1;
  if(catalog.source.runtimeChanged){
   std::vector<SemanticOperation> operations;for(const auto& contributor:writers){const auto& artifact=*set.mods.at(contributor.first);const auto source=contributor.second;
    Require(EiemResourceReloadPlan::SemanticCompleteAt(artifact.manifest.plan,source),
@@ -146,8 +167,8 @@ inline Bytes Materialize(const Set& set,size_t index,bool isolated,PreparedNames
   if(!isolated)return input;for(auto& member:original.members)member.name=set.manifest.plan.names.members.at(member.name);return EndfieldInput::Encode(input,original.members);
  }
  struct Edit {size_t mod=0,source=0;EndfieldInput::Bundle bundle;};std::vector<Edit> edits;Bytes singleStartup;
- for(const auto& contributor:writers){const auto& a=*set.mods.at(contributor.first);const auto& frames=set.frames.at(contributor.first);const Frames empty;begin=std::chrono::steady_clock::now();auto replay=Replay(a,contributor.second,original,frames?*frames:empty);report("shared-contributor-replay",begin);begin=std::chrono::steady_clock::now();
-  Bytes encoded;const auto& check=a.manifest.plan.startupHashes.at(contributor.second)==catalog.source.hash?input:(encoded=EndfieldInput::Encode(input,replay.members));Require(a.explicitResources||Hash(check)==a.manifest.plan.startupHashes.at(contributor.second),"compiled member replay differs from offline proof: "+catalog.source.file);if(writers.size()==1)singleStartup=std::move(encoded);edits.push_back({contributor.first,contributor.second,std::move(replay)});report("shared-contributor-proof",begin);}
+ for(const auto& contributor:writers){const auto& a=*set.mods.at(contributor.first);const auto& frames=set.frames.at(contributor.first);const Frames empty;begin=std::chrono::steady_clock::now();auto replay=Replay(a,contributor.second,original,frames?*frames:empty,streamView);report("shared-contributor-replay",begin);begin=std::chrono::steady_clock::now();
+  Bytes encoded;if(!streamView&&(writers.size()==1||!a.explicitResources)){const auto& check=a.manifest.plan.startupHashes.at(contributor.second)==catalog.source.hash?input:(encoded=EndfieldInput::Encode(input,replay.members));Require(a.explicitResources||Hash(check)==a.manifest.plan.startupHashes.at(contributor.second),"compiled member replay differs from offline proof: "+catalog.source.file);}if(writers.size()==1)singleStartup=std::move(encoded);edits.push_back({contributor.first,contributor.second,std::move(replay)});report("shared-contributor-proof",begin);}
  // An independent Mod already supplied the complete edits and exact sites.
  // Only shared inputs need record merging; avoid reparsing/rebuilding the rest.
  if(edits.size()==1){auto& edit=edits.front();const auto& a=*set.mods.at(edit.mod);if(prepared){*prepared=a.manifest.plan.namespaceRecipes.at(edit.source);if(a.explicitResources)for(auto& recipe:*prepared){auto member=std::find_if(edit.bundle.members.begin(),edit.bundle.members.end(),[&](const auto& value){return value.name==recipe.member;});Require(member!=edit.bundle.members.end(),"resource-addressed namespace member absent");recipe.hash=Hash(member->bytes);}}if(nativeLayout)*nativeLayout=EiemNativeInputOffsets::Describe(edit.bundle.members);if(!isolated){if(a.manifest.plan.startupHashes.at(edit.source)==catalog.source.hash)return input;return singleStartup;}
@@ -157,15 +178,17 @@ inline Bytes Materialize(const Set& set,size_t index,bool isolated,PreparedNames
  std::map<std::string,std::vector<std::pair<size_t,const EndfieldInput::Member*>>> byMember;
  for(size_t i=0;i<edits.size();++i)for(const auto& m:edits[i].bundle.members)byMember[m.name].push_back({i,&m});
  for(const auto& m:original.members)byMember.try_emplace(m.name);
+ if(streamView)for(const auto&edit:edits){const auto&a=*set.mods.at(edit.mod);for(const auto&recipe:a.manifest.plan.memberRecipes.at(edit.source))if(!a.members.count(recipe.name))byMember.try_emplace(recipe.name);}
  // Stream payloads are append-only. Rebase each Mod's offline offset before
  // combining its object records; original payload bytes remain untouched.
- std::map<std::pair<size_t,std::string>,size_t> streamShift;std::map<std::string,Bytes> streams;
+ std::map<std::pair<size_t,std::string>,size_t> streamShift;std::map<std::string,Bytes> streams;std::map<std::string,EiemSharedInputView::Stream> streamViews;
  for(const auto& row:byMember){auto old=oldMembers.find(row.first);const Bytes empty;const auto& base=old==oldMembers.end()?empty:old->second->bytes;if(Serialized(base))continue;
   bool serializedEdit=std::any_of(row.second.begin(),row.second.end(),[](const auto& v){return Serialized(v.second->bytes);});if(serializedEdit)continue;
-  Bytes combined=base;for(const auto& variant:row.second){const auto& bytes=variant.second->bytes;Require(bytes.size()>=base.size()&&std::equal(base.begin(),base.end(),bytes.begin()),"compiled stream changes its original prefix");auto shift=AlignSize(combined.size()-base.size(),16);combined.resize(AddSize(base.size(),shift));streamShift[{variant.first,row.first}]=shift;combined.insert(combined.end(),bytes.begin()+base.size(),bytes.end());}streams.emplace(row.first,std::move(combined));
+  if(streamView){auto& view=streamViews[row.first];view.flags=old!=oldMembers.end()?old->second->flags:0;bool first=true;if(!base.empty())EiemSharedInputView::Add(view,EiemSharedInputView::Original(row.first,base,*sharedView));for(size_t n=0;n<edits.size();++n){const auto&edit=edits[n];const auto&artifact=set.mods.at(edit.mod);const auto&recipes=artifact->manifest.plan.memberRecipes.at(edit.source);auto own=std::find_if(recipes.begin(),recipes.end(),[&](const auto&r){return r.name==row.first;});if(own==recipes.end())continue;if(first&&old==oldMembers.end())view.flags=own->flags;first=false;auto shift=AlignSize(view.size-base.size(),16);auto padding=base.size()+shift-view.size;if(padding)EiemSharedInputView::Add(view,EiemSharedInputView::Literal(Bytes(padding)));streamShift[{n,row.first}]=shift;EiemSharedInputView::Append(view,artifact,edit.mod,*own,base,oldMembers,*sharedView);}continue;}
+  size_t extent=base.size();for(const auto&variant:row.second){Require(variant.second->bytes.size()>=base.size(),"compiled stream original prefix truncated");extent=AddSize(AddSize(base.size(),AlignSize(extent-base.size(),16)),variant.second->bytes.size()-base.size());}Bytes combined;combined.reserve(extent);combined.insert(combined.end(),base.begin(),base.end());for(const auto& variant:row.second){const auto& bytes=variant.second->bytes;Require(std::equal(base.begin(),base.end(),bytes.begin()),"compiled stream changes its original prefix");auto shift=AlignSize(combined.size()-base.size(),16);combined.resize(AddSize(base.size(),shift));streamShift[{variant.first,row.first}]=shift;combined.insert(combined.end(),bytes.begin()+base.size(),bytes.end());}streams.emplace(row.first,std::move(combined));
  }
  std::vector<EndfieldInput::Member> output;
- for(const auto& row:byMember){auto old=oldMembers.find(row.first);auto stream=streams.find(row.first);if(stream!=streams.end()){uint32_t flags=old!=oldMembers.end()?old->second->flags:row.second.front().second->flags;output.push_back({row.first,flags,stream->second});continue;}
+ for(const auto& row:byMember){auto old=oldMembers.find(row.first);auto virtualStream=streamViews.find(row.first);if(virtualStream!=streamViews.end()){output.push_back({row.first,virtualStream->second.flags,{}});continue;}auto stream=streams.find(row.first);if(stream!=streams.end()){uint32_t flags=old!=oldMembers.end()?old->second->flags:row.second.front().second->flags;output.push_back({row.first,flags,std::move(stream->second)});continue;}
   Require(old!=oldMembers.end(),"compiled serialized member lacks original");const auto& bytes=old->second->bytes;const auto& proof=*catalog.members.at(row.first);const auto& layout=proof.before;
   bool extendedTypes=std::any_of(row.second.begin(),row.second.end(),[&](const auto& variant){return set.mods.at(edits.at(variant.first).mod)->members.at(row.first).after.types.size()!=layout.types.size();});
   auto mergedLayout=extendedTypes?ParseSerialized(bytes):layout;std::unique_ptr<NativeRegistrations> registrations;
@@ -186,7 +209,8 @@ inline Bytes Materialize(const Set& set,size_t index,bool isolated,PreparedNames
    }
   }
   report("shared-object-relocations",mergePhase);mergePhase=std::chrono::steady_clock::now();for(auto id:removed)Require(!changes.count(id),"compiled deletion conflicts with another Mod's object edit: "+std::to_string(id));
-  std::map<int64_t,Bytes> mergedChanges;for(const auto& change:changes){const auto& object=layout.objects.at(change.first);try{mergedChanges.emplace(change.first,MergeObject(layout.types.at(object.type),ObjectBytes(bytes,object),change.second));}catch(const std::exception& error){throw std::runtime_error(catalog.source.file+" / "+row.first+" / PathID "+std::to_string(change.first)+": "+error.what());}}
+  const auto overlappingObjects=OverlappingTargetObjects(set,index,row.first,bytes,layout);
+  std::map<int64_t,Bytes> mergedChanges;for(const auto& change:changes){const auto& object=layout.objects.at(change.first);const bool preferLater=overlappingObjects.count(change.first)!=0;try{mergedChanges.emplace(change.first,MergeObject(layout.types.at(object.type),ObjectBytes(bytes,object),change.second,preferLater));}catch(const std::exception& error){throw std::runtime_error(catalog.source.file+" / "+row.first+" / PathID "+std::to_string(change.first)+": "+error.what());}}
   report("shared-object-merge",mergePhase);mergePhase=std::chrono::steady_clock::now();const std::vector<Bytes> emptyRecords;
   std::vector<AddedObject> added;for(auto& item:additions)added.push_back(std::move(item.second));auto merged=BuildSerialized(bytes,mergedLayout,mergedChanges,added,removed,registrations?registrations->types:emptyRecords,registrations?registrations->scripts:emptyRecords);
   bool generic=std::any_of(row.second.begin(),row.second.end(),[&](const auto& variant){return set.mods.at(edits.at(variant.first).mod)->genericResources;});
@@ -203,14 +227,16 @@ inline Bytes Materialize(const Set& set,size_t index,bool isolated,PreparedNames
  // Keep pristine member order; newly introduced streams follow it.
  std::map<std::string,size_t> ordinal;for(size_t i=0;i<original.members.size();++i)ordinal.emplace(original.members[i].name,i);
  std::stable_sort(output.begin(),output.end(),[&](const auto& a,const auto& b){auto ai=ordinal.find(a.name),bi=ordinal.find(b.name);return (ai==ordinal.end()?SIZE_MAX:ai->second)<(bi==ordinal.end()?SIZE_MAX:bi->second);});
+ if(streamView){EiemSharedInputView::Finish(input,std::move(output),streamViews,*prepared,*sharedView);return {};}
  if(nativeLayout)*nativeLayout=EiemNativeInputOffsets::Describe(output);
  if(!isolated&&output.size()==original.members.size()&&std::equal(output.begin(),output.end(),original.members.begin(),[](const auto& a,const auto& b){return a.name==b.name&&a.flags==b.flags&&a.bytes==b.bytes;}))return input;
  if(isolated)for(auto& m:output)m.name=set.manifest.plan.names.members.at(m.name);return EndfieldInput::Encode(input,output);
 }
-inline Bytes IsolatePreparedInput(const Set& set,size_t index,const Bytes& startup,const PreparedNamespaces& prepared){
- Require(Hash(startup)==set.manifest.plan.startupHashes.at(index),"prepared startup input digest differs");
- if(index<set.layouts.size()&&set.manifest.plan.startupHashes.at(index)!=set.catalog.at(index).source.hash)
-  return EiemNativeInputOffsets::Relocate(startup,set.layouts[index],prepared,{},set.manifest.plan.names);
+inline void IsolatePreparedInputInPlace(const Set& set,size_t index,Bytes& startup,const PreparedNamespaces& prepared,bool digestVerified=false){
+ if(!digestVerified)Require(Hash(startup)==set.manifest.plan.startupHashes.at(index),"prepared startup input digest differs");
+ if(index<set.layouts.size()){
+  EiemNativeInputOffsets::RelocateInPlace(startup,set.layouts[index],prepared,{},set.manifest.plan.names);return;
+ }
  auto bundle=EndfieldInput::Decode(startup);
  for(auto& member:bundle.members){
   if(Serialized(member.bytes)){auto recipe=std::find_if(prepared.begin(),prepared.end(),[&](const auto& value){return value.member==member.name;});Require(recipe!=prepared.end(),"prepared namespace member absent");
@@ -219,7 +245,10 @@ inline Bytes IsolatePreparedInput(const Set& set,size_t index,const Bytes& start
   }
   member.name=set.manifest.plan.names.members.at(member.name);
  }
- return EndfieldInput::Encode(startup,bundle.members);
+ startup=EndfieldInput::Encode(startup,bundle.members);
+}
+inline Bytes IsolatePreparedInput(const Set& set,size_t index,const Bytes& startup,const PreparedNamespaces& prepared){
+ Bytes result=startup;IsolatePreparedInputInPlace(set,index,result,prepared);return result;
 }
 inline Bytes StartupInput(const Set& set,size_t index){
  auto ready=set.startup.find(index);Require(ready!=set.startup.end(),"prepared startup input absent");
@@ -230,9 +259,13 @@ inline EiemRenderAssemblyDescription::Description MergeAssembly(const Root& pris
  if(variants.empty())return pristine.Assembly();
  if(variants.size()==1)return variants.front().first->Assembly();
  EiemRenderAssemblyDescription::Description result;if(pristine.Assembly().sources.empty())return pristine.Assembly();
- std::map<std::pair<std::string,int64_t>,const EiemRenderAssemblyDescription::Source*> selected;
- for(const auto& variant:variants){std::set<std::pair<std::string,int64_t>> found;for(const auto& source:variant.first->Assembly().sources){auto id=std::make_pair(source.cab,source.id);if(variant.second.count(id)){Require(selected.emplace(id,&source).second,"compiled Renderer source conflict");found.insert(id);}}Require(found.size()==variant.second.size(),"compiled Renderer source missing");}
- result.sources.reserve(pristine.Assembly().sources.size());for(const auto& source:pristine.Assembly().sources){auto found=selected.find({source.cab,source.id});result.sources.push_back(found==selected.end()?source:*found->second);}
+ std::map<std::pair<std::string,int64_t>,std::vector<const EiemRenderAssemblyDescription::Source*>> selected;
+ for(const auto& variant:variants){std::set<std::pair<std::string,int64_t>> found;for(const auto& source:variant.first->Assembly().sources){auto id=std::make_pair(source.cab,source.id);if(variant.second.count(id)){selected[id].push_back(&source);found.insert(id);}}Require(found.size()==variant.second.size(),"compiled Renderer source missing");}
+ result.sources.reserve(pristine.Assembly().sources.size());for(const auto& source:pristine.Assembly().sources){auto found=selected.find({source.cab,source.id});if(found==selected.end()){result.sources.push_back(source);continue;}
+  auto merged=*found->second.back();std::set<EiemRenderAssemblyDescription::Address> addresses;std::vector<EiemRenderAssemblyDescription::Target> targets;
+  if(!merged.targets.empty()){targets.push_back(merged.targets.front());addresses.insert(merged.targets.front().renderer);}
+  for(const auto* contributor:found->second)for(size_t i=1;i<contributor->targets.size();++i)if(addresses.insert(contributor->targets[i].renderer).second)targets.push_back(contributor->targets[i]);
+  merged.targets=std::move(targets);result.sources.push_back(std::move(merged));}
  result.lods=pristine.Assembly().lods;result.helpers=pristine.Assembly().helpers;
  std::map<EiemRenderAssemblyDescription::Address,const EiemRenderAssemblyDescription::Source*> addresses;for(const auto& source:result.sources)Require(addresses.emplace(source.renderer,&source).second,"compiled Renderer address duplicated");
  auto expand=[&](std::vector<EiemRenderAssemblyDescription::Address>& list){std::vector<EiemRenderAssemblyDescription::Address> output;for(const auto& address:list){auto source=addresses.find(address);Require(source!=addresses.end(),"compiled LOD/helper address unowned");for(const auto& target:source->second->targets)output.push_back(target.renderer);}list=std::move(output);};
@@ -299,6 +332,10 @@ inline std::shared_ptr<Set> Read(const std::filesystem::path& game,const std::sh
   auto ini=EiemNativeInput::Read(root/"mod.ini");Require(Sha(ini.data(),ini.size())==current.iniHash,"Mod INI changed while capturing compiled snapshot");set->iniBytes.emplace(root,std::move(ini));set->files.insert(stamps.begin(),stamps.end());++rootIndex;
   if(std::filesystem::is_regular_file(root/"source-inputs.bin"))EiemLogicalSourceRoutes::Include(set->logicalSources,EiemStaticSources::LoadMod(root,game));
  }
+ std::vector<size_t> modOrder;for(size_t i=0;i<authors.size();++i)modOrder.push_back(i);
+ std::sort(modOrder.begin(),modOrder.end(),[&](size_t a,size_t b){return authors[a].id<authors[b].id;});
+ {auto oldAuthors=std::move(authors);auto oldMods=std::move(set->mods);auto oldFrames=std::move(set->frames);authors.clear();set->mods.clear();set->frames.clear();
+  for(auto i:modOrder){authors.push_back(std::move(oldAuthors[i]));set->mods.push_back(std::move(oldMods[i]));set->frames.push_back(std::move(oldFrames[i]));}}
  auto compositionStarted=std::chrono::steady_clock::now();auto& manifest=set->manifest;manifest.composed=true;manifest.rootAssembly=true;manifest.packages=authors;manifest.package=EiemComposedPackage::Compose(authors,true,false);auto& plan=manifest.plan;plan.composed=true;plan.rulesOnly=true;plan.key=Hash(Bytes(identity.begin(),identity.end()));plan.author=PackageDigest(manifest.package);plan.contract=InputContractDigest(manifest.package);report("author-composition",compositionStarted);
  auto catalogStarted=std::chrono::steady_clock::now();
  std::map<std::string,size_t> inputs;std::map<std::string,std::pair<std::shared_ptr<const Root>,size_t>> pristine;
@@ -317,6 +354,14 @@ inline std::shared_ptr<Set> Read(const std::filesystem::path& game,const std::sh
   }
   for(const auto& row:own.parts){auto part=row.second;part.id=EiemComposedPackage::Name(package.id,part.id);part.material=EiemComposedPackage::Name(package.id,part.material);Require(plan.parts.emplace(row.first,std::move(part)).second,"compiled part marker conflict");}
   for(const auto& row:own.materials)Require(plan.materials.emplace(EiemComposedPackage::Name(package.id,row.first),row.second).second,"compiled material identity conflict");plan.shared.insert(own.shared.begin(),own.shared.end());plan.meshParts+=own.meshParts;plan.rendererParts+=own.rendererParts;plan.textures+=own.textures;plan.materialMatches+=own.materialMatches;
+ }
+ set->overlappingTargets.resize(set->catalog.size());
+ for(size_t i=0;i<set->catalog.size();++i){std::map<Identity,std::set<std::string>> claimants;
+  for(const auto& contributor:set->contributors[i]){const auto& artifact=*set->mods.at(contributor.first);const auto source=contributor.second;
+   if(source>=artifact.manifest.plan.rendererRules.size())continue;
+   for(const auto& rule:artifact.manifest.plan.rendererRules[source])claimants[rule.mesh].insert(artifact.manifest.package.id);
+  }
+  for(const auto& row:claimants)if(row.second.size()>1)set->overlappingTargets[i].insert(row.first);
  }
  if(std::filesystem::is_directory(game/"Endfield_Data/StreamingAssets/VFS")){
   std::vector<EiemResourceReloadPlan::Source> sources;for(const auto& entry:set->catalog)sources.push_back(entry.source);
@@ -384,10 +429,11 @@ inline std::shared_ptr<Set> Read(const std::filesystem::path& game,const std::sh
   if(previous->namespaces.size()!=previous->catalog.size()||previous->layouts.size()!=previous->catalog.size()||set->catalog[i].source.hash!=previous->catalog[old].source.hash||set->contributors[i].size()!=previous->contributors[old].size())return SIZE_MAX;
   for(size_t n=0;n<set->contributors[i].size();++n){auto a=set->contributors[i][n],b=previous->contributors[old][n];if(a.second!=b.second||set->mods[a.first]->digest!=previous->mods[b.first]->digest)return SIZE_MAX;}return old;
  };
- std::vector<std::shared_ptr<const Bytes>> rawStartup(plan.inputs.size());
+ std::vector<std::shared_ptr<Bytes>> rawStartup(plan.inputs.size());
  std::vector<std::shared_ptr<const EiemInputSpanView::View>> rawViews(plan.inputs.size());
  std::vector<EiemCompiledInputView::Buffers> viewBuffers(plan.inputs.size());
  std::vector<const EiemCompiledInputView::Recipe*> viewRecipes(plan.inputs.size(),nullptr);
+ std::vector<std::shared_ptr<EiemSharedInputView::Prepared>> sharedViews(plan.inputs.size());
  std::vector<InputFileStamp> viewSourceStamps(plan.inputs.size());
  std::vector<size_t> reusedInputs(plan.inputs.size(),SIZE_MAX);
  // Decode proofs only for multiple actual writers, or a removed Mod's
@@ -407,30 +453,35 @@ inline std::shared_ptr<Set> Read(const std::filesystem::path& game,const std::sh
    for(const auto& resource:mod->manifest.package.resources){if(resource.second->mapped)buffers.emplace(std::make_pair(EiemResourceRecipe::Author,resource.first),EiemCompiledInputView::Buffer(resource.second->mapped));
     else buffers.emplace(std::make_pair(EiemResourceRecipe::Author,resource.first),std::shared_ptr<const Bytes>(resource.second,&resource.second->bytes));}
    for(const auto& frame:mod->preparedFrames)buffers.emplace(std::make_pair(EiemResourceRecipe::ExpandedFrame,frame.first),std::shared_ptr<const Bytes>(mod,&frame.second));
-   viewRecipes[i]=&mod->views.at(contribution.second);rawViews[i]=EiemCompiledInputView::Bind(*viewRecipes[i],buffers);report("view-bind-startup",begin);begin=std::chrono::steady_clock::now();
+   viewRecipes[i]=&mod->views.at(contribution.second);rawViews[i]=EiemCompiledInputView::Bind(*viewRecipes[i],buffers,{},mod);report("view-bind-startup",begin);begin=std::chrono::steady_clock::now();
    plan.inputs[i].hash=plan.startupHashes[i]=mod->manifest.plan.startupHashes.at(contribution.second)==set->catalog[i].source.hash?set->catalog[i].source.hash:viewRecipes[i]->startupHash;report("view-startup-hash",begin);return;
   }}
   auto old=reusable(i);if(old!=SIZE_MAX&&!previous->views.count(old)){plan.inputs[i].hash=plan.startupHashes[i]=previous->manifest.plan.startupHashes[old];namespaces[i]=previous->namespaces[old];set->layouts[i]=previous->layouts[old];reusedInputs[i]=old;return;}
+  if(writers.size()>1&&!set->catalog[i].source.runtimeChanged){auto begin=std::chrono::steady_clock::now();auto owner=sharedViews[i]=std::make_shared<EiemSharedInputView::Prepared>();auto& prepared=*owner;Materialize(*set,i,false,&namespaces[i],nullptr,cost,&prepared);viewBuffers[i]=std::move(prepared.buffers);viewRecipes[i]=&prepared.recipe;rawViews[i]=EiemCompiledInputView::Bind(prepared.recipe,viewBuffers[i],{},owner);report("shared-view-compose",begin);begin=std::chrono::steady_clock::now();plan.inputs[i].hash=plan.startupHashes[i]=prepared.recipe.startupHash=EiemInputSpanView::Digest(*rawViews[i]);report("shared-view-hash",begin);return;}
   auto begin=std::chrono::steady_clock::now();auto startup=Materialize(*set,i,false,&namespaces[i],&set->layouts[i],cost);report("replay",begin);begin=std::chrono::steady_clock::now();plan.inputs[i].hash=plan.startupHashes[i]=Hash(startup);report("startup-hash",begin);
-  rawStartup[i]=std::make_shared<const Bytes>(std::move(startup));},4);
+  rawStartup[i]=std::make_shared<Bytes>(std::move(startup));},4);
  SelectIsolatedInputs(*set);
  std::vector<std::shared_ptr<const Bytes>> isolatedInputs(plan.closure.size());
  std::vector<std::shared_ptr<const EiemInputSpanView::View>> isolatedViews(plan.closure.size());
  EiemOfflineCompile::ParallelInputs(plan.closure.size(),[&](size_t n){auto i=plan.closure[n];auto begin=std::chrono::steady_clock::now();
-  if(viewRecipes[i]){isolatedViews[n]=EiemCompiledInputView::Bind(*viewRecipes[i],viewBuffers[i],plan.names);report("view-bind-isolated",begin);begin=std::chrono::steady_clock::now();plan.inputs[i].hash.clear();report("view-isolated-hash",begin);return;}
+  if(viewRecipes[i]){isolatedViews[n]=EiemCompiledInputView::Relocate(*viewRecipes[i],rawViews[i],plan.names);report("view-bind-isolated",begin);begin=std::chrono::steady_clock::now();plan.inputs[i].hash.clear();report("view-isolated-hash",begin);return;}
   auto old=reusedInputs[i];std::shared_ptr<const Bytes> prior;
   if(old!=SIZE_MAX){auto ready=previous->isolatedRefs.find(old);if(ready!=previous->isolatedRefs.end())prior=ready->second.lock();}
   if(prior){isolatedInputs[n]=std::make_shared<const Bytes>(EiemNativeInputOffsets::Relocate(*prior,set->layouts[i],namespaces[i],previous->manifest.plan.names,plan.names));report("rekey",begin);}
-  else{auto startup=rawStartup[i];if(!startup){startup=std::make_shared<const Bytes>(Materialize(*set,i,false,&namespaces[i],&set->layouts[i]));report("replay",begin);begin=std::chrono::steady_clock::now();}
-   isolatedInputs[n]=std::make_shared<const Bytes>(IsolatePreparedInput(*set,i,*startup,namespaces[i]));report("isolate",begin);}
+  else{auto startup=rawStartup[i];bool digestVerified=bool(startup);if(!startup){startup=std::make_shared<Bytes>(Materialize(*set,i,false,&namespaces[i],&set->layouts[i]));report("replay",begin);begin=std::chrono::steady_clock::now();}
+   IsolatePreparedInputInPlace(*set,i,*startup,namespaces[i],digestVerified);isolatedInputs[n]=std::move(startup);report("isolate",begin);}
   begin=std::chrono::steady_clock::now();plan.inputs[i].hash=Hash(*isolatedInputs[n]);report("isolated-hash",begin);rawStartup[i].reset();},4);
- for(size_t i=0;i<viewRecipes.size();++i)if(viewRecipes[i]){set->sourceBuffers.emplace(i,viewBuffers[i].at({EiemResourceRecipe::Original,{}}));set->sourceStamps.emplace(i,viewSourceStamps[i]);if(plan.startupHashes[i]!=plan.originals[i].hash)set->startupViews.emplace(i,std::move(rawViews[i]));}
+ for(size_t i=0;i<viewRecipes.size();++i)if(viewRecipes[i]){auto original=viewBuffers[i].find({EiemResourceRecipe::Original,{}});if(original!=viewBuffers[i].end()){set->sourceBuffers.emplace(i,original->second);set->sourceStamps.emplace(i,viewSourceStamps[i]);}if(plan.startupHashes[i]!=plan.originals[i].hash)set->startupViews.emplace(i,std::move(rawViews[i]));}
  for(size_t n=0;n<isolatedInputs.size();++n){auto i=plan.closure[n];if(isolatedViews[n]){plan.viewIdentities.emplace(i,EiemCompiledInputView::Identity(*viewRecipes[i],plan.names));set->views.emplace(i,std::move(isolatedViews[n]));continue;}if(plan.startupHashes[i]!=plan.originals[i].hash)set->startup.emplace(i,isolatedInputs[n]);set->isolatedRefs.emplace(i,isolatedInputs[n]);set->isolated.emplace(i,std::move(isolatedInputs[n]));}
  Require(Unchanged(*set,directory),"Mod changed during compiled rule preparation");return set;
 }
 inline std::shared_ptr<EiemPrefabRules::Context> Context(const std::shared_ptr<const Set>& set){
  auto result=std::make_shared<EiemPrefabRules::Context>(std::make_shared<const Plan>(set->manifest.plan),set->manifest.package,[set](size_t i,bool isolated){if(isolated){auto ready=set->isolatedRefs.find(i);if(ready!=set->isolatedRefs.end())if(auto bytes=ready->second.lock())return *bytes;}else if(set->startup.count(i))return StartupInput(*set,i);return Materialize(*set,i,isolated);});
  result->startupInputs=set->startup;result->startupViews=set->startupViews;result->startupMaterializer=[set](size_t i){return StartupInput(*set,i);};
+ for(const auto& row:set->startup)if(!result->startupViews.count(row.first)){
+  auto i=row.first;Require(i<set->layouts.size()&&i<set->namespaces.size(),"prepared startup view offset coverage differs");
+  result->startupViews.emplace(i,EiemNativeInputOffsets::RelocateView(row.second,set->layouts[i],set->namespaces[i],set->manifest.plan.names,{}));
+ }
  auto graph=std::make_shared<EiemBundleDependencies::Names>();std::map<std::string,size_t> members;
  for(size_t i=0;i<set->catalog.size();++i)for(const auto& member:set->catalog[i].members){auto inserted=members.emplace(member.first,i);Require(inserted.second||inserted.first->second==i,"startup dependency CAB has multiple source bundles");}
  for(size_t i=0;i<set->contributors.size();++i)for(const auto& contributor:set->contributors[i]){

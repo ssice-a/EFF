@@ -31,10 +31,14 @@ class ReleasePreflightTests(unittest.TestCase):
                              json.dumps(BASE_PROTOCOL))
             package.writestr('EFF_Native_Tools/nativepack/eff_resource_pack.exe',
                              b'compiler')
+            package.writestr('EFF_Native_Tools/nativepack/eff_author_assets.dll',
+                             b'author assets')
             package.writestr('EFF_Native_Tools/nativepack/eff_author_core.dll',
                              b'author core')
             package.writestr('EFF_Native_Tools/nativepack/eff_source_index.exe',
                              b'source index')
+            package.writestr('EFF_Native_Tools/nativepack/texconv.exe', b'texconv')
+            package.writestr('EFF_Native_Tools/nativepack/THIRD_PARTY_NOTICES', b'licenses')
             package.writestr('EFF_Native_Tools/vendor/PIL/__init__.py', b'')
             package.writestr('EFF_Native_Tools/vendor/PIL/_imaging.cp311-win_amd64.pyd',
                              b'cp311 imaging')
@@ -50,9 +54,11 @@ class ReleasePreflightTests(unittest.TestCase):
             'sha256': digest,
             'archiveRoot': 'EFF_Native_Tools',
             'compiler': 'nativepack/eff_resource_pack.exe',
+            'authorAssets': 'nativepack/eff_author_assets.dll',
             'indexUpdater': 'nativepack/eff_source_index.exe',
             'authorCore': 'nativepack/eff_author_core.dll',
             'protocol': 'nativepack/package-protocol.json',
+            'textureCompressor': 'nativepack/texconv.exe',
         }), encoding='utf-8')
 
     def tearDown(self):
@@ -108,10 +114,14 @@ class ReleasePreflightTests(unittest.TestCase):
                              json.dumps(BASE_PROTOCOL))
             package.writestr('EFF_Native_Tools/nativepack/eff_resource_pack.exe',
                              b'compiler')
+            package.writestr('EFF_Native_Tools/nativepack/eff_author_assets.dll',
+                             b'author assets')
             package.writestr('EFF_Native_Tools/nativepack/eff_author_core.dll',
                              b'author core')
             package.writestr('EFF_Native_Tools/nativepack/eff_source_index.exe',
                              b'source index')
+            package.writestr('EFF_Native_Tools/nativepack/texconv.exe', b'texconv')
+            package.writestr('EFF_Native_Tools/nativepack/THIRD_PARTY_NOTICES', b'licenses')
             package.writestr('EFF_Native_Tools/vendor/PIL/__init__.py', b'')
             package.writestr('EFF_Native_Tools/vendor/PIL/_imaging.cp311-win_amd64.pyd',
                              b'cp311 imaging')

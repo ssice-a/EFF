@@ -22,14 +22,16 @@ struct Fixture {
  const Type& T(int64_t id){return types.at(objects.at(id).first);}
  Value& V(int64_t id){return objects.at(id).second;}
  void Pointer(int64_t id,const char* field,int64_t target){SetReference(T(id),Child(T(id),V(id),field),{cab,target},refs,cab);}
- void List(int64_t id,const char* name,std::initializer_list<int64_t> targets,const char* field=nullptr){auto& a=ArrayValue(T(id),Child(T(id),V(id),name));for(auto target:targets){auto v=ArrayElement(T(id),a);SetReference(T(id),field?Child(T(id),v,field):v,{cab,target},refs,cab);a.children.push_back(v);}a.count=a.children.size();}
+  void List(int64_t id,const char* name,std::initializer_list<int64_t> targets,const char* field=nullptr){auto& a=ArrayValue(T(id),Child(T(id),V(id),name));for(auto target:targets){auto v=ArrayElement(T(id),a);SetReference(T(id),field?Child(T(id),v,field):v,{cab,target},refs,cab);a.children.push_back(v);}a.count=a.children.size();}
+  void SetList(int64_t id,const char* name,std::initializer_list<int64_t> targets,const char* field=nullptr){auto& a=ArrayValue(T(id),Child(T(id),V(id),name));a.children.clear();a.raw.clear();a.rawOrigins.clear();a.count=0;List(id,name,targets,field);}
  Bytes BytesOf(){Bytes m;Z(m,"fixture");N(m,0,4);N(m,1,1);N(m,types.size(),4);
   for(const auto& t:types){N(m,t.classId,4);N(m,0,1);N(m,65535,2);if(t.classId==114)N(m,0,8),N(m,0,8);m.insert(m.end(),t.hash.begin(),t.hash.end());Bytes strings,nodes;
    auto emit=[&](auto&& self,size_t n,unsigned depth)->void{const auto& f=t.nodes[n];auto offType=strings.size();Z(strings,f.type);auto offName=strings.size();Z(strings,f.name);N(nodes,1,2);N(nodes,depth,1);N(nodes,0,1);N(nodes,offType,4);N(nodes,offName,4);N(nodes,0,8);N(nodes,f.align?0x4000:0,4);N(nodes,0,8);for(auto c:f.children)self(self,c,depth+1);};emit(emit,0,0);
    N(m,t.nodes.size(),4);N(m,strings.size(),4);m.insert(m.end(),nodes.begin(),nodes.end());m.insert(m.end(),strings.begin(),strings.end());N(m,0,4);
   }N(m,objects.size(),4);while(m.size()%4)m.push_back(0);Bytes data;
   for(const auto& o:objects){while(data.size()%8)data.push_back(0);auto bytes=EncodeValue(types[o.second.first],o.second.second);N(m,o.first,8);N(m,data.size(),8);N(m,bytes.size(),4);N(m,o.second.first,4);data.insert(data.end(),bytes.begin(),bytes.end());}
-  N(m,0,4);N(m,0,4);Bytes b(48);b.insert(b.end(),m.begin(),m.end());while(b.size()%16)b.push_back(0);Be(b,20,m.size(),4);Be(b,32,b.size(),8);b.insert(b.end(),data.begin(),data.end());Be(b,24,b.size(),8);ParseSerialized(b);return b;
+  N(m,0,4);N(m,refs.externals.size(),4);for(const auto& external:refs.externals){Z(m,"");m.insert(m.end(),20,0);Z(m,"archive:/"+external+"/"+external);}
+  Bytes b(48);b.insert(b.end(),m.begin(),m.end());while(b.size()%16)b.push_back(0);Be(b,20,m.size(),4);Be(b,32,b.size(),8);b.insert(b.end(),data.begin(),data.end());Be(b,24,b.size(),8);ParseSerialized(b);return b;
  }
  Fixture(){auto info=FieldSpec{"AssetInfo","second",{{"int","preloadIndex",{}},{"int","preloadSize",{}},Ref("asset")}};
   types={Schema(1,{{"string","m_Name",{}},Arr("m_Component",{"ComponentPair","data",{Ref("component")}})}),
@@ -49,6 +51,51 @@ struct Fixture {
  }
 };
 template<class F> void Rejected(F f){bool rejected=false;try{f();}catch(const std::exception&){rejected=true;}Require(rejected,"invalid static assembly accepted");}
+void PerRendererMaterialDonorRegression(){
+ Fixture f;f.Add(201,6);f.SetList(13,"m_Materials",{200,201});f.SetList(23,"m_Materials",{});
+ Package p;p.id="per-renderer-material";Identity target{"assets/static.mesh","Static"};p.targetIndex[target]="R";p.rules["R"].parts={"P","Q"};
+ p.parts["P"].mesh=p.parts["Q"].mesh="M";p.parts["P"].material=p.parts["Q"].material="A";p.meshes["M"]={"mesh",3,3,{},{}};
+ auto meshSchema=std::make_shared<Resource>();meshSchema->type=f.types[5].hash;p.resources["mesh"]=meshSchema;
+ AssetIndex assets;assets[target].cab=f.cab;assets[target].pathId=100;assets[target].classId=43;assets[target].type=meshSchema->type;
+ std::vector<BuiltMeshPart> parts{{target,"R","P",f.cab,100,100,3,3},{target,"R","Q",f.cab,100,101,3,3}};
+ RendererMaterialReferences references;for(auto renderer:{int64_t(13),int64_t(23)})for(const auto& part:std::vector<std::string>{"P","Q"})
+  references[{renderer,part}]={f.cab,renderer==13?201:200};
+ auto build=[&](){auto input=f.BytesOf();RendererMemberBuilder builder(input,f.cab,p,assets,parts);builder.SetMaterialReferences(references);return builder.Build();};
+ auto result=build();Require(result.matches==2&&result.parts.size()==4,"one Mesh hit did not expand multiple source Renderers/author Parts");
+ for(const auto& part:result.parts){const auto expected=part.sourceRenderer==13?201:200;Require(part.sourceRenderer==13||part.sourceRenderer==23,"unexpected source Renderer in Material mapping regression");
+  auto layout=ParseSerialized(result.bytes);auto value=ObjectValue(result.bytes,layout,part.renderer);const auto& type=layout.types.at(layout.objects.at(part.renderer).type);const auto& materials=ConstArray(type,Child(type,value,"m_Materials"));
+  Require(materials.children.size()==1&&NullableReference(type,materials.children.front(),layout,f.cab)==NativeReference{f.cab,expected},"author Renderer did not use its explicit Material input independent of source slot count");}
+ auto preserved=f.BytesOf();RendererMemberBuilder sourceBuilder(preserved,f.cab,p,assets,parts);sourceBuilder.UseSourceMaterials();auto sourceResult=sourceBuilder.Build();
+ auto sourceLayout=ParseSerialized(sourceResult.bytes);auto sourceMaterials=[&](int64_t renderer){auto value=ObjectValue(sourceResult.bytes,sourceLayout,renderer);const auto& type=sourceLayout.types.at(sourceLayout.objects.at(renderer).type);
+  std::vector<NativeReference> refs;for(const auto& item:ConstArray(type,Child(type,value,"m_Materials")).children)refs.push_back(NullableReference(type,item,sourceLayout,f.cab));return refs;};
+  const auto source13=sourceMaterials(13),source23=sourceMaterials(23);
+  if(source13!=std::vector<NativeReference>{{f.cab,200},{f.cab,201}}||!source23.empty()){
+   auto describe=[&](const std::vector<NativeReference>& refs){std::string text="[";for(const auto& ref:refs)text+=ref.first+":"+std::to_string(ref.second)+",";return text+"]";};
+   throw std::runtime_error("unchanged source Renderer material arrays were not preserved: renderer13="+describe(source13)+" renderer23="+describe(source23));
+  }
+ std::cout<<"PASS Mesh hit/material mapping: explicit full Material input ignores source Renderer slot count; unchanged Renderer arrays preserve 0/1/N slots\n";
+}
+void CrossCabSkipCaseRegression(){
+ Fixture f;const std::string external="cab-external";
+ SetReference(f.T(12),Child(f.T(12),f.V(12),"m_Mesh"),{external,100},f.refs,f.cab);
+ Package p;p.id="cross-cab-skip";Identity target{"assets/hidden.mesh","Static"};p.targetIndex[target]="R";p.rules["R"].skip=true;
+ AssetIndex assets;assets[target].cab="CAB-External";assets[target].pathId=100;assets[target].classId=43;
+ auto input=f.BytesOf();RendererMemberBuilder builder(input,f.cab,p,assets,{});auto hidden=builder.Build();
+ Require(hidden.matches==1&&hidden.skipped==1,"cross-CAB handling=skip did not match the external Mesh identity");
+ auto layout=ParseSerialized(hidden.bytes);auto renderer=ObjectValue(hidden.bytes,layout,13);
+ Require(Integer(Child(layout.types.at(layout.objects.at(13).type),renderer,"m_Enabled"))==0,
+         "cross-CAB handling=skip did not serialize m_Enabled=0");
+ Fixture skinned;skinned.types.push_back(Schema(137,{Ref("m_GameObject"),Ref("m_Mesh"),{"bool","m_Enabled",{}}}));
+ skinned.objects.at(13)={skinned.types.size()-1,EmptyValue(skinned.types.back(),0)};
+ skinned.Pointer(13,"m_GameObject",10);skinned.Pointer(12,"m_Mesh",0);
+ SetReference(skinned.T(13),Child(skinned.T(13),skinned.V(13),"m_Mesh"),{external,100},skinned.refs,skinned.cab);
+ auto skinnedInput=skinned.BytesOf();RendererMemberBuilder skinnedBuilder(skinnedInput,skinned.cab,p,assets,{});auto skinnedHidden=skinnedBuilder.Build();
+ Require(skinnedHidden.matches==1&&skinnedHidden.skipped==1,"cross-CAB handling=skip did not match a SkinnedMeshRenderer Mesh PPtr");
+ auto skinnedLayout=ParseSerialized(skinnedHidden.bytes);auto skinnedRenderer=ObjectValue(skinnedHidden.bytes,skinnedLayout,13);
+ Require(Integer(Child(skinnedLayout.types.at(skinnedLayout.objects.at(13).type),skinnedRenderer,"m_Enabled"))==0,
+         "cross-CAB handling=skip did not disable SkinnedMeshRenderer");
+ std::cout<<"PASS handling=skip matches cross-CAB static and skinned Mesh PPtrs independent of CAB case\n";
+}
 void NativePaletteFallbackRegression(){
  // Real failure pattern: source Mesh has [Head,Lip,LeftEye,Neck,RightEye],
  // while the serialized Renderer retains only [Head,Neck]. It is not a prefix.
@@ -112,6 +159,7 @@ void NativePaletteFallbackRegression(){
  std::cout<<"PASS incomplete native palette: exact paths, reordered author slots, written candidate, empty/longer palettes, missing/ambiguous paths and sibling actor isolation\n";
 }
 int main(){try{
+ PerRendererMaterialDonorRegression();
  NativePaletteFallbackRegression();
  Fixture f;auto before=f.BytesOf();Package p;p.id="static";Identity target{"assets/static.mesh","Static"},mat{"assets/material.mat","Mat"};p.targetIndex[target]="R";p.rules["R"].parts={"P","Q"};
  // Shared member parsing must keep root ownership and component ordinals local.
@@ -217,12 +265,15 @@ int main(){try{
  Require(g.Pointer(13,"m_AdditionalVertexStreams")==0&&g.Pointer(13,"m_StaticBatchRoot")==0&&Integer(Child(g.Schema(13),Child(g.Schema(13),g.Tree(13),"m_StaticBatchInfo"),"subMeshCount"))==0,"static donor batch/vertex stream survived geometry replacement");
  auto next=ParseSerialized(built.bytes);for(const auto& part:built.parts){auto renderer=ObjectValue(built.bytes,next,part.renderer);auto ref=NullableReference(next.types[next.objects.at(part.renderer).type],ConstArray(next.types[next.objects.at(part.renderer).type],Child(next.types[next.objects.at(part.renderer).type],renderer,"m_Materials")).children[0],next,f.cab);Require(ref==NativeReference{f.cab,part.material},"static material clone binding differs");}
  std::map<NativeReference,std::string> markers{{{f.cab,100},"first"},{{f.cab,101},"second"}};auto d=EiemRenderAssemblyDescription::Build(before,built.bytes,f.cab,10,p,assets,markers);Require(d.sources.size()==1&&d.sources[0].targets.size()==2&&d.lods[0].levels[0].renderers.size()==2&&d.helpers[0].renderers.size()==2,"static descriptor/helper/LOD expansion missing");
- p.rules["R"].skip=true;auto hidden=RendererMemberBuilder(before,f.cab,p,assets,parts).Build();Require(hidden.skipped==2&&hidden.addedObjects==0,"static skip did not preserve native objects");auto skip=EiemRenderAssemblyDescription::Build(before,hidden.bytes,f.cab,10,p,assets,{});Require(skip.sources[0].targets.empty()&&skip.lods[0].levels[0].renderers.empty(),"static zero-part list mapping wrong");
+ p.rules["R"].skip=true;auto hidden=RendererMemberBuilder(before,f.cab,p,assets,parts).Build();Require(hidden.skipped==2&&hidden.addedObjects==0,"static skip did not preserve native objects");
+ EiemRenderAssemblyDescription::Graph hiddenGraph(hidden.bytes,f.cab,10);Require(!hiddenGraph.Enabled(13),"handling=skip did not serialize m_Enabled=0");
+ auto skip=EiemRenderAssemblyDescription::Build(before,hidden.bytes,f.cab,10,p,assets,{});Require(skip.sources[0].targets.empty()&&skip.lods[0].levels[0].renderers.empty(),"static zero-part list mapping wrong");
  p.rules["R"].skip=false;p.meshes["M"].bones={"fake"};Rejected([&]{RendererMemberBuilder(before,f.cab,p,assets,parts).Build();});p.meshes["M"].bones.clear();p.meshes["M"].shapes={"shape"};Rejected([&]{RendererMemberBuilder(before,f.cab,p,assets,parts).Build();});p.meshes["M"].shapes.clear();
  p.rules["R"].parts={"P"};auto one=RendererMemberBuilder(before,f.cab,p,assets,parts).Build();Require(one.matches==2&&one.addedObjects==0&&one.parts.size()==2,"static one-to-one added unnecessary objects");
  auto untouched=p;untouched.targetIndex.clear();Require(RendererMemberBuilder(before,f.cab,untouched,assets,parts).Build().bytes==before,"unspecified static Mesh changed");
  f.types.push_back(Schema(137,{Ref("m_GameObject"),Ref("m_Mesh"),Arr("m_Bones",Ref("data")),Ref("m_RootBone"),Ref("m_SkinningRoot")}));f.Add(16,f.types.size()-1);f.Pointer(16,"m_GameObject",10);f.Pointer(16,"m_Mesh",102);f.Add(102,5);f.List(10,"m_Component",{16},"component");auto mixedBefore=f.BytesOf();EiemRenderAssemblyDescription::Graph mixed(mixedBefore,f.cab,10);Require(mixed.At(16).component==0&&mixed.At(13).component==1,"mixed Renderer node changed legacy SMR address");
  p.rules["R"].parts={"P","Q"};auto mixedBuilt=RendererMemberBuilder(mixedBefore,f.cab,p,assets,parts).Build();auto mixedDescription=EiemRenderAssemblyDescription::Build(mixedBefore,mixedBuilt.bytes,f.cab,10,p,assets,markers);Require(mixedDescription.sources.size()==2,"mixed native Renderer missing");for(const auto& source:mixedDescription.sources)Require(source.targets.size()==(source.id==13?2:1),"mixed node assigned a static extension to another native Renderer");
  f.Pointer(13,"m_GameObject",20);Rejected([&]{RendererMemberBuilder(f.BytesOf(),f.cab,p,assets,parts).Build();});
+ CrossCabSkipCaseRegression();
  std::cout<<"PASS static MeshFilter consumers, 0/1/N assembly, material clones, hierarchy, LOD/helper mapping, no fake skinning and invalid ownership rejection\n";return 0;
  }catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}}

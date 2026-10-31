@@ -38,7 +38,7 @@ inline Artifact Merge(const Artifact& previous,const Artifact& delta,bool author
  Require(previous.manifest.package.id==delta.manifest.package.id&&(authorRevision||(old.contract==added.contract&&old.author==added.author)),"consumer delta belongs to another author contract");
  Require(previous.manifest.rootAssembly&&delta.manifest.rootAssembly&&old.rulesOnly&&added.rulesOnly&&old.spanRecipes&&added.spanRecipes,"consumer delta lacks independent input proofs");
  Artifact result=previous;auto& plan=result.manifest.plan;Require(plan.semanticOperations.size()<=old.inputs.size()&&plan.semanticComplete.size()<=old.inputs.size(),"previous semantic source coverage exceeds inputs");
- plan.semanticOperations.resize(old.inputs.size());plan.semanticComplete.resize(old.inputs.size(),false);
+ plan.semanticOperations.resize(old.inputs.size());plan.deferredSemanticOperations.resize(old.inputs.size());plan.semanticComplete.resize(old.inputs.size(),false);
  result.proofBlocks.reset();result.proofMutex=std::make_shared<std::mutex>();result.inputMembers.clear();result.addedBundles.clear();result.digest.clear();
  bool retainedStamps=previous.verifiedSources.size()==old.inputs.size();if(!retainedStamps)result.verifiedSources.clear();
  for(size_t i=0;i<old.inputs.size();++i){
@@ -58,7 +58,7 @@ inline Artifact Merge(const Artifact& previous,const Artifact& delta,bool author
   if(found!=existing.end()){auto at=found->second;Require(old.originals.at(at).hash==added.originals.at(i).hash&&((previous.explicitResources&&delta.explicitResources)||previous.views.at(at).startupHash==delta.views.at(i).startupHash)&&previous.views.at(at).size==delta.views.at(i).size,"append delta modifies an existing source; use affected-source replacement");mapped[i]=at;continue;}
   auto at=plan.inputs.size();mapped[i]=at;fresh.push_back(at);existing.emplace(added.originals.at(i).file,at);HydrateInput(delta,i);
   plan.originals.push_back(added.originals.at(i));plan.inputs.push_back(added.inputs.at(i));plan.startupHashes.push_back(added.startupHashes.at(i));plan.rendererRules.push_back(added.rendererRules.at(i));
-  plan.semanticOperations.push_back(EiemResourceReloadPlan::SemanticOperationsAt(added,i));plan.semanticComplete.push_back(EiemResourceReloadPlan::SemanticCompleteAt(added,i));
+  plan.semanticOperations.push_back(EiemResourceReloadPlan::SemanticOperationsAt(added,i));plan.deferredSemanticOperations.push_back({});plan.semanticComplete.push_back(EiemResourceReloadPlan::SemanticCompleteAt(added,i));
   plan.memberRecipes.push_back(added.memberRecipes.at(i));plan.namespaceRecipes.push_back(added.namespaceRecipes.at(i));plan.inputDependencies.emplace_back();result.views.push_back(delta.views.at(i));
   result.hydrated.insert(at);
   if(retainedStamps){const auto& source=added.originals.at(i);auto stamp=FileStamp(source.physical);

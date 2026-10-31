@@ -79,6 +79,7 @@ struct SerializedLayout {
   std::vector<int64_t> order;
   std::vector<std::string> externals;
   size_t typeCountOffset = 0;
+  size_t scriptCount = 0;
 };
 struct Field {
   size_t node = 0, offset = 0, size = 0;
@@ -351,7 +352,11 @@ inline bool SerializedHeader(const Bytes& b,size_t offset=0,size_t size=SIZE_MAX
   Reader h(b,offset+20,true,offset+48);auto metadata=h.Get(4),total=h.Get(8),data=h.Get(8);
   return total==size&&data<=size&&data>=48&&metadata<=data-48;
 }
-inline SerializedLayout ParseSerialized(const Bytes& b) {
+// A metadata prefix is sufficient to read the layout. Payload bounds are
+// checked against the independently observed native file extent, not against
+// the prefix allocation. Existing callers still require a complete file.
+inline SerializedLayout ParseSerialized(const Bytes& b, size_t nativeFileSize = SIZE_MAX) {
+  if (nativeFileSize == SIZE_MAX) nativeFileSize = b.size();
   SerializedLayout layout;
   Reader h(b, 0, true);
   Require(b.size() >= 48, "SerializedFile header truncated");
@@ -361,9 +366,10 @@ inline SerializedLayout ParseSerialized(const Bytes& b) {
   Require(h.Get(1) == 0, "requires little-endian native data");
   h.Skip(3);
   size_t metadata = (size_t)h.Get(4);
-  Require(h.Get(8) == b.size(), "SerializedFile size mismatch");
+  Require(h.Get(8) == nativeFileSize, "SerializedFile size mismatch");
   size_t dataOffset = (size_t)h.Get(8);
-  Require(dataOffset <= b.size() && metadata <= dataOffset && 48 + metadata <= dataOffset,
+  Require(dataOffset <= nativeFileSize && metadata <= dataOffset &&
+              metadata <= b.size() - 48 && 48 + metadata <= dataOffset,
           "SerializedFile metadata range");
   layout.metadataSize = metadata;
   layout.dataOffset = dataOffset;
@@ -428,8 +434,8 @@ inline SerializedLayout ParseSerialized(const Bytes& b) {
     uint64_t relative = r.Get(8);
     o.size = (size_t)r.Get(4);
     o.type = (size_t)r.Get(4);
-    Require(o.type < types.size() && relative <= b.size() - dataOffset &&
-                o.size <= b.size() - dataOffset - relative,
+    Require(o.type < types.size() && relative <= nativeFileSize - dataOffset &&
+                o.size <= nativeFileSize - dataOffset - relative,
             "invalid native object record");
     o.offset = dataOffset + (size_t)relative;
     Require(objects.emplace(o.id, o).second, "duplicate native object PathID");
@@ -437,6 +443,7 @@ inline SerializedLayout ParseSerialized(const Bytes& b) {
   }
   layout.tableEnd = r.p;
   size_t scripts = r.Count();
+  layout.scriptCount = scripts;
   r.Skip(scripts * 12);
   size_t externalCount = r.Count();
   auto& externals = layout.externals;

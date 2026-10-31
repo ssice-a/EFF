@@ -52,7 +52,11 @@ inline Bytes Unpack(const Bytes& bytes){
  Require(!Decompress(h,packed.data(),packed.size(),nullptr,0,&n)&&GetLastError()==ERROR_INSUFFICIENT_BUFFER&&n==size,"compiled Mod declared extent differs");Bytes plain(size);Require(Decompress(h,packed.data(),packed.size(),plain.data(),plain.size(),&n)&&n==size,"compiled Mod decompression failed");return plain;
 }
 struct SchemaWriter {std::map<Bytes,size_t> ids;};
-struct SchemaReader {std::vector<Type> types;};
+struct SchemaReader {
+ std::vector<Type> types;const std::vector<Type>* shared=nullptr;
+ size_t Size()const{return (shared?shared->size():0)+types.size();}
+ const Type& At(size_t index)const{return shared&&index<shared->size()?shared->at(index):types.at(index-(shared?shared->size():0));}
+};
 inline Bytes EncodeSchema(const Type& t){Writer w;w.N(uint64_t(t.classId));w.Raw(t.hash.data(),t.hash.size());w.N(t.nodes.size());for(const auto& n:t.nodes){w.S(n.type);w.S(n.name);w.B(n.align);w.N(n.children.size());for(auto c:n.children)w.N(c);}return std::move(w.b);}
 inline Type DecodeSchema(EiemOfflinePackage::Reader& r){Type t;t.classId=int(r.N());r.Raw(t.hash.data(),t.hash.size());auto nodes=r.Count();for(size_t j=0;j<nodes;++j){Node n;n.type=r.S();n.name=r.S();n.align=r.B();auto children=r.Count();for(size_t k=0;k<children;++k){auto c=r.Size();Require(c>j&&c<nodes,"compiled schema child extent/cycle differs");n.children.push_back(c);}t.nodes.push_back(std::move(n));}PrepareFixedWidths(t);return t;}
 inline void WriteLayout(Writer& w,const SerializedLayout& l,SchemaWriter& schemas){
@@ -63,7 +67,7 @@ inline void WriteLayout(Writer& w,const SerializedLayout& l,SchemaWriter& schema
 inline SerializedLayout ReadLayout(EiemOfflinePackage::Reader& r,SchemaReader& schemas){
  SerializedLayout l;l.metadataSize=r.Size();l.dataOffset=r.Size();l.countOffset=r.Size();l.tableStart=r.Size();l.tableEnd=r.Size();
  Require(l.countOffset>=48&&l.tableStart>=l.countOffset+4&&l.tableEnd<=AddSize(48,l.metadataSize)&&l.dataOffset>=AddSize(48,l.metadataSize),"compiled object metadata extent differs");
- auto count=r.Count();for(size_t i=0;i<count;++i){auto id=r.Size();Require(id<=schemas.types.size(),"compiled schema dictionary reference differs");if(id==schemas.types.size())schemas.types.push_back(DecodeSchema(r));l.types.push_back(schemas.types.at(id));}
+ auto count=r.Count();for(size_t i=0;i<count;++i){auto id=r.Size();Require(id<=schemas.Size(),"compiled schema dictionary reference differs");if(id==schemas.Size())schemas.types.push_back(DecodeSchema(r));l.types.push_back(schemas.At(id));}
  count=r.Count();for(size_t i=0;i<count;++i){Object o;o.id=int64_t(r.N());o.offset=r.Size();o.size=r.Size();o.type=r.Size();Require(o.id&&o.type<l.types.size()&&o.offset>=l.dataOffset&&l.objects.emplace(o.id,o).second,"compiled object identity/type differs");l.order.push_back(o.id);}Require(MultiplySize(count,24)==l.tableEnd-l.tableStart,"compiled object table extent differs");l.externals=r.Strings();return l;
 }
 } // namespace EiemCompiledMod
@@ -110,7 +114,7 @@ inline bool EqualCompiledValue(const Type& type,const Value& a,const Value& b){
  // emission depends on the enclosing offset retains the exact codec check.
  return !paddingDiffers||EncodeValue(type,a)==EncodeValue(type,b);
 }
-inline Value MergeValue(const Type& t,const Value& base,const std::vector<Value>& edits,bool preload=false){
+inline Value MergeValue(const Type& t,const Value& base,const std::vector<Value>& edits,bool preload=false,bool preferLater=false){
  std::vector<Value> changed;for(const auto& v:edits)if(!EqualCompiledValue(t,v,base))changed.push_back(v);if(changed.empty())return base;
  if(std::all_of(changed.begin(),changed.end(),[&](const auto& v){return EqualCompiledValue(t,v,changed.front());}))return changed.front();
  const auto& node=t.nodes.at(base.node);if(preload&&(node.name=="preloadIndex"||node.name=="preloadSize"||node.name=="m_PreloadTable"))return base;
@@ -118,13 +122,14 @@ inline Value MergeValue(const Type& t,const Value& base,const std::vector<Value>
  if(node.type=="Array"&&!(Primitive(t.nodes.at(node.children.at(1)).type)&&!t.nodes.at(node.children.at(1)).align)){
   const auto& element=t.nodes.at(node.children.at(1));bool pointers=element.type.rfind("PPtr<",0)==0;
   if(!pointers&&std::all_of(changed.begin(),changed.end(),[&](const auto& v){return v.children.size()==base.children.size();})){
-   for(size_t i=0;i<out.children.size();++i){std::vector<Value> values;for(const auto& v:changed)values.push_back(v.children[i]);out.children[i]=MergeValue(t,base.children[i],values,preload);}return out;
+   for(size_t i=0;i<out.children.size();++i){std::vector<Value> values;for(const auto& v:changed)values.push_back(v.children[i]);out.children[i]=MergeValue(t,base.children[i],values,preload,preferLater);}return out;
   }
   std::vector<std::vector<Value>> variants;for(const auto& v:changed)variants.push_back(v.children);auto result=MergeSequence(base.children,variants,[&](const Value& a,const Value& b){return EqualCompiledValue(t,a,b);});out.children=std::move(result.values);out.count=out.children.size();return out;
  }
  if(!Primitive(node.type)&&node.type!="Array"&&node.type!="string"&&node.type!="TypelessData"){
-  for(size_t i=0;i<out.children.size();++i){std::vector<Value> values;for(const auto& v:changed){Require(v.children.size()==out.children.size(),"compiled field structure differs");values.push_back(v.children[i]);}try{out.children[i]=MergeValue(t,base.children[i],values,preload);}catch(const std::exception& error){throw std::runtime_error(t.nodes.at(base.children[i].node).name+": "+error.what());}}return out;
+  for(size_t i=0;i<out.children.size();++i){std::vector<Value> values;for(const auto& v:changed){Require(v.children.size()==out.children.size(),"compiled field structure differs");values.push_back(v.children[i]);}try{out.children[i]=MergeValue(t,base.children[i],values,preload,preferLater);}catch(const std::exception& error){throw std::runtime_error(t.nodes.at(base.children[i].node).name+": "+error.what());}}return out;
  }
+ if(preferLater)return changed.back();
  throw std::runtime_error("compiled rules conflict on field "+node.name);
 }
 struct PreloadResult {std::vector<Value> values;std::vector<size_t> offsets;};
@@ -144,8 +149,30 @@ inline PreloadResult MergePreloads(const Type& t,const Value& before,const std::
   auto result=MergeSequence(base,edits,equal);for(size_t i=0;i<result.offsets.size();++i)out.offsets[first->first+i]=out.values.size()+result.offsets[i];out.values.insert(out.values.end(),result.values.begin(),result.values.end());
  }return out;
 }
-inline Bytes MergeObject(const Type& t,const Bytes& base,const std::vector<Bytes>& variants){
- if(variants.size()==1)return variants.front();auto before=DecodeValue(t,0,base);std::vector<Value> values;for(const auto& bytes:variants)values.push_back(DecodeValue(t,0,bytes));auto merged=MergeValue(t,before,values,t.classId==142);
+// The preload table is a packed sequence of 12-byte native pointers. Expanding
+// every pointer to a recursive Value tree multiplies large shared bundles by
+// the number of Mods. Keep this table packed while merging the small fields.
+inline bool MergePackedPreloads(const Type& t,const Bytes& base,const std::vector<Bytes>& variants,Bytes& output,bool preferLater=false){
+ if(t.classId!=142)return false;auto fields=Fields(t,0,base,0,base.size(),0);auto field=fields.find("m_PreloadTable");if(field==fields.end())return false;
+ auto node=field->second.node;while(t.nodes.at(node).type!="Array"){const auto& n=t.nodes.at(node);if(n.children.size()!=1)return false;node=n.children.front();}
+ const auto& array=t.nodes.at(node);if(array.children.size()!=2)return false;const auto& pointer=t.nodes.at(array.children[1]);if(pointer.type.rfind("PPtr<",0)!=0||pointer.children.size()!=2)return false;
+ const auto& file=t.nodes.at(pointer.children[0]);const auto& path=t.nodes.at(pointer.children[1]);if(pointer.align||file.align||path.align||file.name!="m_FileID"||Primitive(file.type)!=4||path.name!="m_PathID"||Primitive(path.type)!=8)return false;
+ using Pointer=std::pair<uint32_t,uint64_t>;auto equal=[](const Pointer&a,const Pointer&b){return a==b;};
+ auto split=[&](const Bytes& bytes,std::vector<Pointer>& pointers){auto f=Fields(t,0,bytes,0,bytes.size(),0).at("m_PreloadTable");Require(f.offset%4==0&&f.size>=4,"packed preload alignment differs");EiemNativeInput::Reader r(bytes,f.offset,false,f.offset+f.size);auto count=r.Count((f.size-4)/12);Require(f.size==AddSize(4,MultiplySize(count,12)),"packed preload pointer extent differs");pointers.reserve(count);for(size_t i=0;i<count;++i){auto id=uint32_t(r.Get(4));auto object=r.Get(8);pointers.emplace_back(id,object);}Bytes skeleton;skeleton.reserve(bytes.size()-count*12);skeleton.insert(skeleton.end(),bytes.begin(),bytes.begin()+f.offset);skeleton.resize(skeleton.size()+4);skeleton.insert(skeleton.end(),bytes.begin()+f.offset+f.size,bytes.end());return DecodeValue(t,0,skeleton);};
+ std::vector<Pointer> original;auto before=split(base,original);std::vector<std::vector<Pointer>> lists(variants.size());std::vector<Value> values;for(size_t i=0;i<variants.size();++i)values.push_back(split(variants[i],lists[i]));
+ auto merged=MergeValue(t,before,values,true,preferLater);std::vector<std::map<size_t,size_t>> boundaries;
+ for(size_t i=0;i<values.size();++i){std::map<size_t,size_t> mapping{{0,0},{original.size(),lists[i].size()}};auto anchor=[&](const Value&old,const Value&next){auto first=Integer(Child(t,old,"preloadIndex")),count=Integer(Child(t,old,"preloadSize")),start=Integer(Child(t,next,"preloadIndex")),size=Integer(Child(t,next,"preloadSize"));Require(first<=original.size()&&count<=original.size()-first&&start<=lists[i].size()&&size<=lists[i].size()-start,"compiled preload interval differs");for(auto row:{std::make_pair(size_t(first),size_t(start)),std::make_pair(size_t(first+count),size_t(start+size))}){auto inserted=mapping.emplace(row);Require(inserted.second||inserted.first->second==row.second,"compiled preload boundary mapping differs");}};
+  for(const char* name:{"m_Container","m_HashContainer"}){const auto&old=ArrayValue(t,Child(t,before,name));const auto&next=ArrayValue(t,Child(t,values[i],name));Require(old.children.size()==next.children.size(),"compiled container address count differs");for(size_t j=0;j<old.children.size();++j)anchor(Child(t,old.children[j],"second"),Child(t,next.children[j],"second"));}anchor(Child(t,before,"m_MainAsset"),Child(t,values[i],"m_MainAsset"));boundaries.push_back(std::move(mapping));
+ }
+ std::vector<Pointer> result;std::vector<size_t> offsets(original.size()+1);const auto&cuts=boundaries.front();
+ for(auto first=cuts.begin(),last=std::next(first);last!=cuts.end();++first,++last){std::vector<Pointer> slice(original.begin()+first->first,original.begin()+last->first);std::vector<std::vector<Pointer>> edits;for(size_t i=0;i<lists.size();++i){auto start=boundaries[i].at(first->first),end=boundaries[i].at(last->first);Require(start<=end,"compiled preload boundaries reordered");std::vector<Pointer> edit(lists[i].begin()+start,lists[i].begin()+end);size_t p=0;for(const auto&v:edit)if(p<slice.size()&&v==slice[p])++p;Require(p==slice.size(),"compiled preload removed an original dependency");edits.push_back(std::move(edit));}auto combined=MergeSequence(slice,edits,equal);for(size_t i=0;i<combined.offsets.size();++i)offsets[first->first+i]=result.size()+combined.offsets[i];result.insert(result.end(),combined.values.begin(),combined.values.end());}
+ auto update=[&](Value&info,const Value&old){auto first=Integer(Child(t,old,"preloadIndex")),count=Integer(Child(t,old,"preloadSize"));Require(first<offsets.size()&&count<offsets.size()-first,"compiled preload interval differs");SetInteger(t,Child(t,info,"preloadIndex"),offsets[size_t(first)]);SetInteger(t,Child(t,info,"preloadSize"),offsets[size_t(first+count)]-offsets[size_t(first)]);};
+ for(const char*name:{"m_Container","m_HashContainer"}){auto&list=ArrayValue(t,Child(t,merged,name));const auto&old=ArrayValue(t,Child(t,before,name));Require(list.children.size()==old.children.size(),"compiled container address count differs");for(size_t i=0;i<list.children.size();++i)update(Child(t,list.children[i],"second"),Child(t,old.children[i],"second"));}update(Child(t,merged,"m_MainAsset"),Child(t,before,"m_MainAsset"));
+ auto skeleton=EncodeValue(t,merged);auto f=Fields(t,0,skeleton,0,skeleton.size(),0).at("m_PreloadTable");Require(f.size==4&&result.size()<=INT_MAX,"packed preload result extent differs");output.reserve(AddSize(skeleton.size(),MultiplySize(result.size(),12)));output.insert(output.end(),skeleton.begin(),skeleton.begin()+f.offset);AppendInteger(output,result.size(),4);for(const auto&p:result){AppendInteger(output,p.first,4);AppendInteger(output,p.second,8);}output.insert(output.end(),skeleton.begin()+f.offset+4,skeleton.end());return true;
+}
+inline Bytes MergeObject(const Type& t,const Bytes& base,const std::vector<Bytes>& variants,bool preferLater=false){
+ Bytes packed;if(variants.size()>1&&MergePackedPreloads(t,base,variants,packed,preferLater))return packed;
+ if(variants.size()==1)return variants.front();auto before=DecodeValue(t,0,base);std::vector<Value> values;for(const auto& bytes:variants)values.push_back(DecodeValue(t,0,bytes));auto merged=MergeValue(t,before,values,t.classId==142,preferLater);
  if(t.classId==142){auto result=MergePreloads(t,before,values);auto update=[&](Value& info,const Value& old){auto first=Integer(Child(t,old,"preloadIndex")),count=Integer(Child(t,old,"preloadSize"));Require(first<result.offsets.size()&&count<result.offsets.size()-first,"compiled preload interval differs");SetInteger(t,Child(t,info,"preloadIndex"),result.offsets[size_t(first)]);SetInteger(t,Child(t,info,"preloadSize"),result.offsets[size_t(first+count)]-result.offsets[size_t(first)]);};
   for(const char* name:{"m_Container","m_HashContainer"}){auto& list=ArrayValue(t,Child(t,merged,name));const auto& old=ArrayValue(t,const_cast<Value&>(Child(t,before,name)));Require(list.children.size()==old.children.size(),"compiled container address count differs");for(size_t i=0;i<list.children.size();++i)update(Child(t,list.children[i],"second"),Child(t,old.children[i],"second"));}update(Child(t,merged,"m_MainAsset"),Child(t,before,"m_MainAsset"));auto& list=ArrayValue(t,Child(t,merged,"m_PreloadTable"));list.children=std::move(result.values);list.count=list.children.size();
  }return EncodeValue(t,merged);
