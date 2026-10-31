@@ -20,12 +20,13 @@ struct Template {std::string cab;Bytes bytes;SerializedLayout layout;AuthorByteS
 struct Collider {std::string id,name,bone,cab;int64_t object=0;Vector3 position;std::array<double,4> rotation;};
 struct Group {std::string id,name,cab;int64_t object=0;std::set<Identity> targets;std::vector<std::pair<std::string,bool>> nodes;std::vector<std::string> colliders;};
 struct Document {std::string id;std::map<std::string,Node> nodes;std::map<std::string,Template> templates;std::map<std::string,Collider> colliders;std::vector<Group> groups;};
-inline Document Decode(const Resource& resource,const std::string& resourceName={}){
- const auto& block=resource.blocks.at("@physics");Bytes bytes(resource.bytes.begin()+block.offset,resource.bytes.begin()+block.offset+block.size);Reader r{bytes};Document d;
+inline Document DecodePayload(std::shared_ptr<const Bytes> source,const std::string& resourceName={}){
+ Require(bool(source),"Physics input payload is absent");
+ const auto& bytes=*source;Reader r{bytes};Document d;
  Require(r.S()==structure,"new Physics input structure differs");d.id=r.S();Require(!d.id.empty(),"Physics identity absent");
  auto n=r.Count();for(size_t i=0;i<n;++i){Node v;v.path=r.S();v.parent=r.S();v.source=r.B();v.hasParent=r.B();for(auto& x:v.position)x=r.D();for(auto& x:v.rotation)x=r.D();for(auto& x:v.scale)x=r.D();Require(d.nodes.emplace(v.path,v).second,"duplicate Physics bone path");}
  for(const auto& node:d.nodes){const auto& v=node.second;Require(!v.hasParent||d.nodes.count(v.parent),"Physics bone parent absent");Require(v.source||v.hasParent,"new Physics bone lacks parent");}
- n=r.Count();for(size_t i=0;i<n;++i){Template v;v.cab=r.S();auto blobOffset=AddSize(r.p,8);v.bytes=r.Blob();v.layout=ParseSerialized(v.bytes);if(!resourceName.empty())v.origins=EiemAuthorBytes::MakeRange(resourceName,resource.bytes,AddSize(block.offset,blobOffset),v.bytes.size());auto cab=v.cab;Require(d.templates.emplace(cab,std::move(v)).second,"duplicate Physics template CAB");}
+ n=r.Count();for(size_t i=0;i<n;++i){Template v;v.cab=r.S();auto blobOffset=AddSize(r.p,8);v.bytes=r.Blob();v.layout=ParseSerialized(v.bytes);if(!resourceName.empty())v.origins=EiemAuthorBytes::MakeRange(resourceName,source,blobOffset,v.bytes.size());auto cab=v.cab;Require(d.templates.emplace(cab,std::move(v)).second,"duplicate Physics template CAB");}
  n=r.Count();for(size_t i=0;i<n;++i){Collider v;v.id=r.S();v.name=r.S();v.bone=r.S();v.cab=r.S();v.object=int64_t(r.N());for(auto& x:v.position)x=r.D();for(auto& x:v.rotation)x=r.D();Require(d.nodes.count(v.bone)&&d.templates.count(v.cab)&&d.templates.at(v.cab).layout.objects.count(v.object),"Physics collider dependency absent");Require(d.colliders.emplace(v.id,v).second,"duplicate Physics collider");}
  n=r.Count();for(size_t i=0;i<n;++i){Group g;g.id=r.S();g.name=r.S();g.cab=r.S();g.object=int64_t(r.N());auto count=r.Count();for(size_t j=0;j<count;++j){auto path=r.S(),asset=r.S();Require(g.targets.insert({path,asset}).second,"duplicate Physics Mesh target");}
   count=r.Count();for(size_t j=0;j<count;++j){auto path=r.S();auto move=r.B();Require(d.nodes.count(path),"Physics group bone absent");g.nodes.emplace_back(path,move);}
@@ -33,6 +34,14 @@ inline Document Decode(const Resource& resource,const std::string& resourceName=
   Require(!g.targets.empty()&&g.nodes.size()>1&&d.templates.count(g.cab)&&d.templates.at(g.cab).layout.objects.count(g.object),"incomplete new Physics group");d.groups.push_back(std::move(g));
  }
  Require(r.p==bytes.size(),"Physics input trailing bytes");return d;
+}
+inline Document DecodePayload(const Bytes& bytes,const std::string& resourceName={}){
+ return DecodePayload(std::make_shared<const Bytes>(bytes),resourceName);
+}
+inline Document Decode(const Resource& resource,const std::string& resourceName={}){
+ const auto& block=resource.blocks.at("@physics");
+ auto bytes=std::make_shared<Bytes>(resource.bytes.begin()+block.offset,resource.bytes.begin()+block.offset+block.size);
+ return DecodePayload(bytes,resourceName);
 }
 inline std::vector<Document> Documents(const Package& package){std::vector<Document> result;for(const auto& row:package.resources)if(row.second->blocks.count("@physics"))result.push_back(Decode(*row.second,row.first));return result;}
 inline Value& FieldPath(const Type& t,Value& value,const std::vector<std::string>& path){auto* v=&value;for(const auto& key:path)v=&Child(t,*v,key);return *v;}

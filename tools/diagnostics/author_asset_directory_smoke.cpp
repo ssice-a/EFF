@@ -3,8 +3,8 @@
 using namespace EiemRuntimeAuthorDirectory;
 template<class F>void Rejected(F f){bool rejected=false;try{f();}catch(const std::exception&){rejected=true;}Require(rejected,"invalid author directory accepted");}
 int main(){try{
- Directory d;d.mod="fixture";MeshAsset m;m.part="body";m.file="meshes/body.mesh";m.path="assets/source.asset";m.marker="body__EFF_PART";m.hash=std::string(64,'A');m.material="metal";m.vertices=3;m.indices=3;m.nativeBytes=32;m.authorBytes=64;m.authorHash=std::string(64,'F');m.bones={"Bip/Pelvis","Bip/Head"};m.shapes={"Smile"};m.binding.hashes={123,456};m.binding.boneBounds={{{0,1,0},{1,2,1}},{{1,0,1},{2,1,2}}};m.fields={"m_Name","m_VertexData","m_IndexBuffer"};d.meshes.push_back(m);
- MaterialEntry material;material.id="metal";material.file="native/materials/metal.effres";material.hash=std::string(64,'C');material.source={"assets/game/metal.mat","MetalBase"};material.authorBytes=64;d.materials.push_back(material);
+ Directory d;d.mod="fixture";MeshAsset m;m.part="body";m.file="meshes/body.effres";m.path="assets/source.asset";m.marker="body__EFF_PART";m.hash=std::string(64,'A');m.material="metal";m.vertices=3;m.indices=3;m.nativeBytes=32;m.authorBytes=64;m.authorHash=std::string(64,'F');m.bones={"Bip/Pelvis","Bip/Head"};m.shapes={"Smile"};m.binding.hashes={123,456};m.binding.boneBounds={{{0,1,0},{1,2,1}},{{1,0,1},{2,1,2}}};m.fields={"m_Name","m_VertexData","m_IndexBuffer"};d.meshes.push_back(m);
+ MaterialEntry material;material.id="metal";material.file="materials/metal.effres";material.hash=std::string(64,'C');material.source={"assets/game/metal.mat","MetalBase"};material.authorBytes=64;d.materials.push_back(material);
  d.rules.push_back({"replace-body",{{0,{"assets/source.asset","Body"}},{1,{"assets/model.fbx","Body_lod1"}}},{"body"},false});
  d.rules.push_back({"hide",{{0,{"assets/hidden.asset","Hidden"}}},{},true});
  auto bytes=Encode(d);auto back=Decode(bytes);Require(Encode(back)==bytes&&back.meshes[0].nativeBytes==m.nativeBytes&&back.meshes[0].authorBytes==m.authorBytes&&back.meshes[0].authorHash==m.authorHash&&back.materials[0].source.path==material.source.path&&back.materials[0].source.asset==material.source.asset&&back.materials[0].authorBytes==material.authorBytes&&back.materials[0].textures==material.textures,"author Mesh and sparse Material identities changed on roundtrip");
@@ -12,7 +12,7 @@ int main(){try{
  auto legacyHash=Sha(legacy.data(),legacy.size()-32);std::copy(legacyHash.begin(),legacyHash.end(),legacy.end()-32);
  Rejected([&]{Decode(legacy);});
  auto badMaterial=Decode(Encode(d));badMaterial.materials[0].hash[0]='!';Rejected([&]{Encode(badMaterial);});
- TextureAsset t;t.id="diffuse";t.file="textures/diffuse.texmeta";t.ddsFile="textures/diffuse.dds";t.path="assets/texture.asset";t.hash=std::string(64,'B');t.cab="CAB-"+std::string(32,'E');t.pathId=201;t.pixelOffset=256;t.width=t.height=1024;t.mips=11;t.pixelBytes=EiemDdsTexture::MipBytes(t.width,t.height,t.mips,t.format);d.textures.push_back(t);
+ TextureAsset t;t.id="diffuse";t.file="textures/diffuse.effres";t.ddsFile="textures/diffuse.dds";d.textures.push_back(t);
  d.materials[0].textures.emplace("_BaseMap","diffuse");
  auto shared=t;shared.id="another-slot";d.textures.push_back(shared);
  Require(Encode(Decode(Encode(d)))==Encode(d),"shared author Texture file/identity changed on roundtrip");
@@ -36,7 +36,7 @@ int main(){try{
  badState=d;badNative=std::make_shared<EiemEffectNative::Manifest>(*native);badNative->bundles.front().file="../outside.bundle";badState.runtime.effects.at("petals").native=badNative;Rejected([&]{Encode(badState);});
  badState=d;badState.runtime.animations.at("smile").tracks.at("$smile")[1]=2;Rejected([&]{Encode(badState);});
  auto cyclic=EiemExpression::Make();cyclic->op=EiemExpression::Not;cyclic->left=cyclic;badState=d;badState.runtime.parts["body"].visible=cyclic;Rejected([&]{Encode(badState);});cyclic->left.reset();
- auto badTexture=d;badTexture.textures[1].format=3;Rejected([&]{Encode(badTexture);});
+ auto badTexture=d;badTexture.textures[1].ddsFile="textures/other.dds";Rejected([&]{Encode(badTexture);});
  auto badBinding=d;badBinding.meshes[0].binding.hashes.pop_back();Rejected([&]{Encode(badBinding);});
  badBinding=d;badBinding.meshes[0].binding.boneBounds[0].second[0]=-1;Rejected([&]{Encode(badBinding);});
  badBinding=d;badBinding.meshes[0].fields.pop_back();Rejected([&]{Encode(badBinding);});

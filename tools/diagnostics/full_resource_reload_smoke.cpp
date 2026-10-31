@@ -1399,40 +1399,6 @@ void DisplayOverrideRegression(){
  displayOverride=true;overrideReleases=0;RemoveOwner(owner);displayOverride=false;
  Require(overrideReleases==1,"display release invoked a fixed ComplexModelViewPart body instead of the actual game's virtual override");Reset();
 }
-void RuleMemoryRegression(){
- using namespace FullResourceReload;Reset();memoryCalls=fileFallbackCalls=0;
- NativeBundle::api.byteClass=byteClass;NativeBundle::api.streamAsync=(void*)87;NativeBundle::api.streamAsyncIcall=nullptr;NativeBundle::api.streamIcall=nullptr;
- NativeBundle::api.streamClass=(void*)0xAA11;NativeBundle::api.streamCtor=(void*)88;
- il2cpp_object_new=[](void* klass)->void*{Require(klass==NativeBundle::api.streamClass,"archive stream managed class differs");auto b=std::make_unique<Bytes>(8);auto p=b->data();storage.push_back(std::move(b));return p;};
- auto emptyPlan=std::make_shared<EiemResourceReloadPlan::Plan>();emptyPlan->rulesOnly=true;
- auto context=std::make_shared<EiemPrefabRules::Context>(emptyPlan,Package{});
- auto prepared=Prepare();auto plan=std::make_shared<EiemResourceReloadPlan::Plan>(*prepared->plan);plan->inputs.resize(1);plan->closure={0};prepared->plan=plan;prepared->rules=context;prepared->ruleInputs.emplace(0,std::make_shared<const Bytes>(Bytes{1,2,3,4}));
- {Attempt a;a.prepared=prepared;a.phase=Phase::Bundles;Step(a);Require(memoryCalls==1&&opened==1&&a.bundles.at(0).request.Get()&&prepared->ruleInputs.empty(),"F10 rules lost stream ownership or retained duplicate worker payloads");scheduleDone.begin()->second=true;Step(a);Require(a.phase==Phase::Assets&&a.bundles.at(0).done,"memory Bundle completion did not advance to Prefabs");}
- {auto bytes=NativeBundle::Array(Bytes{1,2,3,4});auto request=NativeBundle::LoadMemory(bytes.Get(),0,true);bytes={};NativeBundle::CollectMemory();Require(NativeBundle::memoryRequests.size()==1,"async archive stream retired before completion");scheduleDone[request]=true;NativeBundle::CollectMemory();Require(NativeBundle::memoryRequests.empty()&&!NativeBundle::memoryBundles.empty(),"completed Bundle lost its lazy seek/read stream");}
- auto resolver=il2cpp_resolve_icall;il2cpp_resolve_icall=[](const char* name)->void*{Require(std::string(name)=="UnityEngine.AssetBundle::LoadFromStreamInternal"||std::string(name)=="UnityEngine.AssetBundle::LoadFromStreamAsyncInternal","archive stream icall name differs");return (void*)+[](void* stream,uint32_t crc,uint32_t bufferSize)->void*{auto array=*(void**)stream;Require(crc==0&&bufferSize==0&&memcmp((char*)array+32,"\1\2\3\4",4)==0,"sync stream icall signature/payload differs");return bundle;};};
- NativeBundle::api.stream=nullptr;NativeBundle::api.streamIcall=(NativeBundle::Api::StreamFn)il2cpp_resolve_icall("UnityEngine.AssetBundle::LoadFromStreamInternal");NativeBundle::api.streamAsyncIcall=(NativeBundle::Api::StreamFn)il2cpp_resolve_icall("UnityEngine.AssetBundle::LoadFromStreamAsyncInternal");
- {auto bytes=NativeBundle::Array(Bytes{1,2,3,4});Require(NativeBundle::LoadMemory(bytes.Get(),0,false)==bundle,"sync stream icall returned wrong native object");}il2cpp_resolve_icall=resolver;NativeBundle::api.streamIcall=NativeBundle::api.streamAsyncIcall=nullptr;
- emptyPlan->originals.push_back({"test.vfs",std::string(64,'A'),std::filesystem::path("E:/rule-source.chk"),12,4});
- context->IndexSources();
- std::atomic_store(&resourceRules,context);bool wasActive=active.exchange(true);auto fallback=[](void*,uint32_t,uint64_t,void*)->void*{++fileFallbackCalls;return bundle;};
- auto absent=StringValue("E:/unmatched.chk"),matched=StringValue("E:/rule-source.chk");auto calls=memoryCalls;
- Require(ObservePublicFile("rule-unmatched",0,fallback,absent,77,12,nullptr)==bundle&&fileFallbackCalls==1&&memoryCalls==calls,"unmatched file/nonzero CRC intercepted by rules");
- Require(ObservePublicFile("rule-bad-crc",0,fallback,matched,77,12,nullptr)==bundle&&fileFallbackCalls==2,"failed rule returned a null request instead of preserving file load");
- NativeBundle::enabled=true;
- Require(ObservePublicFile("rule-bad-source",0,fallback,matched,0,12,nullptr)==bundle&&fileFallbackCalls==3,"missing original source blocked the game's loading request");
- auto originalFile=file;file=fallback;Require(File(matched,0,12,nullptr)==bundle&&fileFallbackCalls==4,"internal file binding bypassed rule failure passthrough");file=originalFile;
- unsigned replayed=0;auto cachedPlan=std::make_shared<EiemResourceReloadPlan::Plan>();cachedPlan->originals=emptyPlan->originals;cachedPlan->startupHashes={std::string(64,'B')};cachedPlan->rendererRules.resize(1);
- auto cached=std::make_shared<EiemPrefabRules::Context>(cachedPlan,Package{},[&](size_t,bool){++replayed;throw std::runtime_error("startup should not replay source on the game thread");return Bytes{};});
- cached->startupInputsPacked=true;cached->startupInputs.emplace(0,std::make_shared<const Bytes>(EiemCompiledMod::Pack(Bytes{1,2,3,4})));std::atomic_store(&resourceRules,cached);
- bool hit=false;Require(LoadRuleInput(matched,0,12,true,hit)&&hit&&!replayed,"prepared startup input was rebuilt on the game's loading thread");
- auto allocations=storage.size();hit=false;Require(LoadRuleInput(matched,0,12,true,hit)&&hit&&!replayed&&storage.size()==allocations+1,"repeated startup load copied another Byte[] instead of reusing the live stream buffer");
- auto submittedCount=memoryCalls;cachedPlan->startupHashes[0]=cachedPlan->originals[0].hash;hit=false;
- Require(!LoadRuleInput(matched,77,12,true,hit)&&!hit&&!replayed&&memoryCalls==submittedCount,"unchanged dependency intercepted the native file/CRC path");
- for(const auto& request:NativeBundle::memoryRequests)scheduleDone[request.first]=true;NativeBundle::CollectMemory();
- while(!NativeBundle::memoryBundles.empty()){auto b=NativeBundle::memoryBundles.begin();NativeBundle::ReleasedMemory(b->first,b->second.bundle.handle);}Require(NativeBundle::memoryBundles.empty(),"unloaded rule Bundles retained archive streams");
- startupArrays.clear();
- NativeBundle::enabled=false;active=wasActive;std::atomic_store(&resourceRules,std::shared_ptr<EiemPrefabRules::Context>{});Reset();
-}
 void UnrelatedPrefabAllocationRegression(){
  using namespace FullResourceReload;Reset();auto oldRules=std::atomic_load(&Entry::resourceRules);auto wasEnabled=enabled.load();
  struct Cleanup {std::shared_ptr<EiemPrefabRules::Context> rules;bool previous;~Cleanup(){enabled=previous;std::atomic_store(&Entry::resourceRules,rules);Reset();}}cleanup{oldRules,wasEnabled};
@@ -1453,7 +1419,7 @@ void NativeByteStreamRegression(){
  auto request=NativeBundle::LoadBytes(bytes,0,true);bytes.reset();Require(!weak.expired()&&NativeBundle::memoryRequests.at(request).bytes==weak.lock(),"async native input lost immutable byte ownership");
  auto object=(void*)0xAB02;NativeBundle::CompleteMemory(request,object);
  Require(NativeBundle::memoryRequests.empty()&&!weak.expired()&&NativeBundle::memoryBundles.at(object).bytes==weak.lock(),"native completion released lazy archive read backing");
- NativeBundle::ReleasedMemory(object,NativeBundle::MemoryIdentity(object));Require(weak.expired()&&NativeBundle::memoryBundles.empty(),"retired native stream retained backing bytes");
+ NativeBundle::ReleasedMemory(object,NativeBundle::MemoryIdentity(object));Require(weak.expired()&&!NativeBundle::memoryBundles.count(object),"retired native stream retained backing bytes");
  bytes=std::make_shared<const Bytes>(Bytes{1,2,3,4});weak=bytes;request=NativeBundle::LoadBytes(bytes,0,true);bytes.reset();NativeBundle::CompleteMemory(request,nullptr);
  Require(weak.expired()&&NativeBundle::memoryRequests.empty(),"failed native Bundle retained worker bytes");
  bytes=std::make_shared<const Bytes>(Bytes{1,2,3,4});weak=bytes;
@@ -1535,26 +1501,8 @@ void NativeStreamViewRegression(){
  NativeBundle::StreamLength((void*)0xB041,&value,(void*)0xB042);Require(value==23,"unregistered native stream bypassed its original length");
  NativeBundle::RetainMemory(createRequest,RuntimeShapes::Ref::Make(stream,false),{},cursor);cursor.reset();NativeBundle::CompleteMemory(createRequest,bundle);Require(!weak.expired()&&NativeBundle::StreamView(stream),"native completion retired a lazy view cursor");
  NativeBundle::ReleasedMemory(bundle,NativeBundle::MemoryIdentity(bundle));Require(weak.expired()&&!NativeBundle::StreamView(stream)&&!NativeBundle::viewStreamsPresent,"native unload retained a retired view cursor");
- auto api=NativeBundle::api;auto allocate=il2cpp_object_new;auto ready=NativeBundle::viewCallbacksReady;
- NativeBundle::api.streamClass=(void*)0xB050;NativeBundle::api.streamCtor=(void*)88;NativeBundle::api.streamAsync=(void*)87;NativeBundle::api.streamAsyncIcall=nullptr;NativeBundle::viewCallbacksReady=true;
- il2cpp_object_new=[](void* klass)->void*{Require(klass==(void*)0xB050,"compiled view facade class differs");auto memory=std::make_unique<Bytes>(8);auto pointer=memory->data();storage.push_back(std::move(memory));return pointer;};
- auto four=std::make_shared<const View>(std::vector<Span>{{literalSource,0,4,bytes}},std::vector<size_t>{},ReadRange{});
- auto prepared=Prepare();auto plan=std::make_shared<EiemResourceReloadPlan::Plan>(*prepared->plan);plan->inputs.resize(1);plan->closure={0};prepared->plan=plan;prepared->rules=std::make_shared<EiemPrefabRules::Context>(plan,Package{},[](size_t,bool)->Bytes{throw std::runtime_error("compiled view unexpectedly materialized on the game thread");});prepared->ruleInputs.clear();prepared->ruleViews.emplace(0,four);
- {Attempt attempt;attempt.prepared=prepared;attempt.phase=Phase::Bundles;Step(attempt);Require(attempt.bundles.at(0).request.Get()&&prepared->ruleInputs.empty()&&prepared->ruleViews.empty(),"F10 did not submit its prepared native view");auto request=attempt.bundles.at(0).request.Get();NativeBundle::CompleteMemory(request,bundle);NativeBundle::ReleasedMemory(bundle,NativeBundle::MemoryIdentity(bundle));}
- auto sourceRules=std::atomic_load(&resourceRules);prepared->rules->startupViews.emplace(0,four);auto mutablePlan=std::make_shared<EiemResourceReloadPlan::Plan>(*plan);mutablePlan->originals={{"fixture.vfs",std::string(64,'A'),std::filesystem::u8path("E:/view-source"),0,4}};mutablePlan->startupHashes={std::string(64,'B')};mutablePlan->rendererRules.resize(1);prepared->rules->plan=mutablePlan;prepared->rules->IndexSources();std::atomic_store(&resourceRules,prepared->rules);auto enabled=NativeBundle::enabled.exchange(true);bool hit=false;
- auto submitted=LoadRuleInput(StringValue("E:/view-source"),0,0,true,hit);Require(hit&&submitted,"startup did not submit its compiled native view");NativeBundle::CompleteMemory(submitted,bundle);NativeBundle::ReleasedMemory(bundle,NativeBundle::MemoryIdentity(bundle));NativeBundle::enabled=enabled;std::atomic_store(&resourceRules,sourceRules);
- NativeBundle::api=api;NativeBundle::api.byteClass=byteClassBefore;NativeBundle::viewCallbacksReady=ready;il2cpp_object_new=allocate;NativeBundle::viewStreams.clear();NativeBundle::viewStreamsPresent=false;std::tie(NativeBundle::originalStreamRead,NativeBundle::originalStreamSeek,NativeBundle::originalStreamLength)=old;array={};Reset();
-}
-void FileSourceIndexRegression(){
- auto plan=std::make_shared<EiemResourceReloadPlan::Plan>();
- plan->originals={{"first",std::string(64,'A'),std::filesystem::u8path("D:/Game/Archive.vfs"),7,4},
-                  {"second",std::string(64,'B'),std::filesystem::u8path("D:/Game/Archive.vfs"),19,4}};
- auto context=std::make_shared<EiemPrefabRules::Context>(plan,Package{},[](size_t,bool){return Bytes{};});
- Require(context->sourceInputs.at({"d:/game/archive.vfs",7})==0&&context->sourceInputs.at({"d:/game/archive.vfs",19})==1,
-         "same-file source ranges did not retain their exact offsets");
- auto old=std::atomic_load(&Entry::resourceRules);std::atomic_store(&Entry::resourceRules,context);
- bool matched=false;auto requests=memoryCalls;Require(!LoadRuleInput(StringValue("D:\\GAME\\archive.vfs"),77,8,true,matched)&&!matched&&memoryCalls==requests,
-         "unmatched source offset was intercepted or loaded a candidate");std::atomic_store(&Entry::resourceRules,old);
+ NativeBundle::api.byteClass=byteClassBefore;NativeBundle::viewStreams.clear();NativeBundle::viewStreamsPresent=false;
+ std::tie(NativeBundle::originalStreamRead,NativeBundle::originalStreamSeek,NativeBundle::originalStreamLength)=old;array={};Reset();
 }
 void LatestPublicationRegression(){
  using namespace FullResourceReload;
@@ -1955,15 +1903,8 @@ void StartupDependencyHookRegression(bool profile=false){
 }
 void ProfileLoadMisses(){
  using namespace Test;Setup();Reset();
- auto plan=std::make_shared<EiemResourceReloadPlan::Plan>();
- for(unsigned i=0;i<85;++i){plan->originals.push_back({"input-"+std::to_string(i),std::string(64,'A'),std::filesystem::u8path("D:/game/bundles/input-"+std::to_string(i)+".vfs"),0,4});plan->startupHashes.push_back(std::string(64,'B'));}
- plan->roots.push_back({"assets/model.prefab",0,{}});
- auto rules=std::make_shared<EiemPrefabRules::Context>(plan,Package{},[](size_t,bool){throw std::runtime_error("unmatched load replayed an input");return Bytes{};});
- std::atomic_store(&Entry::resourceRules,rules);auto absent=StringValue("D:/game/bundles/vanilla-unrelated.vfs");
- auto clock=NativeBundle::Clock();for(unsigned repeat=0;repeat<10000;++repeat){bool matched=false;Require(!LoadRuleInput(absent,77,0,true,matched)&&!matched,"vanilla file did not pass through");}
- std::cout<<"LOAD-MISS-PROFILE stage=file calls=10000 candidateInputs=85 ms="<<NativeBundle::Ms(clock)<<'\n';
  FullResourceReload::enabled=true;resourceSource=source;resourceLabel="assets/vanilla-unrelated.prefab";
- profiledInvokes=profiledFields=profiledBoxes=0;clock=NativeBundle::Clock();
+ profiledInvokes=profiledFields=profiledBoxes=0;auto clock=NativeBundle::Clock();
  for(unsigned repeat=0;repeat<10000;++repeat)Require(FullResourceReload::ResourceGet(leaseHandle,nullptr)==source,"vanilla prefab did not pass through");
  std::cout<<"LOAD-MISS-PROFILE stage=prefab calls=10000 ms="<<NativeBundle::Ms(clock)<<" invokes="<<profiledInvokes<<" fields="<<profiledFields<<" boxes="<<profiledBoxes<<'\n';
  for(unsigned count:{0u,64u,256u}){
@@ -1971,7 +1912,7 @@ void ProfileLoadMisses(){
   clock=NativeBundle::Clock();for(unsigned repeat=0;repeat<10000;++repeat)NativeBundle::CollectMemory();
   std::cout<<"LOAD-MISS-PROFILE stage=stream-lifetime calls=10000 liveBundles="<<count<<" ms="<<NativeBundle::Ms(clock)<<'\n';NativeBundle::memoryBundles.clear();
  }
- FullResourceReload::enabled=false;std::atomic_store(&Entry::resourceRules,std::shared_ptr<EiemPrefabRules::Context>{});Reset();StartupDependencyHookRegression(true);
+ FullResourceReload::enabled=false;Reset();StartupDependencyHookRegression(true);
 }
 int main(int argc,char** argv){
  using namespace Test;using namespace FullResourceReload;
@@ -2011,7 +1952,6 @@ int main(int argc,char** argv){
   check("UI model lifecycle reload",UIModelReloadRegression);
   check("synchronous world owner",SynchronousOwnerRegression);
   check("unrelated prefab allocation",UnrelatedPrefabAllocationRegression);
-  check("indexed file source ranges",FileSourceIndexRegression);
   check("stream lifetime reentrant identity",StreamLifetimeReentryRegression);
   check("unowned Renderer rejection details",OwnershipRejectionDetailsRegression);
   check("provisional material-controller Renderer coverage",ProvisionalRendererOwnershipRegression);
@@ -2029,7 +1969,7 @@ int main(int argc,char** argv){
 #if defined(EIEM_DIAGNOSTICS)
   check("animation attachment probe contract",AnimationAttachmentProbeRegression);check("unmodified skin probe contract",UnmodifiedSkinProbeRegression);check("actual performance attachment probe",PerformanceProbeRegression);check("native resource release probe",PerformanceReleaseProbeRegression);
 #endif
-  check("native lifecycle",NativeLifecycleRegression);check("typed character audio",[]{typedAudioOnly=true;NativeLifecycleRegression();typedAudioOnly=false;});check("texture identity",TextureIdentityRegression);check("shared material identity",SharedMaterialIdentityRegression);check("load scheduling",PrewarmScheduleRegression);check("committed retry",CommittedRetryRegression);check("released pool",ReleasedPoolRegression);check("complex released pool",ComplexReleasedPoolRegression);check("nested complex release",NestedComplexReleaseRegression);check("display virtual override",DisplayOverrideRegression);check("rule memory loads",RuleMemoryRegression);check("native byte stream ownership",NativeByteStreamRegression);
+  check("native lifecycle",NativeLifecycleRegression);check("typed character audio",[]{typedAudioOnly=true;NativeLifecycleRegression();typedAudioOnly=false;});check("texture identity",TextureIdentityRegression);check("shared material identity",SharedMaterialIdentityRegression);check("load scheduling",PrewarmScheduleRegression);check("committed retry",CommittedRetryRegression);check("released pool",ReleasedPoolRegression);check("complex released pool",ComplexReleasedPoolRegression);check("nested complex release",NestedComplexReleaseRegression);check("display virtual override",DisplayOverrideRegression);check("native byte stream ownership",NativeByteStreamRegression);
   check("selected Bundle closure",SelectedBundleClosureRegression);
   check("consecutive F10 Bundle reuse and ownership",RepeatedBundleReloadRegression);
   check("latest publication",LatestPublicationRegression);check("offline failure cancellation",OfflineRejectionRegression);check("startup",StartupNoWorldRegression);check("Mesh gate",ChangedMeshGateRegression);check("retirement",RetirementRegression);

@@ -143,6 +143,7 @@ void PrepareReplacement(uint64_t token,uint64_t scope,R::Reader& reader,const st
         stagedParts.erase(std::remove_if(stagedParts.begin(),stagedParts.end(),[&](const auto& part){return refreshed.count(part.target)!=0;}),stagedParts.end());
         for(const auto& part:carrier.parts){auto duplicate=std::find_if(stagedParts.begin(),stagedParts.end(),[&](const auto& old){return !(old.target<part.target)&&!(part.target<old.target)&&old.part==part.part&&old.cab==part.cab&&old.id==part.id;});if(duplicate==stagedParts.end())stagedParts.push_back(part);}
       }
+      phase("restore-staged-mesh-metadata");N::EnsureStagedMeshMetadata(*combined,stagedParts);
       phase("collect-renderer-material-uses");auto uses=M::CollectUses(transaction.Layout(),member.name,*combined,combinedTargets,
         [&](int64_t id,const std::set<std::string>& fields){return transaction.Project(id,fields);});
       M::Shared materials;

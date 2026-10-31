@@ -175,13 +175,34 @@ def frame_stream(source_channels, positions, normals, tangents):
                                    tangentMaxError=float(np.max(np.abs(stream[:,6:10]-tangents))))
 
 
+def game_texture_coordinates(uv_channels, tangents, count):
+    """Convert Blender UVs to the game's image origin for native Mesh data."""
+    require(count > 0 and len(uv_channels) == 8, 'UV channel count')
+    converted = []
+    has_uv0 = False
+    for channel, values in enumerate(uv_channels):
+        if not values:
+            converted.append(None)
+            continue
+        dimension = len(values) // count
+        require(2 <= dimension <= 4 and len(values) == count * dimension, 'UV shape')
+        uv = np.asarray(values, dtype='<f4').reshape(count, dimension)
+        uv[:, 1] = 1.0 - uv[:, 1]
+        converted.append(uv)
+        has_uv0 |= channel == 0
+    tangent_values = np.asarray(tangents, dtype=np.float64).reshape(count, 4)
+    if has_uv0:
+        tangent_values[:, 3] *= -1.0
+    return converted, tangent_values
+
+
 def native_mesh(template, author, name):
     mesh = copy.deepcopy(template)
     count = author['vertex_count']
     positions = np.asarray(author['vertices'],dtype=np.float64).reshape(count,3)
     require(count>0 and np.all(np.isfinite(positions)), 'empty or nonfinite author geometry')
     normals = np.asarray(author['normals'],dtype=np.float64).reshape(count,3)
-    tangents = np.asarray(author['tangents'],dtype=np.float64).reshape(count,4)
+    uvs, tangents = game_texture_coordinates(author['uvs'], author['tangents'], count)
     require(not author['additional'], 'additional native shape-normal payload is unsupported by the source schema')
     require(not mesh['m_CollisionMeshBaked'].data and not mesh['m_CollisionMeshOnly'].data, 'collision-only source Mesh unsupported')
     source_channels = mesh['m_VertexData']['m_Channels'].items()
@@ -193,13 +214,12 @@ def native_mesh(template, author, name):
         channels[2] = dict(stream=0,offset=24,format=0,dimension=4)
     arrays = []
     offset = 0
-    for i,values in enumerate(author['uvs']):
-        if not values: continue
-        dim = len(values)//count
-        require(2<=dim<=4 and len(values)==count*dim, 'UV shape')
+    for i,values in enumerate(uvs):
+        if values is None: continue
+        dim = values.shape[1]
         flags = source_channels[i+4]['dimension'].data & 0xf0
         channels[i+4] = dict(stream=1,offset=offset,format=0,dimension=flags|dim)
-        arrays.append(np.asarray(values,dtype='<f4').reshape(count,dim))
+        arrays.append(values)
         offset += dim*4
     if author['colors']:
         channels[3]=dict(stream=1,offset=offset,format=0,dimension=4)

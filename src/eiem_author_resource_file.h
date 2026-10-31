@@ -32,7 +32,8 @@ inline uint64_t Get(const unsigned char* input, size_t bytes) {
 }
 
 inline Layout Parse(size_t fileBytes,
-                    const std::function<void(size_t, unsigned char*, size_t)>& read) {
+                    const std::function<void(size_t, unsigned char*, size_t)>& read,
+                    Bytes* metadataOutput = nullptr) {
   Require(bool(read) && fileBytes >= headerBytes, "author resource header truncated");
   Bytes header(headerBytes);
   read(0, header.data(), header.size());
@@ -45,7 +46,7 @@ inline Layout Parse(size_t fileBytes,
   auto metadataBytes = Get(header.data() + 24, 8);
   auto payloadBytes = Get(header.data() + 32, 8);
   Require(result.kind >= 1 && result.kind <= 7, "unknown author resource kind");
-  Require(metadataBytes && metadataBytes <= maximumMetadataBytes && metadataBytes <= SIZE_MAX,
+  Require((metadataBytes || result.kind == 3) && metadataBytes <= maximumMetadataBytes && metadataBytes <= SIZE_MAX,
           "author resource metadata extent invalid");
   Require(payloadBytes <= SIZE_MAX, "author resource payload extent overflow");
 
@@ -60,6 +61,7 @@ inline Layout Parse(size_t fileBytes,
   const auto digest = Sha(metadata.data(), metadata.size());
   Require(std::equal(digest.begin(), digest.end(), header.begin() + 40),
           "author resource metadata checksum differs");
+  if (metadataOutput) *metadataOutput = std::move(metadata);
   return result;
 }
 
@@ -74,7 +76,7 @@ inline Bytes ReadMetadata(const Layout& layout,
 
 inline Bytes Encode(unsigned kind, const Bytes& metadata, const Bytes& payload) {
   Require(kind >= 1 && kind <= 7, "unknown author resource kind");
-  Require(!metadata.empty() && metadata.size() <= maximumMetadataBytes,
+  Require((!metadata.empty() || kind == 3) && metadata.size() <= maximumMetadataBytes,
           "author resource metadata extent invalid");
   Bytes result(headerBytes, 0);
   std::copy(std::begin(magic), std::end(magic), result.begin());

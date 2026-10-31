@@ -550,6 +550,28 @@ int main(int argc,char** argv) {
       il2cpp_class_get_name=helperClassName;il2cpp_class_get_namespace=helperNamespace;il2cpp_class_get_parent=helperParent;
       RuntimeShapes::originalHelperInit=helperOriginal;RuntimeShapes::helperRenderersField=helperField;RuntimeShapes::originalEnabledGetter=getterOriginal;
       Require(RuntimeShapes::bound.size()==parts.size()*2,"later model control registration incomplete");
+      // A target can carry visibility controls even when the authored shape
+      // channel layout no longer matches the game's current Mesh. Shape
+      // animation must be skipped without dropping the independent Renderer
+      // visibility binding.
+      const RuntimeControls::Spec* mismatchSpec=nullptr;
+      for(const auto& row:RuntimeShapes::specs)
+        if(row.second.visible&&!row.second.channels.empty()){mismatchSpec=&row.second;break;}
+      Require(mismatchSpec,"fixture has no shaped visibility target");
+      auto mismatchMesh=(void*)identity++;Test::MakeMesh(mismatchMesh,*mismatchSpec);
+      ++Test::meshes[mismatchMesh].vertices;
+      auto mismatchRenderer=(void*)identity++;
+      Test::renderMeshes[mismatchRenderer]=mismatchMesh;Test::renderEnabled[mismatchRenderer]=1;
+      RuntimeShapes::RegisterRenderer(mismatchRenderer,mismatchMesh,true);
+      Require(RuntimeShapes::bound.count(mismatchRenderer),"layout mismatch dropped visibility binding");
+      auto& mismatchBinding=RuntimeShapes::bound.at(mismatchRenderer);
+      Require(mismatchBinding.modelReady&&!mismatchBinding.shapeCompatible,
+              "layout mismatch was treated as a valid shape binding");
+      RuntimeShapes::ApplyVisibility(mismatchRenderer,mismatchBinding,*mismatchSpec);
+      Require(bool(Test::renderEnabled.at(mismatchRenderer))==
+              (mismatchBinding.nativeEnabled&&mismatchSpec->visible->Evaluate(RuntimeControls::variables.at(mismatchSpec->package))!=0),
+              "layout mismatch did not preserve visibility evaluation");
+      RuntimeShapes::bound.erase(mismatchRenderer);
       auto apply=[&] {
         for(auto& binding:RuntimeShapes::bound) RuntimeShapes::ApplyVisibility(binding.first,binding.second,RuntimeShapes::specs.at(binding.second.marker));
       };

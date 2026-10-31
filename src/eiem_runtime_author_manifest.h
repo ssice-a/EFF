@@ -1,12 +1,19 @@
 #pragma once
 #include "eiem_mesh_target_directory.h"
 #include "eiem_runtime_author_directory.h"
+#include <cerrno>
+#include <cstdlib>
 
 // Startup manifest view. It validates relationships and paths but deliberately
 // does not stat, hash, or read the resource payloads.
 namespace EiemRuntimeAuthorManifest {
 using namespace EiemDirectory;
 namespace D = EiemRuntimeAuthorDirectory;
+struct TextureSettings {
+  bool linear = false;
+  unsigned filter = 1, wrap = 0, aniso = 1;
+  double mipBias = 0.0;
+};
 struct Resource {
   std::string id;
   unsigned kind = 0;
@@ -15,6 +22,7 @@ struct Resource {
   std::string dds;
   std::string author;
   Identity source;
+  TextureSettings textureSettings;
   std::map<std::string, std::string> textureBindings;
   std::vector<std::string> targetRules;
 };
@@ -32,6 +40,32 @@ struct Manifest {
 
 inline void ResourcePath(const std::string& value) {
   D::Relative(value);
+}
+
+inline unsigned TextureInteger(const std::map<std::string, std::string>& values,
+                               const char* name, unsigned fallback, unsigned maximum) {
+  auto found = values.find(name);
+  if (found == values.end()) return fallback;
+  const auto& text = found->second;
+  Require(!text.empty() && text.find_first_not_of("0123456789") == text.npos,
+          std::string("invalid Texture setting: ") + name);
+  auto parsed = std::stoul(text);
+  Require(parsed <= maximum, std::string("Texture setting out of range: ") + name);
+  return unsigned(parsed);
+}
+
+inline double TextureNumber(const std::map<std::string, std::string>& values,
+                            const char* name, double fallback) {
+  auto found = values.find(name);
+  if (found == values.end()) return fallback;
+  const auto& text = found->second;
+  errno = 0;
+  char* end = nullptr;
+  auto parsed = std::strtod(text.c_str(), &end);
+  Require(end == text.c_str() + text.size() && end != text.c_str() &&
+              errno != ERANGE && std::isfinite(parsed),
+          std::string("invalid Texture setting: ") + name);
+  return parsed;
 }
 
 inline Manifest Read(const std::filesystem::path& root) {
@@ -98,6 +132,16 @@ inline Manifest Read(const std::filesystem::path& root) {
       resource.kind = 3;
       resource.path = values.at("path");
       resource.dds = values.at("dds");
+      if (auto linear = values.find("linear"); linear != values.end()) {
+        Require(linear->second == "true" || linear->second == "false" ||
+                    linear->second == "1" || linear->second == "0",
+                "Texture linear setting is invalid");
+        resource.textureSettings.linear = linear->second == "true" || linear->second == "1";
+      }
+      resource.textureSettings.filter = TextureInteger(values, "filter", 1, 2);
+      resource.textureSettings.wrap = TextureInteger(values, "wrap", 0, 3);
+      resource.textureSettings.aniso = TextureInteger(values, "aniso", 1, 16);
+      resource.textureSettings.mipBias = TextureNumber(values, "mip_bias", 0.0);
       if (values.count("source.path") || values.count("source.asset")) {
         Require(values.count("source.path") && values.count("source.asset"), "Texture source identity is incomplete");
         resource.source = Source(values, "source.");
@@ -130,6 +174,20 @@ inline Manifest Read(const std::filesystem::path& root) {
   }
 
   Require(!controlsPath.empty(), "format 3 Controls resource is absent");
+  std::map<std::string, Resource> textureFiles;
+  for (const auto& row : result.resources) {
+    const auto& resource = row.second;
+    if (resource.kind != 3) continue;
+    auto inserted = textureFiles.emplace(resource.path, resource);
+    if (!inserted.second) {
+      const auto& prior = inserted.first->second;
+      const auto& a = prior.textureSettings;
+      const auto& b = resource.textureSettings;
+      Require(prior.dds == resource.dds && a.linear == b.linear && a.filter == b.filter &&
+                  a.wrap == b.wrap && a.aniso == b.aniso && a.mipBias == b.mipBias,
+              "shared Texture resource path has conflicting DDS or sampling semantics: " + resource.path);
+    }
+  }
   for (const auto& row : result.resources) {
     const auto& resource = row.second;
     if(resource.type=="effect-attachment"&&!resource.author.empty()){

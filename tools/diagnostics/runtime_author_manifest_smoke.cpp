@@ -18,9 +18,10 @@ int main() {
         "[MaterialAnimationGlow]\npath=author/controls.effres\n\n"
         "[EffectAttachmentSpark]\npath=author/controls.effres\nauthor=ResourceEffectAuthor_Spark\n\n"
         "[MaterialBody]\npath=author/materials/body.mat\nsource.path=assets/base/body.mat\nsource.asset=Body\ntexture._BaseMap=TextureBody\n\n"
-        "[TextureBody]\npath=author/textures/body.texmeta\ndds=editable/custom/body.dds\n\n"
-        "[ResourceEffect_0123456789ABCDEF]\ntype=effect\npath=native/effects/spark.effres\ntargets=ReplaceBody\n\n"
-        "[ResourceEffectAuthor_Spark]\ntype=effect-author\npath=native/effect-author/spark.effres\n\n"
+        "[TextureBody]\npath=author/textures/body.texmeta\ndds=editable/custom/body.dds\n"
+        "linear=true\nfilter=2\nwrap=1\naniso=8\nmip_bias=-0.5\n\n"
+        "[ResourceEffect_0123456789ABCDEF]\ntype=effect\npath=effects/spark.effres\ntargets=ReplaceBody\n\n"
+        "[ResourceEffectAuthor_Spark]\ntype=effect-author\npath=effects/author/spark.effres\n\n"
         "[ResourceControls]\ntype=controls\npath=author/controls.effres\n\n"
         "[PartBody]\nmesh=MeshBody\nmaterial=MaterialBody\nvisible=1\n\n"
         "[ReplaceBody]\ntarget.path=assets/base/body.asset\ntarget.asset=Body\nparts=PartBody\n";
@@ -32,6 +33,10 @@ int main() {
             "format 3 relationships differ");
     Require(manifest.resources.at("TextureBody").dds == "editable/custom/body.dds",
             "user-selected DDS path was not preserved");
+    const auto& sampling = manifest.resources.at("TextureBody").textureSettings;
+    Require(sampling.linear && sampling.filter == 2 && sampling.wrap == 1 &&
+                sampling.aniso == 8 && sampling.mipBias == -0.5,
+            "Format 3 Texture semantic/sampling settings were not parsed");
     Require(manifest.resources.at("ShapeAnimationWalk").type == "shape-animation" &&
                 manifest.resources.at("MaterialAnimationGlow").type == "material-animation" &&
                 manifest.resources.at("EffectAttachmentSpark").type == "effect-attachment" &&
@@ -52,8 +57,22 @@ int main() {
     try { (void)EiemRuntimeAuthorManifest::Read(root); } catch (const std::exception&) { traversalRejected = true; }
     Require(traversalRejected, "format 3 accepted a resource path outside the Mod root");
 
+    { std::ofstream output(root / "mod.ini", std::ios::binary | std::ios::trunc);
+      output << ini << "\n[TextureAlias]\npath=author/textures/body.texmeta\n"
+                "dds=editable/other.dds\nlinear=true\n"; }
+    bool textureAliasRejected = false;
+    try { (void)EiemRuntimeAuthorManifest::Read(root); }
+    catch (const std::exception&) { textureAliasRejected = true; }
+    Require(textureAliasRejected, "format 3 accepted conflicting semantics for one Texture file");
+
+    { std::ofstream output(root / "mod.ini", std::ios::binary | std::ios::trunc);
+      output << "[Mod]\nformat=2\nid=Legacy\n\n[Constants]\n"; }
+    bool legacyRejected = false;
+    try { (void)EiemRuntimeAuthorManifest::Read(root); } catch (const std::exception&) { legacyRejected = true; }
+    Require(legacyRejected, "runtime accepted a Mod Manager migration input");
+
     std::filesystem::remove_all(root);
-    std::cout << "PASS format 3 manifest validates relationships only; missing payloads remain unopened and traversal is rejected\n";
+    std::cout << "PASS Format 3 manifest validates relationships only; payloads remain unopened, traversal and legacy format are rejected\n";
     return 0;
   } catch (const std::exception& error) {
     std::error_code ignored;

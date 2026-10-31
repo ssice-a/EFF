@@ -99,4 +99,53 @@ inline Asset Build(const Package& package,const Identity& target,const std::stri
   if(!m.shapes.empty())fields.insert("m_IsReadable");asset.fields.assign(fields.begin(),fields.end());
  asset.vertices=m.vertices;asset.indices=m.indices;asset.bones=unsigned(m.bones.size());asset.shapes=unsigned(m.shapes.size());return asset;
 }
+
+inline std::string RuntimePartName(const std::string& owner,const std::string& part,
+                                   const Identity& target,bool hasShapes){
+ auto label="EFF_STABLE_PART/1\n"+owner+"\n"+part+"\n"+target.path+"\n"+target.asset;
+ auto hash=Sha((const unsigned char*)label.data(),label.size());
+ auto name=target.asset+"__EFF_SHAPE_"+Hex(hash.data(),hash.size());
+ if(!hasShapes){auto at=name.find("__EFF_SHAPE_");Require(at!=std::string::npos,"author Mesh marker prefix absent");name.replace(at,12,"__EFF_PART_");}
+ return name;
+}
+
+inline Asset Build(const std::string& owner,const std::string& part,const std::string& material,
+ const Identity& target,const Bytes& source,const std::string& sourceCab,int64_t meshId,
+ const Resource& authored,const Mesh& mesh,const std::string& resourceFile,
+ const Bytes& editableSnapshot){
+ Require(!owner.empty()&&!part.empty()&&!material.empty()&&!resourceFile.empty(),
+         "typed author Mesh identity is incomplete");
+ Require(editableSnapshot.size()>=12&&!memcmp(editableSnapshot.data(),"EFFMESH\0",8)&&
+         Le(editableSnapshot.data(),editableSnapshot.size(),8,4)==6,
+         "typed author Mesh snapshot signature/version differs");
+ Require(authored.kind==1&&!mesh.resource.empty()&&mesh.vertices&&mesh.indices&&mesh.indices%3==0,
+         "typed author Mesh geometry input differs");
+ auto layout=ParseSerialized(source);auto found=layout.objects.find(meshId);
+ Require(found!=layout.objects.end()&&layout.types.at(found->second.type).classId==43,
+         "typed author Mesh template object absent");
+ auto assets=SerializedAssets(source,sourceCab,layout);
+ Require(std::any_of(assets.begin(),assets.end(),[&](const auto& asset){
+   return asset.path==target.path&&asset.asset==target.asset&&asset.pathId==meshId&&
+          asset.cab==sourceCab&&asset.classId==43;
+ }),"typed author Mesh template identity differs");
+ const auto& type=layout.types.at(found->second.type);
+ Require(type.hash==authored.type,"typed author Mesh TypeTree differs from exact template");
+ auto sourceValue=ObjectValue(source,layout,meshId);
+ auto name=RuntimePartName(owner,part,target,!mesh.shapes.empty());
+ auto value=ApplyMesh(type,sourceValue,authored,mesh,name,!mesh.shapes.empty());
+ auto payload=EncodeValue(type,value);
+ auto label=owner+"\n"+part+"\n"+target.path+"\n"+target.asset+"\n";
+ payload.insert(payload.end(),label.begin(),label.end());auto hash=Sha(payload.data(),payload.size());
+ auto asset=Isolate(source,sourceCab,meshId,target.path,value,Hex(hash.data(),hash.size()));
+ asset.binding=BuildMeshBindingMetadata(type,value,authored,mesh);
+ std::set<std::string> fields{"m_Name"};
+ for(const auto& block:authored.blocks)if(!block.first.empty()&&block.first[0]!='@')fields.insert(block.first);
+ if(!mesh.shapes.empty())fields.insert("m_IsReadable");
+ asset.fields.assign(fields.begin(),fields.end());
+ asset.vertices=mesh.vertices;asset.indices=mesh.indices;
+ asset.bones=unsigned(mesh.bones.size());asset.shapes=unsigned(mesh.shapes.size());
+ asset.member="CAB-"+Hex(hash.data(),16);asset.bundle="eff/"+Hex(hash.data(),32)+".ab";
+ asset.path=target.path;asset.meshName=name;asset.meshId=meshId;
+ return asset;
+}
 } // namespace EiemAuthorMeshBundle

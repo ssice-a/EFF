@@ -37,7 +37,7 @@ int main(){try{
   Require(recoveredAuthor==authorMesh&&Hex(recoveredHash.data(),recoveredHash.size())==describedMesh.authorHash,
     "Mesh editable author snapshot does not roundtrip with its native resource");
 
-  D::MaterialEntry material;material.id="MaterialBody";material.file="native/materials/body.effres";
+  D::MaterialEntry material;material.id="MaterialBody";material.file="materials/body.effres";
   material.hash=std::string(64,'B');material.source={"assets/base/body.mat","BaseMaterial"};
   std::string authorText="format=EFFMAT\nversion=1\noverrides=true\nsource=assets/base/body.mat\nname=BaseMaterial\nfloat._Gloss=.4\n";
   Bytes authorMaterial(authorText.begin(),authorText.end());material.authorBytes=authorMaterial.size();
@@ -62,14 +62,6 @@ int main(){try{
   Require(recoveredMaterial==authorMaterial&&Hex(recoveredMaterialHash.data(),recoveredMaterialHash.size())==describedMaterial.hash,
     "sparse Material edits do not roundtrip independently of native game data");
 
-  D::TextureAsset texture;texture.id="TextureBody";texture.file="textures/body.texmeta";
-  texture.ddsFile="editable/body.dds";texture.path="assets/body.tex";texture.hash=std::string(64,'C');
-  texture.cab="CAB-0011223344556677";texture.pathId=23;texture.pixelOffset=300;texture.pixelBytes=16;
-  texture.width=4;texture.height=4;texture.mips=1;texture.format=25;
-  auto textureRoundtrip=M::DecodeTexture(M::EncodeTexture(texture));
-  Require(textureRoundtrip.ddsFile==texture.ddsFile&&textureRoundtrip.pixelOffset==300&&textureRoundtrip.format==25,
-    "Texture/DDS metadata roundtrip differs");
-
   D::Auxiliary physics;physics.id="ResourcePhysics";physics.file="resources/physics.bin";
   physics.hash=std::string(64,'D');physics.kind=5;physics.bytes=80;
   physics.authorBytes=128;physics.authorHash=std::string(64,'E');
@@ -85,9 +77,9 @@ int main(){try{
   Require(controlsRoundtrip.defaults.empty(),"controls metadata roundtrip differs");
   std::string effectAuthorHash(64,'F');
   auto effectAuthor=M::DecodeEffectAuthor(M::EncodeEffectAuthor(
-    "ResourceEffectAuthor_Test","native/effect-author/test.effres",256,effectAuthorHash));
+    "ResourceEffectAuthor_Test","effects/author/test.effres",256,effectAuthorHash));
   Require(effectAuthor.id=="ResourceEffectAuthor_Test"&&effectAuthor.bytes==256&&
     effectAuthor.hash==effectAuthorHash,"Effect author metadata roundtrip differs");
-  std::cout<<"PASS typed Mesh, Material, Texture/DDS, auxiliary, Effect author and controls metadata roundtrip\n";
+  std::cout<<"PASS typed Mesh, Material, auxiliary, Effect author and controls metadata roundtrip\n";
   return 0;
 }catch(const std::exception& error){std::cerr<<"FAIL: "<<error.what()<<'\n';return 1;}}

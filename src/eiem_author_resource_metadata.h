@@ -76,23 +76,6 @@ inline D::MaterialEntry DecodeMaterial(const EiemDirectory::Bytes& bytes) {
   return material;
 }
 
-inline EiemDirectory::Bytes EncodeTexture(const D::TextureAsset& texture) {
-  auto w=Start(3); w.S(texture.id); w.S(texture.file); w.S(texture.ddsFile); w.S(texture.path);
-  w.S(texture.hash); w.S(texture.cab); w.N(uint64_t(texture.pathId)); w.N(texture.pixelOffset);
-  w.N(texture.pixelBytes); w.N(texture.width); w.N(texture.height); w.N(texture.mips); w.N(texture.format);
-  return std::move(w.b);
-}
-
-inline D::TextureAsset DecodeTexture(const EiemDirectory::Bytes& bytes) {
-  auto r=Open(bytes,3); D::TextureAsset texture; texture.id=r.S(); texture.file=r.S(); texture.ddsFile=r.S();
-  texture.path=r.S(); texture.hash=r.S(); texture.cab=r.S(); texture.pathId=int64_t(r.N());
-  auto offset=r.N(), extent=r.N(); EiemDirectory::Require(offset<=SIZE_MAX&&extent<=SIZE_MAX,
-    "author Texture span exceeds address space"); texture.pixelOffset=size_t(offset);texture.pixelBytes=size_t(extent);
-  texture.width=r.U();texture.height=r.U();texture.mips=r.U();texture.format=r.U();
-  EiemDirectory::Require(r.p==bytes.size(), "author Texture metadata trailing data");
-  return texture;
-}
-
 inline EiemDirectory::Bytes EncodeAuxiliary(const D::Auxiliary& resource) {
   auto w=Start(resource.kind==5?4:5); w.S(resource.id); w.S(resource.file); w.S(resource.hash);
   w.N(resource.kind); w.N(resource.bytes); w.N(resource.targets.size());

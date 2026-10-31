@@ -43,6 +43,7 @@ struct Bound {
   bool modelReady = false;
   Ref filter;
   uint64_t visibilityRevision=~uint64_t(0);
+  bool shapeCompatible = true;
 };
 struct Snapshot { Ref mesh; };
 struct CaptureScope {
@@ -271,25 +272,33 @@ const Spec* Match(void* mesh) {return Match(nullptr,mesh);}
 void Bind(void* renderer, void* mesh, const Spec& spec) {
   auto existing = bound.find(renderer);
   if (existing != bound.end() && existing->second.renderer.Get() == renderer && existing->second.mesh.Get() == mesh) return;
-  Require(Alive(renderer) && Alive(mesh) && Scalar<int>(api.vertexCount,mesh) == int(spec.vertices) &&
-          Scalar<int>(api.shapeCount,mesh) == int(spec.channels.size()), "runtime shape provenance/layout mismatch");
-  Require(RendererKind(renderer)!=23||spec.channels.empty(),"static MeshRenderer cannot animate shape channels");
+  Require(Alive(renderer) && Alive(mesh), "runtime shape binding target is no longer alive");
   // A managed Mesh wrapper can be collected while its native Renderer still
   // uses the asset. Keep that wrapper until this Renderer binding retires;
   // native validity is still checked independently on the main thread.
   Bound b{Ref::Make(renderer,true),Ref::Make(mesh,false),spec.marker,{}};
+  b.shapeCompatible=spec.channels.empty();
+  if(!spec.channels.empty()) {
+    auto rendererKind=RendererKind(renderer);
+    auto actualVertices=Scalar<int>(api.vertexCount,mesh);
+    auto actualShapes=Scalar<int>(api.shapeCount,mesh);
+    b.shapeCompatible=rendererKind!=23 && actualVertices==int(spec.vertices) &&
+      actualShapes==int(spec.channels.size());
+    if(b.shapeCompatible) for(size_t i=0;i<spec.channels.size();++i) {
+      int index=int(i);void* args[]={&index};
+      if(String(Call(api.shapeName,mesh,args))!=spec.channels[i]) {b.shapeCompatible=false;break;}
+      b.indices.emplace(spec.channels[i],index);
+    }
+    if(!b.shapeCompatible)
+      Log("[SHAPE-RUNTIME-LAYOUT] part=%s expectedVertices=%u actualVertices=%d expectedChannels=%zu actualChannels=%d rendererKind=%d shapeControls=disabled visibilityIndependent=1",
+          spec.part.c_str(),spec.vertices,actualVertices,spec.channels.size(),actualShapes,rendererKind);
+  }
   if(RendererKind(renderer)==23)b.filter=Ref::Make(SourceFilter(renderer),false);
   if (spec.visible) b.nativeEnabled=Scalar<unsigned char>(api.getEnabled,renderer)!=0;
-  for (size_t i=0;i<spec.channels.size();++i) {
-    int index = int(i); void* args[] = {&index};
-    auto name = String(Call(api.shapeName,mesh,args));
-    Require(name == spec.channels[i], "runtime shape authored channel order mismatch");
-    b.indices.emplace(name,index);
-  }
   bound[renderer] = std::move(b);
   boundCount.store(unsigned(bound.size()));
-  Log("[SHAPE-RUNTIME-BIND] renderer=%p mesh=%p part=%s vertices=%u channels=%zu nativeShapesRetained=1",
-      renderer,mesh,spec.part.c_str(),spec.vertices,spec.channels.size());
+  Log("[SHAPE-RUNTIME-BIND] renderer=%p mesh=%p part=%s vertices=%u channels=%zu shapeCompatible=%d nativeShapesRetained=1",
+      renderer,mesh,spec.part.c_str(),spec.vertices,spec.channels.size(),int(bound.at(renderer).shapeCompatible));
 }
 Cached& Read(void* mesh, const Spec& spec) {
   auto existing = cached.find(mesh);
@@ -478,6 +487,7 @@ void* SnapshotFor(void* renderer, void* source, const Spec& spec) {
   if (duplicate != scope->supplied.end()) return duplicate->second;
   performance.hit=true;
   Bind(renderer,source,spec);
+  Require(bound.at(renderer).shapeCompatible,"runtime shape provenance/layout mismatch");
   auto& data = Read(source,spec);
   std::map<std::string,float> weights;
   for (const auto& item : bound.at(renderer).indices) {
@@ -676,7 +686,8 @@ size_t RegisterModel(void* root) {
     void* renderer=nullptr;
     Require(CopyRaw((char*)objects.Get()+32+i*sizeof(void*),&renderer,sizeof(renderer)),"runtime model renderer element");
     if (Alive(renderer)) {
-      auto mesh=SourceMesh(renderer);RegisterRenderer(renderer,mesh);
+      auto mesh=SourceMesh(renderer);
+      RegisterRenderer(renderer,mesh);
       auto binding=bound.find(renderer);
       if(binding!=bound.end()&&binding->second.renderer.Get()==renderer&&binding->second.mesh.Get()==mesh&&binding->second.modelReady)++ready;
     }
@@ -699,8 +710,11 @@ size_t RegisterRendererList(void* renderers,bool modelReady) {
   for(int i=0;i<size;++i) {
     void* renderer=nullptr;
     Require(CopyRaw((char*)items+32+i*sizeof(void*),&renderer,sizeof(renderer)),"runtime shape renderer list element");
-    if(!Alive(renderer)||!RendererKind(renderer))continue;
-    auto mesh=SourceMesh(renderer);RegisterRenderer(renderer,mesh,modelReady);
+    if(!Alive(renderer))continue;
+    auto kind=RendererKind(renderer);
+    auto mesh=kind?SourceMesh(renderer):nullptr;
+    if(!kind)continue;
+    RegisterRenderer(renderer,mesh,modelReady);
     auto binding=bound.find(renderer);
     if(binding!=bound.end()&&binding->second.renderer.Get()==renderer&&binding->second.mesh.Get()==mesh&&binding->second.modelReady)++ready;
   }
@@ -790,7 +804,7 @@ void Update() {
     auto current=it->second.filter.handle?(Alive(filter)?Call(api.filterMesh,filter):nullptr):SourceMesh(renderer);
     if (current!=mesh) { it=bound.erase(it); continue; }
     ApplyVisibility(renderer,it->second,spec,true);
-    for (const auto& control : spec.controls) {
+    if(it->second.shapeCompatible) for (const auto& control : spec.controls) {
       int index=it->second.indices.at(control.first);
       float target=float(ShapeValue(spec.package,control.second)*100.0);
       void* readArgs[]={&index};

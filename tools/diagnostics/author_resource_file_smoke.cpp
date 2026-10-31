@@ -22,6 +22,18 @@ int main() {
     read(layout.payloadOffset, payloadRead.data(), payloadRead.size());
     Require(payloadRead == payload, "author resource payload range differs");
 
+    Bytes textureScaffold{1, 2, 3, 4};
+    auto textureFile = Encode(3, {}, textureScaffold);
+    auto textureRead = [&](size_t at, unsigned char* output, size_t size) {
+      Require(at <= textureFile.size() && size <= textureFile.size() - at,
+              "smoke Texture read range outside author resource");
+      memcpy(output, textureFile.data() + at, size);
+    };
+    auto textureLayout = Parse(textureFile.size(), textureRead);
+    Require(textureLayout.kind == 3 && textureLayout.metadataBytes == 0 &&
+                textureLayout.payloadBytes == textureScaffold.size(),
+            "Texture scaffold must not duplicate DDS or manifest metadata");
+
     auto rejects = [&](Bytes candidate, size_t declaredBytes) {
       bool rejected = false;
       try {

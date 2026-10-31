@@ -26,12 +26,6 @@ inline Layout Parse(const Bytes& header,size_t fileBytes){
  result.bytes=MipBytes(result.width,result.height,result.mips,result.format);
  Require(result.offset<=fileBytes&&result.bytes==fileBytes-result.offset,"DDS mip data extent differs");return result;
 }
-inline void Matches(const Layout& value,unsigned width,unsigned height,unsigned mips,unsigned format,bool linear){
- Require(value.width==width&&value.height==height&&value.mips==mips&&value.format==format,"replacement DDS dimensions, format or mip count differ from exported texture");
- // DDS color flags describe the encoded file. The material binding and native
- // Texture2D metadata retain the authored sampling semantics.
- (void)linear;
-}
 inline Bytes Header(unsigned width,unsigned height,unsigned mips,unsigned format,bool linear){
  auto bytes=MipBytes(width,height,mips,format);Require(bytes<=UINT32_MAX,"DDS mip data too large");Bytes result(148);memcpy(result.data(),"DDS ",4);
  auto put=[&](size_t at,uint32_t n){for(unsigned i=0;i<4;++i)result.at(at+i)=static_cast<unsigned char>(n>>(8*i));};

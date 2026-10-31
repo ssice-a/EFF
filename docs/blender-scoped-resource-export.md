@@ -66,7 +66,7 @@ Blender 本地编译器 SHA256：`105845432DABA55E0BCD9BCD0A37D022F8D47B777280A9
 
 ZFY 细分测量：来源查询从 2.57 秒降到约 0.63 秒；来源索引串行三次读取共 2.64 秒，共用一次读取为 0.99 秒，并行后约 0.37 秒。优化后几何阶段墙钟约 2.24 秒、外观阶段 1.13 秒、元数据阶段 0.80 秒。`proof-*`、`renderer-*`、`namespace`、`span-recipe` 为线程时间之和且部分互相包含，不能相加为总导出耗时；名字带 `-wall` 的阶段是墙钟耗时。新增磁盘缓存为零，编译包大小及内容不变；Mod 消费者数量不同仍会影响冷编译耗时。
 
-实时 Blender MCP 使用当前打开的 `G:\zmd\zfy\zfy.blend` 和所选 7 个 Mesh，经生产 `export_native_package(..., resource_scope='MESH')` 在隔离 Mod 中分别导出。两轮均清空 Mesh 快照缓存，作者副本均不含 compiled.bin。完整导出从 25.011 秒降至 12.641 秒；优化版作者处理 2.208 秒、来源准备与编译 10.287 秒、发布 0.146 秒。两轮全部输出文件摘要一致，编译文件均为 8,778,912 字节。这是当前未保存工程的几何，与上表固定已发布 ZFY 作者包属于不同输入。正式 Mod 未改，未保存工程，清理函数恢复原活动对象及模式，临时目录已清理。后续只读核验仍为所选 7 Mesh、活动 clothes、同一工程，当前处于物体模式。复现入口为 `tools/diagnostics/benchmark_blender_mesh_export.py::compare_current`，测试脚本调用已注册的实现模块，不重新注册插件。
+实时 Blender MCP 使用当前打开的 `G:\zmd\zfy\zfy.blend` 和所选 7 个 Mesh，经生产 `export_native_package(..., resource_scope='MESH')` 在隔离 Mod 中分别导出。两轮均清空 Mesh 快照缓存，作者副本均不含 compiled.bin。完整导出从 25.011 秒降至 12.641 秒；优化版作者处理 2.208 秒、来源准备与编译 10.287 秒、发布 0.146 秒。两轮全部输出文件摘要一致，编译文件均为 8,778,912 字节。这是当前未保存工程的几何，与上表固定已发布 ZFY 作者包属于不同输入。正式 Mod 未改，未保存工程，清理函数恢复原活动对象及模式，临时目录已清理。后续只读核验仍为所选 7 Mesh、活动 clothes、同一工程，当前处于物体模式。以上是旧编译格式的历史记录，不是 Format 3 基线；当前冷导出入口为 `tools/Blender/benchmark_format3_export.py`。
 
 v35/v36 编译器构建、静态 Mesh 消费者与 0/1/N Renderer 扩展、编译规则组合、PPtr/stream 审计、命名替换及独立包格式回归通过。新版 v35 编译器只部署到 Blender 自己的 `nativepack/eff_resource_pack.exe`，SHA256 为 `6665BDBE2696D515F496D2B7570FEB7A9D341064C3CD8817311304D22A2D4060`。实时 `reload_context` 确认下一次导出会调用该文件，无需重启 Blender。协议声明与此前安装版相同；107 个 Mod、配置、游戏 DLL 及其他插件原生文件摘要未变。本轮没有游戏内模型迁移测试，编译输出逐字节相同是本轮行为一致性的验证。
 
@@ -148,7 +148,7 @@ TEX 始终使用当前图片的文件名主体：`body.png` 写成 `textures/bod
 
 优化后的 v35 编译器已更新到本机 `plugin/tools/eff_resource_pack.exe`，当前 Blender 的导出模块已重载。没有更换游戏 DLL，也没有写入游戏 Mod、游戏缓存或保存用户工程；主源码 v36 的构建和离线检查不等于 v36 的游戏验收。
 
-复现入口为 `tools/Blender/benchmark_texture_export.py`：后台 Blender 使用 `--factory-startup --python-exit-code 1 --python <脚本> -- <插件目录> <blend> <Mod> <来源目录> <游戏目录> --compile --changed-pixels --compiler <exe>`；可加 `--report <json>` 保留小型计时报告。该脚本只读保存的工程及正式 Mod，临时作者和编译缓存随测试结束清理。分段编译耗时通过环境变量 `EFF_OFFLINE_PROFILE=1` 启用，workerMs 是各线程工作时间之和，不能直接与总墙钟时间相加。
+上述纹理换图数据来自旧编译格式，原基准脚本 `tools/Blender/benchmark_texture_export.py` 已随 Format 3 重构移除，不能用当前代码重现。现行冷导出入口为 `tools/Blender/benchmark_format3_export.py`，它要求固定 Blend、EFFSOURCE 来源基线和全新的目标目录；它只测完整 Format 3 冷导出，不替代历史的单贴图增量计时。
 
 目录测试检查同路径更新、共享载荷拆分、材质增量、Mesh 及控制保留。实时 Blender 测试在隔离 LZY 副本中对比白色与原图的全部 mip，并调用同构建的共享编译器。实际 LZY 的 2K TEX 换成 1K、INI 字节不变也已通过原生载荷检查；11 个原生 Texture2D 对象及其像素保持不变。
 

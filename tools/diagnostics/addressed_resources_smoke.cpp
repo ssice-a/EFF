@@ -1,6 +1,9 @@
 #define EIEM_AUTHOR_BUILDER_FIXTURE_ONLY
 #include "author_builder_origins_smoke.cpp"
 #include "../../src/eiem_addressed_resource_update.h"
+#include "../../src/eiem_author_texture_bundle.h"
+#include "../../src/eiem_demand_author_resources.h"
+#include <fstream>
 
 namespace AddressedTest {
 using namespace EiemAddressedResources;
@@ -45,6 +48,12 @@ struct Setup {
   SetString(fixture.T(200),Child(fixture.T(200),fixture.V(200),"m_Name"),"Mat");SetFloat(fixture.T(200),Child(fixture.T(200),fixture.V(200),"m_Custom"),0.125);
   auto& envs=ArrayValue(fixture.T(200),Child(fixture.T(200),Child(fixture.T(200),fixture.V(200),"m_SavedProperties"),"m_TexEnvs"));auto env=ArrayElement(fixture.T(200),envs);SetString(fixture.T(200),Child(fixture.T(200),env,"first"),"_MainTex");SetReference(fixture.T(200),Child(fixture.T(200),Child(fixture.T(200),env,"second"),"m_Texture"),{fixture.cab,400},fixture.refs,fixture.cab);envs.children.push_back(std::move(env));envs.count=1;
   fixture.types.push_back(TextureType());fixture.Add(400,fixture.types.size()-1);auto& texture=fixture.V(400);const auto& tt=fixture.T(400);SetString(tt,Child(tt,texture,"m_Name"),"Texture");SetInteger(tt,Child(tt,texture,"m_ImageCount"),1);SetInteger(tt,Child(tt,texture,"m_TextureDimension"),2);SetString(tt,Child(tt,Child(tt,texture,"m_StreamData"),"path"),fixture.cab+".resS");SetInteger(tt,Child(tt,Child(tt,texture,"m_StreamData"),"size"),4);
+  auto appendTextureAsset=[&](const char* field){auto& entries=ArrayValue(fixture.T(300),Child(fixture.T(300),fixture.V(300),field));auto entry=ArrayElement(fixture.T(300),entries);
+   if(!strcmp(field,"m_Container"))SetString(fixture.T(300),Child(fixture.T(300),entry,"first"),textureTarget.path);
+   else SetInteger(fixture.T(300),Child(fixture.T(300),entry,"first"),400);
+   auto& info=Child(fixture.T(300),entry,"second");SetReference(fixture.T(300),Child(fixture.T(300),info,"asset"),{fixture.cab,400},fixture.refs,fixture.cab);
+   entries.children.push_back(std::move(entry));entries.count=entries.children.size();};
+  appendTextureAsset("m_Container");appendTextureAsset("m_HashContainer");
   fixture.types[3]=Schema(137,{Ref("m_GameObject"),Ref("m_Mesh"),{"bool","m_Enabled",{}},Arr("m_Materials",Ref("data")),Arr("m_Bones",Ref("data")),Ref("m_RootBone"),Ref("m_SkinningRoot"),Arr("m_BlendShapeWeights",{"float","data",{}}),{"bool","m_DirtyAABB",{}},{"AABB","m_AABB",{Vec("m_Center"),Vec("m_Extent")}}});
   for(int64_t id:{13,23}){auto bone=id+28;fixture.Add(bone-1,0);SetString(fixture.T(bone-1),Child(fixture.T(bone-1),fixture.V(bone-1),"m_Name"),"spine");fixture.Add(bone,1);fixture.Pointer(bone,"m_GameObject",bone-1);fixture.Pointer(bone,"m_Father",id-2);fixture.List(id-2,"m_Children",{bone});SetVector(fixture.T(bone),Child(fixture.T(bone),fixture.V(bone),"m_LocalScale"),{1,1,1});SetFloat(fixture.T(bone),Child(fixture.T(bone),Child(fixture.T(bone),fixture.V(bone),"m_LocalRotation"),"w"),1);fixture.List(bone-1,"m_Component",{bone},"component");fixture.objects.at(id)={3,EmptyValue(fixture.types[3],0)};fixture.Pointer(id,"m_GameObject",id-3);fixture.Pointer(id,"m_Mesh",100);fixture.Pointer(id,"m_RootBone",bone);fixture.List(id,"m_Bones",{bone});fixture.List(id,"m_Materials",{200});}
   pristine=fixture.BytesOf();package.id="addressed-resources";package.targetIndex[meshTarget]="R";package.rules["R"].parts={"P"};package.parts["P"].mesh="M";package.parts["P"].material="A";
@@ -128,7 +137,58 @@ void DuplicateGeneratedContexts(){
  Require(Decode(duplicate.resourceBindingBytes,setup.package).ranges==bindings.ranges,"duplicate native consumers changed resource dependency ranges");
  std::cout<<"PASS duplicate generated contexts: shared bounds across native inputs retain one deterministic payload\n";
 }
+void TextureDdsResize(){
+ namespace TextureBundle=EiemAuthorTextureBundle;
+ namespace File=EiemAuthorResourceFile;namespace Demand=EiemDemandAuthorResources;
+ Setup setup;const auto& source=setup.assets.at(setup.textureTarget);
+ auto sourceLayout=ParseSerialized(setup.pristine);const auto& sourceTextureType=sourceLayout.types.at(sourceLayout.objects.at(source.pathId).type);
+ Require(sourceTextureType.classId==28&&std::any_of(sourceTextureType.nodes.begin(),sourceTextureType.nodes.end(),
+   [](const auto& node){return node.name=="m_Name";}),"Texture resize fixture lacks the Texture2D name field");
+ auto scaffold=TextureBundle::BuildScaffold(setup.pristine,source.cab,source.pathId,
+                           setup.textureTarget.path,setup.package.id+"/T");
+ auto scaffoldBundle=EndfieldInput::Decode(scaffold.bytes);
+ Require(scaffoldBundle.members.size()==1,"Texture scaffold member count differs");
+ const auto& scaffoldMember=scaffoldBundle.members.front();
+ auto scaffoldLayout=ParseSerialized(scaffoldMember.bytes);
+ auto scaffoldAssets=SerializedAssets(scaffoldMember.bytes,scaffoldMember.name,scaffoldLayout);
+ Require(scaffoldAssets.size()==1&&scaffoldAssets.front().classId==28&&
+   scaffoldAssets.front().path==setup.textureTarget.path&&
+   scaffoldAssets.front().asset==setup.package.id+"/T"&&
+   scaffoldAssets.front().cab==scaffoldMember.name,
+   "Texture scaffold must preserve its source logical path and use its generated Mod identity");
+ auto output=std::filesystem::temp_directory_path()/"eff-texture-dds-resize-smoke";
+ std::filesystem::remove_all(output);std::filesystem::create_directories(output/"textures");
+ auto save=[](const std::filesystem::path& path,const Bytes& bytes){
+  std::ofstream file(path,std::ios::binary|std::ios::trunc);Require(bool(file),"Texture smoke output open failed");
+  file.write(reinterpret_cast<const char*>(bytes.data()),std::streamsize(bytes.size()));Require(bool(file),"Texture smoke output write failed");};
+ save(output/"textures/body.effres",File::Encode(3,{},scaffold.bytes));
+ auto dds=EiemDdsTexture::Header(8,8,1,25,false);Bytes ddsPixels(64,0x5A);dds.insert(dds.end(),ddsPixels.begin(),ddsPixels.end());
+ save(output/"textures/body.dds",dds);
+ EiemRuntimeAuthorDirectory::TextureAsset declaration;declaration.id="TextureBody";
+ declaration.file="textures/body.effres";declaration.ddsFile="textures/body.dds";
+ EiemRuntimeAuthorManifest::TextureSettings settings;settings.linear=true;settings.filter=2;
+ settings.wrap=1;settings.aniso=8;settings.mipBias=-0.5;
+ auto prepared=Demand::OpenTexture(output,declaration,settings);
+ Bytes encoded(prepared->input->Size());Require(prepared->input->ReadAt(0,encoded.data(),encoded.size())==encoded.size(),
+   "resized Texture2D input view was truncated");
+ auto archive=EndfieldInput::Decode(encoded);Require(archive.members.size()==1,"resized Texture2D archive member count differs");
+ auto layout=ParseSerialized(archive.members.front().bytes);auto object=layout.objects.at(prepared->id);
+ const auto& type=layout.types.at(object.type);auto value=ObjectValue(archive.members.front().bytes,layout,prepared->id);
+ const auto& sampling=Child(type,value,"m_TextureSettings");
+ Require(Integer(Child(type,value,"m_Width"))==8&&Integer(Child(type,value,"m_Height"))==8&&
+   Integer(Child(type,value,"m_TextureFormat"))==25&&Integer(Child(type,value,"m_MipCount"))==1&&
+   Integer(Child(type,value,"m_CompleteImageSize"))==64&&Child(type,value,"image data").raw==ddsPixels&&
+   Integer(Child(type,value,"m_ColorSpace"))==0&&
+   Integer(Child(type,sampling,"m_FilterMode"))==2&&Integer(Child(type,sampling,"m_WrapU"))==1&&
+   Integer(Child(type,sampling,"m_Aniso"))==8,
+   "Format 3 DDS/settings did not update the native Texture2D fields");
+ std::filesystem::remove_all(output);
+ std::cout<<"PASS Format 3 Texture scaffold accepts resized DDS and rewrites native Texture2D fields/pixels\n";
+}
 } // namespace AddressedTest
 #ifndef EIEM_ADDRESSED_FIXTURE_ONLY
-int main(){try{AddressedTest::MixedReplay();AddressedTest::Fallbacks();AddressedTest::MappedAuthorResources();AddressedTest::DuplicateGeneratedContexts();return 0;}catch(const std::exception& e){std::cerr<<"FAIL addressed resources: "<<e.what()<<'\n';return 1;}}
+int main(int argc,char** argv){try{
+ if(argc==2&&std::string(argv[1])=="--texture-only"){AddressedTest::TextureDdsResize();return 0;}
+ AddressedTest::MixedReplay();AddressedTest::Fallbacks();AddressedTest::MappedAuthorResources();AddressedTest::DuplicateGeneratedContexts();AddressedTest::TextureDdsResize();return 0;
+}catch(const std::exception& e){std::cerr<<"FAIL addressed resources: "<<e.what()<<'\n';return 1;}}
 #endif

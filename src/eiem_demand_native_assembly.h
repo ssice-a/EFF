@@ -65,7 +65,8 @@ struct Author {
     for(const auto& author:authors){const auto& mod=author->catalog->Directory().mod;const auto prefix=EiemComposedPackage::Prefix(mod);
       result->catalogs.push_back(author->catalog);
       for(const auto& source:author->materialSources)result->materialSources.emplace(prefix+source.first,source.second);
-      for(const auto& source:author->meshSources){auto part=prefix+source.first;const auto& mesh=result->package.meshes.at(part);
+      for(const auto& source:author->meshSources){auto part=prefix+source.first;
+        Require(result->package.meshes.count(part),"composed native Mesh part is absent");
         result->meshSources.emplace(part,source.second);}
     }
     return result;
@@ -91,6 +92,15 @@ struct Author {
     return ComposePhysicsDocuments(loaded,relevant);
   }
 };
+inline void EnsureStagedMeshMetadata(Author& author,const std::vector<BuiltMeshPart>& parts) {
+  std::set<std::string> checked;
+  for(const auto& part:parts){
+    if(!checked.insert(part.part).second)continue;
+    const auto& declaration=author.package.meshes.at(author.package.parts.at(part.part).mesh);
+    if(author.bindings.count(declaration.resource)&&author.markers.count(part.part))continue;
+    author.GetMesh(part.part);
+  }
+}
 struct Carrier {
   P::Plan plan;
   std::vector<BuiltMeshPart> parts;

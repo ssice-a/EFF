@@ -1,6 +1,7 @@
 #pragma once
 #include "eiem_runtime_author_directory.h"
 #include "eiem_runtime_author_manifest.h"
+#include "eiem_dds_texture.h"
 #include "eiem_author_material_edits.h"
 #include "eiem_author_resource_file.h"
 #include "eiem_author_resource_metadata.h"
@@ -15,6 +16,7 @@ namespace EiemDemandAuthorResources {
 using namespace EiemNativeInput;
 namespace D=EiemRuntimeAuthorDirectory;namespace R=EiemNativeRandomAccess;
 namespace G=EiemNativeObjectGraft;
+namespace P=EiemNativeSerializedSplice;namespace S=EiemNativeSpliceView;namespace V=EiemInputSpanView;
 struct Mesh {
   D::MeshAsset declaration;
   G::AuthorObject object;
@@ -22,8 +24,8 @@ struct Mesh {
 };
 struct Texture {
   D::TextureAsset declaration;
-  G::AuthorObject object;
   std::shared_ptr<const EiemInputSpanView::View> input;
+  EiemDdsTexture::Layout replacement;
   std::string cab,name;
   int64_t id=0;
   size_t metadataReadBytes=0;
@@ -37,7 +39,6 @@ struct Material {
   size_t metadataReadBytes=0;
 };
 struct Physics {
-  std::shared_ptr<const Resource> backing;
   EiemPhysicsInput::Document document;
 };
 inline std::filesystem::path AssetPath(const std::filesystem::path& root,const std::string& file) {
@@ -49,6 +50,20 @@ inline EiemAuthorResourceFile::Layout AuthorLayout(const std::shared_ptr<R::File
   auto read=[file](size_t at,unsigned char* output,size_t size){file->ReadAt(at,output,size);};
   auto layout=EiemAuthorResourceFile::Parse(file->Size(),read);
   Require(layout.kind==kind,"native author resource kind differs");return layout;
+}
+inline D::MeshAsset ReadMeshMetadata(const std::filesystem::path& root,const D::MeshAsset& declaration,
+                                     const std::string& partId) {
+  auto file=std::make_shared<R::File>(AssetPath(root,declaration.file),0);
+  Bytes metadata;
+  auto layout=EiemAuthorResourceFile::Parse(file->Size(),
+    [file](size_t at,unsigned char* output,size_t size){file->ReadAt(at,output,size);},&metadata);
+  Require(layout.kind==1,"native author Mesh metadata kind differs");
+  auto described=EiemAuthorResourceMetadata::DecodeMesh(metadata);
+  Require(described.part==partId&&described.nativeBytes>0&&described.authorBytes>0&&
+    AddSize(described.nativeBytes,described.authorBytes)==layout.payloadBytes,
+    "native/editable author Mesh metadata extents differ");
+  file->VerifyStable();
+  return described;
 }
 inline Bytes AuthorMetadata(const std::shared_ptr<R::File>& file,const EiemAuthorResourceFile::Layout& layout) {
   return EiemAuthorResourceFile::ReadMetadata(layout,[file](size_t at,unsigned char* output,size_t size){file->ReadAt(at,output,size);});
@@ -92,49 +107,84 @@ inline std::shared_ptr<const Mesh> OpenMesh(const std::filesystem::path& root,co
   for(const auto& field:result->declaration.fields)Require(result->object.fields.count(field),"native author Mesh selected field absent: "+field);
   file->VerifyStable();result->metadataReadBytes=reader.stats.encodedBytes;return result;
 }
-inline std::shared_ptr<const Texture> OpenTexture(const std::filesystem::path& root,const D::TextureAsset& declaration) {
-  auto metadata=std::make_shared<R::File>(AssetPath(root,declaration.file),0);
-  auto envelope=AuthorLayout(metadata,3);auto described=EiemAuthorResourceMetadata::DecodeTexture(AuthorMetadata(metadata,envelope));
-  Require(described.id==declaration.id&&described.width&&described.height&&described.mips,
-    "native author Texture identity/layout differs");
-  described.file=declaration.file;described.ddsFile=declaration.ddsFile;
-  const auto metadataBytes=envelope.payloadBytes;
-  auto dds=std::make_shared<R::File>(AssetPath(root,described.ddsFile),0);
+inline std::shared_ptr<const Texture> OpenTexture(const std::filesystem::path& root,
+    const D::TextureAsset& declaration,
+    const EiemRuntimeAuthorManifest::TextureSettings& settings = {}) {
+  auto textureFile=std::make_shared<R::File>(AssetPath(root,declaration.file),0);
+  auto envelope=AuthorLayout(textureFile,3);
+  Require(!envelope.metadataBytes&&envelope.payloadBytes,
+    "native author Texture must contain a Texture2D scaffold only");
+  const auto payloadOffset=envelope.payloadOffset;
+  R::ReadRange read=[textureFile,payloadOffset,payloadBytes=envelope.payloadBytes](size_t at,unsigned char* out,size_t n){
+    Require(at<=payloadBytes&&n<=payloadBytes-at,"native author Texture read exceeds its payload");
+    textureFile->ReadAt(payloadOffset+at,out,n);
+  };
+  R::Reader reader(envelope.payloadBytes,read);
+  Require(reader.header.bytes==envelope.payloadBytes&&reader.directory.members.size()==1,
+    "native author Texture scaffold extent/members differ");
+  const auto& member=reader.directory.members.front();auto layout=reader.Layout(member);
+  Require((member.flags&4)&&layout.externals.empty()&&layout.objects.size()==2,
+    "native author Texture is not an isolated local asset");
+  auto names=reader.Assets(member,layout);Require(names.size()==1,"native author Texture directory is ambiguous");
+  const auto& asset=names.front();
+  Require(asset.classId==28,"native author Texture asset is not Texture2D");
+
+  auto dds=std::make_shared<R::File>(AssetPath(root,declaration.ddsFile),0);
   Bytes ddsHeader(std::min(dds->Size(),size_t(148)));dds->ReadAt(0,ddsHeader.data(),ddsHeader.size());
   auto ddsLayout=EiemDdsTexture::Parse(ddsHeader,dds->Size());
-  EiemDdsTexture::Matches(ddsLayout,described.width,described.height,described.mips,described.format,false);
-  Require(ddsLayout.bytes==described.pixelBytes&&described.pixelOffset<=metadataBytes,"replacement DDS payload differs from native texture extent");
-  auto fullSize=AddSize(metadataBytes,described.pixelBytes);
-  Require(fullSize<=INT64_MAX,"native author Texture input exceeds stream extent");
-  auto read=[metadata,base=envelope.payloadOffset,pixelOffset=described.pixelOffset,pixelBytes=described.pixelBytes,fullSize](size_t at,unsigned char* out,size_t n){
-    Require(at<=fullSize&&n<=fullSize-at,"native author Texture metadata read exceeds extent");
-    while(n){
-      if(at<pixelOffset){auto take=std::min(n,pixelOffset-at);metadata->ReadAt(base+at,out,take);at+=take;out+=take;n-=take;continue;}
-      auto pixelEnd=AddSize(pixelOffset,pixelBytes);
-      if(at<pixelEnd){auto take=std::min(n,pixelEnd-at);memset(out,0,take);at+=take;out+=take;n-=take;continue;}
-      auto source=at-pixelBytes;metadata->ReadAt(base+source,out,n);return;
+  Require(ddsLayout.bytes<=INT_MAX&&asset.cab==member.name,
+    "replacement DDS/Texture2D scaffold identity differs");
+  std::set<std::string> mutableFields{"m_Width","m_Height","m_MipCount","m_TextureFormat",
+    "m_CompleteImageSize","m_ColorSpace","m_TextureSettings"};
+  auto objectRanges=reader.Ranges(member,layout,asset.pathId);std::set<std::string> projected;
+  for(const auto& field:mutableFields)if(objectRanges.count(field))projected.insert(field);
+  for(const auto* required:{"m_Width","m_Height","m_MipCount","m_TextureFormat",
+                            "m_CompleteImageSize","m_ColorSpace","m_TextureSettings"})
+    Require(projected.count(required),std::string("native author Texture update field absent: ")+required);
+  const auto& image=objectRanges.at("image data");Bytes imageLength(4);
+  reader.ReadAt(image.offset,imageLength.data(),imageLength.size());
+  Require(Le(imageLength,0,4)==0,"native author Texture scaffold image data is not empty");
+  auto fields=reader.Fields(member,layout,asset.pathId,projected);
+  auto result=std::make_shared<Texture>();result->declaration=declaration;result->cab=member.name;result->id=asset.pathId;result->name=asset.asset;
+  const auto& textureType=layout.types.at(layout.objects.at(asset.pathId).type);
+  SetInteger(textureType,fields.at("m_Width"),ddsLayout.width);
+  SetInteger(textureType,fields.at("m_Height"),ddsLayout.height);
+  SetInteger(textureType,fields.at("m_MipCount"),ddsLayout.mips);
+  SetInteger(textureType,fields.at("m_TextureFormat"),ddsLayout.format);
+  SetInteger(textureType,fields.at("m_CompleteImageSize"),ddsLayout.bytes);
+  SetInteger(textureType,fields.at("m_ColorSpace"),settings.linear?0:1);
+  auto& sampling=fields.at("m_TextureSettings");
+  SetInteger(textureType,Child(textureType,sampling,"m_FilterMode"),settings.filter);
+  SetInteger(textureType,Child(textureType,sampling,"m_Aniso"),settings.aniso);
+  SetFloat(textureType,Child(textureType,sampling,"m_MipBias"),settings.mipBias);
+  for(const auto* field:{"m_WrapU","m_WrapV","m_WrapW"})
+    SetInteger(textureType,Child(textureType,sampling,field),settings.wrap);
+
+  auto ddsView=std::make_shared<const V::View>(std::vector<V::Span>{{0,ddsLayout.offset,ddsLayout.bytes,{}}},
+    std::vector<size_t>{dds->Size()},[dds](size_t source,size_t at,unsigned char* out,size_t n){
+      Require(!source,"native author Texture DDS source index differs");dds->ReadAt(at,out,n);});
+  const auto& object=layout.objects.at(asset.pathId);const auto& type=layout.types.at(object.type);
+  auto objectBegin=AddSize(member.offset,object.offset);P::RangePayload payload;size_t output=0;
+  for(auto node:type.nodes.at(0).children){const auto& name=type.nodes.at(node).name;const auto& field=objectRanges.at(name);
+    if(G::HasAlignment(type,node))Require(((field.offset-objectBegin)&3)==(output&3),"replacement DDS changes a Texture field alignment");
+    if(name=="image data"){
+      Require(type.nodes.at(node).type=="TypelessData","native author Texture inline data schema differs");
+      Bytes sizeBytes;AppendInteger(sizeBytes,ddsLayout.bytes,4);auto sizeLiteral=std::make_shared<const Bytes>(std::move(sizeBytes));
+      payload.pieces.push_back({0,sizeLiteral->size(),sizeLiteral,{}});output=AddSize(output,sizeLiteral->size());
+      payload.pieces.push_back({0,ddsLayout.bytes,{},ddsView});output=AddSize(output,ddsLayout.bytes);
+      if(type.nodes.at(node).align){auto padding=(size_t(0)-output)&3;if(padding){auto pad=std::make_shared<const Bytes>(padding,0);payload.pieces.push_back({0,pad->size(),pad,{}});output=AddSize(output,pad->size());}}
+    }else if(auto edit=fields.find(name);edit!=fields.end()){
+      Bytes encoded(output&3);WriteValue(type,edit->second,encoded);encoded.erase(encoded.begin(),encoded.begin()+(output&3));
+      auto bytes=std::make_shared<const Bytes>(std::move(encoded));payload.pieces.push_back({0,bytes->size(),bytes,{}});output=AddSize(output,bytes->size());
+    }else{
+      payload.pieces.push_back({field.offset-member.offset,field.size,{},{}});output=AddSize(output,field.size);
     }
-  };
-  R::Reader reader(fullSize,read);
-  Require(reader.header.bytes==fullSize&&reader.directory.members.size()==1,"native author Texture extent/members differ");
-  const auto& member=reader.directory.members[0];auto layout=reader.Layout(member);
-  Require((member.flags&4)&&layout.externals.empty()&&layout.objects.size()==2,"native author Texture is not an isolated local asset");
-  auto names=reader.Assets(member,layout);Require(names.size()==1,"native author Texture directory is ambiguous");const auto& asset=names.front();
-  Require(asset.classId==28&&asset.cab==member.name&&asset.path==described.path,"native author Texture declaration/identity differs");
-  auto fields=reader.Fields(member,layout,asset.pathId,{"m_Width","m_Height","m_MipCount","m_TextureFormat","m_ColorSpace"});
-  Require(Integer(fields.at("m_Width"))==described.width&&Integer(fields.at("m_Height"))==described.height&&Integer(fields.at("m_MipCount"))==described.mips&&Integer(fields.at("m_TextureFormat"))==described.format,"native author Texture dimensions/format differ");
-  auto result=std::make_shared<Texture>();result->declaration=std::move(described);result->cab=member.name;result->id=asset.pathId;result->name=asset.asset;
-  Require(result->cab==result->declaration.cab&&result->id==result->declaration.pathId,"native author Texture CAB/PathID differs");
-  std::vector<EiemInputSpanView::Span> spans;
-  spans.push_back({0,0,result->declaration.pixelOffset,{}});
-  spans.push_back({1,ddsLayout.offset,ddsLayout.bytes,{}});
-  // The metadata file has already had the pixels removed. Its suffix starts
-  // at pixelOffset, not pixelOffset + pixelBytes in the reconstructed input.
-  if(result->declaration.pixelOffset<metadataBytes)spans.push_back({0,AddSize(envelope.payloadOffset,result->declaration.pixelOffset),metadataBytes-result->declaration.pixelOffset,{}});
-  spans.front().offset=envelope.payloadOffset;
-  result->input=std::make_shared<const EiemInputSpanView::View>(std::move(spans),std::vector<size_t>{metadata->Size(),dds->Size()},
-    [metadata,dds](size_t source,size_t at,unsigned char* out,size_t n){if(source==0)metadata->ReadAt(at,out,n);else{Require(source==1,"native author Texture source index differs");dds->ReadAt(at,out,n);}});
-  result->object=G::Describe(reader,0,layout,asset.pathId,read);metadata->VerifyStable();dds->VerifyStable();result->metadataReadBytes=reader.stats.encodedBytes;return result;
+  }
+  if(type.nodes.at(0).align&&(output&3)){auto pad=std::make_shared<const Bytes>(4-(output&3),0);payload.pieces.push_back({0,pad->size(),pad,{}});output=AddSize(output,pad->size());}
+  std::map<int64_t,P::RangePayload> edits;edits.emplace(asset.pathId,std::move(payload));
+  auto plan=P::BuildRanges(reader,0,layout,edits);auto prepared=S::BuildRanges(reader,{plan.rewrite});
+  result->input=prepared.Bind(read);result->replacement=ddsLayout;
+  textureFile->VerifyStable();dds->VerifyStable();result->metadataReadBytes=reader.stats.encodedBytes;return result;
 }
 inline std::set<NativeReference> MaterialReferences(const Type& type,const Value& value,
     const SerializedLayout& layout,const std::string& cab,size_t depth=0) {
@@ -243,6 +293,28 @@ public:
     }
     Require(declaredEffectAttachments==expectedEffectAttachments,"format 3 EffectAttachment declarations differ from Controls resource");
     Require(effectFiles==expectedEffectFiles,"format 3 Effect resources differ from Controls resource bundle inputs");
+    std::map<std::string,std::string> shapeMeshResources;
+    for(const auto& state:directory_.runtime.parts)if(!state.second.shapes.empty()){
+      auto part=manifest_.parts.find(state.first);
+      Require(part!=manifest_.parts.end(),"shape-controlled Part is absent from the author manifest");
+      shapeMeshResources.emplace(part->second.mesh,state.first);
+    }
+    for(const auto& row:shapeMeshResources){
+      auto mesh=meshResources.find(row.first);
+      Require(mesh!=meshResources.end(),"shape-controlled Mesh resource is absent from the author manifest");
+      auto described=ReadMeshMetadata(root_,mesh->second,row.second);
+      Require(!described.shapes.empty(),"shape-controlled Mesh metadata has no channels");
+      mesh->second.vertices=described.vertices;
+      mesh->second.indices=described.indices;
+      mesh->second.shapes=std::move(described.shapes);
+    }
+    for(const auto& state:directory_.runtime.parts)if(!state.second.shapes.empty()){
+      const auto& part=manifest_.parts.at(state.first);
+      const auto& channels=meshResources.at(part.mesh).shapes;
+      for(const auto& binding:state.second.shapes)
+        Require(std::find(channels.begin(),channels.end(),binding.first)!=channels.end(),
+          "shape control channel is absent from its Mesh metadata: "+state.first+"/"+binding.first);
+    }
     for(const auto& row:manifest_.parts){auto mesh=meshResources.find(row.second.mesh);
       Require(mesh!=meshResources.end(),"format 3 Part Mesh metadata is absent");auto part=mesh->second;
       part.part=row.first;part.material=row.second.material;directory_.meshes.push_back(std::move(part));}
@@ -272,7 +344,8 @@ private:
   std::shared_ptr<const Texture> GetTextureLocked(const std::string& id) {
     auto index=textureIds_.find(id);Require(index!=textureIds_.end(),"author Texture declaration is absent: "+id);
     const auto& entry=directory_.textures.at(index->second);auto found=textures_.find(entry.file);if(found!=textures_.end())return found->second;
-    auto asset=OpenTexture(root_,entry);textures_.emplace(entry.file,asset);return asset;
+    auto asset=OpenTexture(root_,entry,manifest_.resources.at(id).textureSettings);
+    textures_.emplace(entry.file,asset);return asset;
   }
 public:
   std::shared_ptr<const Texture> GetTexture(const std::string& id) {
@@ -303,13 +376,13 @@ public:
       if(!relevant)continue;
       auto file=std::make_shared<R::File>(AssetPath(root_,declaration.path),0);auto layout=AuthorLayout(file,4);
       auto metadata=AuthorMetadata(file,layout);auto entry=EiemAuthorResourceMetadata::DecodeAuxiliary(metadata,4);
-      Require(entry.id==row.first&&entry.file==declaration.path&&entry.targets.size()==declaredTargets.size()&&
+      D::Relative(entry.file);Require(entry.id==row.first&&!entry.file.empty()&&entry.targets.size()==declaredTargets.size()&&
         std::equal(entry.targets.begin(),entry.targets.end(),declaredTargets.begin(),[](const auto& a,const auto& b){return !(a<b)&&!(b<a);})&&
         entry.bytes<=16*1024*1024&&entry.authorBytes>0&&AddSize(entry.bytes,entry.authorBytes)==layout.payloadBytes,
         "native/editable Physics resource declaration differs from mod.ini");
       auto found=physics_.find(entry.id);if(found==physics_.end()){
-        Bytes bytes(entry.bytes);file->ReadAt(layout.payloadOffset,bytes.data(),bytes.size());file->VerifyStable();auto hash=Sha(bytes.data(),bytes.size());Require(Hex(hash.data(),hash.size())==entry.hash,"native Physics content checksum differs");
-        auto asset=std::make_shared<Physics>();asset->backing=std::make_shared<const Resource>(EiemDirectory::Decode(std::move(bytes),5));asset->document=EiemPhysicsInput::Decode(*asset->backing);
+        auto bytes=std::make_shared<Bytes>(entry.bytes);file->ReadAt(layout.payloadOffset,bytes->data(),bytes->size());file->VerifyStable();auto hash=Sha(bytes->data(),bytes->size());Require(Hex(hash.data(),hash.size())==entry.hash,"native Physics content checksum differs");
+        auto asset=std::make_shared<Physics>();asset->document=EiemPhysicsInput::DecodePayload(bytes,entry.file);
         std::set<Identity> actual;for(const auto& group:asset->document.groups)actual.insert(group.targets.begin(),group.targets.end());
         Require(actual.size()==entry.targets.size()&&std::equal(actual.begin(),actual.end(),entry.targets.begin(),[](const auto& a,const auto& b){return !(a<b)&&!(b<a);}),"native Physics target declaration differs");
         found=physics_.emplace(entry.id,std::move(asset)).first;

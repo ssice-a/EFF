@@ -8,7 +8,6 @@ import hashlib
 import struct
 
 from .type_tree import Value, encode, from_data, require
-from .resource_file import encode_resource, encode_strings
 
 KIND = 5
 STRUCTURE = 'EFF_NEW_BONE_CLOTH/path+trs+mesh-consumers+native-templates/le64'
@@ -243,7 +242,4 @@ def build_resource(source, evidence, document, skeleton, targets):
         for node in group['nodes']: w.text(node['bone']); w.n(int(node['role'] == 'MOVE'))
         w.n(len(group['colliders']))
         for identity in group['colliders']: w.text(identity)
-    return encode_resource(KIND, '00' * 16, {'@physics': bytes(w.data),
-                           '@source-prefabs': encode_strings([source.manifest['prefab'],
-                              next(t['path'].rsplit('/', 1)[-1] for t in evidence['transforms']
-                                   if t['inSelectedPrefab'] and t['parent'] is None)])})
+    return bytes(w.data)

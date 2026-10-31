@@ -67,6 +67,69 @@ public:
   }
 };
 
+class DecodedViewSource {
+  ReadRange source_;
+  std::vector<EiemNativeViewWriter::OriginalBlock> blocks_;
+  size_t decodedSize_ = 0, cacheLimit_ = 0, blockLimit_ = 0;
+  struct Cached { size_t index; std::shared_ptr<const Bytes> bytes; };
+  mutable std::mutex mutex_;
+  mutable std::list<Cached> cache_;
+  mutable size_t cacheResident_ = 0;
+  mutable size_t pinnedIndex_ = SIZE_MAX;
+  mutable std::shared_ptr<const Bytes> pinned_;
+
+  std::shared_ptr<const Bytes> Block(size_t index) const {
+    if (pinned_ && pinnedIndex_ == index) return pinned_;
+    for (auto it = cache_.begin(); it != cache_.end(); ++it) if (it->index == index) {
+      auto bytes = it->bytes; cache_.splice(cache_.begin(), cache_, it); return bytes;
+    }
+    const auto& block = blocks_.at(index).block;
+    Require(block.encoded <= blockLimit_ && block.decoded <= blockLimit_,
+            "native streamed block budget exhausted");
+    Bytes encoded(block.encoded); source_(blocks_[index].offset, encoded.data(), encoded.size());
+    EndfieldInput::CryptBlock(encoded);
+    auto decoded = std::make_shared<const Bytes>(Lz4(encoded.data(), encoded.size(), block.decoded, true));
+    pinned_.reset(); pinnedIndex_ = SIZE_MAX;
+    if (decoded->size() <= cacheLimit_) {
+      while (!cache_.empty() && decoded->size() > cacheLimit_ - cacheResident_) {
+        cacheResident_ -= cache_.back().bytes->size(); cache_.pop_back();
+      }
+      cache_.push_front({index, decoded}); cacheResident_ += decoded->size();
+    } else {
+      pinned_ = decoded; pinnedIndex_ = index;
+    }
+    return decoded;
+  }
+public:
+  DecodedViewSource(ReadRange source, std::vector<EiemNativeViewWriter::OriginalBlock> blocks,
+      size_t decodedSize, size_t cacheLimit, size_t blockLimit)
+      : source_(std::move(source)), blocks_(std::move(blocks)), decodedSize_(decodedSize),
+        cacheLimit_(cacheLimit), blockLimit_(blockLimit) {
+    Require(bool(source_) && !blocks_.empty(), "native decoded view source absent");
+  }
+  void ReadAt(size_t at, unsigned char* output, size_t size) const {
+    Require(at <= decodedSize_ && size <= decodedSize_ - at, "native decoded view read exceeds input");
+    if (!size) return;
+    Require(output, "native decoded view destination absent");
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto found = std::upper_bound(blocks_.begin(), blocks_.end(), at,
+        [](size_t position, const auto& block) { return position < block.decodedOffset; });
+    Require(found != blocks_.begin(), "native decoded view block absent"); --found;
+    while (size) {
+      const auto& original = *found;
+      auto local = at - original.decodedOffset;
+      auto count = std::min(size, original.block.decoded - local);
+      Require(count, "native decoded view block has no progress");
+      if (!original.block.flags) source_(original.offset + local, output, count);
+      else {
+        auto bytes = Block(size_t(found - blocks_.begin()));
+        std::memcpy(output, bytes->data() + local, count);
+      }
+      at += count; output += count; size -= count; ++found;
+    }
+  }
+};
+
 class Reader {
   ReadRange source_;
   size_t sourceSize_ = 0;
@@ -74,6 +137,8 @@ class Reader {
   std::list<Cached> cache_;
   size_t pinnedIndex_ = SIZE_MAX;
   std::shared_ptr<const Bytes> pinned_;
+  mutable std::mutex viewMutex_;
+  mutable std::weak_ptr<DecodedViewSource> decodedView_;
   void Source(size_t at, unsigned char* output, size_t size) {
     Require(at <= sourceSize_ && size <= sourceSize_ - at, "native range read exceeds source");
     Require(stats.encodedBytes <= limits.readBytes && size <= limits.readBytes - stats.encodedBytes,
@@ -189,16 +254,26 @@ public:
     if(type.nodes.at(0).align)cursor.Skip((size_t(0)-(cursor.position-begin))&3);
     Require(cursor.position==cursor.end,"native object field ranges do not consume payload");return fields;
   }
-  // Author outputs use native uncompressed blocks. Expose their decoded bytes
-  // as file spans; neither opening the view nor a consumer graft reads pixels,
-  // vertices or shape deltas. The callback must retain its immutable file lease.
+  // Expose decoded payload bytes without materializing the Bundle. Compressed
+  // blocks are decoded only when read and cached within the configured budget.
   std::shared_ptr<const EiemInputSpanView::View> UncompressedView(ReadRange source) const {
-    std::vector<EiemInputSpanView::Span> spans;
-    for(const auto& block:directory.blocks){Require(!block.block.flags&&block.block.decoded==block.block.encoded,"streamable author input contains compressed blocks");
-      if(block.block.decoded)spans.push_back({0,block.offset,block.block.decoded,{}});
+    std::shared_ptr<DecodedViewSource> decoded;
+    {
+      std::lock_guard<std::mutex> lock(viewMutex_);
+      decoded = decodedView_.lock();
+      if (!decoded) {
+        decoded = std::make_shared<DecodedViewSource>(std::move(source), directory.blocks,
+            directory.decoded, limits.cacheBytes, limits.blockBytes);
+        decodedView_ = decoded;
+      }
     }
-    auto size=header.bytes;return std::make_shared<const EiemInputSpanView::View>(std::move(spans),std::vector<size_t>{size},
-      [source=std::move(source)](size_t id,size_t at,unsigned char* out,size_t n){Require(!id,"author native view source id differs");source(at,out,n);});
+    std::vector<EiemInputSpanView::Span> spans;
+    if (directory.decoded) spans.push_back({0, 0, directory.decoded, {}});
+    return std::make_shared<const EiemInputSpanView::View>(std::move(spans),
+        std::vector<size_t>{directory.decoded},
+        [decoded=std::move(decoded)](size_t id,size_t at,unsigned char* out,size_t n) {
+          Require(!id, "author native view source id differs"); decoded->ReadAt(at,out,n);
+        });
   }
   std::map<std::string, Value> Fields(const EiemNativeViewWriter::Member& member,
       const SerializedLayout& layout, int64_t id, const std::set<std::string>& wanted) {

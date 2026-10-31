@@ -16,6 +16,7 @@ This index points to the current user and developer documentation in the EFF mai
 - [ADR-0002: Self-Describing Runtime Resource Files](adr/0002-runtime-resource-files.md): format 3 manifest, resource files, DDS split, lazy runtime reads and migration acceptance.
 - [Demand-driven runtime design](demand-driven-native-resource-loading.md): implementation evidence and acceptance gaps for the new route.
 - [Format 3 transition status](format3-transition-status.md): what is wired into normal DLL, Blender, and Manager paths versus isolated acceptance tooling.
+- [Format 3 input architecture review](format3-input-architecture-review.md): current runtime/export path, telemetry limits, and performance-test preparation.
 - [Runtime resource discovery](runtime-resource-discovery.md): historical source-input discovery and runtime matching evidence.
 - [Release management](release-management.md): independent repositories, tool compatibility gates and local preflight.
 
@@ -32,10 +33,8 @@ The old compiled-package and format-2 documents describe superseded runtime and 
 
 Historical diagnostics and design records remain available for context. They may describe retired implementations or older local builds; do not treat their dated measurements as current release results.
 
-The format 3 transition is still in development. As of 2026-10-30, the
-development DLL has a format 3 runtime/F10 path and has passed native request,
-resource, physics, shared-dependency, and real-directory smoke tests. Blender
-full export writes format 3; import restores Mesh, Material, DDS, Physics, and
-Effect author data. Partial-resource export and Mod Manager migration remain
-incomplete, and Blender 5.2 plus in-game format 3 acceptance are outstanding.
-Do not deploy a format 3-only DLL against the installed format 2 Mods.
+The Format 3 runtime and Blender export path are active in development. The
+user has confirmed in-game Mesh replacement and both shape-key controls. A
+controlled performance baseline, Blender 5.2 UI round-trip acceptance, and
+Mod Manager migration remain outstanding. See the [current transition status](format3-transition-status.md)
+and [performance test preparation](format3-input-architecture-review.md).

@@ -1,5 +1,6 @@
 #pragma once
 #include "eiem_native_input.h"
+#include "eiem_file_identity.h"
 #include <iomanip>
 #include <locale>
 
@@ -41,22 +42,6 @@ inline std::string InputContractDigest(const Package& p) {
   for(const auto& r:p.rules) {text(r.first);out<<r.second.skip<<','<<r.second.parts.size()<<'\n';for(const auto& part:r.second.parts) text(part);
     out<<r.second.targets.size()<<'\n';for(const auto& target:r.second.targets) {out<<target.first<<'\n';text(target.second.path);text(target.second.asset);}}
   auto data=out.str();auto h=Sha((const unsigned char*)data.data(),data.size());return Hex(h.data(),h.size());
-}
-struct InputFileStamp {
-  uint64_t bytes = 0, written = 0;
-};
-inline InputFileStamp FileStamp(const std::filesystem::path& path) {
-  WIN32_FILE_ATTRIBUTE_DATA attributes{};
-  if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes)) {
-    auto error = GetLastError();
-    throw std::runtime_error("loading input file stamp unavailable: " + path.u8string() + " win32=" + std::to_string(error));
-  }
-  Require(!(attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY), "loading input is a directory: " + path.u8string());
-  return {(uint64_t(attributes.nFileSizeHigh) << 32) | attributes.nFileSizeLow,
-          (uint64_t(attributes.ftLastWriteTime.dwHighDateTime) << 32) | attributes.ftLastWriteTime.dwLowDateTime};
-}
-inline bool SameStamp(const InputFileStamp& a, const InputFileStamp& b) {
-  return a.bytes == b.bytes && a.written == b.written;
 }
 // Native asynchronous loads may reopen frozen startup/generation paths. Hold
 // the verified file against overwrite and deletion for the consumer lifetime.
@@ -115,9 +100,6 @@ inline bool TableHeader(const std::string& text,const char* name) {
 inline uint64_t Decimal(const std::string& value) {
   Require(!value.empty() && value.find_first_not_of("0123456789") == value.npos, "loading input decimal field");
   return std::stoull(value);
-}
-inline bool DigestText(const std::string& value) {
-  return value.size() == 64 && value.find_first_not_of("0123456789ABCDEF") == value.npos;
 }
 inline InputSubstitutions ReadInputSubstitutions(const std::filesystem::path& table,
                                                   const std::filesystem::path& game,

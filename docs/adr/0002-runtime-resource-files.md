@@ -8,7 +8,7 @@
 
 1. The new Mod format uses `[Mod] format=3`. The new DLL accepts format 3 only.
    Mod Manager owns the one-time conversion from supported format 2 packages.
-2. `mod.ini` is the only relationship manifest. It names resource IDs, relative
+2. `mod.ini` is the only relationship and file-location manifest. It names resource IDs, relative
    paths, Mesh targets, Part membership, Material bindings, controls, physics,
    effects, and animation relationships. It contains no file offsets, cache
    keys, content hashes, CAB/PathID values, or generated consumer lists.
@@ -19,9 +19,12 @@
    index, or cache is required for correctness.
 4. Mesh resource files contain the native serialized Mesh and an `EFFMESH`
    author snapshot so Blender can round-trip geometry, bindings, and target
-   metadata. Material resource files contain only a sparse `EFFMAT` edit
-   document plus its logical source path and asset name; they do not contain a
-   native Material snapshot. When a declared Mesh target is prepared, the DLL
+   metadata. Native Mesh UV V coordinates are converted from Blender's image
+   origin to the game's sampling origin during offline encoding; the `EFFMESH`
+   author snapshot retains Blender's original UV values. Material resource
+   files contain only a sparse `EFFMAT` edit document plus its logical source
+   path and asset name; they do not contain a native Material snapshot. When a
+   declared Mesh target is prepared, the DLL
    resolves that logical Material in the current game manifest, reads its
    current serialized object, applies the sparse parameter edits and explicit
    Texture bindings to a private variant, then lets the game deserialize it.
@@ -33,15 +36,17 @@
    document and its `EFFSKEL` dependency. Metadata records both extents and
    the author snapshot SHA-256. Runtime reads only the native extent when a
    target Mesh is requested; Blender validates and restores the author data.
-5. A Texture declaration names two separate files: a native Texture resource
-   and a standard `.dds` pixel file. The author Texture has its own CAB identity;
-   Material PPtrs name that resource rather than replacing a game-global
-   Texture. The DDS file retains its complete standard header and payload
-   byte-for-byte. Replacing it does not require regenerating the metadata file
-   or exporting again. DDS dimensions, format, and mip extents are validated
-   against the native Texture metadata; semantic color interpretation comes
-   from the edited Material slot and source template, not a forced rewrite of
-   the DDS header.
+5. A Texture declaration names a native Texture2D scaffold (`path`) and an
+   ordinary DDS (`dds`) in the same default `textures/` directory. The
+   scaffold is a small native serialized Texture2D with an empty image-data
+   field; it carries the game-readable object schema and CAB/PathID identity,
+   not image dimensions or a pixel-length contract. The standard DDS is the
+   sole source of dimensions, pixel format, mip count, and mip bytes. Runtime
+   reads those values from the DDS header, updates the corresponding fields
+   in the scaffold, injects its mip payload, and gives the result to the
+   game's normal deserializer. The DDS file remains byte-for-byte unchanged.
+   Replacing it with another valid DDS, including a different size or mip
+   layout, needs no Blender re-export and no change to `mod.ini`.
 6. Physics files and each native Effect bundle are separate resources named by
    `Resource` declarations in `mod.ini`. They are opened only when a matched
    owner needs them. Physics author data is co-located with its native input;
@@ -50,9 +55,15 @@
    sections name the authored records within that resource and point to the
    same file. The DLL verifies that these declarations match the control-state
    contents. It does not keep a second generated relationship index.
-7. Directory layout is user-controlled. The DLL resolves each declared path
-   relative to its Mod root, rejects traversal outside that root, and does not
-   recursively scan or hash payload files at startup.
+7. The default layout keeps resource types easy to browse: `meshes/`,
+   `materials/`, `textures/`, `physics/`, and `effects/`, with
+   `controls.effres` at the Mod root. A Texture scaffold and its `.dds` file
+   live together under `textures/`; there is no parallel `native/` tree.
+   Directory layout remains user-controlled: the DLL resolves each declared
+   path relative to its Mod root, rejects traversal outside that root, and
+   does not recursively scan or hash payload files at startup. Relative file
+   locations repeated inside resource metadata are descriptive author data;
+   readers use the `mod.ini` path and do not require the duplicate to match.
 8. Startup reads `mod.ini` and creates transient rule lookup tables. The game
    request path performs exact logical target matching, then reads only the
    declared inputs needed for that request and applies a bounded serialized

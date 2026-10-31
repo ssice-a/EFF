@@ -1,6 +1,7 @@
 #pragma once
 #include "eiem_entry_author_materials.h"
 #include "eiem_entry_author_asset_load.h"
+#include "eiem_demand_author_resources.h"
 // A developer-only acceptance seam. It does not publish routes, modify live
 // instances or replace the production byte backend. Discovery starts only at
 // real raw Prefab returns. Frames advance already-pending native requests and
@@ -14,13 +15,15 @@ struct Api {
  size_t assetSize=0,bundleSize=0,bundleHashOffset=0,assetHashOffset=0;
 } api;
 struct Config {std::shared_ptr<const Bytes> bytes;std::string path,name,marker,digest;int vertices=0,bones=0,shapes=0;} config;
+std::string textureDigest;
 bool enabled=false,constructing=false,loading=false;
 std::filesystem::path sampleRoot;
-std::optional<EiemRuntimeAuthorDirectory::Directory> sampleDirectory;
+std::shared_ptr<EiemDemandAuthorResources::Catalog> sampleCatalog;
+std::optional<EiemRuntimeAuthorDirectory::MeshAsset> sampleMesh;
 unsigned initializedDuringClone=0;Ref meshType,authorMesh,resolvedMesh;
 Ref textureType;void* textureByIdSetter=nullptr;
 AuthorAssetLoad::Cache assetLoads;AuthorAssetLoad::Ticket meshLoad,textureLoad;
-std::optional<EiemRuntimeAuthorDirectory::TextureAsset> sampleTexture;
+std::shared_ptr<const EiemDemandAuthorResources::Texture> sampleTexture;
 std::shared_ptr<const Bytes> textureBytes;Ref authorTexture;
 std::map<int,Ref> observed;std::map<int,size_t> matchedRoots;std::map<int,bool> verifiedRoots;
 using ProbeClock=std::chrono::steady_clock;
@@ -112,8 +115,8 @@ void RequestAuthorAssets(){
   Log("[ADAPT-PROBE-ASSET-SUBMITTED] kind=Mesh submitMs=%.3f asynchronous=1 actualSourceObserved=1 synchronousFallback=0",meshLoad->submitMs);
  }
  if(sampleTexture&&!textureLoad){
-  textureLoad=assetLoads.Request({{sampleTexture->hash,sampleTexture->path,"Texture2D"},textureBytes,textureType,[](void* texture){
-   Require(Scalar<int>(api.textureWidth,texture)==int(sampleTexture->width)&&Scalar<int>(api.textureHeight,texture)==int(sampleTexture->height)&&Scalar<int>(api.textureMips,texture)==int(sampleTexture->mips),"independent inline Texture metadata differs");
+  textureLoad=assetLoads.Request({{textureDigest,sampleTexture->declaration.file,"Texture2D"},textureBytes,textureType,[](void* texture){
+   Require(Scalar<int>(api.textureWidth,texture)==int(sampleTexture->replacement.width)&&Scalar<int>(api.textureHeight,texture)==int(sampleTexture->replacement.height)&&Scalar<int>(api.textureMips,texture)==int(sampleTexture->replacement.mips),"independent DDS Texture metadata differs");
   }});
   textureBytes.reset();
   Log("[ADAPT-PROBE-ASSET-SUBMITTED] kind=Texture2D submitMs=%.3f asynchronous=1 actualSourceObserved=1 synchronousFallback=0",textureLoad->submitMs);
@@ -132,7 +135,7 @@ bool AuthorAssetsReady(){
  return RuntimeShapes::Alive(authorMesh.Get())&&(!sampleTexture||RuntimeShapes::Alive(authorTexture.Get()));
 }
 void VerifyTextureAndMaterial(void* candidate){
- if(!sampleDirectory)return;
+ if(!sampleTexture)return;
  Require(sampleTexture&&RuntimeShapes::Alive(authorTexture.Get()),"shared independent Texture not ready");auto texture=authorTexture;
  for(const auto& r:FullResourceReload::Components(candidate)){
   auto materials=Ref::Make(Call(FullResourceReload::api.materials,r.Get()),false);auto values=FullResourceReload::ReferenceArray(materials.Get());
@@ -147,14 +150,13 @@ void VerifyTextureAndMaterial(void* candidate){
   void* assign[]={&id,texture.Get()};Call(textureByIdSetter,copy.Get(),assign);
   Require(Call(FullResourceReload::api.shader,copy.Get())==Call(FullResourceReload::api.shader,donor),"private Material copy changed the source Shader");
   Require(Call(FullResourceReload::api.textureById,copy.Get(),beforeArgs)==texture.Get()&&Call(FullResourceReload::api.textureById,donor,beforeArgs)==before.Get(),"private Material texture override leaked into donor");
-  Log("[ADAPT-PROBE-TEXTURE-MATERIAL] width=%u height=%u mips=%u independentInlineTexture=1 privateMaterialCopy=1 originalMaterialPreserved=1 sharedNativeTexture=1",sampleTexture->width,sampleTexture->height,sampleTexture->mips);return;
+  Log("[ADAPT-PROBE-TEXTURE-MATERIAL] width=%u height=%u mips=%u standardDds=1 privateMaterialCopy=1 originalMaterialPreserved=1 sharedNativeTexture=1",sampleTexture->replacement.width,sampleTexture->replacement.height,sampleTexture->replacement.mips);return;
  }
  throw std::runtime_error("no Material texture slot available for independent acceptance sample");
 }
 void VerifyBonePaths(void* candidate,void* renderer,const std::vector<void*>& palette,void* skinRoot){
- if(!sampleDirectory)return;
- auto author=std::find_if(sampleDirectory->meshes.begin(),sampleDirectory->meshes.end(),[](const auto& m){return m.marker==config.marker;});
- Require(author!=sampleDirectory->meshes.end(),"native author directory lacks the probe Mesh layout");
+ if(!sampleMesh)return;
+ const auto& author=*sampleMesh;
  std::vector<EiemPrefabBoneBinding::Node> nodes;std::vector<Ref> transforms;std::map<void*,size_t> indexes;
  auto walk=[&](auto&& self,void* node,size_t parent)->void{
   auto index=nodes.size();Require(indexes.emplace(node,index).second,"candidate bone hierarchy contains a cycle");
@@ -164,10 +166,10 @@ void VerifyBonePaths(void* candidate,void* renderer,const std::vector<void*>& pa
  };
  walk(walk,Call(FullResourceReload::api.goTransform,candidate),SIZE_MAX);
  auto owner=Call(RuntimeShapes::api.transform,renderer);Require(indexes.count(owner)&&indexes.count(skinRoot),"candidate Renderer/root bone is outside owning Prefab");
- EiemPrefabBoneBinding::Tree tree(nodes);auto slots=tree.Resolve(indexes.at(owner),indexes.at(skinRoot),author->bones);
+ EiemPrefabBoneBinding::Tree tree(nodes);auto slots=tree.Resolve(indexes.at(owner),indexes.at(skinRoot),author.bones);
  Require(slots.size()==palette.size(),"candidate author bone path coverage differs");
  for(size_t i=0;i<slots.size();++i)Require(transforms.at(slots[i]).Get()==palette[i],"runtime author path maps to another native bone slot");
- auto reversed=author->bones;std::reverse(reversed.begin(),reversed.end());auto alternate=tree.Resolve(indexes.at(owner),indexes.at(skinRoot),reversed);
+ auto reversed=author.bones;std::reverse(reversed.begin(),reversed.end());auto alternate=tree.Resolve(indexes.at(owner),indexes.at(skinRoot),reversed);
  for(size_t i=0;i<alternate.size();++i)Require(transforms.at(alternate[i]).Get()==palette[palette.size()-1-i],"runtime bone mapping depends on donor palette order");
  Log("[ADAPT-PROBE-BONE-PATHS] bones=%zu reorderedSlotsVerified=1 prefabScopeOnly=1 sourcePaletteNotUsedForLookup=1",slots.size());
 }
@@ -320,16 +322,20 @@ void InstallOptional(void** assemblies,size_t count){
   api.destroyImmediate=FullResourceReload::Method(object,"DestroyImmediate",{"UnityEngine.Object"},"System.Void",true);
   api.setSkinMesh=FullResourceReload::Method(FindClass("UnityEngine","SkinnedMeshRenderer",assemblies,count),"set_sharedMesh",{"UnityEngine.Mesh"},"System.Void",false);
   sampleRoot=configurationFile.parent_path()/"sample";
-  if(std::filesystem::is_regular_file(sampleRoot/"assets.bin")){
-   sampleDirectory=EiemRuntimeAuthorDirectory::Decode(EiemDirectory::Read(sampleRoot/"assets.bin"));
-   auto selected=std::find_if(sampleDirectory->textures.begin(),sampleDirectory->textures.end(),[](const auto& t){return std::filesystem::is_regular_file(sampleRoot/std::filesystem::u8path(t.file));});
-   Require(selected!=sampleDirectory->textures.end(),"independent Texture acceptance sample absent");sampleTexture=*selected;
-   textureBytes=std::make_shared<const Bytes>(EiemDirectory::Read(sampleRoot/std::filesystem::u8path(selected->file)));
-   auto textureHash=Sha(textureBytes->data(),textureBytes->size());Require(Hex(textureHash.data(),textureHash.size())==selected->hash,"independent Texture acceptance sample changed");
-   auto texture=FindClass("UnityEngine","Texture",assemblies,count);textureType=FullResourceReload::Type(FindClass("UnityEngine","Texture2D",assemblies,count));
-   api.textureWidth=FullResourceReload::Method(texture,"get_width",{},"System.Int32",false);api.textureHeight=FullResourceReload::Method(texture,"get_height",{},"System.Int32",false);
-   api.textureMips=FullResourceReload::Method(texture,"get_mipmapCount",{},"System.Int32",false);
-   textureByIdSetter=FullResourceReload::Method(FindClass("UnityEngine","Material",assemblies,count),"SetTexture",{"System.Int32","UnityEngine.Texture"},"System.Void",false);AuthorMaterials::Bind(assemblies,count);
+  if(std::filesystem::is_regular_file(sampleRoot/"mod.ini")){
+   sampleCatalog=std::make_shared<EiemDemandAuthorResources::Catalog>(sampleRoot);
+   for(const auto& mesh:sampleCatalog->Directory().meshes){auto selected=sampleCatalog->GetMesh(mesh.part)->declaration;
+    if(selected.marker==config.marker){sampleMesh=std::move(selected);break;}}
+   if(!sampleCatalog->Directory().textures.empty()){
+    sampleTexture=sampleCatalog->GetTexture(sampleCatalog->Directory().textures.front().id);
+    textureBytes=std::make_shared<Bytes>(sampleTexture->input->Size());
+    Require(sampleTexture->input->ReadAt(0,textureBytes->data(),textureBytes->size())==textureBytes->size(),"format 3 sample Texture input is truncated");
+    auto textureHash=Sha(textureBytes->data(),textureBytes->size());textureDigest=Hex(textureHash.data(),textureHash.size());
+    auto texture=FindClass("UnityEngine","Texture",assemblies,count);textureType=FullResourceReload::Type(FindClass("UnityEngine","Texture2D",assemblies,count));
+    api.textureWidth=FullResourceReload::Method(texture,"get_width",{},"System.Int32",false);api.textureHeight=FullResourceReload::Method(texture,"get_height",{},"System.Int32",false);
+    api.textureMips=FullResourceReload::Method(texture,"get_mipmapCount",{},"System.Int32",false);
+    textureByIdSetter=FullResourceReload::Method(FindClass("UnityEngine","Material",assemblies,count),"SetTexture",{"System.Int32","UnityEngine.Texture"},"System.Void",false);AuthorMaterials::Bind(assemblies,count);
+   }
   }
   Require(RuntimeShapes::api.bindPoses,"adaptation probe public bindpose getter unavailable");
   auto helper=FindClass("Beyond.Gameplay.View","EntityRenderHelper",assemblies,count);

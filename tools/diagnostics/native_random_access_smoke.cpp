@@ -60,6 +60,45 @@ void CompressedRanges() {
   RejectRead([&]{R::Reader invalid(truncated.size(),[&](size_t p,unsigned char* out,size_t n){std::memcpy(out,truncated.data()+p,n);});},"truncated source");
   std::cout<<"PASS compressed cross-block reads, bounded cache, malformed input, production decode agreement\n";
 }
+void CompressedDecodedView() {
+  Bytes first(4096),middle(4096),last(4096);
+  for(size_t i=0;i<first.size();++i){first[i]=static_cast<unsigned char>(i*5);middle[i]=static_cast<unsigned char>(i*7);last[i]=static_cast<unsigned char>(i*11);}
+  auto a=LiteralBlock(first),b=LiteralBlock(last);
+  auto input=std::make_shared<Bytes>(EiemNativeViewWriter::Prefix(EiemAuthorMeshBundle::EnvelopeHeader(),
+      {{first.size(),a.size(),5},{middle.size(),middle.size(),0},{last.size(),b.size(),5}},
+      {{"CAB-decoded-view",4,0,first.size()+middle.size()+last.size()}}));
+  auto prefix=input->size();input->insert(input->end(),a.begin(),a.end());input->insert(input->end(),middle.begin(),middle.end());input->insert(input->end(),b.begin(),b.end());
+  size_t sourceReads=0,sourceBytes=0;
+  auto read=[input,&sourceReads,&sourceBytes](size_t at,unsigned char* out,size_t n){
+    Require(at<=input->size()&&n<=input->size()-at,"decoded view source read invalid");
+    ++sourceReads;sourceBytes+=n;std::memcpy(out,input->data()+at,n);
+  };
+  R::Limits limits;limits.cacheBytes=first.size();R::Reader reader(input->size(),read,limits);
+  auto beforeBytes=sourceBytes;auto view=reader.UncompressedView(read);
+  Require(view->Size()==first.size()+middle.size()+last.size()&&sourceBytes==beforeBytes,
+    "compressed decoded view eagerly read payload");
+  Bytes expected=first;expected.insert(expected.end(),middle.begin(),middle.end());expected.insert(expected.end(),last.begin(),last.end());
+  Bytes actual(32);Require(view->ReadAt(12,actual.data(),actual.size())==actual.size()&&
+      std::equal(actual.begin(),actual.end(),expected.begin()+12),"compressed decoded view first block differs");
+  auto afterFirst=sourceBytes;auto afterFirstReads=sourceReads;
+  view->ReadAt(64,actual.data(),actual.size());
+  Require(sourceBytes==afterFirst&&sourceReads==afterFirstReads,"compressed decoded view did not reuse cached block");
+  Bytes crossing(32);view->ReadAt(first.size()-8,crossing.data(),crossing.size());
+  Require(std::equal(crossing.begin(),crossing.end(),expected.begin()+first.size()-8),
+    "compressed decoded view cross-block read differs");
+  Bytes tail(64);view->ReadAt(first.size()+middle.size()+17,tail.data(),tail.size());
+  Require(std::equal(tail.begin(),tail.end(),expected.begin()+first.size()+middle.size()+17),
+    "compressed decoded view tail differs");
+  auto afterTail=sourceBytes;view->ReadAt(128,actual.data(),actual.size());
+  Require(sourceBytes>afterFirst&&sourceBytes==afterTail+a.size(),
+    "compressed decoded view did not keep bounded LRU behavior");
+  std::atomic<bool> same{true};std::vector<std::thread> threads;
+  for(size_t i=0;i<6;++i)threads.emplace_back([&,i]{Bytes chunk(96);for(size_t n=0;n<20;++n){
+    auto at=(i*113+n*17)%(first.size()-chunk.size());view->ReadAt(at,chunk.data(),chunk.size());
+    if(!std::equal(chunk.begin(),chunk.end(),first.begin()+at))same=false;}});
+  for(auto& thread:threads)thread.join();Require(same,"compressed decoded view concurrent read differs");
+  std::cout<<"PASS demand-decoded compressed view: lazy block reads, bounded shared cache, cross-block reads and concurrent access\n";
+}
 Bytes Materialize(const std::shared_ptr<const EiemInputSpanView::View>& view) {
   Bytes bytes(view->Size());Require(view->ReadAt(0,bytes.data(),bytes.size())==bytes.size(),"splice view truncated");return bytes;
 }
@@ -315,14 +354,12 @@ void NativeCatalogAssembly() {
   namespace D=EiemRuntimeAuthorDirectory;namespace N=EiemDemandNativeAssembly;
   namespace M=EiemAuthorResourceMetadata;namespace F=EiemAuthorResourceFile;
   auto folder=std::filesystem::temp_directory_path()/("eff-native-catalog-"+std::to_string(GetCurrentProcessId()));
-  Require(!std::filesystem::exists(folder),"native catalog fixture exists");std::filesystem::create_directories(folder/"native/materials");std::filesystem::create_directories(folder/"native/meshes");
+  Require(!std::filesystem::exists(folder),"native catalog fixture exists");std::filesystem::create_directories(folder/"materials");std::filesystem::create_directories(folder/"meshes");
   struct Cleanup{std::filesystem::path root;~Cleanup(){std::error_code ignored;std::filesystem::remove_all(root,ignored);}}cleanup{folder};
   Fixture fixture;fixture.types[5]=Schema(43,{{"string","m_Name",{}},{"TypelessData","m_VertexData",{}},{"TypelessData","m_IndexBuffer",{}}});
   fixture.objects.at(100)={5,EmptyValue(fixture.types[5],0)};auto& mt=fixture.types[5];SetString(mt,Child(mt,fixture.V(100),"m_Name"),"Static");
   Child(mt,fixture.V(100),"m_VertexData").raw=Bytes(4096,17);Child(mt,fixture.V(100),"m_IndexBuffer").raw=Bytes(6,1);
   auto& bt=fixture.types[4];
-  for(const char* name:{"m_Name","m_AssetBundleName"}){auto n=bt.nodes.size();bt.nodes.push_back({"string",name,false,{}});bt.nodes[0].children.push_back(n);fixture.V(300).children.push_back(EmptyValue(bt,n));}
-  auto dn=bt.nodes.size();bt.nodes.push_back({"vector","m_Dependencies",false,{dn+1}});bt.nodes.push_back({"Array","Array",false,{dn+2,dn+3}});bt.nodes.push_back({"int","size",false,{}});bt.nodes.push_back({"string","data",false,{}});bt.nodes[0].children.push_back(dn);fixture.V(300).children.push_back(EmptyValue(bt,dn));
   auto& hashes=ArrayValue(bt,Child(bt,fixture.V(300),"m_HashContainer"));auto hashEntry=ArrayElement(bt,hashes);SetInteger(bt,Child(bt,hashEntry,"first"),42);SetReference(bt,Child(bt,Child(bt,hashEntry,"second"),"asset"),{fixture.cab,100},fixture.refs,fixture.cab);hashes.children={hashEntry};hashes.count=1;
   // The two native renderers intentionally select different original materials.
   fixture.Add(201,6);auto& secondMaterials=ArrayValue(fixture.T(23),Child(fixture.T(23),fixture.V(23),"m_Materials"));secondMaterials.children.clear();secondMaterials.count=0;
@@ -330,19 +367,19 @@ void NativeCatalogAssembly() {
   auto read=[source](size_t at,unsigned char* out,size_t n){memcpy(out,source->data()+at,n);};
   for(size_t count:{size_t(0),size_t(1),size_t(3)}){
     D::Directory directory;directory.mod="native-fixture";directory.rules.push_back({"ReplaceStatic",{{0,{"assets/static.mesh","Static"}}},{},!count});
-    D::MaterialEntry material;material.id="MaterialBody";material.file="native/materials/material.effres";material.source={"assets/game/material.mat","GameMaterial"};
+    D::MaterialEntry material;material.id="MaterialBody";material.file="materials/material.effres";material.source={"assets/game/material.mat","GameMaterial"};
     Bytes authorMaterial{'f','o','r','m','a','t','=','E','F','F','M','A','T','\n'};material.authorBytes=authorMaterial.size();auto materialAuthorHash=Sha(authorMaterial.data(),authorMaterial.size());material.hash=Hex(materialAuthorHash.data(),materialAuthorHash.size());directory.materials.push_back(material);
     EiemResourceReloadPlan::Save(folder/std::filesystem::u8path(material.file),F::Encode(2,M::EncodeMaterial(material),authorMaterial));
-    for(size_t i=0;i<count;++i){D::MeshAsset mesh;mesh.part="PartP"+std::to_string(i);mesh.file="native/meshes/"+mesh.part+".effres";mesh.path="assets/static.mesh";mesh.marker="native-P"+std::to_string(i);mesh.material="MaterialBody";mesh.vertices=3;mesh.indices=3;mesh.fields={"m_Name","m_VertexData","m_IndexBuffer"};
+    for(size_t i=0;i<count;++i){D::MeshAsset mesh;mesh.part="PartP"+std::to_string(i);mesh.file="meshes/"+mesh.part+".effres";mesh.path="assets/static.mesh";mesh.marker="native-P"+std::to_string(i);mesh.material="MaterialBody";mesh.vertices=3;mesh.indices=3;mesh.fields={"m_Name","m_VertexData","m_IndexBuffer"};
       auto value=fixture.V(100);SetString(mt,Child(mt,value,"m_Name"),mesh.marker);Child(mt,value,"m_VertexData").raw.assign(1024*1024+37,static_cast<unsigned char>(i+3));
       auto asset=EiemAuthorMeshBundle::Isolate(raw,fixture.cab,100,mesh.path,value,std::string(64,static_cast<char>('a'+i)));auto digest=Sha(asset.bytes.data(),asset.bytes.size());mesh.hash=Hex(digest.data(),digest.size());
       Bytes editable{'E','F','F','M','E','S','H',0,6,0,0,0};mesh.nativeBytes=asset.bytes.size();mesh.authorBytes=editable.size();auto editableHash=Sha(editable.data(),editable.size());mesh.authorHash=Hex(editableHash.data(),editableHash.size());
       Bytes payload=asset.bytes;payload.insert(payload.end(),editable.begin(),editable.end());EiemResourceReloadPlan::Save(folder/std::filesystem::u8path(mesh.file),F::Encode(1,M::EncodeMesh(mesh),payload));directory.meshes.push_back(mesh);directory.rules.front().parts.push_back(mesh.part);
     }
-    EiemAuthorControlMetadata::State controls;EiemResourceReloadPlan::Save(folder/"native/controls.effres",F::Encode(6,M::EncodeControls(controls),{}));
+    EiemAuthorControlMetadata::State controls;EiemResourceReloadPlan::Save(folder/"controls.effres",F::Encode(6,M::EncodeControls(controls),{}));
     std::ostringstream ini;ini<<"[Mod]\nformat=3\nid=native-fixture\nkey_switch_enabled=1\n\n[Constants]\n\n"
       <<"[MaterialBody]\npath="<<material.file<<"\nsource.path="<<material.source.path<<"\nsource.asset="<<material.source.asset<<"\n\n";
-    ini<<"[ResourceControls]\ntype=controls\npath=native/controls.effres\n\n";
+    ini<<"[ResourceControls]\ntype=controls\npath=controls.effres\n\n";
     for(const auto& mesh:directory.meshes){auto suffix=mesh.part.substr(strlen("Part"));ini<<"[Mesh"<<suffix<<"]\npath="<<mesh.file<<"\n\n["<<mesh.part<<"]\nmesh=Mesh"<<suffix<<"\nmaterial=MaterialBody\nvisible=1\n\n";}
     ini<<"[MeshUnhit]\npath=missing/unhit.mesh.effres\n\n"
       <<"[PartUnhit]\nmesh=MeshUnhit\nmaterial=MaterialBody\nvisible=1\n\n";
@@ -578,5 +615,5 @@ void RealInputs(const std::filesystem::path& game,const std::filesystem::path& m
   }
   Require(count,"no real input fixtures inspected");
 }
-int main(int argc,char** argv) {try{if(argc==8&&std::string(argv[1])=="--native-author-observed"){InspectNativeAuthor(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[6]),argv[7],std::filesystem::u8path(argv[4]),std::stoull(argv[5]));return 0;}if(argc==4&&std::string(argv[1])=="--inspect"){InspectObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]));return 0;}if(argc==6&&std::string(argv[1])=="--author-observed"){InspectAuthorObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[4]),argv[5]);return 0;}if(argc==8&&std::string(argv[1])=="--author-consumer-observed"){InspectAuthorObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[6]),argv[7],std::filesystem::u8path(argv[4]),std::stoull(argv[5]));return 0;}SparseInput();CompressedRanges();SpliceCompressed();SpliceMetadata();SpliceSparse();SpliceDifferential();SerializedPlanDifferential();SerializedPlanSparse();ProjectedRendererAssembly();StreamedAuthorGraft();PreloadIntervals();NativeCatalogAssembly();RetainedSourceLease();if(argc==3)RealInputs(std::filesystem::u8path(argv[1]),std::filesystem::u8path(argv[2]));else Require(argc==1,"usage: native_random_access_smoke [game mod]");std::cout<<"PASS native random access; no author payloads or native game objects created\n";return 0;}catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}}
+int main(int argc,char** argv) {try{if(argc==8&&std::string(argv[1])=="--native-author-observed"){InspectNativeAuthor(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[6]),argv[7],std::filesystem::u8path(argv[4]),std::stoull(argv[5]));return 0;}if(argc==4&&std::string(argv[1])=="--inspect"){InspectObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]));return 0;}if(argc==6&&std::string(argv[1])=="--author-observed"){InspectAuthorObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[4]),argv[5]);return 0;}if(argc==8&&std::string(argv[1])=="--author-consumer-observed"){InspectAuthorObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[6]),argv[7],std::filesystem::u8path(argv[4]),std::stoull(argv[5]));return 0;}SparseInput();CompressedRanges();CompressedDecodedView();SpliceCompressed();SpliceMetadata();SpliceSparse();SpliceDifferential();SerializedPlanDifferential();SerializedPlanSparse();ProjectedRendererAssembly();StreamedAuthorGraft();PreloadIntervals();NativeCatalogAssembly();RetainedSourceLease();if(argc==3)RealInputs(std::filesystem::u8path(argv[1]),std::filesystem::u8path(argv[2]));else Require(argc==1,"usage: native_random_access_smoke [game mod]");std::cout<<"PASS native random access; no author payloads or native game objects created\n";return 0;}catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}}
 

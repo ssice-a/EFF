@@ -44,6 +44,45 @@ class FrameStreamTests(unittest.TestCase):
             mesh.frame_stream(channels,np.zeros((1,3)),np.array([[0.,0.,1.]]),np.array([[1.,0.,0.,1.]]))
 
 
+class TextureCoordinateTests(unittest.TestCase):
+    def test_native_uvs_match_game_origin_and_preserve_author_data(self):
+        source_uvs = [
+            [.1, .2, .8, .9],
+            [.3, .4, .7, .6, .2, .1],
+            [.5, .25, .75, .1, .8, .6, .4, .9],
+            [], [], [], [], [],
+        ]
+        source_tangents = [1., 0., 0., 1., 0., 1., 0., -1.]
+        original_uvs = [values[:] for values in source_uvs]
+        original_tangents = source_tangents[:]
+
+        converted, tangents = mesh.game_texture_coordinates(
+            source_uvs, source_tangents, 2)
+
+        np.testing.assert_allclose(converted[0], [[.1, .8], [.8, .1]], atol=3e-8)
+        np.testing.assert_allclose(converted[1], [[.3, .6, .7], [.6, .8, .1]], atol=3e-8)
+        np.testing.assert_allclose(converted[2], [[.5, .75, .75, .1],
+                                                  [.8, .4, .4, .9]], atol=3e-8)
+        self.assertEqual(converted[3:], [None] * 5)
+        np.testing.assert_array_equal(tangents.reshape(2, 4)[:, :3],
+                                      np.asarray(source_tangents).reshape(2, 4)[:, :3])
+        np.testing.assert_array_equal(tangents.reshape(2, 4)[:, 3], [-1., 1.])
+        self.assertEqual(source_uvs, original_uvs)
+        self.assertEqual(source_tangents, original_tangents)
+
+    def test_uv_channels_without_uv0_keep_tangent_handedness(self):
+        channels = [[], [.1, .2, .7, .8]] + [[]] * 6
+        converted, tangents = mesh.game_texture_coordinates(
+            channels, [1., 0., 0., 1., 1., 0., 0., -1.], 2)
+        np.testing.assert_allclose(converted[1], [[.1, .8], [.7, .2]], atol=3e-8)
+        np.testing.assert_array_equal(tangents.reshape(2, 4)[:, 3], [1., -1.])
+
+    def test_native_uvs_reject_invalid_channel_shapes(self):
+        with self.assertRaisesRegex(ValueError, 'UV shape'):
+            mesh.game_texture_coordinates([[.1, .2, .3], *([[]] * 7)],
+                                          [1., 0., 0., 1.], 2)
+
+
 class SkinStreamTests(unittest.TestCase):
     def static(self):
         return dict(vertex_count=3, skin=[], bone_paths=[], bindposes=[], bone_hashes=[])
