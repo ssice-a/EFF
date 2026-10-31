@@ -24,7 +24,9 @@ The following checks passed for the current Format 3 changes:
 - `git diff --check` passed in both the main repository and Blender submodule.
 
 The Blender 5.2 UI round-trip was not run; the system Python environment does
-not provide `bpy`. This pass did not build or deploy a game DLL.
+not provide `bpy`. A Format 3 `load-perf` development DLL was built and staged
+in the game plugin directory for the first controlled in-game baseline; it is
+not a production build.
 
 ## Performance Readiness
 
