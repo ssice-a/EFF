@@ -53,4 +53,6 @@ the reproduced log and deployment receipt are in
 `bin/local-deployments/effect-owner-metadata-20261102-072743/`.
 The production binary verifier, full effect suite (including lazy native view
 playback), shape/visibility bridge, full resource reload, and demand resource
-regressions passed. Restart acceptance is pending.
+regressions passed. The user confirmed visible lx effects after restarting
+on 2026-11-02. Subsequent offline palette compaction was validated separately;
+see `body-weight-repair-20261102.md`.

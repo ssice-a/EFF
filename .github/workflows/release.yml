@@ -94,6 +94,8 @@ jobs:
     - name: Build shared authoring tools
       shell: pwsh
       run: |
+        python tools/diagnostics/prepare_texconv.py
+        if ($LASTEXITCODE -ne 0) { throw 'Pinned DirectXTex download or SHA256 verification failed' }
         New-Item -ItemType Directory -Force bin/pillow-wheels | Out-Null
         python -m pip download --only-binary=:all: --no-deps --platform win_amd64 --implementation cp --python-version 3.11 --abi cp311 Pillow==12.3.0 --dest bin/pillow-wheels
         if ($LASTEXITCODE -ne 0) { throw 'Pillow cp311 wheel download failed' }
