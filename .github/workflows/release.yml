@@ -75,7 +75,7 @@ jobs:
     - name: Build standalone legacy Mod migrator
       shell: pwsh
       run: |
-        python -m pip install --disable-pip-version-check PyInstaller==6.21.0 Pillow==12.3.0
+        python -m pip install --disable-pip-version-check PyInstaller==6.21.0 Pillow==12.3.0 numpy==2.3.5
         if ($LASTEXITCODE -ne 0) { throw 'Migration tool Python dependencies failed to install' }
         $blenderTools = (Resolve-Path tools/Blender).Path
         $nativeExport = Join-Path $blenderTools 'eiem_native_export.py'

@@ -1,4 +1,4 @@
-# EFF v2.0.1
+# EFF v2.0.2
 
 本次为 Format 3 架构重构，配套 EFF Blender v0.50.0、AnimeStudio v1.9.0、EFF Mod Manager v0.2.0。
 
@@ -12,11 +12,13 @@
 
 ## 安装与迁移
 
-退出游戏后，将 EFF_v2.0.1_dll.zip 解压到游戏根目录。保留个人 plugin/eff.ini、plugin/mods 与 state.ini。旧 Mod 先用 EFF Mod Manager v0.2.0 迁移为 Format 3，或用配套 Blender 重新导出。共享作者工具供离线作者与迁移工具使用，无需安装到游戏目录。
+退出游戏后，将 EFF_v2.0.2_dll.zip 解压到游戏根目录。保留个人 plugin/eff.ini、plugin/mods 与 state.ini。旧 Mod 先用 EFF Mod Manager v0.2.0 迁移为 Format 3，或用配套 Blender 重新导出。共享作者工具供离线作者与迁移工具使用，无需安装到游戏目录。
 
 ## 验证
 
 按键切换问题已由用户在游戏中确认修复。发布工作流继续验证依赖图、材质移除、模型显隐生命周期、热重载事务、DLL 加载、索引更新和共享工具收据。资源权重修复属于本地 Mod 资产修改，不包含用户 Mod 或工程到公开发布包。
+
+- Fixed the standalone migration package missing NumPy; v2.0.1 did not reach publication.
 
 ## English
 
