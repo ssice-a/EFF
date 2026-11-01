@@ -591,12 +591,8 @@ void Report(int frame) noexcept {
 std::shared_ptr<const InstalledGeneration> BuildInstalledPackages(){
   auto begin=std::chrono::steady_clock::now();std::map<std::string,std::shared_ptr<N::Author>> next;auto graph=std::make_shared<std::vector<Package>>();std::vector<EiemMeshTargetDirectory::Target> selected;
   for(const auto& root:DiscoverModRoots()){
-    // During migration the original Mod remains the enabled/install identity;
-    // only its small INI header is consulted, never its old resource payloads.
-    auto sections=ParseIni(EiemDirectory::Read(root/"mod.ini"));std::string mod;
-    for(const auto& section:sections)if(section.id=="Mod")mod=section.values.at("id");Require(Identifier(mod),"native Mod identity absent");
     auto catalog=std::make_shared<EiemDemandAuthorResources::Catalog>(root);
-    Require(catalog->Directory().mod==mod,"native author directory belongs to a different Mod");auto author=std::make_shared<N::Author>(std::move(catalog));author->package.root=root;
+    auto mod=catalog->Directory().mod;auto author=std::make_shared<N::Author>(std::move(catalog));author->package.root=root;
     Require(next.emplace(mod,author).second,"duplicate native Mod id");graph->push_back(author->package);
     for(const auto& rule:author->package.rules)for(const auto& target:rule.second.targets){EiemMeshTargetDirectory::Target row;row.mod=mod;row.root=root;row.rule=rule.first;row.source=target.second;row.lod=target.first;row.partIds=rule.second.parts;row.parts=row.partIds.size();row.skip=rule.second.skip;selected.push_back(std::move(row));}
   }

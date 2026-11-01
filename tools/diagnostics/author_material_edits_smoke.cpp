@@ -50,6 +50,23 @@ static Fixture MaterialFixture(){
   return fixture;
 }
 
+static void CheckMaterialPropertyRemoval(){
+  FieldSpec floatMap{"vector","m_Floats",{{"Array","Array",{{"int","size",{}},
+    {"pair","data",{{"string","first",{}},{"float","second",{}}}}}}}};
+  auto type=Schema(21,{{"UnityPropertySheet","m_SavedProperties",{floatMap}}});
+  auto material=EmptyValue(type,0);auto& saved=Child(type,material,"m_SavedProperties");
+  auto& values=ArrayValue(type,Child(type,saved,"m_Floats"));auto old=ArrayElement(type,values);
+  SetString(type,Child(type,old,"first"),"_LegacyOnly");SetFloat(type,Child(type,old,"second"),0.5);
+  values.children.push_back(std::move(old));values.count=1;
+  const std::string authorText="format=EFFMAT\nversion=1\noverrides=true\n"
+    "source=assets/material.mat\nremove.float._LegacyOnly=true\n";
+  Bytes authorBytes(authorText.begin(),authorText.end());auto author=EiemAuthorMaterialEdits::Parse(authorBytes);
+  SerializedLayout layout;auto result=EiemNativeMaterialOperations::Apply(type,std::move(material),
+    author.edits,layout,"CAB-current");
+  Require(ConstArray(type,Child(type,Child(type,result,"m_SavedProperties"),"m_Floats")).children.empty(),
+    "EFFMAT Material property removal was not applied");
+}
+
 static NativeReference Reference(const Type& type,const Value& pointer,const SerializedLayout& layout,
                                  const std::string& cab){
   auto file=Integer(Child(type,pointer,"m_FileID"));auto id=int64_t(Integer(Child(type,pointer,"m_PathID")));
@@ -95,8 +112,14 @@ static void CheckCurrentSourceMaterialIsClonedAndEdited(){
     "current game Shader PPtr was not preserved");
 }
 
-int main(){try{
+int main(int argc,char** argv){try{
+  if(argc>1&&std::string(argv[1])=="--removal-only"){
+    CheckMaterialPropertyRemoval();
+    std::cout<<"PASS EFFMAT removal operations are parsed and applied to the native Material copy\n";
+    return 0;
+  }
   CheckCurrentSourceMaterialIsClonedAndEdited();
+  CheckMaterialPropertyRemoval();
   auto malformed=Bytes{'f','o','r','m','a','t','=','E','F','F','M','A','T','\n'};
   bool rejected=false;try{(void)EiemAuthorMaterialEdits::Parse(malformed);}catch(const std::exception&){rejected=true;}
   Require(rejected,"incomplete EFFMAT document was accepted");

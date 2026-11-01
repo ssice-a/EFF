@@ -28,15 +28,17 @@ AnimeStudio registers each completed index workspace against its game installati
 
 Each EFF Release builds one `EFF_Shared_Native_Tools_<tag>.zip` and publishes `eff-native-tools.json`. The manifest contains the immutable release URL, byte length, SHA256, file layout and EFF framework tag. Any of the three clients can fetch this manifest from the latest published EFF Release, verify the archive, then cache it under `R/tools/<sha256>/`. A failed download or digest check is not installed. Blender author export only reads the installed cache; it never blocks the export UI on a first-time download.
 
-The package currently contains:
+The Format 3 package contains:
 
-- `eff_resource_pack.exe`: offline author resource compilation and source discovery.
+- `eff_resource_pack.exe`: offline author resource compilation, source discovery, and Mod repair.
 - `eff_source_index.exe`: incremental index refresh for Blender export.
+- `eff_author_assets.dll`: typed Format 3 author resource writer used by legacy migration.
 - `eff_author_core.dll`: native authoring codecs used by Blender.
+- `eff_migrate_mods.exe` and `source-exporter/`: legacy Mod migration and AnimeStudio source snapshots.
 - `package-protocol.json`: capabilities that are checked against the game DLL and author code.
 - `vendor/`: Python dependencies used by the native author core.
 
-The DLL does not load these authoring tools. It reads already compiled Mod output at runtime. AnimeStudio builds and validates its index in-process, then registers the workspace for Blender and the manager. The manager uses the shared compiler only for its offline repair workflow.
+The runtime DLL does not load these authoring tools; it reads already compiled Mod output. AnimeStudio builds and validates its index in-process, then registers the workspace for Blender and the manager. Mod Manager repair invokes `eff_resource_pack.exe` to rebuild compiled output against the current game index. Migration invokes `eff_migrate_mods.exe` and the typed author-resource DLL; that DLL does not replace the repair compiler.
 
 The Blender add-on may include the small Python codecs and data models needed to edit source resources. It must not include a second copy of shared `.exe`, `.dll`, `.pyd`, or the full source index. Its package validator rejects native executables and libraries.
 

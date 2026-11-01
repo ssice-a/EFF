@@ -17,8 +17,8 @@ struct Target {
   size_t parts = 0;
   bool skip = false;
 };
-inline std::vector<Target> Read(const std::filesystem::path& root) {
-  auto sections = ParseIni(EiemDirectory::Read(root / "mod.ini"));
+inline std::vector<Target> Read(const std::filesystem::path& root,
+                                const std::vector<Section>& sections) {
   std::map<std::string, const Section*> index;
   for (const auto& s : sections) index.emplace(s.id, &s);
   Require(index.count("Mod"), "Mesh target directory lacks Mod section");
@@ -66,6 +66,10 @@ inline std::vector<Target> Read(const std::filesystem::path& root) {
     }
   }
   return result;
+}
+inline std::vector<Target> Read(const std::filesystem::path& root) {
+  const auto sections = ParseIni(EiemDirectory::Read(root / "mod.ini"));
+  return Read(root, sections);
 }
 // The caller supplies only the dependency list already requested by the game.
 // Include self: a Prefab and its target Mesh can occupy the same Bundle.

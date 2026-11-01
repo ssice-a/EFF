@@ -72,6 +72,25 @@ jobs:
       with:
         python-version: '3.11'
 
+    - name: Build standalone legacy Mod migrator
+      shell: pwsh
+      run: |
+        python -m pip install --disable-pip-version-check PyInstaller==6.21.0 Pillow==12.3.0
+        if ($LASTEXITCODE -ne 0) { throw 'Migration tool Python dependencies failed to install' }
+        $blenderTools = (Resolve-Path tools/Blender).Path
+        $nativeExport = Join-Path $blenderTools 'eiem_native_export.py'
+        $formatModule = Join-Path $blenderTools 'eiem_format.py'
+        $sharedResources = Join-Path $blenderTools 'eiem_shared_resources.py'
+        $textureCompression = Join-Path $blenderTools 'eiem_texture_compression.py'
+        python -m PyInstaller --clean --noconfirm --onefile --console --name eff_migrate_mods --paths . --paths $blenderTools --add-data "$nativeExport;tools/Blender" --add-data "$formatModule;tools/Blender" --add-data "$sharedResources;tools/Blender" --add-data "$textureCompression;tools/Blender" --collect-all PIL --hidden-import eiem_native_export --hidden-import eiem_texture_compression --hidden-import eiem_shared_resources --hidden-import eiem_format --distpath bin/legacy-migrator/dist --workpath bin/legacy-migrator/build --specpath bin/legacy-migrator/spec tools/nativepack/migrate_launcher.py
+        if ($LASTEXITCODE -ne 0) { throw 'Standalone legacy Mod migrator build failed' }
+        & bin/legacy-migrator/dist/eff_migrate_mods.exe --help | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Standalone legacy Mod migrator did not start' }
+        dotnet publish tools/AnimeStudio/AnimeStudio.GUI/AnimeStudio.GUI.csproj -c Release -f net9.0-windows -r win-x64 --self-contained false -p:TargetFrameworks=net9.0-windows -o bin/legacy-source-exporter
+        if ($LASTEXITCODE -ne 0) { throw 'AnimeStudio migration source exporter publish failed' }
+        Copy-Item bin/legacy-source-exporter/AnimeStudio.GUI.exe bin/legacy-source-exporter/eff_migrate_sources.exe
+        if (-not (Test-Path bin/legacy-source-exporter/eff_migrate_sources.exe) -or -not (Test-Path bin/legacy-source-exporter/AnimeStudio.GUI.dll) -or -not (Test-Path bin/legacy-source-exporter/AnimeStudio.GUI.deps.json) -or -not (Test-Path bin/legacy-source-exporter/AnimeStudio.GUI.runtimeconfig.json)) { throw 'AnimeStudio migration source exporter payload is incomplete' }
+
     - name: Build shared authoring tools
       shell: pwsh
       run: |
@@ -96,10 +115,10 @@ jobs:
         python tools/diagnostics/author_assets_abi_smoke.py bin/author-assets/eff_author_assets_format3.dll
         if ($LASTEXITCODE -ne 0) { throw 'Format 3 author asset writer ABI validation failed' }
         New-Item -ItemType Directory -Force bin/release-artifacts | Out-Null
-        python tools/diagnostics/package_shared_native_tools.py --output bin/release-artifacts --compiler bin/resource-pack/eff_resource_pack.exe --dll-protocol bin/resource-directory-entry-v35/package-protocol.json --framework-tag $env:RELEASE_TAG --manifest-output bin/release-artifacts/eff-native-tools.json
-        if ($LASTEXITCODE -ne 0) { throw 'Shared authoring tools do not match the production DLL protocol' }
+        python tools/diagnostics/package_shared_native_tools.py --output bin/release-artifacts --framework-tag $env:RELEASE_TAG --manifest-output bin/release-artifacts/eff-native-tools.json
+        if ($LASTEXITCODE -ne 0) { throw 'Shared authoring tools could not be packaged' }
         $archive = Get-ChildItem bin/release-artifacts/EFF_Shared_Native_Tools_*.zip | Select-Object -First 1 -ExpandProperty FullName
-        python tools/release/verify_shared_tools.py --archive $archive --dll-protocol bin/resource-directory-entry-v35/package-protocol.json --manifest bin/release-artifacts/eff-native-tools.json
+        python tools/release/verify_shared_tools.py --archive $archive --manifest bin/release-artifacts/eff-native-tools.json
         if ($LASTEXITCODE -ne 0) { throw 'Shared tools receipt validation failed' }
 
     - name: Verify release preflight tooling
@@ -111,7 +130,7 @@ jobs:
     - name: Verify production DLL excludes temporary diagnostics
       shell: pwsh
       run: |
-        python tools/diagnostics/verify_production_dll.py bin/resource-directory-entry-v35/eff.dll
+        python tools/diagnostics/verify_production_dll.py bin/resource-directory-entry-format3/eff.dll
         if ($LASTEXITCODE -ne 0) { throw 'Production diagnostic isolation failed' }
 
     - name: Verify native reload transaction
@@ -127,7 +146,7 @@ jobs:
       run: |
         cmd /c tools\diagnostics\build_production_dll_load_smoke.cmd
         if ($LASTEXITCODE -ne 0) { throw 'Production DLL host test build failed' }
-        $binary = (Resolve-Path bin/resource-directory-entry-v35/eff.dll).Path
+        $binary = (Resolve-Path bin/resource-directory-entry-format3/eff.dll).Path
         & bin/production-dll-load/production_dll_load_smoke.exe $binary "$env:WINDIR/System32"
         if ($LASTEXITCODE -ne 0) { throw 'Production DLL attach/logging/control locks failed' }
 
@@ -190,7 +209,7 @@ jobs:
 
         # Install the runtime DLL and both game-root proxy loaders. Symbols and
         # diagnostic/build artifacts stay out of the distribution archive.
-        $buildRoot = "bin/resource-directory-entry-v35"
+        $buildRoot = "bin/resource-directory-entry-format3"
         Copy-Item "$buildRoot/eff.dll", "$buildRoot/eff.ini", "$buildRoot/package-protocol.json" -Destination $pluginRoot
         Copy-Item "$buildRoot/d3dcompiler_47.dll", "$buildRoot/vulkan-1.dll" -Destination $gameRoot
         Copy-Item LICENSE,THIRD_PARTY_NOTICES -Destination $pluginRoot

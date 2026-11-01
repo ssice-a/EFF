@@ -10,13 +10,18 @@ import zipfile
 def verify_shared_tools(archive_path, manifest_path, expected_sha256=None):
     archive_path = Path(archive_path)
     manifest = json.loads(Path(manifest_path).read_text(encoding='utf-8-sig'))
-    if manifest.get('format') != 'EFF_SHARED_NATIVE_TOOLS/2':
+    if manifest.get('format') != 'EFF_SHARED_NATIVE_TOOLS/3':
         raise ValueError('unsupported shared native tools manifest format')
     expected_layout = {
         'archiveRoot': 'EFF_Native_Tools',
+        'compiler': 'nativepack/eff_resource_pack.exe',
+        'indexUpdater': 'nativepack/eff_source_index.exe',
+        'protocol': 'nativepack/package-protocol.json',
         'authorAssets': 'nativepack/eff_author_assets.dll',
         'authorCore': 'nativepack/eff_author_core.dll',
         'textureCompressor': 'nativepack/texconv.exe',
+        'legacyMigrator': 'nativepack/eff_migrate_mods.exe',
+        'migrationSourceExporter': 'nativepack/source-exporter/eff_migrate_sources.exe',
     }
     if any(manifest.get(key) != value for key, value in expected_layout.items()):
         raise ValueError('shared native tools manifest has an unsupported file layout')
@@ -42,9 +47,17 @@ def verify_shared_tools(archive_path, manifest_path, expected_sha256=None):
         raise ValueError('manifest URL must name this immutable EFF release asset on github.com')
 
     required_files = {
+        'EFF_Native_Tools/nativepack/eff_resource_pack.exe',
+        'EFF_Native_Tools/nativepack/eff_source_index.exe',
+        'EFF_Native_Tools/nativepack/package-protocol.json',
         'EFF_Native_Tools/nativepack/eff_author_assets.dll',
         'EFF_Native_Tools/nativepack/eff_author_core.dll',
         'EFF_Native_Tools/nativepack/texconv.exe',
+        'EFF_Native_Tools/nativepack/eff_migrate_mods.exe',
+        'EFF_Native_Tools/nativepack/source-exporter/eff_migrate_sources.exe',
+        'EFF_Native_Tools/nativepack/source-exporter/AnimeStudio.GUI.dll',
+        'EFF_Native_Tools/nativepack/source-exporter/AnimeStudio.GUI.deps.json',
+        'EFF_Native_Tools/nativepack/source-exporter/AnimeStudio.GUI.runtimeconfig.json',
         'EFF_Native_Tools/nativepack/THIRD_PARTY_NOTICES',
         'EFF_Native_Tools/vendor/PIL/__init__.py',
         'EFF_Native_Tools/vendor/PIL/_imaging.cp311-win_amd64.pyd',
@@ -59,15 +72,6 @@ def verify_shared_tools(archive_path, manifest_path, expected_sha256=None):
         if missing:
             raise ValueError('native base is missing required files: '
                              + ', '.join(sorted(missing)))
-        obsolete = {
-            'EFF_Native_Tools/nativepack/eff_resource_pack.exe',
-            'EFF_Native_Tools/nativepack/eff_source_index.exe',
-            'EFF_Native_Tools/nativepack/package-protocol.json',
-        }
-        present = obsolete & names
-        if present:
-            raise ValueError('shared native tools still contain legacy compiler/index files: '
-                             + ', '.join(sorted(present)))
     return {
         'bytes': actual_size,
         'sha256': actual_sha256,

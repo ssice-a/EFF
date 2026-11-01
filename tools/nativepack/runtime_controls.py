@@ -104,13 +104,17 @@ def effect_decode(resource):
     autoplay=r.n(1);require(autoplay<=1,'effect autoplay domain');transform=struct.unpack('<10f',r.raw(40));require(all(math.isfinite(v) for v in transform) and abs(sum(v*v for v in transform[3:7])-1)<1e-3,'effect transform nonfinite/rotation');native=r.strings();require(len(native)==3,'effect native identity')
     root,particles,count=r.n(),r.n(),r.n();require(0<count<=(len(r.data)-r.offset)//16 and root<count,'effect native count/root')
     require(len(native[0])==64 and all(c in '0123456789ABCDEF' for c in native[0]) and native[1].startswith('assets/') and '..' not in native[1] and native[2],'effect native identity')
+    bundles=[]
     for i in range(count):
         bundle=r.strings();require(len(bundle)==2,'effect bundle identity');n=r.n();require(n<=count,'effect dependency count');deps=[r.n() for _ in range(n)]
         require(len(set(deps))==len(deps) and all(d<count and d!=i for d in deps),'effect dependencies')
         data=r.raw(r.n(8));require(sha256_bytes(data).hex().upper()==bundle[1],'effect bundle SHA256')
         require(native_archive(data) or data.startswith(b'UnityFS\0'),'effect archive header')
+        bundles.append(dict(file=bundle[0], hash=bundle[1], dependencies=deps, data=data))
     r.end();require(not bone.startswith('/') and not bone.endswith('/') and all(x not in ('','.','..') for x in bone.split('/')) if bone else True,'effect bone path')
     result=dict(owner=owner,id=cid,label=label,key=key,part=part,bone=bone,autoplay=bool(autoplay),variable='$fx_'+cid,position=list(transform[:3]),rotation=list(transform[3:7]),scale=list(transform[7:]))
+    result['native']=dict(key=native[0], prefab=native[1], rootName=native[2],
+                          root=root, particles=particles, bundles=bundles)
     if '@effect-target' in resource['blocks']:
         from .resource_file import decode_strings
         target=decode_strings(resource['blocks']['@effect-target']);require(len(target)>4 and target[0].startswith('assets/') and target[0].endswith('.prefab'),'invalid effect target proof')

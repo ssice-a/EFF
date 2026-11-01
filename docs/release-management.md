@@ -4,7 +4,7 @@ EFF, EFF Blender, AnimeStudio and EFF Mod Manager have separate repositories, ve
 
 ## Ownership
 
-- EFF builds the game DLL and its protocol declaration. The same workflow builds `eff_resource_pack.exe`, `eff_source_index.exe`, `eff_author_core.dll`, their Python dependency, and `package-protocol.json` into `EFF_Shared_Native_Tools_<tag>.zip`. It publishes `eff-native-tools.json` with the archive's URL, size and SHA256.
+- EFF builds the game DLL and its protocol declaration. The same workflow builds `eff_resource_pack.exe`, `eff_source_index.exe`, the Format 3 author-assets DLL, the Format 2 migrator and its AnimeStudio source exporter, `eff_author_core.dll`, their Python dependency, and `package-protocol.json` into `EFF_Shared_Native_Tools_<tag>.zip`. It publishes `eff-native-tools.json` with the archive's URL, size and SHA256.
 - EFF Blender packages Python authoring code and format codecs. It does not ship another compiler, index helper, author-core DLL or full source index. Its CI uses the framework tag named in the latest published EFF shared-tools manifest.
 - AnimeStudio builds its index in-process and registers the user-selected workspace. The index remains in that workspace and is not copied into Blender or Mod Manager.
 - EFF Mod Manager uses the shared compiler for offline Mod repair and caches it under the user's resource root.

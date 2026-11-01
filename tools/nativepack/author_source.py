@@ -64,7 +64,10 @@ class AuthorSource:
         manifest = (self.package/'source/manifest.json').read_bytes()
         self.manifest_hash = sha256_bytes(manifest)
         self.manifest = json.loads(manifest.decode('utf-8-sig'))
-        require(self.manifest.get('format') == 'EFFSOURCE' and isinstance(self.manifest.get('serializedFiles'), list) and isinstance(self.manifest.get('resources'), list), 'unsupported source baseline structure')
+        require(self.manifest.get('format') == 'EFFSOURCE' and self.manifest.get('version') == 1 and
+                isinstance(self.manifest.get('serializedFiles'), list) and
+                isinstance(self.manifest.get('resources'), list),
+                'unsupported source baseline structure')
         self.rows = {}
         identities = set()
         for row in self.manifest['serializedFiles']:
@@ -73,15 +76,33 @@ class AuthorSource:
                     'duplicate/empty source CAB identity')
             identities.add(cab.casefold())
             self.rows[cab] = row
+        self._resources_by_target = {}
+        self._resources_by_identity = {}
+        self._resources_by_type = {}
+        for row in self.manifest['resources']:
+            target = (row.get('type'), row.get('logicalPath'), row.get('name'))
+            self._resources_by_target.setdefault(target, []).append(row)
+            self._resources_by_type.setdefault(row.get('type'), []).append(row)
+            identity = row.get('identity')
+            if identity is not None:
+                self._resources_by_identity.setdefault(identity, row)
         self.files = {}
     def assert_current(self):
         require(sha256_bytes((self.package/'source/manifest.json').read_bytes()) == self.manifest_hash,
                 '解包来源在导出期间发生更新，暂存结果未发布；请重新导出')
     def resolve(self, kind, path, asset):
-        values = [r for r in self.manifest['resources'] if
-                  (r['type'], r['logicalPath'], r['name']) == (kind, path, asset)]
+        values = self.find_all(kind, path, asset)
         require(len(values) == 1, f'{kind} source has {len(values)} matches: {path} / {asset}')
         return values[0]
+    def find_all(self, kind, path, asset):
+        return self._resources_by_target.get((kind, path, asset), ())
+    def first_of_type(self, kind):
+        values = self._resources_by_type.get(kind, ())
+        return values[0] if values else None
+    def resolve_identity(self, identity):
+        resource = self._resources_by_identity.get(identity)
+        require(resource is not None, 'source resource identity is absent: ' + str(identity))
+        return resource
     def file(self, resource):
         cab = resource['native']['cab']
         if cab not in self.files:

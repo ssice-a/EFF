@@ -157,6 +157,11 @@ def _expression_for_bindings(bindings):
     return expression or ("number", 1.0, "", None, None)
 
 
+def _part_visibility(part):
+    return part.get("visibilityExpression") or _expression_for_bindings(
+        part["visibilityBindings"])
+
+
 def _key_chord(value):
     names = {"INSERT": 0x2D, "DELETE": 0x2E, "HOME": 0x24, "END": 0x23,
              "PAGEUP": 0x21, "PAGEDOWN": 0x22, "LEFT": 0x25, "RIGHT": 0x27,
@@ -185,22 +190,40 @@ def _key_chord(value):
     return vk, modifiers
 
 
-def _controls_resource(mod_id, parts, switches, material_clips, effects):
-    defaults, persistent, controls, bindings = {}, set(), {}, []
+def _controls_resource(mod_id, parts, switches, material_clips, effects,
+                       state_defaults=None, persistent_states=None,
+                       key_bindings=None):
+    preserve_state = state_defaults is not None
+    defaults = {key: float(value) for key, value in (state_defaults or {}).items()}
+    persistent = set(persistent_states or ()) if preserve_state else set()
+    controls, bindings = {}, []
     runtime_parts, animations, material_ids, material_tracks = {}, {}, set(), {}
 
     def default(variable, value):
-        require(variable not in defaults and math.isfinite(float(value)),
-                "duplicate or invalid runtime default: " + variable)
-        defaults[variable] = float(value)
+        value = float(value)
+        require(math.isfinite(value), "invalid runtime default: " + variable)
+        if variable in defaults:
+            require(defaults[variable] == value,
+                    "runtime default differs from preserved state: " + variable)
+            return
+        defaults[variable] = value
         persistent.add(variable)
 
-    for index, switch in enumerate(switches, 1):
-        variable = switch["variable"]
-        default(variable, switch["default"])
-        bindings.append(("KeySwitch" + str(index), variable, "cycle",
-                         *_key_chord(switch["key"]), 1.0, switch.get("label", ""),
-                         list(map(float, range(switch["stateCount"]))) or [0.0, 1.0]))
+    if key_bindings is None:
+        for index, switch in enumerate(switches, 1):
+            variable = switch["variable"]
+            default(variable, switch["default"])
+            values = switch.get("stateValues", list(range(switch["stateCount"])))
+            bindings.append(("KeySwitch" + str(index), variable, "cycle",
+                             *_key_chord(switch["key"]), 1.0, switch.get("label", ""),
+                             list(map(float, values)) or [0.0, 1.0]))
+    else:
+        for binding in key_bindings:
+            variable = binding["variable"]
+            require(variable in defaults, "key binding state is undeclared: " + variable)
+            bindings.append((binding["id"], variable, binding["type"],
+                             *_key_chord(binding["key"]), float(binding["speed"]),
+                             binding.get("label", ""), list(map(float, binding["values"]))))
 
     shape_bindings = {}
     shape_rows = []
@@ -214,7 +237,8 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects):
             key = (token, control["identity"])
             variable = shape_bindings.get(key)
             if variable is None:
-                variable = "$shape_" + token + "_" + _identifier(control["identity"])
+                variable = control.get("variable") or (
+                    "$shape_" + token + "_" + _identifier(control["identity"]))
                 shape_bindings[key] = variable
                 default(variable, control["default"])
                 controls[variable] = (control["label"], float(control["minimum"]),
@@ -228,15 +252,18 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects):
                                          variable, "hold", *_key_chord(chord),
                                          float(control["hotkey_speed"]), control["label"],
                                          [float(target)]))
+            elif control.get("variable"):
+                require(variable == control["variable"],
+                        "shared shape identity maps to multiple state variables")
             shape_variables[control["shape"]] = variable
-        runtime_parts[part_id] = dict(visible=_expression_for_bindings(part["visibilityBindings"]),
+        runtime_parts[part_id] = dict(visible=_part_visibility(part),
                                       shapes=shape_variables)
 
     for part in parts:
         part_id = _part_id(part["partId"])
         for clip in part.get("shapeAnimations", ()):
             identity = clip["id"]
-            variable = "$anim_speed_" + _identifier(identity)
+            variable = clip.get("speedVariable") or ("$anim_speed_" + _identifier(identity))
             if identity not in animations:
                 default(variable, clip["speed"])
                 animations[identity] = dict(id=identity, label=clip["label"], speedVariable=variable,
@@ -417,7 +444,9 @@ def _write_ini(root, ini):
 
 def write_format3_directory(root, mod_id, parts, materials, textures, rules,
                             switches, material_clips, effects, physics=(),
-                            author_files=None):
+                            author_files=None, state_defaults=None,
+                            persistent_states=None, key_bindings=None,
+                            key_switch_enabled=True):
     """Write one final Format 3 author directory from typed Blender records."""
     import hashlib
     import os
@@ -428,7 +457,8 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
     author_files = dict(author_files or {})
     ini = configparser.ConfigParser(interpolation=None, delimiters=("=",), strict=True)
     ini.optionxform = str
-    ini["Mod"] = {"format": "3", "id": mod_id, "key_switch_enabled": "1"}
+    ini["Mod"] = {"format": "3", "id": mod_id,
+                   "key_switch_enabled": "1" if key_switch_enabled else "0"}
     ini["Constants"] = {}
     texture_ids = {}
     for texture in textures:
@@ -476,24 +506,33 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         section = _part_id(part["partId"])
         ids_by_part[part["partId"]] = section
         shape_variables[section] = {}
+        if part.get("shapeBindings") is not None:
+            shape_variables[section].update(part["shapeBindings"])
+            continue
         for control in part.get("shapeControls", ()):
             if control["enabled"]:
                 token = re.sub(r"[^A-Za-z0-9_]", "_", part["object"])
-                shape_variables[section][control["shape"]] = "$shape_" + token + "_" + _identifier(control["identity"])
+                shape_variables[section][control["shape"]] = control.get("variable") or (
+                    "$shape_" + token + "_" + _identifier(control["identity"]))
     for part in parts:
         section = ids_by_part[part["partId"]]
         mesh_id = _identifier("Mesh_" + section)
         mesh_file = "meshes/" + section + ".effres"
         ini[mesh_id] = {"path": mesh_file}
-        visible = _expression_for_bindings(part["visibilityBindings"])
+        visible = _part_visibility(part)
         # Format 3 retains the same small expression grammar in mod.ini.
         def show(node):
             op, number, variable, left, right = node
             if op == "number": return "true" if number else "false"
             if op == "variable": return variable
-            if op == "equal": return show(left) + " == " + show(right)
-            if op == "or": return "(" + show(left) + " || " + show(right) + ")"
-            if op == "and": return "(" + show(left) + " && " + show(right) + ")"
+            if op == "not": return "!(" + show(left) + ")"
+            if op == "negative": return "-" + show(left)
+            operators = {"equal": "==", "not_equal": "!=", "less": "<",
+                         "less_equal": "<=", "greater": ">",
+                         "greater_equal": ">=", "or": "||", "and": "&&"}
+            if op in operators:
+                rendered = show(left) + " " + operators[op] + " " + show(right)
+                return "(" + rendered + ")" if op in ("or", "and") else rendered
             raise ValueError("unsupported visibility expression")
         values = {"mesh": mesh_id, "material": _identifier(part["material"]), "visible": show(visible)}
         for shape, variable in shape_variables[section].items(): values["shape." + shape] = variable
@@ -557,7 +596,10 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         require(author_name in author_files, "Format 3 Effect author snapshot is absent: " + author_name)
 
     control_file = "controls.effres"
-    control_data, _runtime_parts = _controls_resource(mod_id, parts, switches, material_clips, effects)
+    control_data, _runtime_parts = _controls_resource(
+        mod_id, parts, switches, material_clips, effects,
+        state_defaults=state_defaults, persistent_states=persistent_states,
+        key_bindings=key_bindings)
     (root / control_file).write_bytes(control_data)
     for relative, identity in effect_resources.items():
         values = {"type": "effect", "path": relative}
@@ -598,65 +640,65 @@ def _digest(path):
     return value.hexdigest().upper()
 
 
-def _manifest(package):
-    package = Path(package).resolve()
-    raw = (package / "source/manifest.json").read_bytes()
-    value = json.loads(raw.decode("utf-8-sig"))
-    require(value.get("format") == "EFFSOURCE" and value.get("version") == 1,
-            "unsupported EFFSOURCE author baseline")
-    rows = {row["cab"]: row for row in value.get("serializedFiles", ())}
-    require(len(rows) == len(value.get("serializedFiles", ())), "duplicate CAB in EFFSOURCE")
-    return package, value, rows
-
-
-def _template(package, manifest, files, kind, path, asset, resource=None):
-    if resource is None:
-        matches = [row for row in manifest["resources"]
-                   if row.get("type") == kind and row.get("logicalPath") == path and row.get("name") == asset]
-        require(len(matches) == 1, f"{kind} source has {len(matches)} exact EFFSOURCE matches: {path} / {asset}")
-        resource = matches[0]
-    else:
-        require((resource.get("type"), resource.get("logicalPath"), resource.get("name")) ==
-                (kind, path, asset), "selected EFFSOURCE template identity differs")
+def _template(source, kind, path, asset, resource, verified_snapshots):
+    package = Path(source.package).resolve()
+    files = source.rows
+    require((resource.get("type"), resource.get("logicalPath"), resource.get("name")) ==
+            (kind, path, asset), "selected EFFSOURCE template identity differs")
     native = resource["native"]
     file = files.get(native["cab"])
     require(file is not None, "EFFSOURCE native CAB is absent: " + native["cab"])
     snapshot = (package / file["snapshot"]["file"]).resolve()
     require(package in snapshot.parents and snapshot.is_file(), "EFFSOURCE snapshot path is invalid")
-    require(_digest(snapshot) == file["snapshot"]["sha256"], "EFFSOURCE snapshot checksum differs: " + native["cab"])
+    key = snapshot, file["snapshot"]["sha256"]
+    if key not in verified_snapshots:
+        require(_digest(snapshot) == key[1], "EFFSOURCE snapshot checksum differs: " + native["cab"])
+        verified_snapshots.add(key)
     return [kind, path, asset, native["cab"], str(native["pathId"]), str(snapshot), file["snapshot"]["sha256"]], file
 
 
-def resolve_templates(source_packages, rules, *, include_texture=False):
+def resolve_templates(sources, rules, *, include_texture=False, additional=()):
     """Resolve templates for the explicitly selected Format 3 Mesh targets."""
-    packages = [_manifest(path) for path in sorted({Path(p).resolve() for p in source_packages}, key=lambda p: str(p).casefold())]
+    packages = {Path(source.package).resolve(): source for source in sources}
+    packages = sorted(packages.items(), key=lambda row: str(row[0]).casefold())
     wanted = {
         ("Mesh", target["sourcePath"], target["sourceAsset"])
         for rule in rules if not rule["hidden"]
         for target in rule["targets"]
     }
+    wanted.update(tuple(row) for row in additional)
 
     texture_template = None
     rows_by_identity = {}
-    for package, manifest, files in packages:
+    verified_snapshots = set()
+    for _package, source in packages:
         wanted_rows = {}
-        for resource in manifest.get("resources", ()):
-            identity = (resource.get("type"), resource.get("logicalPath"), resource.get("name"))
-            if identity in wanted:
-                require(identity not in wanted_rows,
-                        "duplicate exact EFFSOURCE template: " + repr(identity))
-                wanted_rows[identity] = resource
-            if resource.get("type") == "Texture2D" and texture_template is None:
-                texture_template, _ = _template(package, manifest, files, "Texture2D",
-                                                resource["logicalPath"], resource["name"], resource)
+        for identity in wanted:
+            matches = source.find_all(*identity)
+            require(len(matches) <= 1,
+                    "duplicate exact EFFSOURCE template: " + repr(identity))
+            if matches:
+                wanted_rows[identity] = matches[0]
+        if include_texture and texture_template is None:
+            resource = source.first_of_type("Texture2D")
+            if resource is not None:
+                texture_template, _ = _template(
+                    source, "Texture2D", resource["logicalPath"], resource["name"],
+                    resource, verified_snapshots)
         for identity, resource in wanted_rows.items():
             kind, path, asset = identity
             if resource is None:
                 continue
-            row, file = _template(package, manifest, files, kind, path, asset, resource)
+            row, _ = _template(source, kind, path, asset, resource,
+                               verified_snapshots)
             identity = kind, path, asset
-            prior = rows_by_identity.setdefault(identity, row)
-            require(prior == row, f"ambiguous exact {kind} template across selected source packages: {path} / {asset}")
+            prior = rows_by_identity.get(identity)
+            if prior is None:
+                rows_by_identity[identity] = row
+            else:
+                same_native_snapshot = prior[:5] == row[:5] and prior[6] == row[6]
+                require(same_native_snapshot,
+                        f"ambiguous exact {kind} template across selected source packages: {path} / {asset}")
 
     missing = wanted - rows_by_identity.keys()
     require(not missing, "selected EFFSOURCE packages lack exact author templates: " + repr(sorted(missing)))

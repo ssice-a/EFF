@@ -22,6 +22,11 @@ struct Mesh {
   G::AuthorObject object;
   size_t metadataReadBytes=0;
 };
+struct MeshSnapshot {
+  std::shared_ptr<R::File> file;
+  EiemAuthorResourceFile::Layout envelope;
+  D::MeshAsset declaration;
+};
 struct Texture {
   D::TextureAsset declaration;
   std::shared_ptr<const EiemInputSpanView::View> input;
@@ -51,7 +56,7 @@ inline EiemAuthorResourceFile::Layout AuthorLayout(const std::shared_ptr<R::File
   auto layout=EiemAuthorResourceFile::Parse(file->Size(),read);
   Require(layout.kind==kind,"native author resource kind differs");return layout;
 }
-inline D::MeshAsset ReadMeshMetadata(const std::filesystem::path& root,const D::MeshAsset& declaration,
+inline MeshSnapshot ReadMeshMetadata(const std::filesystem::path& root,const D::MeshAsset& declaration,
                                      const std::string& partId) {
   auto file=std::make_shared<R::File>(AssetPath(root,declaration.file),0);
   Bytes metadata;
@@ -63,7 +68,7 @@ inline D::MeshAsset ReadMeshMetadata(const std::filesystem::path& root,const D::
     AddSize(described.nativeBytes,described.authorBytes)==layout.payloadBytes,
     "native/editable author Mesh metadata extents differ");
   file->VerifyStable();
-  return described;
+  return {std::move(file),layout,std::move(described)};
 }
 inline Bytes AuthorMetadata(const std::shared_ptr<R::File>& file,const EiemAuthorResourceFile::Layout& layout) {
   return EiemAuthorResourceFile::ReadMetadata(layout,[file](size_t at,unsigned char* output,size_t size){file->ReadAt(at,output,size);});
@@ -88,9 +93,13 @@ inline std::shared_ptr<const EiemInputSpanView::View> OpenEffectInput(
     std::vector<size_t>{file->Size()},
     [file](size_t,size_t at,unsigned char* out,size_t n){file->ReadAt(at,out,n);});
 }
-inline std::shared_ptr<const Mesh> OpenMesh(const std::filesystem::path& root,const D::MeshAsset& declaration) {
-  auto file=std::make_shared<R::File>(AssetPath(root,declaration.file),0);auto envelope=AuthorLayout(file,1);
-  auto described=EiemAuthorResourceMetadata::DecodeMesh(AuthorMetadata(file,envelope));
+inline std::shared_ptr<const Mesh> OpenMesh(const std::filesystem::path& root,const D::MeshAsset& declaration,
+                                            const MeshSnapshot* snapshot=nullptr) {
+  auto file=snapshot?snapshot->file:std::make_shared<R::File>(AssetPath(root,declaration.file),0);
+  auto envelope=snapshot?snapshot->envelope:AuthorLayout(file,1);
+  Require(envelope.kind==1,"native author Mesh metadata kind differs");
+  auto described=snapshot?snapshot->declaration:
+      EiemAuthorResourceMetadata::DecodeMesh(AuthorMetadata(file,envelope));
   Require(described.part==declaration.part&&described.nativeBytes>0&&described.authorBytes>0&&
     AddSize(described.nativeBytes,described.authorBytes)==envelope.payloadBytes,
     "native/editable author Mesh payload extents differ");
@@ -218,6 +227,7 @@ class Catalog {
   EiemRuntimeAuthorManifest::Manifest manifest_;
   D::Directory directory_;
   std::map<std::string,size_t> parts_;
+  std::map<std::string,MeshSnapshot> meshSnapshots_;
   std::map<std::string,size_t> textureIds_;
   std::map<std::string,size_t> materialIds_;
   std::map<std::string,std::string> effectPaths_;
@@ -302,11 +312,14 @@ public:
     for(const auto& row:shapeMeshResources){
       auto mesh=meshResources.find(row.first);
       Require(mesh!=meshResources.end(),"shape-controlled Mesh resource is absent from the author manifest");
-      auto described=ReadMeshMetadata(root_,mesh->second,row.second);
+      auto snapshot=ReadMeshMetadata(root_,mesh->second,row.second);
+      auto described=snapshot.declaration;
       Require(!described.shapes.empty(),"shape-controlled Mesh metadata has no channels");
       mesh->second.vertices=described.vertices;
       mesh->second.indices=described.indices;
       mesh->second.shapes=std::move(described.shapes);
+      Require(meshSnapshots_.emplace(mesh->second.file,std::move(snapshot)).second,
+              "shape-controlled Mesh resource file is duplicated");
     }
     for(const auto& state:directory_.runtime.parts)if(!state.second.shapes.empty()){
       const auto& part=manifest_.parts.at(state.first);
@@ -337,7 +350,10 @@ public:
   }
   std::shared_ptr<const Mesh> GetMesh(const std::string& part) {
     std::lock_guard<std::mutex> lock(mutex_);auto found=meshes_.find(part);if(found!=meshes_.end())return found->second;
-    auto asset=OpenMesh(root_,directory_.meshes.at(parts_.at(part)));meshes_.emplace(part,asset);return asset;
+    const auto& declaration=directory_.meshes.at(parts_.at(part));
+    auto snapshot=meshSnapshots_.find(declaration.file);
+    auto asset=OpenMesh(root_,declaration,snapshot==meshSnapshots_.end()?nullptr:&snapshot->second);
+    meshes_.emplace(part,asset);return asset;
   }
   size_t OpenMeshes(){std::lock_guard<std::mutex> lock(mutex_);return meshes_.size();}
 private:

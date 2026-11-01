@@ -108,9 +108,21 @@ inline std::string Export(const unsigned char* data,size_t size,const std::files
   Require((member.flags&4)&&layout.externals.empty()&&layout.objects.size()==2,
       "typed Texture scaffold is not an isolated local asset");
   auto names=native.Assets(member,layout);
-  Require(names.size()==1&&names.front().classId==28&&names.front().path==templateRow.identity.path&&
-      names.front().asset==mod+"/"+row.file&&names.front().cab==member.name,
-      "typed Texture scaffold generated identity differs from DLL runtime contract");
+  auto expectedPath=templateRow.identity.path;
+  std::transform(expectedPath.begin(),expectedPath.end(),expectedPath.begin(),
+      [](unsigned char c){return char(std::tolower(c));});
+  bool identityMatches=names.size()==1&&names.front().classId==28&&
+      names.front().path==expectedPath&&names.front().asset==mod+"/"+row.file&&
+      names.front().cab==member.name;
+  if(!identityMatches){
+    std::ostringstream detail;
+    detail<<"typed Texture scaffold generated identity differs from DLL runtime contract"
+      <<" expected={path:"<<expectedPath<<", asset:"<<mod<<"/"<<row.file
+      <<", cab:"<<member.name<<", class:28} actual_count="<<names.size();
+    if(!names.empty())detail<<" actual={path:"<<names.front().path<<", asset:"<<names.front().asset
+      <<", cab:"<<names.front().cab<<", class:"<<names.front().classId<<"}";
+    Require(false,detail.str());
+  }
   auto envelope=EiemAuthorResourceFile::Encode(3,{},asset.bytes);Save(target,row.file,envelope);nativeBytes+=envelope.size();expectedTextures.push_back(std::move(row));
  }
  Require(reader.at==reader.size,"typed author input has trailing bytes");

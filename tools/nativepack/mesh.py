@@ -344,3 +344,201 @@ def renderer_bounds(author,root_bind):
     lower,upper=shape_envelope(author)
     low,high=transformed_envelope(lower,upper,root_bind)
     return dict(m_Center=vector((low+high)*.5),m_Extent=vector((high-low)*.5))
+
+
+def decode_native_mesh(mesh, bone_paths):
+    """Decode a native Mesh TypeTree into the portable EFFMESH author arrays."""
+    vertex = mesh['m_VertexData']
+    count = vertex['m_VertexCount'].data
+    channels = vertex['m_Channels'].items()
+    require(0 < count <= 4000000 and len(channels) == 14,
+            'native Mesh vertex count/channel layout is unsupported')
+    widths = (4, 2, 1, 1, 2, 2, 1, 1, 2, 2, 4, 4)
+    dtypes = ('<f4', '<f2', 'u1', 'i1', '<u2', '<i2', 'u1', 'i1',
+              '<u2', '<i2', '<u4', '<i4')
+    descriptors = [{key: channel[key].data for key in
+                    ('stream', 'offset', 'format', 'dimension')}
+                   for channel in channels]
+    strides, starts = [0]*4, [0]*4
+    for descriptor in descriptors:
+        dimension = descriptor['dimension'] & 15
+        if not dimension:
+            continue
+        stream, offset, fmt = (descriptor['stream'], descriptor['offset'],
+                              descriptor['format'])
+        require(0 <= stream < 4 and 0 <= fmt < len(widths) and
+                0 < dimension <= 4 and offset >= 0 and
+                offset + dimension * widths[fmt] <= 256,
+                'native Mesh channel extent is unsupported')
+        strides[stream] = max(strides[stream], offset + dimension * widths[fmt])
+    data = vertex['m_DataSize'].data
+    size = 0
+    for stream in range(4):
+        starts[stream] = size
+        size = (size + count * strides[stream] + 15) & ~15
+    require(len(data) == size, 'native Mesh vertex stream extent differs')
+
+    import numpy as np
+
+    def channel(index, *, normalized=False):
+        descriptor = descriptors[index]
+        dimension = descriptor['dimension'] & 15
+        if dimension == 0:
+            return None
+        stream, offset, fmt = (descriptor['stream'], descriptor['offset'],
+                               descriptor['format'])
+        values = np.ndarray((count, dimension), dtype=dtypes[fmt], buffer=data,
+                            offset=starts[stream] + offset,
+                            strides=(strides[stream], widths[fmt])).astype(np.float64)
+        if normalized and fmt == 2:
+            values /= 255.0
+        elif normalized and fmt == 3:
+            values = np.maximum(values / 127.0, -1.0)
+        elif normalized and fmt == 4:
+            values /= 65535.0
+        elif normalized and fmt == 5:
+            values = np.maximum(values / 32767.0, -1.0)
+        return values
+
+    positions = channel(0)
+    require(descriptors[0]['format'] == 0 and descriptors[0]['dimension'] == 3,
+            'native Mesh positions are not Float32x3')
+    require(np.all(np.isfinite(positions)), 'native Mesh positions are nonfinite')
+
+    normal_descriptor = descriptors[1]
+    if normal_descriptor['dimension'] == 0x31:
+        require(normal_descriptor['format'] == 0 and
+                descriptors[2]['dimension'] == 0,
+                'native packed Mesh frame layout differs')
+        words = np.ndarray((count,), dtype='<u4', buffer=data,
+                           offset=starts[normal_descriptor['stream']] +
+                           normal_descriptor['offset'],
+                           strides=(strides[normal_descriptor['stream']],)).copy()
+        require(np.all(words & 0x40000000),
+                'native packed Mesh frame marker is absent')
+        normals, tangents = unpack_frames(words)
+    else:
+        require(normal_descriptor['format'] == 0 and
+                normal_descriptor['dimension'] == 3 and
+                descriptors[2]['format'] == 0 and
+                descriptors[2]['dimension'] == 4,
+                'native Mesh Float32 frame layout differs')
+        normals, tangents = channel(1), channel(2)
+    require(np.all(np.isfinite(normals)) and np.all(np.isfinite(tangents)),
+            'native Mesh frame data is nonfinite')
+
+    uvs = []
+    for index in range(4, 12):
+        values = channel(index)
+        if values is not None:
+            require(descriptors[index]['format'] == 0 and values.shape[1] >= 2,
+                    'native Mesh UV channel is not Float32')
+            values[:, 1] = 1.0 - values[:, 1]
+            uvs.append(values.reshape(-1).tolist())
+        else:
+            uvs.append([])
+    if any(uvs[0]):
+        tangents[:, 3] *= -1.0
+
+    colors = channel(3)
+    if colors is not None:
+        require(descriptors[3]['format'] == 0 and colors.shape[1] == 4,
+                'native Mesh colors are not Float32x4')
+    indices_data = bytes(mesh['m_IndexBuffer'].items())
+    index_format = mesh['m_IndexFormat'].data
+    require(index_format in (0, 1), 'native Mesh index format is unsupported')
+    index_dtype = '<u2' if index_format == 0 else '<u4'
+    indices = np.frombuffer(indices_data, dtype=index_dtype).astype(np.uint32)
+    require(len(indices) > 0 and len(indices) % 3 == 0 and
+            np.all(indices < count), 'native Mesh triangle indices are invalid')
+
+    palette = len(bone_paths)
+    bindposes = []
+    for matrix in mesh['m_BindPose'].items():
+        value = matrix.plain()
+        bindposes.append([value[f'e{row}{column}']
+                          for column in range(4) for row in range(4)])
+    bone_hashes = [value.data for value in mesh['m_BoneNameHashes'].items()]
+    require(len(bindposes) == len(bone_hashes) == palette,
+            'native Mesh bone palette metadata differs')
+    weights = channel(12, normalized=True)
+    bone_indices = channel(13)
+    if palette:
+        require(weights is not None and bone_indices is not None and
+                weights.shape == bone_indices.shape == (count, 4),
+                'native Mesh skin channels are unsupported')
+        require(descriptors[12]['format'] in (0, 1, 2, 3, 4, 5) and
+                descriptors[13]['format'] in (0, 1, 2, 3, 6, 7, 8, 9, 10, 11),
+                'native Mesh skin encoding is unsupported')
+        require(np.all(np.isfinite(weights)) and np.all(weights >= 0) and
+                np.all(bone_indices >= 0) and np.all(bone_indices < palette),
+                'native Mesh skin values are invalid')
+        sums = weights.sum(axis=1)
+        require(np.all(sums > 0), 'native Mesh vertex has no skin influence')
+        weights /= sums[:, None]
+        skin = [(w.tolist(), b.astype(np.uint32).tolist())
+                for w, b in zip(weights, bone_indices)]
+    else:
+        require(weights is None and bone_indices is None,
+                'native unskinned Mesh contains skin channels')
+        skin = []
+
+    submeshes = []
+    index_width = 2 if index_format == 0 else 4
+    for row in mesh['m_SubMeshes'].items():
+        native = row.plain()
+        first_byte = native['firstByte']
+        require(first_byte % index_width == 0,
+                'native Mesh SubMesh byte offset is misaligned')
+        submeshes.append((native['topology'], first_byte // index_width,
+                          native['indexCount'], native['baseVertex'],
+                          native['firstVertex'], native['vertexCount']))
+    require(submeshes and all(row[0] == 0 and row[2] % 3 == 0
+                              for row in submeshes),
+            'native Mesh contains unsupported non-triangle SubMeshes')
+
+    shape_data = mesh['m_Shapes']
+    blend_vertices = []
+    for row in shape_data['vertices'].items():
+        value = row.plain()
+        blend_vertices.append((value['index'],
+                               [value['vertex'][axis] for axis in ('x', 'y', 'z')],
+                               [value['normal'][axis] for axis in ('x', 'y', 'z')],
+                               [value['tangent'][axis] for axis in ('x', 'y', 'z')]))
+    blend_frames = []
+    for row in shape_data['shapes'].items():
+        value = row.plain()
+        blend_frames.append(("", value['firstVertex'], value['vertexCount'],
+                             value['hasNormals'], value['hasTangents'], False))
+    blend_channels = []
+    for row in shape_data['channels'].items():
+        value = row.plain()
+        first = value['frameIndex']
+        stop = first + value['frameCount']
+        require(value['frameCount'] > 0 and stop <= len(blend_frames),
+                'native Mesh BlendShape channel range differs')
+        for index in range(first, stop):
+            frame = blend_frames[index]
+            blend_frames[index] = (value['name'], *frame[1:])
+        blend_channels.append((value['name'], value['nameHash'], first,
+                               value['frameCount']))
+    blend_weights = [value.data for value in shape_data['fullWeights'].items()]
+    require(len(blend_frames) == len(blend_weights),
+            'native Mesh BlendShape frame weights differ')
+    additional_shape_normals = any(frame[5] for frame in blend_frames)
+    require(not additional_shape_normals,
+            'native Mesh additional BlendShape normal payload is unsupported')
+
+    return dict(version=6, coordinate='Blender', source='',
+                name=mesh['m_Name'].data, vertex_count=count,
+                vertices=positions.reshape(-1).tolist(),
+                normals=normals.reshape(-1).tolist(),
+                tangents=tangents.reshape(-1).tolist(),
+                colors=[] if colors is None else colors.reshape(-1).tolist(),
+                uvs=uvs, indices=indices.tolist(), submeshes=submeshes,
+                skin=skin, bindposes=bindposes, bone_hashes=bone_hashes,
+                bone_paths=list(bone_paths), bone_index_paths=[],
+                bone_sources=[], bone_source_candidates=[[] for _ in range(palette)],
+                blend_vertices=blend_vertices, blend_frames=blend_frames,
+                blend_channels=blend_channels, blend_weights=blend_weights,
+                additional=[])

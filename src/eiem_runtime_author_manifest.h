@@ -68,10 +68,10 @@ inline double TextureNumber(const std::map<std::string, std::string>& values,
   return parsed;
 }
 
-inline Manifest Read(const std::filesystem::path& root) {
+inline Manifest Read(const std::filesystem::path& root,
+                     const std::vector<Section>& sections) {
   Manifest result;
   result.root = std::filesystem::canonical(root);
-  const auto sections = ParseIni(EiemDirectory::Read(result.root / "mod.ini"));
   std::map<std::string, const Section*> index;
   for (const auto& section : sections)
     Require(index.emplace(section.id, &section).second, "duplicate author manifest section");
@@ -215,7 +215,7 @@ inline Manifest Read(const std::filesystem::path& root) {
     }
   }
 
-  result.targets = EiemMeshTargetDirectory::Read(result.root);
+  result.targets = EiemMeshTargetDirectory::Read(result.root, sections);
   std::set<std::string> rules;
   for (const auto& target : result.targets) rules.insert(target.rule);
   for (const auto& row : result.resources)
@@ -228,5 +228,10 @@ inline Manifest Read(const std::filesystem::path& root) {
     Require(result.resources.count(row.second.mesh) && result.resources.count(row.second.material),
             "unreferenced Part has missing resources: " + row.first);
   return result;
+}
+inline Manifest Read(const std::filesystem::path& root) {
+  const auto canonicalRoot = std::filesystem::canonical(root);
+  const auto sections = ParseIni(EiemDirectory::Read(canonicalRoot / "mod.ini"));
+  return Read(canonicalRoot, sections);
 }
 } // namespace EiemRuntimeAuthorManifest

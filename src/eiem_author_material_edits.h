@@ -64,12 +64,29 @@ inline Author Parse(const Bytes& bytes){
   else if(kind=="keyword"){
    Require(value=="0"||value=="1"||value=="false"||value=="true","invalid EFFMAT keyword value: "+key);
    inserted=result.edits.keywords.emplace(property,value=="1"||value=="true").second;
+  }else if(kind=="remove"){
+   auto separator=property.find('.');Require(separator!=std::string::npos&&separator+1<property.size(),"invalid EFFMAT removal: "+key);
+   auto removalKind=property.substr(0,separator),removed=property.substr(separator+1);std::string field;
+   if(removalKind=="float")field="m_Floats";else if(removalKind=="int")field="m_Ints";
+   else if(removalKind=="color"||removalKind=="value4")field="m_Colors";
+   else if(removalKind=="texture")field="m_TexEnvs";else if(removalKind=="tag")field="stringTagMap";
+   else throw std::runtime_error("unsupported EFFMAT removal: "+key);
+   Require(value=="1"||value=="true","invalid EFFMAT removal value: "+key);
+   inserted=result.edits.removed[field].insert(std::move(removed)).second;
   }else if(kind=="tag")inserted=result.edits.tags.emplace(property,value).second;
   else if(kind=="texture"){
    Require(!value.empty()&&result.textures.emplace(property,value).second,"duplicate or empty EFFMAT texture binding: "+key);continue;
   }else throw std::runtime_error("unsupported EFFMAT edit: "+key);
   Require(inserted,"duplicate EFFMAT operation: "+key);
  }
+ auto removed=[&](const char* field,const std::string& name){auto found=result.edits.removed.find(field);return found!=result.edits.removed.end()&&found->second.count(name);};
+ for(const auto& row:result.edits.floats)Require(!removed("m_Floats",row.first),"conflicting EFFMAT removal/value: "+row.first);
+ for(const auto& row:result.edits.integers)Require(!removed("m_Ints",row.first),"conflicting EFFMAT removal/value: "+row.first);
+ for(const auto& row:result.edits.colors)Require(!removed("m_Colors",row.first),"conflicting EFFMAT removal/value: "+row.first);
+ for(const auto& row:result.edits.scales)Require(!removed("m_TexEnvs",row.first),"conflicting EFFMAT removal/texture scale: "+row.first);
+ for(const auto& row:result.edits.offsets)Require(!removed("m_TexEnvs",row.first),"conflicting EFFMAT removal/texture offset: "+row.first);
+ for(const auto& row:result.textures)Require(!removed("m_TexEnvs",row.first),"conflicting EFFMAT removal/texture binding: "+row.first);
+ for(const auto& row:result.edits.tags)Require(!removed("stringTagMap",row.first),"conflicting EFFMAT removal/tag value: "+row.first);
  return result;
 }
 inline const Value* Find(const Type& type,const Value& parent,const char* name){
