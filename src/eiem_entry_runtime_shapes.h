@@ -40,11 +40,14 @@ struct Bound {
   std::string marker;
   std::map<std::string,int> indices;
   bool nativeEnabled = true;
+  bool tracksNativeEnabled = false;
+  bool restoreNativeIntent = false;
   bool modelReady = false;
   Ref filter;
   uint64_t visibilityRevision=~uint64_t(0);
   bool shapeCompatible = true;
 };
+struct RetiredNativeIntent {Ref renderer;bool nativeEnabled=true;};
 struct Snapshot { Ref mesh; };
 struct CaptureScope {
   CaptureScope* previous = nullptr;
@@ -79,10 +82,12 @@ std::atomic<bool> enabled{false};
 std::atomic<unsigned> boundCount{0};
 unsigned packageGeneration = 0, checkedGeneration = 0;
 bool registrationPaused = false;
-bool visibilityWriting = false;
+thread_local bool visibilityWriting = false;
+std::atomic<DWORD> visibilityThread{0};
 using EnabledSetterFn = void (*)(void*,bool);
 EnabledSetterFn originalEnabledSetter = nullptr;
 std::map<void*,Bound> bound;
+std::map<void*,RetiredNativeIntent> retiredNativeIntents;
 std::map<void*,Cached> cached;
 std::vector<Group> groups;
 thread_local CaptureScope* scope = nullptr;
@@ -103,11 +108,6 @@ TickFn originalHelperInit = nullptr;
 void* helperRenderersField=nullptr;
 using EnabledGetterFn = bool (*)(void*);
 EnabledGetterFn originalEnabledGetter=nullptr;
-thread_local unsigned nativeVisibilityReadDepth=0;
-struct NativeVisibilityReadScope {
-  NativeVisibilityReadScope(){++nativeVisibilityReadDepth;}
-  ~NativeVisibilityReadScope(){--nativeVisibilityReadDepth;}
-};
 MeshGetterFn originalMeshGetter = nullptr;
 using ShapeCountFn = int (*)(void*);
 using FilterSetterFn = void (*)(void*,void*);
@@ -185,16 +185,42 @@ template <class T> T Scalar(void* method, void* self = nullptr, void** arguments
   Require(boxed && CopyRaw(il2cpp_object_unbox(boxed),&result,sizeof(result)), "runtime shape scalar result");
   return result;
 }
-bool Main() { bool main=Scalar<unsigned char>(api.main)!=0;if(main)EiemLoadPerformance::ObserveMainThread();return main; }
+bool ActualEnabled(void* renderer) {
+  // DLL consumers need the rendered flag, never the game's native-intent view.
+  return originalEnabledGetter?originalEnabledGetter(renderer):Scalar<unsigned char>(api.getEnabled,renderer)!=0;
+}
+bool Main() { bool main=Scalar<unsigned char>(api.main)!=0;if(main){visibilityThread.store(GetCurrentThreadId(),std::memory_order_relaxed);EiemLoadPerformance::ObserveMainThread();}return main; }
 bool Alive(void* object) {
   if (!object) return false;
   void* arguments[] = {object};
   return Scalar<unsigned char>(api.alive,nullptr,arguments) != 0;
 }
+bool TakeRetiredNativeIntent(void* renderer,bool& nativeEnabled) {
+  auto found=retiredNativeIntents.find(renderer);
+  if(found==retiredNativeIntents.end())return false;
+  auto target=found->second.renderer.Get();
+  if(target!=renderer||!Alive(target)){retiredNativeIntents.erase(found);return false;}
+  nativeEnabled=found->second.nativeEnabled;
+  retiredNativeIntents.erase(found);
+  return true;
+}
+void RetireRenderer(void* renderer) {
+  auto found=bound.find(renderer);
+  if(found==bound.end())return;
+  try {
+    auto target=found->second.renderer.Get();
+    if(target==renderer&&Alive(target)&&found->second.tracksNativeEnabled)
+      retiredNativeIntents[renderer]=RetiredNativeIntent{Ref::Make(target,true),found->second.nativeEnabled};
+  } catch(const std::exception& e) {Log("[CONTROL-RUNTIME-GAP] nativeIntentRetire=%s",e.what());}
+  bound.erase(found);
+  boundCount.store(unsigned(bound.size()));
+}
+void RetireAllRenderers() {while(!bound.empty())RetireRenderer(bound.begin()->first);}
 void PruneCached(){
   // Cached source geometry is consulted only by capture/model events. Its
   // weak ownership is checked at those boundaries, not on every game frame.
   for(auto it=cached.begin();it!=cached.end();)if(!Alive(it->second.mesh.Get()))it=cached.erase(it);else ++it;
+  for(auto it=retiredNativeIntents.begin();it!=retiredNativeIntents.end();)if(!Alive(it->second.renderer.Get()))it=retiredNativeIntents.erase(it);else ++it;
 }
 template <class V> std::vector<V> Array(void* object, size_t expected) {
   size_t length = 0;
@@ -272,11 +298,16 @@ const Spec* Match(void* mesh) {return Match(nullptr,mesh);}
 void Bind(void* renderer, void* mesh, const Spec& spec) {
   auto existing = bound.find(renderer);
   if (existing != bound.end() && existing->second.renderer.Get() == renderer && existing->second.mesh.Get() == mesh) return;
+  if(existing!=bound.end()) {
+    if(existing->second.renderer.Get()==renderer)RetireRenderer(renderer);
+    else {bound.erase(existing);boundCount.store(unsigned(bound.size()));}
+  }
   Require(Alive(renderer) && Alive(mesh), "runtime shape binding target is no longer alive");
   // A managed Mesh wrapper can be collected while its native Renderer still
   // uses the asset. Keep that wrapper until this Renderer binding retires;
   // native validity is still checked independently on the main thread.
   Bound b{Ref::Make(renderer,true),Ref::Make(mesh,false),spec.marker,{}};
+  b.tracksNativeEnabled=bool(spec.visible);
   b.shapeCompatible=spec.channels.empty();
   if(!spec.channels.empty()) {
     auto rendererKind=RendererKind(renderer);
@@ -294,7 +325,11 @@ void Bind(void* renderer, void* mesh, const Spec& spec) {
           spec.part.c_str(),spec.vertices,actualVertices,spec.channels.size(),actualShapes,rendererKind);
   }
   if(RendererKind(renderer)==23)b.filter=Ref::Make(SourceFilter(renderer),false);
-  if (spec.visible) b.nativeEnabled=Scalar<unsigned char>(api.getEnabled,renderer)!=0;
+  bool restoredNativeIntent=TakeRetiredNativeIntent(renderer,b.nativeEnabled);
+  if (spec.visible) {
+    if(restoredNativeIntent)b.restoreNativeIntent=true;
+    else b.nativeEnabled=ActualEnabled(renderer);
+  }
   bound[renderer] = std::move(b);
   boundCount.store(unsigned(bound.size()));
   Log("[SHAPE-RUNTIME-BIND] renderer=%p mesh=%p part=%s vertices=%u channels=%zu shapeCompatible=%d nativeShapesRetained=1",
@@ -621,6 +656,15 @@ void SetEnabled(void* renderer,bool nativeRequest) {
           it->second.nativeEnabled=nativeRequest;
           output=nativeRequest && (!it->second.modelReady || spec.visible->Evaluate(variables.at(spec.package))!=0);
         }
+      } else {
+        auto retired=retiredNativeIntents.find(renderer);
+        if(retired!=retiredNativeIntents.end()) {
+          auto target=retired->second.renderer.Get();
+          if(target==renderer&&Alive(target)) {
+            retired->second.nativeEnabled=nativeRequest;
+          }
+          else retiredNativeIntents.erase(retired);
+        }
       }
     }
   } catch(const std::exception& e) {Log("[CONTROL-RUNTIME-GAP] nativeEnabled=%s",e.what());}
@@ -631,12 +675,10 @@ void ApplyVisibility(void* renderer,Bound& binding,const Spec& spec,bool onlyIfC
   if(onlyIfChanged&&binding.visibilityRevision==RuntimeControls::valueRevision)return;
   bool authorVisible=spec.visible->Evaluate(variables.at(spec.package))!=0;
   bool target=binding.nativeEnabled && authorVisible;
-  // Our comparisons and write readback need the actual flag, including when
-  // helper completion is nested inside the game's native snapshot scope.
-  struct Guard {Guard(){visibilityWriting=true;}~Guard(){visibilityWriting=false;}} guard;
-  if ((Scalar<unsigned char>(api.getEnabled,renderer)!=0)==target) {binding.visibilityRevision=RuntimeControls::valueRevision;return;}
+  struct Guard {bool old=visibilityWriting;Guard(){visibilityWriting=true;}~Guard(){visibilityWriting=old;}} guard;
+  if (ActualEnabled(renderer)==target) {binding.visibilityRevision=RuntimeControls::valueRevision;return;}
   originalEnabledSetter(renderer,target);
-  Require((Scalar<unsigned char>(api.getEnabled,renderer)!=0)==target,"runtime visibility readback mismatch");
+  Require(ActualEnabled(renderer)==target,"runtime visibility readback mismatch");
   binding.visibilityRevision=RuntimeControls::valueRevision;
   Log("[CONTROL-RUNTIME-VISIBILITY] package=%s part=%s renderer=%p authorVisible=%d nativeEnabled=%d enabled=%d",
       spec.package.c_str(),spec.part.c_str(),renderer,int(authorVisible),int(binding.nativeEnabled),int(target));
@@ -647,9 +689,10 @@ void RegisterRenderer(void* renderer,void* mesh,bool modelReady=true) {
     Bind(renderer,mesh,*spec);
     auto& binding=bound.at(renderer);
     if(modelReady && !binding.modelReady) {
-      // Before helper/model completion there is no author filtering. Later
-      // view-part snapshot reads have their own native-intent scope.
-      if(spec->visible) binding.nativeEnabled=Scalar<unsigned char>(api.getEnabled,renderer)!=0;
+      // Before first completion there is no author filtering. Reused instances
+      // retain their native intent independently of the rendered flag.
+      if(spec->visible&&!binding.restoreNativeIntent) binding.nativeEnabled=ActualEnabled(renderer);
+      binding.restoreNativeIntent=false;
       binding.modelReady=true;
     }
     ApplyVisibility(renderer,binding,*spec);
@@ -721,14 +764,18 @@ size_t RegisterRendererList(void* renderers,bool modelReady) {
   performance.hit=ready!=0;return ready;
 }
 bool GetEnabled(void* renderer) {
-  // View parts save their initial enabled state after helper initialization.
-  // In that exact call scope return native intent, so authored hiding cannot
-  // become a permanent native disable. Normal reads retain the real flag.
-  if(enabled&&nativeVisibilityReadDepth&&!visibilityWriting) {
+  // Game code can snapshot/replay visibility at any lifecycle boundary. Its
+  // read must match its last request, not our author-filtered render output.
+  // Bindings are main-thread-owned; other threads never inspect these maps.
+  if(enabled&&GetCurrentThreadId()==visibilityThread.load(std::memory_order_relaxed))try {
     auto binding=bound.find(renderer);
-    if(binding!=bound.end()&&binding->second.renderer.Get()==renderer&&binding->second.modelReady)
-      return binding->second.nativeEnabled;
-  }
+    if(binding!=bound.end()&&binding->second.tracksNativeEnabled&&
+       binding->second.renderer.Get()==renderer&&Alive(renderer)&&
+       SourceMesh(renderer)==binding->second.mesh.Get())return binding->second.nativeEnabled;
+    auto retired=retiredNativeIntents.find(renderer);
+    if(retired!=retiredNativeIntents.end()&&retired->second.renderer.Get()==renderer&&Alive(renderer))
+      return retired->second.nativeEnabled;
+  } catch(const std::exception& e) {Log("[CONTROL-RUNTIME-GAP] nativeEnabledRead=%s",e.what());}
   return originalEnabledGetter(renderer);
 }
 void HelperInitialized(void* self,void* info) {
@@ -799,10 +846,16 @@ void Update() {
     bool cleanup=(uintptr_t(it->first)>>4)%64==unsigned(frame)%64;
     if(spec.controls.empty()&&!visibilityDirty&&!cleanup){++it;continue;}
     auto renderer=it->second.renderer.Get(), mesh=it->second.mesh.Get();
-    if (!Alive(renderer) || !Alive(mesh)) { it=bound.erase(it); continue; }
+    if (!Alive(renderer) || !Alive(mesh)) {
+      if(Alive(renderer)) {auto key=it->first;++it;RetireRenderer(key);}
+      else {it=bound.erase(it);boundCount.store(unsigned(bound.size()));}
+      continue;
+    }
     auto filter=it->second.filter.Get();
     auto current=it->second.filter.handle?(Alive(filter)?Call(api.filterMesh,filter):nullptr):SourceMesh(renderer);
-    if (current!=mesh) { it=bound.erase(it); continue; }
+    if (current!=mesh) {
+      auto key=it->first;++it;RetireRenderer(key);continue;
+    }
     ApplyVisibility(renderer,it->second,spec,true);
     if(it->second.shapeCompatible) for (const auto& control : spec.controls) {
       int index=it->second.indices.at(control.first);

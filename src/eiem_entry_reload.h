@@ -20,7 +20,7 @@ void Write(const Mutation& m,float value) {
   if(m.index<0) {
     struct Guard {bool old=RuntimeShapes::visibilityWriting;Guard(){RuntimeShapes::visibilityWriting=true;}~Guard(){RuntimeShapes::visibilityWriting=old;}} guard;
     RuntimeShapes::originalEnabledSetter(m.renderer,value!=0);
-    Require((RuntimeShapes::Scalar<unsigned char>(RuntimeShapes::api.getEnabled,m.renderer)!=0)==(value!=0),"reload visibility readback mismatch");
+    Require(RuntimeShapes::ActualEnabled(m.renderer)==(value!=0),"reload visibility readback mismatch");
   } else {
     int index=m.index;void* args[]={&index,&value};
     RuntimeShapes::Call(RuntimeShapes::api.setWeight,m.renderer,args);
@@ -37,7 +37,7 @@ void ApplyControls(RuntimeControls::State& next,bool (*sample)(const EiemKeyChor
     const auto& old=RuntimeControls::specs.at(b.marker);const auto& spec=next.specs.at(b.marker);
     Require(old.channels==spec.channels && old.vertices==spec.vertices,"reload live Mesh layout changed");
     const auto& values=next.variables.at(spec.package);
-    float before=RuntimeShapes::Scalar<unsigned char>(RuntimeShapes::api.getEnabled,renderer)!=0;
+    float before=RuntimeShapes::ActualEnabled(renderer);
     float target=b.modelReady ? b.nativeEnabled && (!spec.visible || spec.visible->Evaluate(values)!=0) : before;
     if(before!=target) changes.push_back({renderer,-1,before,target});
     // Formerly owned channels return to zero when their binding is removed.

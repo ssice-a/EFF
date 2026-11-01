@@ -141,6 +141,16 @@ jobs:
         & "bin/resource-directory-entry-v35/full_resource_reload_smoke.exe"
         if ($LASTEXITCODE -ne 0) { throw 'Reload test failed' }
 
+    - name: Verify Format 3 dependency and visibility regressions
+      shell: pwsh
+      run: |
+        cmd /c tools\diagnostics\build_demand_resource_regressions.cmd
+        if ($LASTEXITCODE -ne 0) { throw 'Demand dependency regressions failed' }
+        cmd /c tools\diagnostics\build_runtime_shape_bridge_smoke.cmd
+        if ($LASTEXITCODE -ne 0) { throw 'Visibility bridge test build failed' }
+        & bin/resource-directory-entry/runtime_shape_bridge_smoke.exe
+        if ($LASTEXITCODE -ne 0) { throw 'Visibility lifecycle regression failed' }
+
     - name: Load the actual production DLL in an isolated host
       shell: pwsh
       run: |

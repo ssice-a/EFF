@@ -1,4 +1,4 @@
-# Format-2 runtime key controls
+# Format-3 runtime key controls
 
 The serialized-input entry registers all `[Key...]` declarations automatically
 for authored parts, including constant `visible=` expressions. Diagnostic or
@@ -24,9 +24,12 @@ transactions are described in [the architecture](code-architecture.md).
   children, including inactive renderers; native material-controller Init also
   registers its explicit list provisionally. The helper's `InitAll` completion
   activates bindings from its own cached Renderer list, covering NPCs that do
-  not use a view part. Base/Complex view-part initialization reads native
-  enabled intent in an exact nested scope so its initial snapshot cannot capture
-  author hiding; other reads return actual enabled flags. Reused instances retain
+  not use a view part. Game `Renderer.enabled` reads return the last native
+  enabled intent for controlled instances, including while retained in a pool.
+  This boundary applies to every game caller, so a later ultimate/model-switch
+  snapshot cannot cache author hiding as a native disable. DLL visibility
+  comparisons, reload rollback and attached effects use `ActualEnabled` through
+  the original getter to inspect the rendered flag. Reused instances retain
   native intent and current author values. F10 registers rebuilt models immediately after
   the new control graph is published and restores bindings during rollback.
   No periodic scene-wide Renderer discovery is used.
@@ -51,11 +54,36 @@ preserves geometry, indices, bindposes, weights and resource references.
 The binding evaluates `Part.visible` against shared Mod state and combines it
 with the game's native enabled request through public `Renderer.enabled`.
 Showing a part cannot re-enable a Renderer that the game requested disabled.
+The final flag is `nativeEnabled && authorVisible`; game requests update only
+native intent and Mod controls update only author visibility. Read/write hooks
+access binding state only on the Unity main thread. Uncontrolled Renderers and
+disabled runtime calls retain the original getter/setter behavior. No caller-
+specific snapshot scopes or per-frame forced re-enabling are used.
 Switches do not activate GameObjects, change bones or rebuild base resources.
 Shape controls write only their declared channels through public bindings.
 Registration inspects the original source getter, including during afterimage
 capture. Immutable capture snapshots retain their native palette, frame and
 lifetime until actual native Release.
+
+### Ultimate/model reuse regression (2026-11-02)
+
+The ZFY trace showed NumPad4 still cycling 0/1/2 after the reported failure.
+The two Parts exclusive to state 0 received native disable requests after
+reuse without a later enable; suppressing those Parts makes states 0 and 1
+look identical. The trace establishes the request sequence, but does not
+identify the game's exact snapshot caller.
+
+An always-run `runtime_shape_bridge_smoke` case reproduces the same symptom
+by snapshotting author-hidden Renderers outside completion callbacks, disabling
+and retiring the world model, then rebinding and replaying the snapshot. Before
+the boundary fix, state 0 yields world signature 2 and UI signature 3. After
+the fix, all three signatures agree. The case also checks true native hiding,
+pooled intent, stale Mesh rejection, off-thread passthrough, disabled runtime
+and reload write/readback/rollback. The 128-Renderer/64-frame idle query budget
+remains unchanged. The full resource-reload mock suite, effect attachment
+suite (including author-hidden effects), production DLL build and isolated
+host-runtime loading pass. The user confirmed the ultimate/model-switch fix in game
+on 2026-11-02; that confirmation covers the reported ZFY state loss.
 
 ## Shape animation clips
 

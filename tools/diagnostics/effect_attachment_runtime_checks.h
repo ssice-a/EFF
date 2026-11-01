@@ -123,7 +123,16 @@ void SplitOwnerChecks(){
  auto refreshed=effect;refreshed.native=EffectTest::Manifest('6');
  A::pendingStandalone=std::make_shared<const std::vector<Package>>();A::pendingEffects[p.id]={{refreshed.id,refreshed}};A::pendingForceReload=true;A::reloadPending=true;tick();
  Require(world.instance!=worldBefore&&npc.instance!=npcBefore&&ui.instance!=uiBeforeReload&&world.generation==ui.generation&&world.generation==npc.generation,"changed F9 did not update all world/NPC/UI instances independently");
- hiddenRenderers.insert(Test::newRenderer);A::Frame();Require(!world.instance&&npc.instance&&ui.instance,"visible sibling defeated mounted Part visibility or hid unrelated model effects");hiddenRenderers.clear();tick();
+ // Game reads native intent, but effect attachments must use rendered state.
+ auto previousEnabledGetter=RuntimeShapes::originalEnabledGetter;
+ RuntimeShapes::originalEnabledGetter=[](void* renderer)->bool{return !hiddenRenderers.count(renderer);};
+ auto& hiddenBinding=RuntimeShapes::bound.at(Test::newRenderer);auto previousTracking=hiddenBinding.tracksNativeEnabled;
+ hiddenBinding.tracksNativeEnabled=true;hiddenBinding.nativeEnabled=true;
+ hiddenRenderers.insert(Test::newRenderer);
+ Require(RuntimeShapes::GetEnabled(Test::newRenderer)&&!RuntimeShapes::ActualEnabled(Test::newRenderer),"effect fixture did not separate game intent from rendered visibility");
+ A::Frame();Require(!world.instance&&npc.instance&&ui.instance,"author-hidden Part retained an effect because native intent was enabled");
+ hiddenBinding.tracksNativeEnabled=previousTracking;RuntimeShapes::originalEnabledGetter=previousEnabledGetter;
+ hiddenRenderers.clear();tick();
  auto worldInstance=world.instance,uiInstance=ui.instance;auto previousHelperRelease=FullResourceReload::originalHelperRelease;FullResourceReload::originalHelperRelease=[](void*,void*){};
  FullResourceReload::HelperReleased(Test::unrelatedHelper,nullptr);FullResourceReload::originalHelperRelease=previousHelperRelease;FullResourceReload::api.componentGo=previousComponentGo;Test::currentRoot=Test::oldRoot;
  Require(A::bindings.size()==2&&world.instance==worldInstance&&ui.instance==uiInstance,"NPC pool release destroyed world/UI effects");

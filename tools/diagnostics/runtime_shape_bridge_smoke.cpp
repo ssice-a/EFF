@@ -362,7 +362,70 @@ int main(int argc,char** argv) {
       RuntimeShapes::bound=bound;RuntimeShapes::cached=cached;RuntimeShapes::specs=specs;RuntimeShapes::keys=keys;RuntimeShapes::variables=variables;RuntimeShapes::api=api;RuntimeShapes::lastFrame=lastFrame;RuntimeShapes::packageGeneration=packageGeneration;RuntimeShapes::boundCount=unsigned(bound.size());Test::renderMeshes.clear();Test::renderEnabled.clear();
       Require(Test::handles.empty(),"idle visibility test leaks managed handles");
     }
-    // Integration against the actual format-2 package: model completion,
+    stage="three-state switch across game snapshot and model reuse";
+    {
+      const auto api=RuntimeShapes::api;const auto specs=RuntimeShapes::specs;
+      const auto variables=RuntimeShapes::variables;const auto bound=RuntimeShapes::bound;
+      const auto retired=RuntimeShapes::retiredNativeIntents;const auto setter=RuntimeShapes::originalEnabledSetter;
+      const auto getter=RuntimeShapes::originalEnabledGetter;const auto revision=RuntimeControls::valueRevision;
+      RuntimeShapes::bound.clear();RuntimeShapes::retiredNativeIntents.clear();RuntimeShapes::specs.clear();
+      RuntimeShapes::variables={{"fixture",{{"$switch",0}}}};
+      RuntimeShapes::api.mesh=(void*)0x303;RuntimeShapes::api.name=(void*)0x306;
+      RuntimeShapes::api.getEnabled=(void*)0x308;RuntimeShapes::api.alive=(void*)1;
+      RuntimeShapes::originalEnabledSetter=Test::Enabled;RuntimeShapes::originalEnabledGetter=Test::EnabledGetter;
+      void* renderers[2][2]={{(void*)0x71000,(void*)0x71010},{(void*)0x72000,(void*)0x72010}};
+      for(int part=0;part<2;++part) {
+        RuntimeShapes::Spec spec;spec.marker="snapshot-part-"+std::to_string(part);spec.part=spec.marker;spec.package="fixture";
+        std::string expression=part==0?"$switch == 0":"$switch != 2",error;
+        spec.visible=EiemExpressionParser(expression,error).Parse();Require(bool(spec.visible),"snapshot fixture expression");
+        RuntimeShapes::specs.emplace(spec.marker,spec);auto mesh=(void*)(uintptr_t(0x73000)+part*16);Test::MakeMesh(mesh,spec);
+        for(int instance=0;instance<2;++instance) {
+          auto renderer=renderers[instance][part];Test::renderMeshes[renderer]=mesh;Test::renderEnabled[renderer]=1;
+          RuntimeShapes::RegisterRenderer(renderer,mesh,true);
+        }
+      }
+      auto state=[&](int value,int instance) {
+        RuntimeShapes::variables.at("fixture").at("$switch")=value;++RuntimeControls::valueRevision;
+        unsigned signature=0;for(int part=0;part<2;++part){auto renderer=renderers[instance][part];auto& b=RuntimeShapes::bound.at(renderer);
+          RuntimeShapes::ApplyVisibility(renderer,b,RuntimeShapes::specs.at(b.marker));
+          if(Test::renderEnabled.at(renderer))signature|=1u<<part;
+        }return signature;
+      };
+      Require(state(0,0)==3&&state(1,0)==2&&state(2,0)==0,"initial world switch does not have three distinct combinations");
+      state(1,0);state(1,1);
+      // Snapshot outside any completion callback, disable for the ultimate,
+      // then reuse the world model and replay the game's captured flags.
+      bool snapshot[2];for(int part=0;part<2;++part)snapshot[part]=RuntimeShapes::GetEnabled(renderers[0][part]);
+      for(int part=0;part<2;++part){auto renderer=renderers[0][part];RuntimeShapes::SetEnabled(renderer,false);RuntimeShapes::RetireRenderer(renderer);}
+      for(int part=0;part<2;++part){auto renderer=renderers[0][part];RuntimeShapes::RegisterRenderer(renderer,Test::renderMeshes.at(renderer),false);RuntimeShapes::SetEnabled(renderer,snapshot[part]);RuntimeShapes::RegisterRenderer(renderer,Test::renderMeshes.at(renderer),true);}
+      for(int value=0;value<3;++value){auto world=state(value,0),ui=state(value,1);
+        Require(world==ui,"ultimate snapshot/replay collapsed the world switch while UI retained three combinations: state="+std::to_string(value)+" world="+std::to_string(world)+" UI="+std::to_string(ui));}
+      RuntimeShapes::SetEnabled(renderers[0][0],false);state(0,0);
+      Require(!Test::renderEnabled.at(renderers[0][0])&&!RuntimeShapes::GetEnabled(renderers[0][0]),"author switch overrode a genuine native disable");
+      RuntimeShapes::SetEnabled(renderers[0][0],true);state(1,0);
+      Require(!Test::renderEnabled.at(renderers[0][0])&&RuntimeShapes::GetEnabled(renderers[0][0]),"native enable bypassed the author's hidden state or lost its own intent");
+      auto hidden=renderers[0][0],mesh=Test::renderMeshes.at(hidden);
+      RuntimeShapes::RetireRenderer(hidden);
+      Require(RuntimeShapes::GetEnabled(hidden)&&!RuntimeShapes::ActualEnabled(hidden),"pooled author-hidden Renderer lost its native intent view");
+      RuntimeShapes::SetEnabled(hidden,false);Require(!RuntimeShapes::GetEnabled(hidden),"pooled Renderer lost a native disable");
+      RuntimeShapes::SetEnabled(hidden,true);RuntimeShapes::RegisterRenderer(hidden,mesh,true);state(1,0);
+      EntryReload::Mutation write{hidden,-1,0,1};EntryReload::Write(write,1);EntryReload::Write(write,0);
+      Require(!RuntimeShapes::ActualEnabled(hidden)&&RuntimeShapes::GetEnabled(hidden),"reload readback/rollback contaminated native intent");
+      Test::renderMeshes[hidden]=(void*)0x73080;
+      Require(!RuntimeShapes::GetEnabled(hidden),"stale Mesh binding virtualized an unrelated replacement");Test::renderMeshes[hidden]=mesh;
+      bool otherThread=true;std::thread reader([&]{otherThread=RuntimeShapes::GetEnabled(hidden);});reader.join();
+      Require(!otherThread,"off-thread getter read main-thread-owned visibility bindings");
+      auto unrelated=(void*)0x74000;Test::renderEnabled[unrelated]=0;
+      Require(!RuntimeShapes::GetEnabled(unrelated),"unbound getter changed actual native state");
+      RuntimeShapes::enabled=false;Require(!RuntimeShapes::GetEnabled(renderers[0][0]),"disabled runtime still virtualizes visibility");RuntimeShapes::enabled=true;
+      RuntimeShapes::bound=bound;RuntimeShapes::retiredNativeIntents=retired;RuntimeShapes::specs=specs;RuntimeShapes::variables=variables;
+      RuntimeShapes::api=api;RuntimeShapes::originalEnabledSetter=setter;RuntimeShapes::originalEnabledGetter=getter;
+      RuntimeControls::valueRevision=revision;RuntimeShapes::boundCount=unsigned(bound.size());
+      Test::renderMeshes.clear();Test::renderEnabled.clear();Test::meshes.clear();
+      Require(Test::handles.empty(),"model snapshot regression leaks managed handles");
+      std::cout<<"PASS three-state world/UI snapshot replay, ultimate model reuse, real native disable and unrelated Renderer\n";
+    }
+    // Integration against the actual author package: model completion,
     // provenance registration, every switch declaration, per-instance writes,
     // native enable arbitration, physical edges and preference round-trip.
     stage="real Mod fixture";
@@ -509,10 +572,9 @@ int main(int argc,char** argv) {
       Test::helperHasList=true;
       auto helperDisabled=Test::modelRenderers[1].values[0];Test::Enabled(helperDisabled,false);
       const auto helperSnapshot=Test::renderEnabled;
-      // Helper InitAll can run inside view-part post-processing. Internal
-      // author writes/readback must inspect the actual enabled flag even
-      // while the game is capturing its separate native-intent snapshot.
-      {RuntimeShapes::NativeVisibilityReadScope snapshot;completeHelper();}
+      // Helper completion applies author controls without contaminating later
+      // game snapshots, regardless of the caller that initiated the helper.
+      completeHelper();
       Require(Test::helperCompletions==2,"helper original was skipped or called more than once");
       void* authoredHidden=nullptr;
       for(size_t i=0;i<Test::modelRenderers[1].header.count;++i){auto renderer=Test::modelRenderers[1].values[i];
@@ -524,14 +586,9 @@ int main(int argc,char** argv) {
         if(binding.nativeEnabled&&!Test::renderEnabled.at(renderer))authoredHidden=renderer;
       }
       Require(authoredHidden,"fixture must include an authored hidden part for native snapshot regression");
-      Require(!RuntimeShapes::GetEnabled(authoredHidden),"normal enabled getter must return the actual rendered state");
-      {RuntimeShapes::NativeVisibilityReadScope snapshot;
-        Require(RuntimeShapes::GetEnabled(authoredHidden),"view-part baseline captured authored hiding instead of native intent after helper completion");
-        Require(!RuntimeShapes::GetEnabled(helperDisabled),"snapshot bypassed real native hiding");
-        {RuntimeShapes::NativeVisibilityReadScope nested;Require(RuntimeShapes::GetEnabled(authoredHidden),"nested snapshot lost native intent");}
-        Require(RuntimeShapes::GetEnabled(authoredHidden),"nested scope reset outer snapshot");
-      }
-      Require(!RuntimeShapes::GetEnabled(authoredHidden)&&RuntimeShapes::nativeVisibilityReadDepth==0,"snapshot scope leaked into normal game reads");
+      Require(RuntimeShapes::GetEnabled(authoredHidden),"game read captured author hiding instead of native intent");
+      Require(!RuntimeShapes::ActualEnabled(authoredHidden),"DLL read did not observe the author's actual hidden state");
+      Require(!RuntimeShapes::GetEnabled(helperDisabled),"game read bypassed a genuine native disable");
       RuntimeShapes::SetEnabled(helperDisabled,true);
       const auto helperFlags=Test::renderEnabled;
       std::map<void*,bool> helperIntent;for(const auto& row:RuntimeShapes::bound)helperIntent[row.first]=row.second.nativeEnabled;
@@ -622,6 +679,18 @@ int main(int argc,char** argv) {
       Require(!Test::renderEnabled.at(renderer),"author switch re-enables native-disabled Renderer");
       RuntimeShapes::SetEnabled(renderer,true);Require(Test::renderEnabled.at(renderer),"native enable not restored for visible author part");
       switchVisible(false);
+      auto recycledMesh=Test::renderMeshes.at(renderer);
+      auto nativeIntent=RuntimeShapes::bound.at(renderer).nativeEnabled;
+      RuntimeShapes::RetireRenderer(renderer);
+      RuntimeShapes::SetEnabled(renderer,false);
+      RuntimeShapes::SetEnabled(renderer,nativeIntent);
+      RuntimeShapes::RegisterRenderer(renderer,recycledMesh,true);
+      Require(RuntimeShapes::bound.at(renderer).nativeEnabled==nativeIntent,
+              "reused Renderer lost its native enabled intent after model release");
+      switchVisible(true);
+      Require(Test::renderEnabled.at(renderer),
+              "reused Renderer could not show a part after returning from a released model");
+      switchVisible(false);
       auto newRenderer=(void*)identity++;Test::renderMeshes[newRenderer]=Test::renderMeshes.at(renderer);Test::renderEnabled[newRenderer]=1;
       RuntimeShapes::RegisterRenderer(newRenderer,Test::renderMeshes.at(newRenderer));
       Require(!Test::renderEnabled.at(newRenderer),"new instance does not inherit current switch state");
@@ -645,7 +714,7 @@ int main(int argc,char** argv) {
         Require(restored.at(key)==RuntimeShapes::variables.at(package.id).at(key),"persisted state failed restart round-trip");
       bool rejected=false;try {EiemEntryPreferences::Validate(package,{{"$switch_83e2d51e4c704061",9}});}catch(...){rejected=true;}
       Require(rejected,"invalid persisted multi-state domain accepted");
-      RuntimeShapes::bound.clear();RuntimeShapes::api=savedApi;RuntimeShapes::specs=savedSpecs;
+      RuntimeShapes::bound.clear();RuntimeShapes::retiredNativeIntents.clear();RuntimeShapes::api=savedApi;RuntimeShapes::specs=savedSpecs;
       RuntimeShapes::variables=savedVariables;RuntimeShapes::keys=savedKeys;RuntimeShapes::held=savedHeld;
       RuntimeShapes::controlGraph=savedGraph;RuntimeShapes::originalEnabledSetter=savedSetter;RuntimeShapes::boundCount=0;
       Test::renderMeshes.clear();Test::meshes.clear();Test::renderEnabled.clear();

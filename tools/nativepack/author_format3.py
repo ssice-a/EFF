@@ -190,6 +190,19 @@ def _key_chord(value):
     return vk, modifiers
 
 
+def _effect_runtime_part(effect, parts):
+    source_part = effect.get("part", "")
+    if not source_part:
+        return ""
+    declared = {_part_id(part["partId"]) for part in parts}
+    if source_part in declared:
+        return source_part
+    runtime_part = _part_id(source_part)
+    require(runtime_part in declared,
+            "Format 3 Effect attachment Part is not declared: " + source_part)
+    return runtime_part
+
+
 def _controls_resource(mod_id, parts, switches, material_clips, effects,
                        state_defaults=None, persistent_states=None,
                        key_bindings=None):
@@ -315,7 +328,8 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
             bindings.append(("KeyRuntime" + _identifier(identity) + ("" if index == 0 else "_K" + str(index + 1)),
                 variable, "cycle", *_key_chord(chord), 1.0, "", [0.0, 1.0]))
         native = effect["native"]
-        row = dict(id=identity, label=effect["label"], part=effect["part"],
+        runtime_part = _effect_runtime_part(effect, parts)
+        row = dict(id=identity, label=effect["label"], part=runtime_part,
                    bone=effect.get("bone", ""), variable=variable,
                    autoplay=bool(effect.get("autoplay", True)),
                    position=effect["position"], rotation=effect["rotation"], scale=effect["scale"],

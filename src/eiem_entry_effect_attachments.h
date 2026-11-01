@@ -154,7 +154,7 @@ void Frame(){
   // The game's scene cleanup can retire an unmanaged effect independently of
   // its model. A strong managed handle does not keep the Unity object alive.
   if(b.instance&&(!RuntimeShapes::Alive(b.instance->object.Get())||!RuntimeShapes::Scalar<unsigned char>(Native::api.activeSelf,b.instance->object.Get()))){Stop(b);b.failed=false;b.changed=true;Log("[EFFECT-ATTACHMENT-RECOVER] package=%s effect=%s owner=%p reason=clone-retired-or-disabled",b.package.c_str(),b.id.c_str(),b.owner.Get());}
-  for(const auto& r:b.renderers){EiemLoadPerformance::Add(EiemLoadPerformance::Operation::EffectVisibility);if(RuntimeShapes::Alive(r.Get())&&RuntimeShapes::Scalar<unsigned char>(RuntimeShapes::api.getEnabled,r.Get())){auto go=Ref::Make(Call(FullResourceReload::api.componentGo,r.Get()),false);if(RuntimeShapes::Scalar<unsigned char>(Native::api.activeHierarchy,go.Get())){visible=true;if(!layerSource.Get())layerSource=go;}}}desired&=visible;
+  for(const auto& r:b.renderers){EiemLoadPerformance::Add(EiemLoadPerformance::Operation::EffectVisibility);if(RuntimeShapes::Alive(r.Get())&&RuntimeShapes::ActualEnabled(r.Get())){auto go=Ref::Make(Call(FullResourceReload::api.componentGo,r.Get()),false);if(RuntimeShapes::Scalar<unsigned char>(Native::api.activeHierarchy,go.Get())){visible=true;if(!layerSource.Get())layerSource=go;}}}desired&=visible;
   if(!desired){Stop(b);++it;continue;}
   auto& g=*b.generation;if(!b.failed&&g.phase!=Native::Phase::Ready&&(g.phase!=Native::Phase::Rejected||g.retryRequested)&&stepped.insert(&g).second){try{
     if(g.phase==Native::Phase::Rejected){

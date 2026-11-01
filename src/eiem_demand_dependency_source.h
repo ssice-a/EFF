@@ -5,7 +5,15 @@
 #include <vector>
 
 namespace EiemDemandDependencySource {
-// Resolve a referenced CAB only within the game's current request group.
+// Resolve a referenced CAB within the request group and the direct native
+// dependencies of bundles already opened for this request.
+template<class NativeMap>
+std::vector<uint64_t> CandidateKeys(const std::vector<uint64_t>& requestKeys,const NativeMap& native) {
+  auto candidates=requestKeys;
+  for(const auto& row:native)for(auto key:row.second)
+    if(std::find(candidates.begin(),candidates.end(),key)==candidates.end())candidates.push_back(key);
+  return candidates;
+}
 // The known-CAB map is a hint; the opened bundle is always checked for the
 // actual CAB before returning it.
 template<class CabMap,class KnownMap,class Open>

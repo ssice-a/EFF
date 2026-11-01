@@ -2,6 +2,7 @@
 from pathlib import Path
 import struct
 import sys
+import subprocess
 
 def imports(data):
     """Read PE imports without requiring a developer-installed PE library."""
@@ -35,6 +36,10 @@ path = Path(sys.argv[1])
 data = path.read_bytes()
 load_perf = '--load-perf' in sys.argv[2:]
 effects_debug = '--effects-debug' in sys.argv[2:]
+format3_runtime = b'mode=format3-runtime' in data
+if format3_runtime:
+    subprocess.run([sys.executable, str(Path(__file__).with_name('verify_demand_loading_probe.py')),
+                    str(path), '--format3-runtime'], check=True)
 checked = data.replace(b'[DEBUG-loadperf]', b'load-performance') if load_perf else data
 if load_perf:
     assert b'[DEBUG-loadperf]' in data, 'Expected enabled performance measurements'
@@ -54,9 +59,12 @@ for proxy in ('d3dcompiler_47.dll', 'vulkan-1.dll'):
 for marker in (
     b"[DEBUG-", b"[ENTRY-CAPTURE]", b"[ENTRY-SNAPSHOT]", b"[ENTRY-SNAPSHOT-SELECTION]",
     b"[ENTRY-COUNTERS]", b"[CAPTURE-ELIGIBILITY]", b"[RELOAD-LOAD-SUBMITTED]",
-    b"resource-input-diagnostics", b"snapshot-ranges.tsv", b"[ADAPT-PROBE-", b"[CATALOG-SURVEY-", b"[MESH-TARGET-", b"[MESH-NATIVE-", b"[DEMAND-PROBE-", b"[DEMAND-NATIVE-",
+    b"resource-input-diagnostics", b"snapshot-ranges.tsv", b"[ADAPT-PROBE-", b"[CATALOG-SURVEY-", b"[MESH-TARGET-", b"[MESH-NATIVE-",
 ):
     assert marker not in checked, f"Production DLL contains diagnostic marker: {marker!r}"
+if not format3_runtime:
+    for marker in (b'[DEMAND-PROBE-', b'[DEMAND-NATIVE-'):
+        assert marker not in checked, f'Production DLL contains diagnostic marker: {marker!r}'
 for marker in (
     b"[FULL-RELOAD-COMMIT]", b"[FULL-RELOAD-REJECT]", b"eff_log.txt",
     b"ForceExitAllPerformOnEntity", b"_PreloadSpIdlePerform", b"_PreloadSpDashPerform",

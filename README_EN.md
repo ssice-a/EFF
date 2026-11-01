@@ -4,13 +4,13 @@
 
 AnimeStudio exports source assets and templates. Blender creates and compiles each independent Mod. EFF applies the compiled rules before the game creates resources and uses the game's model lifecycle for reloads.
 
-Paired releases: **EFF v1.10.2, EFF Blender v0.49.2, AnimeStudio v1.8.1**. There is one production DLL package. Compatibility follows byte structures, fields, source hashes and references.
+Paired releases: **EFF v2.0.0, EFF Blender v0.50.0, AnimeStudio v1.9.0**. There is one production DLL package. The DLL accepts Format 3 only; Mod Manager v0.2.0 converts legacy packages offline.
 
 See the illustrated quick tutorial for installation, extraction, Blender editing and export: [English](Mod%20Tutorial_EN.md) · [中文](Mod%20Tutorial.md).
 
 ## Install
 
-Download `EFF_v1.10.2_dll.zip` from [Releases](https://github.com/ssice-a/EFF/releases), quit the game and extract beside `Endfield.exe`. The current proxy forwarders support Windows installations at `C:\Windows`; other system directories are not supported yet. Preserve `plugin/eff.ini`, your Mods and their `state.ini` when upgrading.
+Download `EFF_v2.0.0_dll.zip` from [Releases](https://github.com/ssice-a/EFF/releases), quit the game and extract beside `Endfield.exe`. The current proxy forwarders support Windows installations at `C:\Windows`; other system directories are not supported yet. Preserve `plugin/eff.ini`, your Mods and their `state.ini` when upgrading.
 
 ```text
 d3dcompiler_47.dll
@@ -22,14 +22,12 @@ plugin/
   mods/
     YourMod/
       mod.ini
-      compiled.bin
-      source-inputs.bin
       meshes/
       materials/
       textures/
 ```
 
-The production DLL and proxies statically link their own C/C++ runtime implementation and do not depend on the game's older MSVCP/VCRUNTIME files. Do not replace the game's runtime files. The DLL distribution has no compiler, source tools or AnimeStudio libraries. Previous `plugin/tools/eff_resource_pack.exe` and `plugin/tools/static-sources/` are unused and can be removed. Move complete Mod folders directly into `plugin/mods/`. Re-export older Mods with the paired Blender add-on to produce `compiled.bin`. Relative game source paths make the output portable. After game updates, players can use the Mod repair feature in EFF Mod Manager; it matches current game resources and backs up the original package without Blender or manual extraction. Authors can instead refresh extracted sources in AnimeStudio and export their original projects again.
+The production DLL and proxies statically link their own C/C++ runtime implementation and do not depend on the game's older MSVCP/VCRUNTIME files. Do not replace the game's runtime files. The DLL distribution has no compiler, source tools or AnimeStudio libraries. Previous `plugin/tools/eff_resource_pack.exe` and `plugin/tools/static-sources/` are unused and can be removed. Move complete Mod folders directly into `plugin/mods/`. Migrate legacy Mods with Mod Manager or re-export with the paired Blender add-on. Format 3 ships independent .effres and DDS resources without compiled.bin or source-inputs.bin. Relative game source paths make the output portable. After game updates, players can use the Mod repair feature in EFF Mod Manager; it matches current game resources and backs up the original package without Blender or manual extraction. Authors can instead refresh extracted sources in AnimeStudio and export their original projects again.
 
 ## Features and controls
 
@@ -54,15 +52,15 @@ DLL updates require a game restart. Wait for active model loads to finish before
 ## Author workflow
 
 1. Export an EFF source package using [AnimeStudio](https://github.com/ssice-a/AnimeStudio). Keep source templates, manifest and author index.
-2. Import its `mod.ini` with [EFF Blender](https://github.com/ssice-a/EFF-blender), edit and export selected Meshes. Start with all resources; partial exports update an existing complete Mod.
+2. Import its `mod.ini` with [EFF Blender](https://github.com/ssice-a/EFF-blender), edit and export selected Meshes. A complete export validates all declarations and only replaces files whose contents changed.
 3. Blender obtains shared authoring tools from EFF Releases, resolves all consumers of the declared source Mesh offline and compiles this one staged Mod. Verified tools are cached under the user-selected resource root before publishing.
-4. EFF reads the independent results, combines compiled edits on shared inputs and applies proven byte recipes. It does not compile geometry/materials/textures, query the global asset index or scan scene Renderers.
+4. EFF reads Format 3 resources on demand, combines edits on shared inputs and submits native inputs before deserialization. It does not compile geometry/materials/textures, query the global asset index or scan scene Renderers.
 
 The four-endpoint ownership, user-selected resource root, AnimeStudio index location and build/release flow are described in [Shared Tools and Indexes](docs/shared-tools-and-indexes.md). Blender 5.2 users select the AnimeStudio unpack-index location in the add-on UI after installation; they do not select an extraction output directory.
 
-Exports under the game's `plugin/mods/` locate the installation automatically; other output directories require `EFF_RELOAD_GAME`. Players need neither author tools nor source snapshots. `mod.ini` remains the author rule entry; `compiled.bin` is derived output. Both short texture names and older hash names use their package's own references.
+Exports under the game's `plugin/mods/` locate the installation automatically; other output directories require `EFF_RELOAD_GAME`. Players need neither author tools nor source snapshots. `mod.ini` remains the author rule entry; Format 3 stores independent resource files.
 
-Complete original bundles are not saved in the Mod. Compiled outputs include native input views, dependency and instance-binding indices; size follows actual author resources and shared edits and is not an estimate of Unity memory usage. See the [loading flow](docs/runtime-resource-discovery.md) and [output contract](docs/offline-resource-package-format.md).
+Complete original bundles are not saved in the Mod. Format 3 stores authored resources and declarations; native inputs are prepared when the game requests them. Package size is not an estimate of Unity memory usage. See the [loading flow](docs/runtime-resource-discovery.md) and [output contract](docs/offline-resource-package-format.md).
 
 ## Validation limits
 

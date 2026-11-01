@@ -4,7 +4,7 @@
 
 EFF 在《明日方舟：终末地》创建资源和实例前应用 Mod。AnimeStudio 导出来源，Blender 制作并编译独立 Mod，EFF DLL 读取结果并完成游戏内加载与热重载。
 
-配套发布：**EFF v1.10.2、EFF Blender v0.49.2、AnimeStudio v1.8.1**。DLL 只提供一个正式安装包；兼容性依据数据结构、字段、来源摘要和引用关系判断。
+配套发布：**EFF v2.0.0、EFF Blender v0.50.0、AnimeStudio v1.9.0**。DLL 仅接受 Format 3；旧格式由 EFF Mod Manager v0.2.0 离线迁移。
 
 首次制作 Mod 可先阅读带截图的简易教程：[中文](Mod%20Tutorial.md) · [English](Mod%20Tutorial_EN.md)。
 
@@ -21,7 +21,7 @@ EFF 在《明日方舟：终末地》创建资源和实例前应用 Mod。AnimeS
 
 ## 安装
 
-从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v1.10.2_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。当前代理转发支持 Windows 系统目录为 `C:\Windows` 的安装；其他系统目录尚不支持。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和各 Mod 的 `state.ini`。
+从 [EFF Releases](https://github.com/ssice-a/EFF/releases) 下载 `EFF_v2.0.0_dll.zip`。退出游戏，将 ZIP 解压到 `Endfield.exe` 所在目录。当前代理转发支持 Windows 系统目录为 `C:\Windows` 的安装；其他系统目录尚不支持。更新时保留自己的 `plugin/eff.ini`、`plugin/mods/` 和各 Mod 的 `state.ini`。
 
 ```text
 d3dcompiler_47.dll
@@ -33,8 +33,6 @@ plugin/
   mods/
     YourMod/
       mod.ini
-      compiled.bin
-      source-inputs.bin
       meshes/
       materials/
       textures/
@@ -42,7 +40,7 @@ plugin/
 
 正式 DLL 与代理静态链接自身的 C/C++ 运行实现，不依赖游戏目录中较旧的 MSVCP/VCRUNTIME；无需修改游戏运行库。DLL 包不包含编译器、AnimeStudio 运行库或来源工具。已有安装的 `plugin/tools/eff_resource_pack.exe` 和 `plugin/tools/static-sources/` 可删除；新版 DLL 不调用它们。若已有同名代理加载器，请先确认使用的图形后端与插件加载方式。
 
-把包含 `mod.ini` 的完整 Mod 文件夹直接放入 `plugin/mods/`。`compiled.bin` 必须随作者资源一起分发。文件夹可移动到其他安装，来源路径相对游戏目录。游戏更新后，玩家可使用 EFF Mod Manager 中的 Mod 修复功能；修复前会匹配当前游戏资源并备份原包，不要求 Blender 或手动解包。
+把包含 `mod.ini` 的完整 Mod 文件夹直接放入 `plugin/mods/`。Format 3 资源文件必须随 mod.ini 一起分发，不再使用 compiled.bin 或 source-inputs.bin。文件夹可移动到其他安装，来源路径相对游戏目录。游戏更新后，玩家可使用 EFF Mod Manager 中的 Mod 修复功能；修复前会匹配当前游戏资源并备份原包，不要求 Blender 或手动解包。
 
 作者也可用 AnimeStudio 更新原解包资源，再从原 Blender 工程重新导出。修复使用当前游戏的来源和消费者；资产删除、来源歧义或不受支持的结构会报告失败，保留原包。
 
@@ -70,15 +68,15 @@ disable_camera_fade=true
 ## 制作与三端职责
 
 1. 使用 [AnimeStudio](https://github.com/ssice-a/AnimeStudio) 打开 VFS，选择 Prefab 并导出 EFF 源包。保留源包的字段模板、manifest 和作者索引。
-2. 安装 [EFF Blender 插件](https://github.com/ssice-a/EFF-blender)，导入源包 `mod.ini`，编辑并导出所选网格。首次导出选择全部资源；后续可仅更新 Mesh、材质与贴图或贴图。
+2. 安装 [EFF Blender 插件](https://github.com/ssice-a/EFF-blender)，导入源包 `mod.ini`，编辑并导出所选网格。导出事务验证全部声明，发布时仅替换内容变化的文件。
 3. Blender 从 EFF Release 获取共享作者工具，按 INI 源 Mesh 离线找到全部 Prefab/Renderer 消费者，编译当前这一个 Mod。工具按 SHA256 缓存到用户选择的资源根目录；暂存结果完整验证后才发布，失败保留此前输出。
-4. DLL 读取各 Mod 的编译结果，合并共用资源上的已编译修改，在游戏加载前应用字节规则；F10 使用同一规则并调用游戏模型生命周期。DLL 不编译作者资源，不查询全游戏索引，不全场景扫描 Renderer。
+4. DLL 按当前请求读取 Format 3 资源，合并共用资源上的修改并提交原生输入；F10 使用同一规则并调用游戏模型生命周期。DLL 不编译作者资源，不查询全游戏索引，不全场景扫描 Renderer。
 
 四端共享工具、AnimeStudio 索引位置、用户可选存储路径与构建发布流程见[共享工具与索引](docs/shared-tools-and-indexes.md)。Blender 5.2 插件在 **N → EFF → AnimeStudio 解包索引**中选择索引位置；无需在插件安装时选择索引，也无需指定解包输出目录。
 
-导出到游戏 `plugin/mods/` 会自动识别安装路径；导出到其他目录请设置 `EFF_RELOAD_GAME`。玩家不需要作者索引、原游戏包快照或 Blender 工具。`mod.ini` 仍是唯一作者规则入口，`compiled.bin` 是它的派生编译结果。新贴图短名称与旧哈希名称都依各自 INI/manifest 解析。
+导出到游戏 `plugin/mods/` 会自动识别安装路径；导出到其他目录请设置 `EFF_RELOAD_GAME`。玩家不需要作者索引、原游戏包快照或 Blender 工具。`mod.ini` 是规则入口，各 .effres 和 DDS 为独立资源；DLL 只读取 Format 3。
 
-完整原包不会写入 Mod。编译结果包含资源输入视图、依赖与实例绑定索引，大小随实际作者资源和共享修改变化。规则文件大小与 Unity 加载时的内存占用不同。详见[命中与加载流程](docs/runtime-resource-discovery.md)、[输出契约](docs/offline-resource-package-format.md)。
+完整原包不会写入 Mod。Mod 保存作者资源和声明，DLL 在游戏实际请求时准备输入并复用原生反序列化。规则文件大小与 Unity 加载时的内存占用不同。详见[命中与加载流程](docs/runtime-resource-discovery.md)、[输出契约](docs/offline-resource-package-format.md)。
 
 ## 验证边界
 

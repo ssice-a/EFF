@@ -19,6 +19,21 @@ int main(){try{
   Require(dependency!=dependencyCabs.end()&&dependency->second==23&&openedDependencyKeys==std::vector<uint64_t>({17,23}),
     "stale CAB index blocked exact dependency-group fallback");
   std::cout<<"PASS external CAB dependency lookup verifies the current request group before bounded fallback\n";
+  std::map<uint64_t,std::vector<uint64_t>> sourceNativeDependencies{{99,{23,31,31}}};
+  auto sourceCandidates=EiemDemandDependencySource::CandidateKeys(dependencyKeys,sourceNativeDependencies);
+  Require(sourceCandidates==std::vector<uint64_t>({17,23,31}),
+    "logical source Bundle dependencies were not added uniquely to the CAB search scope");
+  std::map<std::string,int> sourceDependencyCabs;std::map<std::string,uint64_t> noIndexedSourceDependencies;
+  std::vector<uint64_t> openedSourceDependencyKeys;
+  auto sourceDependency=EiemDemandDependencySource::Resolve("CAB-material-texture",sourceCandidates,
+      sourceDependencyCabs,noIndexedSourceDependencies,[&](uint64_t key){
+    openedSourceDependencyKeys.push_back(key);
+    if(key==31)sourceDependencyCabs.emplace("CAB-material-texture",31);
+  });
+  Require(sourceDependency!=sourceDependencyCabs.end()&&sourceDependency->second==31&&
+      openedSourceDependencyKeys==std::vector<uint64_t>({17,23,31}),
+    "CAB referenced by a logical source Material was outside the bounded dependency search");
+  std::cout<<"PASS logical source Material CAB lookup includes its direct native dependencies without a game-wide scan\n";
   auto bytes=std::make_shared<const EiemNativeInput::Bytes>(EiemNativeInput::Bytes{1,2,3});
   auto view=std::make_shared<const EiemInputSpanView::View>(std::vector<EiemInputSpanView::Span>{{SIZE_MAX,0,bytes->size(),bytes}},std::vector<size_t>{},EiemInputSpanView::ReadRange{});
   Graph graph;Input texture{100,1,"eff/texture.ab","CAB-texture",view,{}},material{101,1,"eff/material.ab","CAB-material",view,{100,3}};

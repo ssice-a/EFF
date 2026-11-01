@@ -670,9 +670,10 @@ struct DependencyGroup {
     Stage("cache-vfs-input");sources.emplace(key,source);++headerReads;return source;
   }
   std::pair<std::shared_ptr<GroupSource>,size_t> DependencySource(const std::string& cab){Stage("resolve-native-dependency-source");
-    auto found=EiemDemandDependencySource::Resolve(cab,keys,cabs,shared->cabKeys,[&](uint64_t key){
+    auto candidates=EiemDemandDependencySource::CandidateKeys(keys,native);
+    auto found=EiemDemandDependencySource::Resolve(cab,candidates,cabs,shared->cabKeys,[&](uint64_t key){
       Stage("open-dependency-source-candidate",key);Open(key);Stage("lookup-dependency-source-cab",key);});
-    if(found!=cabs.end()){Stage("native-dependency-source-ready");return found->second;}
+    if(found!=cabs.end()){Native(found->second.first->key);Stage("native-dependency-source-ready");return found->second;}
     Stage("native-dependency-source-not-found");throw std::runtime_error("referenced CAB absent from requested native dependency group: "+cab);
   }
   LogicalDependencyBinding ResolveLogicalDependency(const EiemRuntimeAuthorDirectory::NativeDependency& declaration){

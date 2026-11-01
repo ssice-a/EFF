@@ -388,11 +388,11 @@ void RecordPartFinished(void* self){
  }catch(const std::exception& e){Log("[FULL-RELOAD-PART-GAP] reason=%s",e.what());}
 }
 void PartFinished(void* self,void* info){
- {RuntimeShapes::NativeVisibilityReadScope snapshot;originalPartFinished(self,info);}
+ originalPartFinished(self,info);
  RecordPartFinished(self);
 }
 void BasePartFinished(void* self,void* info){
- {RuntimeShapes::NativeVisibilityReadScope snapshot;originalBasePartFinished(self,info);}
+ originalBasePartFinished(self,info);
  // Complex parts are recorded after their own post-processing completes.
  // Other game view parts also use the base completion lifecycle.
  if(!Inherits(self,"Beyond.Gameplay.View","ComplexModelViewPart"))RecordPartFinished(self);
@@ -420,8 +420,7 @@ void ObservePartReleased(void* self,void* info,PartFinishedFn original){
  original(self,info);
  // ReleaseModel can return a still-alive root to the game's path pool.
  // It is no longer a live owner; native captures retain their own snapshots.
- for(const auto& renderer:renderers)RuntimeShapes::bound.erase(renderer.Get());
- RuntimeShapes::boundCount.store(unsigned(RuntimeShapes::bound.size()));
+ for(const auto& renderer:renderers)RuntimeShapes::RetireRenderer(renderer.Get());
  auto live=liveParts.find(self);
  if(incoming&&live!=liveParts.end()){
   // LoadModel releases the old root before starting its replacement. Keep
@@ -448,8 +447,7 @@ void ReleaseHelperRoot(void* root){
  for(const auto& p:liveUIModels)if(RootContains(p.second.root.Get(),root))return;
  for(const auto& p:liveHelperModels)if(p.second.root.Get()==root)return;
  EffectDebug::OwnerReleasing(root);RuntimeAttachments::OwnerReleasing(root);
- if(RuntimeShapes::Alive(root)&&!RuntimeShapes::bound.empty())for(const auto& r:Components(root))RuntimeShapes::bound.erase(r.Get());
- RuntimeShapes::boundCount.store(unsigned(RuntimeShapes::bound.size()));
+ if(RuntimeShapes::Alive(root)&&!RuntimeShapes::bound.empty())for(const auto& r:Components(root))RuntimeShapes::RetireRenderer(r.Get());
 }
 void* CurrentRoot(const Owner& owner){return owner.uiModel?owner.uiLoadedRoot.Get():owner.viewPart?ReadObject(owner.component.Get(),"m_model","UnityEngine.GameObject"):Call(api.getModel,owner.component.Get());}
 void RemoveOwner(const Owner& owner){if(owner.uiModel){auto root=CurrentRoot(owner);if(root&&UIOwns(owner.component.Get(),root)){void* args[]={root};Call(api.uiUnload,owner.component.Get(),args);}owner.uiLoadedRoot={};return;}
@@ -1087,7 +1085,7 @@ struct SkinState {
 };
 SkinState ReadSkinState(void* renderer,void* rootTransform){
  SkinState state;auto owner=Ref::Make(Call(api.componentGo,renderer),false);
- state.enabled=RuntimeShapes::Scalar<unsigned char>(RuntimeShapes::api.getEnabled,renderer)!=0;
+ state.enabled=RuntimeShapes::ActualEnabled(renderer);
  state.active=RuntimeShapes::Scalar<unsigned char>(skinStateProbe.active,owner.Get())!=0;
  state.forceOff=RuntimeShapes::Scalar<unsigned char>(skinStateProbe.forceOff,renderer)!=0;
  state.bounds=RuntimeShapes::Scalar<SkinState::Bounds>(skinStateProbe.bounds,renderer);
@@ -1445,7 +1443,7 @@ void Rebuild(Attempt& a){
   Log("[FULL-RELOAD-ROLLBACK] previousRoutesRestored=1 previousControlsRetained=1 ownersRestored=%d",int(restored));throw;
  }
  auto stage=NativeBundle::Clock();auto graph=a.prepared->controls.graph;RuntimeControls::Swap(a.prepared->controls);std::atomic_store(&published,graph);settings.PublishPrepared(a.prepared->config);
- RuntimeShapes::bound.clear();RuntimeShapes::cached.clear();RuntimeShapes::boundCount=0;
+ RuntimeShapes::RetireAllRenderers();RuntimeShapes::cached.clear();
  // Installed original-namespace substitutions stay frozen. Future instances
  // receive generation prefabs through the exact native source route.
  auto current=a.prepared->base+1;RuntimeShapes::packageGeneration=current;RuntimeShapes::checkedGeneration=current;generation.store(current);

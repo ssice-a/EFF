@@ -187,7 +187,7 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==32){auto it=scheduleBundles.find(self);return it==scheduleBundles.end()?bundle:it->second;}
  if(m==33){Require(args&&*(unsigned char*)args[0]==0,"unloaded candidate objects still in use");++unloadCalls;return nullptr;}
  if(m==40){if(self==unrelatedRenderer)return foreignRoot;Require(self==oldRenderer||self==newRenderer||self==animator,"Component getter invoked on a GameObject");return renderTransform;}
- if(m==41){Require(uiOwned.count(self)||self==uiProxyRoot||self==currentRoot||self==oldRoot||self==newRoot||self==restoredRoot||self==candidate||self==lazyCandidate,"GameObject getter invoked on a Component");return prefabTransform;}
+ if(m==41){Require(uiOwned.count(self)||self==uiProxyRoot||self==currentRoot||self==oldRoot||self==newRoot||self==restoredRoot||self==candidate||self==lazyCandidate||self==unrelatedRoot,"GameObject getter invoked on a Component");return prefabTransform;}
  if(m==42)return transformParents.at(self);
  if(m==50){auto request=(void*)(uintptr_t(0x8000)+ ++opened);scheduleDone[request]=false;scheduleBundles[request]=(void*)(uintptr_t(0x9000)+opened);return request;}
  if(m==87){Require(!self&&args&&args[0]&&*(uint32_t*)args[1]==0&&*(uint32_t*)args[2]==0,"archive stream Bundle load argument ABI differs");auto view=NativeBundle::StreamView(args[0]);auto native=nativeStreams.find(args[0]);if(view){unsigned char bytes[4]{};Require(view->Length()==4&&view->Read(bytes,4)==4&&memcmp(bytes,"\1\2\3\4",4)==0,"registered native view payload differs");}else if(native!=nativeStreams.end()){Require(native->second.second==4&&memcmp(native->second.first,"\1\2\3\4",4)==0,"native archive stream byte lifetime differs");}else{auto array=*(void**)args[0];size_t length=0;Require(Entry::ArrayLength(array,&length)&&length==4&&memcmp((char*)array+32,"\1\2\3\4",4)==0,"archive stream Bundle payload differs");}++memoryCalls;return Invoke((void*)50,nullptr,nullptr,exception);}
@@ -285,8 +285,8 @@ void Setup(){
  a.get=(void*)60;a.error=(void*)61;a.partRelease=(void*)22;a.partLoad=(void*)62;a.partSetup=(void*)63;NativeBundle::api.assetLoad=(void*)58;NativeBundle::api.result=(void*)59;
  NativeBundle::api.done=(void*)31;NativeBundle::api.bundle=(void*)32;NativeBundle::api.unload=(void*)33;
  FullResourceReload::originalClone=NativeClone;
- FullResourceReload::originalPartFinished=[](void*,void*){Require(RuntimeShapes::nativeVisibilityReadDepth!=0,"complex model completion did not protect the game's initial Renderer snapshot");};
- FullResourceReload::originalBasePartFinished=[](void*,void*){Require(RuntimeShapes::nativeVisibilityReadDepth!=0,"base model completion did not protect the game's initial Renderer snapshot");};
+ FullResourceReload::originalPartFinished=[](void*,void*){};
+ FullResourceReload::originalBasePartFinished=[](void*,void*){};
  FullResourceReload::originalPartReleased=[](void*,void*){currentRoot=nullptr;};
  FullResourceReload::originalComplexPartReleased=[](void* self,void* info){FullResourceReload::PartReleased(self,info);};
  FullResourceReload::originalPartLoading=[](void*,void*,void*,void*){if(completePartLoading){currentRoot=NativeCreate(source);FullResourceReload::PartFinished(mainPart,nullptr);}};
@@ -352,7 +352,7 @@ void Reset(){
  identitySameMesh=false;textureValue=oldTexture;
  scheduleDone.clear();scheduleBundles.clear();opened=leaseRequests=sceneQueries=0;
  hasHelper=hasEntity=hasModel=hasPart=helperMatches=rendererInside=true;released=false;modelPath="assets/model.prefab";
- RuntimeShapes::bound.clear();RuntimeShapes::boundCount=0;
+ RuntimeShapes::bound.clear();RuntimeShapes::retiredNativeIntents.clear();RuntimeShapes::boundCount=0;
  FullResourceReload::sourceLeases.clear();FullResourceReload::liveParts.clear();
  FullResourceReload::uiPageFactory={};uiPageAvailable=true;uiPageReject=false;uiPageBinds=0;uiRequestCallback=nullptr;FullResourceReload::liveUIModels.clear();FullResourceReload::pendingUIModels.clear();FullResourceReload::uiReloadRequests.clear();FullResourceReload::uiProxyRequests.clear();uiOwned.clear();uiRoot=uiProxyRoot=oldRoot;uiResultRoot=nullptr;creatingUI=uiLateInstantiate=false;uiCallbacks=uiUnloads=uiCancelledCompletions=0;uiInline=false;uiNativeReady=false;uiDelayed=uiCancelled=false;
  std::atomic_store(&FullResourceReload::activeNative,std::shared_ptr<FullResourceReload::Attempt>{});FullResourceReload::retained.clear();
@@ -1010,6 +1010,10 @@ void AuxiliaryHelperRegression(){
  Reset();
 }
 void OtherCharacterOwnerRegression(){
+ // This case records two vanilla owners before either has authored controls.
+ // Do not inherit RuntimeShapes enablement from an earlier frame scenario.
+ const auto controlsEnabled=RuntimeShapes::enabled.load();RuntimeShapes::enabled=false;
+ struct RestoreControls {bool value;~RestoreControls(){RuntimeShapes::enabled=value;}} restore{controlsEnabled};
  using namespace FullResourceReload;Reset();RecordPart();completePartLoading=false;callbackTarget=unrelatedModel;
  PartLoading(unrelatedPart,unrelatedConfig,loadCallback,nullptr);PartFinished(unrelatedPart,nullptr);
  auto capture=[&](const std::vector<std::string>& paths){

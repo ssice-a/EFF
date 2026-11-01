@@ -1,51 +1,22 @@
-# EFF v1.10.2
+# EFF v2.0.0
 
-配套版本：[EFF Blender v0.49.2](https://github.com/ssice-a/EFF-blender/releases/tag/v0.49.2)、[AnimeStudio v1.8.1](https://github.com/ssice-a/AnimeStudio/releases/tag/v1.8.1)。
+本次为 Format 3 架构重构，配套 EFF Blender v0.50.0、AnimeStudio v1.9.0、EFF Mod Manager v0.2.0。
 
-- 增加按资源地址增量替换路径；只改 Mesh、材质、贴图、物理或特效资源时复用已验证的命中关系、来源图和 PFB 结构。
-- 资源布局、声明、Mesh 拓扑或绑定关系改变时自动回退完整编译，避免生成不可读取的 Mod。
-- 修复并发发布重试丢失资源替换模式的问题，避免资源更新偶发退回慢速完整编译。
-- 修复多部件静态 Mesh 装配的 provenance 校验，使额外 Renderer 与对应作者部件的稳定资源标识一致。
-- 延续 v1.10.1 的资源增量更新和命名按键切换组协议；保留既有 Mod 格式兼容读取。
-- EFF Release 工作流构建并上传配套 Blender native base；Blender 插件包校验基础包摘要与 DLL/编译器共同协议。
-- DLL 仍须在目标游戏版本进行冷启动、F10、UI、NPC、多 Mod 与特效实机回归后再从 draft 发布。
+- DLL 只接受 Format 3 自描述资源目录；旧格式转换统一由 Mod Manager 离线完成，运行时不增加旧格式兼容分支。
+- 改为按游戏请求准备原生资源输入，复用当前 CAB/path ID、依赖与反序列化流程；无需在 Mod 内携带 compiled.bin 或 source-inputs.bin。
+- Mesh、材质、贴图、物理、特效、控制资源独立保存；公共来源索引与作者工具使用共享位置和 SHA256 校验。
+- 修复变身、大招换模、回收和跨场景后切换组丢失状态：游戏原生显隐意图与作者过滤后的实际显隐分别管理，UI 与大世界共用控制值。
+- 修复特效挂载 Part 标识、原生材质外部 CAB 的直接依赖解析、材质属性移除与热重载生命周期。
+- Blender 导出只保留实际使用的骨骼槽位；新增可撤销的空顶点组清理，保留所有正权重。
 
-## 下载与安装
+## 安装与迁移
 
-- `EFF_v1.10.2_dll.zip`：退出游戏后解压到游戏根目录，保留个人配置和 Mods。
-- `EFF_Blender_Native_v0.49.2.zip`：Blender Release 工作流使用的配套基础包，不需要单独安装。
+退出游戏后，将 EFF_v2.0.0_dll.zip 解压到游戏根目录。保留个人 plugin/eff.ini、plugin/mods 与 state.ini。旧 Mod 先用 EFF Mod Manager v0.2.0 迁移为 Format 3，或用配套 Blender 重新导出。共享作者工具供离线作者与迁移工具使用，无需安装到游戏目录。
 
-## English
+## 验证
 
-Adds addressed resource replacement for Mesh, material, texture, physics and effect edits while retaining validated hit/source graphs and PFB structure. Structural changes fall back to a complete compile; concurrent publish retries preserve resource-only mode. The release workflow builds and uploads the paired Blender native base. Mod repair is distributed through EFF Mod Manager. Validate the DLL in the target game before publishing the draft.
-
-## Previous release
-
-## EFF v1.9.0
-
-配套版本：[EFF Blender v0.48.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.48.0)、[AnimeStudio v1.8.1](https://github.com/ssice-a/AnimeStudio/releases/tag/v1.8.1)。
-
-- 接入 ParticleSystem 特效 Mod：可独立安装，也可挂载角色 Mesh 骨骼；默认随模型生命周期加载，支持快捷键显隐及 F9 热重载。
-- 特效挂载覆盖全部角色 LOD，并与多 Mod 资源准备、提交、回滚和场景更新共用现有运行时流程；不增加独立特效 DLL。
-- 支持独立特效包和角色包同时导出；Mod 目录递归扫描，允许在现有 Mod 文件夹内再放置含独立 `mod.ini` 的子包。
-- 增加材质动态参数播放控制，并保留现有 Shape Keys 动画组与玩家按键控制。
-- 收紧热重载资源所有权和代际事务处理，保留已验证的末端依赖裁剪、增量 Mesh 编译和多 Mod 事务组合。
-
-## 下载与安装
-
-- `EFF_v1.9.0_dll.zip`：退出游戏后解压到游戏根目录，保留个人 `plugin/eff.ini`、Mods 和 `state.ini`。只含生产 DLL、代理、协议声明和默认配置。
-- `EFF-Repair-v0.3.0-win-x64.zip`：独立游戏外修复工具，需要 .NET 9 Windows Desktop Runtime；修复前会备份原 Mod。
-- `EFF-Endfield-Index-20261022.effindex.gz` 与 `eff-index-catalog.json`：当前游戏内容的完整索引及 Repair 下载目录。索引压缩包 97,429,663 字节；工具会按游戏 Bundle 内容摘要选择并校验下载。
-- `EFF_Blender_Native_v0.47.0.zip`：配套 Blender Release 使用的完整固定原生基础包，包含本次编译器、来源索引器、作者核心及插件 Python 文件。普通 DLL 用户不需要安装它。
-
-旧 Mod 不需要仅为升级 DLL 重新导出。若来源内容发生变化，作者可用配套 Blender 更新原工程并重新导出；玩家可使用修复工具。游戏内表现仍取决于来源 Prefab、Renderer 和材质配置，离线预览不等同于游戏渲染。
+按键切换问题已由用户在游戏中确认修复。发布工作流继续验证依赖图、材质移除、模型显隐生命周期、热重载事务、DLL 加载、索引更新和共享工具收据。资源权重修复属于本地 Mod 资产修改，不包含用户 Mod 或工程到公开发布包。
 
 ## English
 
-Adds ParticleSystem effect Mods that can run independently or attach to a character Mesh bone. Effects follow the model lifecycle, cover every character LOD, support key toggles and F9 reload, and use the existing Mod transaction path without a separate DLL. Mod discovery now recurses through nested package folders. Adds animated material-property controls and retains the existing Shape Keys playback groups.
-
-Install `EFF_v1.9.0_dll.zip` beside `Endfield.exe` after closing the game. Preserve personal configuration and Mods. The optional Repair tool downloads a content-matched full index from the release catalog. `EFF_Blender_Native_v0.47.0.zip` is a pinned build base for the paired Blender package, not a game installation component.
-
-## 2026-10-23 工具更新
-
-DLL 继续使用 v1.9.0，本次未修改或重新发布 DLL。新增 EFF Repair v0.3.0，配合 AnimeStudio v1.8.1 与 Blender v0.48.0 共享本机完整索引位置和下载缓存，避免为每个工程复制全量索引；完整索引包内容保持不变。旧源包不会仅因全局指纹、应用版本或索引路径变化而自动重解包；缺少可靠逐 Bundle 记录时保留原文件，仍可显式刷新。
+Format 3 is the only runtime format. Legacy conversion runs offline in Mod Manager. Demand-driven native inputs retain game-owned deserialization and bounded dependency discovery. Fixes native visibility snapshots after transformation, effect Part bindings, direct material dependencies and reload lifecycle handling. The Blender exporter compacts unused skin palette entries and provides undoable empty-group cleanup. Preserve personal settings and migrate older Mods before upgrading.
