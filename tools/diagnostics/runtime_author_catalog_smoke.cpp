@@ -71,6 +71,18 @@ static int SmokeRealMod(const std::filesystem::path& root){
     "real format 3 Mod lacks Mesh/Material/Texture resources");
   Require(catalog->OpenMeshes()==0&&catalog->OpenMaterials()==0&&catalog->OpenTextures()==0&&catalog->OpenPhysics()==0,
     "format 3 startup opened a native resource payload");
+  Native::Author controlAuthor(catalog);const auto published=controlAuthor.package;
+  for(const auto& row:published.effects){const auto& effect=row.second;
+    if(effect.part.empty()||effect.bone.empty())continue;
+    const auto& owner=published.meshes.at(published.parts.at(effect.part).mesh);
+    auto declaration=std::find_if(directory.meshes.begin(),directory.meshes.end(),[&](const auto& mesh){return mesh.part==effect.part;});
+    Require(declaration!=directory.meshes.end(),"real effect owner Mesh declaration is missing");
+    auto metadata=A::ReadMeshMetadata(root,*declaration,effect.part);
+    Require(!owner.bones.empty()&&owner.bones==metadata.declaration.bones&&catalog->OpenMeshes()==0,
+      "real effect control publication lost its ordered owner palette or opened native payload");
+    std::cout<<"PASS real effect owner metadata mod="<<published.id<<" part="<<effect.part
+      <<" bones="<<owner.bones.size()<<" openMeshResources=0\n";
+  }
   size_t meshBytes=0,materialBytes=0,textureBytes=0,physicsBytes=0;
   for(const auto& declaration:directory.meshes){try{auto mesh=catalog->GetMesh(declaration.part);
     Require(mesh->object.fields.size()>=declaration.fields.size(),"real Mesh selected fields are absent");meshBytes+=mesh->metadataReadBytes;

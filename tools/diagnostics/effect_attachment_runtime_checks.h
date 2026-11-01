@@ -182,11 +182,59 @@ void SplitOwnerChecks(){
  ownerRenderers.clear();rendererBones.clear();meshNames.clear();nodeNames.clear();rendererMeshes.clear();
  std::cout<<"PASS split-source effect Part ownership: different bone palettes, independent world/NPC/UI instances, shared resources, visibility and separate release\n";
 }
+void LazyOwnerMetadataChecks(){
+ // Use the real Format 3 Catalog and immutable control publication. Carrier
+ // compositions cannot populate this declaration after it has been copied.
+ namespace F=EiemAuthorResourceFile;namespace M=EiemAuthorResourceMetadata;
+ auto root=std::filesystem::temp_directory_path()/("eff-effect-owner-metadata-"+std::to_string(GetCurrentProcessId()));
+ Require(!std::filesystem::exists(root),"effect metadata test directory exists");
+ struct Cleanup{std::filesystem::path root;~Cleanup(){std::error_code error;std::filesystem::remove_all(root,error);}}cleanup{root};
+ std::filesystem::create_directories(root);
+ auto save=[&](const char* name,const Bytes& bytes){std::ofstream out(root/name,std::ios::binary);out.write(reinterpret_cast<const char*>(bytes.data()),std::streamsize(bytes.size()));Require(bool(out),"effect metadata fixture write failed");};
+ EiemRuntimeAuthorDirectory::MeshAsset mesh;mesh.part="PartBody";mesh.file="body.effres";mesh.bones={"Bone"};
+ mesh.vertices=3;mesh.indices=3;mesh.nativeBytes=1;mesh.authorBytes=1;mesh.authorHash=std::string(64,'A');
+ mesh.binding.hashes={1};mesh.binding.boneBounds.resize(1);
+ save("body.effres",F::Encode(1,M::EncodeMesh(mesh),Bytes{1,2}));
+ EffectAttachment effect;effect.id="test";effect.part="PartBody";effect.bone="Right";effect.variable="$fx_test";effect.native=EffectTest::Manifest('6');
+ const auto& input=effect.native->bundles.front();
+ save("effect.effres",F::Encode(5,M::EncodeEffect("ResourceEffect",input.file,input.hash,input.Size()),*input.bytes));
+ EiemAuthorControlMetadata::State controls;controls.defaults[effect.variable]=1;controls.controls[effect.variable]={"effect",0,1};controls.effects.emplace(effect.id,effect);
+ save("controls.effres",F::Encode(6,M::EncodeControls(controls),{}));
+ const std::string ini=
+  "[Mod]\nformat=3\nid=LazyEffectOwner\n\n"
+  "[MeshBody]\npath=body.effres\n\n[MeshUnhit]\npath=missing.effres\n\n"
+  "[MaterialBody]\npath=missing-material.effres\nsource.path=assets/body.mat\nsource.asset=BodyMaterial\n\n"
+  "[PartBody]\nmesh=MeshBody\nmaterial=MaterialBody\nvisible=1\n\n"
+  "[PartUnhit]\nmesh=MeshUnhit\nmaterial=MaterialBody\nvisible=1\n\n"
+  "[ReplaceBody]\ntarget.path=assets/body.mesh\ntarget.asset=Body\nparts=PartBody\n\n"
+  "[ReplaceUnhit]\ntarget.path=assets/unhit.mesh\ntarget.asset=Unhit\nparts=PartUnhit\n\n"
+  "[ResourceControls]\ntype=controls\npath=controls.effres\n\n"
+  "[ResourceEffect]\ntype=effect\npath=effect.effres\n\n[EffectAttachmenttest]\npath=controls.effres\n";
+ save("mod.ini",Bytes(ini.begin(),ini.end()));
+ auto catalog=std::make_shared<EiemDemandAuthorResources::Catalog>(root);
+ EiemDemandNativeAssembly::Author author(catalog);
+ RuntimeControls::controlGraph=std::make_shared<const std::vector<Package>>(std::vector<Package>{author.package});
+ const auto& package=RuntimeControls::controlGraph->front();
+ RuntimeControls::Spec spec;spec.package=package.id;spec.part=effect.part;spec.marker="marker";RuntimeControls::specs[spec.marker]=spec;
+ A::ModelReady(Test::oldRoot);
+ Require(A::bindings.size()==1&&A::bindings.begin()->second.parent.Get()==Test::right,"Format 3 lazy effect owner lost its bone palette before native demand");
+ Require(catalog->OpenMeshes()==0&&package.meshes.at("PartUnhit").bones.empty(),"effect mount opened native Mesh payload or unrelated Mesh metadata");
+ auto incompatible=package;incompatible.meshes.at("PartBody").bones={"WrongBone"};bool rejected=false;
+ try{A::Parent(Test::oldRoot,Test::oldRenderer,incompatible,effect);}catch(const std::exception&){rejected=true;}
+ Require(rejected,"lazy effect mount bypassed ordered skeleton provenance validation");
+ auto callbacksReady=NativeBundle::viewCallbacksReady;NativeBundle::viewCallbacksReady=true;
+ for(unsigned frame=0;frame<12;++frame){for(auto& row:Test::scheduleDone)row.second=true;Test::done=1;A::Frame();D::Collect();}
+ Require(A::bindings.begin()->second.instance&&catalog->OpenMeshes()==0,"lazy effect owner bound but never played its native instance");
+ NativeBundle::viewCallbacksReady=callbacksReady;
+ A::OwnerReleasing(Test::oldRoot);RuntimeControls::controlGraph.reset();RuntimeControls::specs.clear();
+ std::cout<<"PASS Format 3 lazy effect bone mount: immutable control publication, metadata-only owner, missing unhit Mesh deferred\n";
+}
 void Checks(){
  il2cpp_runtime_invoke=Invoke;RuntimeShapes::api.getEnabled=(void*)920;D::api.activeHierarchy=(void*)919;EffectTest::dead.clear();EffectTest::badName=false;EffectTest::foreignBundle=false;Test::done=1;
  auto original=EffectTest::Manifest('1');Package p;p.id="AttachmentMod";p.parts["PartBody"].mesh="MeshBody";p.meshes["MeshBody"].bones={"Bone"};p.defaults["$fx_test"]=1;p.controls["$fx_test"]={"effect",0,1};
  EffectAttachment effect;effect.id="test";effect.label="test";effect.part="PartBody";effect.variable="$fx_test";effect.native=original;p.effects.emplace(effect.id,effect);
  Test::transformParents[Test::right]=Test::oldRoot;auto boneEffect=effect;boneEffect.bone="Right";Require(A::Parent(Test::oldRoot,Test::oldRenderer,p,boneEffect)==Test::right,"effect cannot mount a skeleton bone absent from owner Mesh palette");
+ LazyOwnerMetadataChecks();
  RuntimeControls::controlGraph=std::make_shared<const std::vector<Package>>(std::vector<Package>{p});RuntimeControls::variables[p.id]=p.defaults;
  RuntimeControls::Spec spec;spec.package=p.id;spec.part="PartBody";spec.marker="marker";RuntimeControls::specs["marker"]=spec;
  A::revision=RuntimeControls::revision;A::ModelReady(Test::oldRoot);Require(A::bindings.size()==1,"effect owner marker did not bind exact Mod part");

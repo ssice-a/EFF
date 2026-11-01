@@ -303,23 +303,33 @@ public:
     }
     Require(declaredEffectAttachments==expectedEffectAttachments,"format 3 EffectAttachment declarations differ from Controls resource");
     Require(effectFiles==expectedEffectFiles,"format 3 Effect resources differ from Controls resource bundle inputs");
-    std::map<std::string,std::string> shapeMeshResources;
+    // Immutable controls need channel descriptors and bone-mounted effects
+    // need the ordered owner palette before publication. Request-local native
+    // compositions cannot fill these declarations later. Read only metadata
+    // for those dependencies; Mesh geometry and native inputs stay lazy.
+    std::map<std::string,std::string> controlMeshResources;
     for(const auto& state:directory_.runtime.parts)if(!state.second.shapes.empty()){
       auto part=manifest_.parts.find(state.first);
       Require(part!=manifest_.parts.end(),"shape-controlled Part is absent from the author manifest");
-      shapeMeshResources.emplace(part->second.mesh,state.first);
+      controlMeshResources.emplace(part->second.mesh,state.first);
     }
-    for(const auto& row:shapeMeshResources){
+    for(const auto& row:directory_.runtime.effects){const auto& effect=row.second;
+      if(effect.part.empty())continue;
+      auto part=manifest_.parts.find(effect.part);
+      Require(part!=manifest_.parts.end(),"effect owner Part is absent from the author manifest");
+      if(!effect.bone.empty())controlMeshResources.emplace(part->second.mesh,effect.part);
+    }
+    for(const auto& row:controlMeshResources){
       auto mesh=meshResources.find(row.first);
-      Require(mesh!=meshResources.end(),"shape-controlled Mesh resource is absent from the author manifest");
+      Require(mesh!=meshResources.end(),"control-dependent Mesh resource is absent from the author manifest");
       auto snapshot=ReadMeshMetadata(root_,mesh->second,row.second);
       auto described=snapshot.declaration;
-      Require(!described.shapes.empty(),"shape-controlled Mesh metadata has no channels");
       mesh->second.vertices=described.vertices;
       mesh->second.indices=described.indices;
+      mesh->second.bones=std::move(described.bones);
       mesh->second.shapes=std::move(described.shapes);
       Require(meshSnapshots_.emplace(mesh->second.file,std::move(snapshot)).second,
-              "shape-controlled Mesh resource file is duplicated");
+              "control-dependent Mesh resource file is duplicated");
     }
     for(const auto& state:directory_.runtime.parts)if(!state.second.shapes.empty()){
       const auto& part=manifest_.parts.at(state.first);
