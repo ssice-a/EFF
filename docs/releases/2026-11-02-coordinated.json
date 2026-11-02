@@ -1,0 +1,107 @@
+{
+  "verifiedAt": "2026-11-02T08:33:48.055969+08:00",
+  "sourceCommit": "7ae206c2a802ba872c101a5d9e99eefe7bf9f178",
+  "workflowCommit": "7ae206c2a802ba872c101a5d9e99eefe7bf9f178",
+  "releases": [
+    {
+      "repo": "ssice-a/EFF",
+      "tag": "v2.0.3",
+      "commit": "7ae206c2a802ba872c101a5d9e99eefe7bf9f178",
+      "assets": [
+        {
+          "name": "eff-native-tools.json",
+          "bytes": 770,
+          "sha256": "0ef8e6aec03d9e5a30851e3b1ec97ad3c9fcdb7c23955a6a3e0cd60a9f4be6c3"
+        },
+        {
+          "name": "EFF_Shared_Native_Tools_v2.0.3.zip",
+          "bytes": 96113689,
+          "sha256": "124ef70997254e28a7c25d4082a5b615d536b04e2dbd3ca1d245f2f1b2350938"
+        },
+        {
+          "name": "EFF_v2.0.3_dll.zip",
+          "bytes": 1587437,
+          "sha256": "b164af4b0503b4c59eb79a7fbc03d47bd406c87ee4633424ae2220fdc587a0ac"
+        }
+      ],
+      "verified": true,
+      "url": "https://github.com/ssice-a/EFF/releases/tag/v2.0.3",
+      "publishedAt": "2026-11-02T00:32:07Z",
+      "ciRun": 41366525878
+    },
+    {
+      "repo": "ssice-a/AnimeStudio",
+      "tag": "v1.9.0",
+      "commit": "d06d905d4d8dae664a5042137be0a70fcb61f54d",
+      "assets": [
+        {
+          "name": "AnimeStudio_v1.9.0_net10.0-windows.zip",
+          "bytes": 13643298,
+          "sha256": "ea39408079c78859c8f85a7e70d51beeb61a15aea0c3f9596fc468b625490c5e"
+        },
+        {
+          "name": "AnimeStudio_v1.9.0_net9.0-windows.zip",
+          "bytes": 13635726,
+          "sha256": "624fdd693a9ad9d3bc2f435f1d19d6edc3c12d53e0d446b61a7d6d85a61f3cf0"
+        }
+      ],
+      "verified": true,
+      "url": "https://github.com/ssice-a/AnimeStudio/releases/tag/v1.9.0",
+      "publishedAt": "2026-11-02T00:32:30Z",
+      "ciRun": 41363165925
+    },
+    {
+      "repo": "ssice-a/EFF-Mod-Manager",
+      "tag": "v0.2.0",
+      "commit": "21ca1be4596728df0b65f497db6e61438f8b2dd3",
+      "assets": [
+        {
+          "name": "EFF-Mod-Manager-v0.2.0-win-x64.zip",
+          "bytes": 807258,
+          "sha256": "59ce76e98b9685837551bc9399193ea789f4c84b1654e499522fd3a4ae7984b3"
+        }
+      ],
+      "verified": true,
+      "url": "https://github.com/ssice-a/EFF-Mod-Manager/releases/tag/v0.2.0",
+      "publishedAt": "2026-11-02T00:32:35Z",
+      "ciRun": 41360735135
+    },
+    {
+      "repo": "ssice-a/EFF-blender",
+      "tag": "v0.50.0",
+      "commit": "b81296cbbc110e558248eb76a29027a77ad5f104",
+      "assets": [
+        {
+          "name": "EFF_Blender_v0.50.0.zip",
+          "bytes": 366776,
+          "sha256": "211c84ad8c1c0156f5f5dd28cd5c339dd8b0b3036b7ca0f39a9acd4e956eee41"
+        }
+      ],
+      "verified": true,
+      "url": "https://github.com/ssice-a/EFF-blender/releases/tag/v0.50.0",
+      "publishedAt": "2026-11-02T00:33:36Z",
+      "ciRun": 41367676430
+    }
+  ],
+  "localAssetVerification": {
+    "filesChecked": 664,
+    "patchedMeshes": 160,
+    "verifiedSavedProjects": 8,
+    "passed": true
+  },
+  "installedDll": {
+    "tag": "v2.0.3",
+    "sha256": "4621CD4ED5F679ED524677B41F46310DB8C93583E8035C256BD139777848EC20",
+    "deployedAt": "2026-11-02T08:32:29.6096141+08:00",
+    "protectedFiles": 663,
+    "gameAcceptance": "pending-restart"
+  },
+  "localChecks": {
+    "releasePreflightTests": 10,
+    "blenderAuthorTests": 99,
+    "blenderAuthorSkipped": 1,
+    "skipReason": "Format 2 package publication belongs to Mod Manager",
+    "compiledComposition": "passed",
+    "savedProjectReopen": "8 passed"
+  }
+}

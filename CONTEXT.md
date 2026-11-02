@@ -2,6 +2,8 @@
 
 ## 当前设计权威（2026-10-30）
 
+2026-11-02 已完成四端正式发布：EFF v2.0.3、EFF Blender v0.50.0、AnimeStudio v1.9.0、Mod Manager v0.2.0。标签、源码提交、CI 与下载校验见[发布回执](docs/releases/2026-11-02-coordinated.md)。用户已确认 lx 特效与大招换模后的按键切换修复；另已按 UV 修复并部署八个 Mod 的身体权重，清理空顶点组与未用骨骼槽位，保存的八份工程已重新打开校验。新权重的游戏画面和最终发布 DLL 重启后的实机验收仍待确认；文件体积下降不等于已测得内存收益。详见[资源修复记录](docs/body-weight-repair-20261102.md)。
+
 本文件以下按日期记录的部署、验收和历史实现不可覆盖当前设计。当前 Mod 格式、DLL 运行时、Blender 往返、DDS 与 Mod Manager 迁移统一以 [ADR-0001](docs/adr/0001-authoritative-mod-directory.md) 和 [ADR-0002](docs/adr/0002-runtime-resource-files.md) 为准；旧格式文档已列入[归档索引](docs/archive/README.md)。
 
 当前目标为 format 3：`mod.ini` 是唯一关系清单，资源文件独立且自描述，DDS 保持标准文件原样；DLL 只跟随游戏真实请求匹配并局部改写，不读全局消费索引；Blender 负责离线资源生成与选择性往返；Mod Manager 事务式迁移 format 2。工作状态以 ADR 的验收要求和当前代码测试为准，历史“已部署/已通过”记录不表示 format 3 或完整按需链路已验收。

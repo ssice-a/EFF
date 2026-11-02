@@ -4,6 +4,7 @@ This index points to the current user and developer documentation in the EFF mai
 
 ## Users
 
+- [Coordinated release, 2026-11-02](releases/2026-11-02-coordinated.md): published versions, exact commits, CI runs, archive SHA256 values and local deployment boundaries.
 - [Chinese Mod tutorial](../Mod%20Tutorial.md) and [English Mod tutorial](../Mod%20Tutorial_EN.md): install, unpack, edit and export.
 - [Shared Tools and Indexes](shared-tools-and-indexes.md): user-selected storage root, AnimeStudio index workspace, shared compiler package, and the division of work across four endpoints.
 - [Material and dynamic effects](../tools/Blender/docs/material-effects.md) and [dynamic material/effect testing](dynamic-material-effects-testing.md).

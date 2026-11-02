@@ -2,6 +2,8 @@
 
 EFF, EFF Blender, AnimeStudio and EFF Mod Manager have separate repositories, versions and Release workflows. EFF is the source of shared native authoring tools; the other applications consume its immutable Release assets when needed.
 
+The [2026-11-02 coordinated release receipt](releases/2026-11-02-coordinated.md) records EFF v2.0.3, EFF Blender v0.50.0, AnimeStudio v1.9.0 and Mod Manager v0.2.0, including exact commits, CI runs and verified archive hashes.
+
 ## Ownership
 
 - EFF builds the game DLL and its protocol declaration. The same workflow builds `eff_resource_pack.exe`, `eff_source_index.exe`, the Format 3 author-assets DLL, the Format 2 migrator and its AnimeStudio source exporter, `eff_author_core.dll`, their Python dependency, and `package-protocol.json` into `EFF_Shared_Native_Tools_<tag>.zip`. It publishes `eff-native-tools.json` with the archive's URL, size and SHA256.
