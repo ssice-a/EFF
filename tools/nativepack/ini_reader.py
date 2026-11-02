@@ -246,10 +246,12 @@ def read_package(root, resource_cache=None):
     if committed is not None:
         allowed.update(committed['blobs'])
     from .mod_directory import package_files
+    # Unreferenced .bak files are rollback sidecars, not Format 2 payloads.
     actual = {p.relative_to(root).as_posix() for p in package_files(root)
               if not re.fullmatch(r"state\.ini(?:\.tmp-[0-9]+)?", p.relative_to(root).as_posix())
               and p.suffix.lower() not in (".png", ".psd") and p.name.lower() != "eff_texture_convert.exe"
               and TRANSIENT_PATH.fullmatch(p.relative_to(root).as_posix()) is None
+              and (p.relative_to(root).as_posix() in allowed or p.suffix.lower() != ".bak")
               and (p.relative_to(root).as_posix() in allowed or
                    BLOCK_PATH.fullmatch(p.relative_to(root).as_posix()) is None)}
     require(actual == allowed, "unreferenced/source files in Mod directory: " + str(sorted(actual ^ allowed)))

@@ -367,6 +367,14 @@ class DirectoryTests(unittest.TestCase):
         data = bytearray(path.read_bytes()); data[-1] ^= 1; path.write_bytes(data)
         with self.assertRaisesRegex(ValueError, "checksum"): read_package(self.root)
 
+    def test_unreferenced_backup_sidecar_does_not_block_format2_migration(self):
+        sidecar = self.root / "controls.effres.pre-part-fix-20261102.bak"
+        sidecar.write_bytes(b"rollback copy")
+        package = read_package(self.root)
+        self.assertEqual(package["modId"], "Test")
+        self.assertNotIn(sidecar.relative_to(self.root).as_posix(), package["_files"])
+        self.assertEqual(sidecar.read_bytes(), b"rollback copy")
+
     def test_texture_settings_are_editable_in_ini(self):
         ini = ini_document(self.root)
         for section in ini.sections():

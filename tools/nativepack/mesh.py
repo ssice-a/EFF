@@ -176,10 +176,9 @@ def frame_stream(source_channels, positions, normals, tangents):
 
 
 def game_texture_coordinates(uv_channels, tangents, count):
-    """Convert Blender UVs to the game's image origin for native Mesh data."""
+    """Preserve authored UV coordinates and tangent handedness in native Mesh data."""
     require(count > 0 and len(uv_channels) == 8, 'UV channel count')
     converted = []
-    has_uv0 = False
     for channel, values in enumerate(uv_channels):
         if not values:
             converted.append(None)
@@ -187,12 +186,8 @@ def game_texture_coordinates(uv_channels, tangents, count):
         dimension = len(values) // count
         require(2 <= dimension <= 4 and len(values) == count * dimension, 'UV shape')
         uv = np.asarray(values, dtype='<f4').reshape(count, dimension)
-        uv[:, 1] = 1.0 - uv[:, 1]
         converted.append(uv)
-        has_uv0 |= channel == 0
     tangent_values = np.asarray(tangents, dtype=np.float64).reshape(count, 4)
-    if has_uv0:
-        tangent_values[:, 3] *= -1.0
     return converted, tangent_values
 
 

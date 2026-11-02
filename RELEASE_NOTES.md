@@ -1,4 +1,14 @@
-# EFF v2.0.3
+# EFF v2.0.4
+
+配套发布修复共享 Format 2 迁移工具，支持旧 Mod 目录中未引用的回滚 `.bak` 文件，不再因此拒绝整批迁移。
+
+- Format 2 迁移仍验证所有声明资源；仅忽略未被清单引用的回滚副本。
+- 增加迁移回归测试，覆盖含 `.bak` 文件的真实目录模式。
+- Mesh 导出保留作者 UV 与切线手性；贴图行方向在离线 DDS 编码阶段统一处理，迁移与 Blender 导出使用同一规则。
+
+共享工具包：`EFF_Shared_Native_Tools_v2.0.4.zip`。运行时仍只接受 Format 3。
+
+## EFF v2.0.3
 
 本次为 Format 3 架构重构，配套 EFF Blender v0.50.0、AnimeStudio v1.9.0、EFF Mod Manager v0.2.0。
 

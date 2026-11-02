@@ -19,9 +19,9 @@
    index, or cache is required for correctness.
 4. Mesh resource files contain the native serialized Mesh and an `EFFMESH`
    author snapshot so Blender can round-trip geometry, bindings, and target
-   metadata. Native Mesh UV V coordinates are converted from Blender's image
-   origin to the game's sampling origin during offline encoding; the `EFFMESH`
-   author snapshot retains Blender's original UV values. Material resource
+   metadata. Native Mesh UV coordinates and tangent handedness preserve their
+   authored values; source-image row orientation is normalized during DDS
+   encoding. The `EFFMESH` author snapshot retains the same UV values. Material resource
    files contain only a sparse `EFFMAT` edit document plus its logical source
    path and asset name; they do not contain a native Material snapshot. When a
    declared Mesh target is prepared, the DLL
