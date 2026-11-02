@@ -14,9 +14,9 @@ The [2026-11-02 coordinated release receipt](releases/2026-11-02-coordinated.md)
 ## Release Flow
 
 1. Review and commit each repository's intended source in that repository. Record exact commits and verify the EFF submodule gitlinks before a coordinated release. Do not reset or clean unrelated local work.
-2. Build the EFF tag. The workflow checks the DLL protocol against the shared compiler, verifies the tools archive and manifest, runs DLL and index regressions, then creates a draft containing the DLL ZIP, shared-tools ZIP and manifest. Publish the EFF release before consumers need its new tool protocol.
+2. Push the EFF release tag. The workflow checks the DLL protocol against the shared compiler, verifies the tools archive and manifest, runs DLL and index regressions, then publishes the DLL ZIP, shared-tools ZIP and manifest. Publish EFF before consumers need its new tool protocol.
 3. Build AnimeStudio independently when its source changes. Run the index and transactional source-update suites, then verify both supported framework packages.
-4. Build EFF Blender independently when its source changes. Its CI reads the latest published EFF tools manifest, checks out that EFF tag for author-contract tests, and rejects packages containing native executables or libraries. It targets Blender 5.2.
+4. Push the EFF Blender release tag after the paired EFF tools release is public. Its CI reads the latest published EFF tools manifest, checks out that EFF tag for author-contract tests, and rejects packages containing native executables or libraries. It targets Blender 5.2 and publishes the tested ZIP.
 5. Build EFF Mod Manager independently when its source changes. Run the .NET 9 Windows build and file-operation/shared-settings tests; confirm its package does not contain a private compiler copy.
 6. Record each Release URL, asset name, size, SHA256 and CI run. A local deployment is separate evidence and does not publish a GitHub Release.
 

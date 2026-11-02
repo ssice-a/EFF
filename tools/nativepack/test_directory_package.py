@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import configparser
 import struct
 import tempfile
 import unittest
@@ -102,6 +103,26 @@ def fixture():
 
 
 class DirectoryTests(unittest.TestCase):
+    def test_format3_material_validator_accepts_package_source_paths(self):
+        from nativepack.author_format3 import _validate_material_resource, encode_material_resource
+
+        source_path = 'packages/com.hg.render-pipelines/runtime/renderpipelineresources/material/defaultmaterial.mat'
+        author_data = ('format=EFFMAT\nversion=1\noverrides=true\nsource=' +
+                       source_path + '\n').encode('utf-8')
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            relative = 'materials/MaterialBody.mat'
+            path = root / relative
+            path.parent.mkdir(parents=True)
+            path.write_bytes(encode_material_resource('MaterialBody', relative,
+                                                      source_path, 'Body', author_data))
+            ini = configparser.ConfigParser(interpolation=None, delimiters=('=',), strict=True)
+            ini.optionxform = str
+            ini.add_section('MaterialBody')
+            ini['MaterialBody'].update(path=relative, **{'source.path': source_path,
+                                                        'source.asset': 'Body'})
+            _validate_material_resource(root, relative, 'MaterialBody', ini, len(author_data))
+
     def test_memory_only_export_emits_complete_input_without_staging_files(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / 'staging'

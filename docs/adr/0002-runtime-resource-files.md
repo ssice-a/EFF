@@ -12,6 +12,11 @@
    paths, Mesh targets, Part membership, Material bindings, controls, physics,
    effects, and animation relationships. It contains no file offsets, cache
    keys, content hashes, CAB/PathID values, or generated consumer lists.
+   A game resource identity uses its normalized logical path and asset name;
+   the path may belong to either the `assets/` or `packages/` namespace for
+   Mesh targets and Material/Texture sources. The namespace does not depend on
+   resource kind, and identity paths reject traversal segments, backslashes,
+   and drive prefixes.
 3. Each referenced resource file is self-describing and independently
    addressable. Its file identity is its resource ID and relative path in
    `mod.ini`; runtime-native data and the author metadata required by Blender

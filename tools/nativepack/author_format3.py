@@ -767,6 +767,13 @@ def _effmat_values(data, label):
     return values
 
 
+def is_logical_resource_path(path):
+    if (not isinstance(path, str) or "\0" in path or "\\" in path or ":" in path or
+            not path.lower().startswith(("assets/", "packages/"))):
+        return False
+    return all(part not in ("", ".", "..") for part in path.split("/"))
+
+
 def _validate_material_resource(root, relative, section, ini, payload_bytes):
     path = root / relative
     with path.open("rb") as stream:
@@ -780,7 +787,7 @@ def _validate_material_resource(root, relative, section, ini, payload_bytes):
             reader.string() for _ in range(4))
         author_bytes, author_hash = reader.integer(), reader.string()
         reader.end()
-        require(material_id == section and resource_file and source_path.startswith("assets/") and
+        require(material_id == section and resource_file and is_logical_resource_path(source_path) and
                 source_path == ini[section].get("source.path") and
                 source_asset == ini[section].get("source.asset") and
                 len(author_hash) == 64 and author_hash.upper() == author_hash and

@@ -1,4 +1,14 @@
-# EFF v2.0.4
+# EFF v2.0.5
+
+配套 EFF Blender v0.50.2、AnimeStudio v1.9.1；Windows x64。运行时仍只接受 Format 3。
+
+- 接受 `packages/` 命名空间中的 Mesh 目标及 Material/Texture 来源身份，与 `assets/` 使用同一逻辑路径规则。
+- 继续拒绝路径穿越、反斜杠、盘符和空路径段；不会把游戏资源身份误当作本地贴图文件。
+- 增加运行时清单、作者工具和 Blender 导出回归测试，覆盖 package 资源路径及非法路径。
+
+共享工具包：`EFF_Shared_Native_Tools_v2.0.5.zip`。
+
+## EFF v2.0.4
 
 配套发布修复共享 Format 2 迁移工具，支持旧 Mod 目录中未引用的回滚 `.bak` 文件，不再因此拒绝整批迁移。
 

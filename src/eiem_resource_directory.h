@@ -325,12 +325,26 @@ struct Identity {
     return std::tie(path, asset) < std::tie(b.path, b.asset);
   }
 };
+inline std::string LogicalResourcePath(std::string path) {
+  Require(!path.empty() && path.back() != '/' && path.find('\\') == path.npos &&
+              path.find(':') == path.npos && path.find('\0') == path.npos,
+          "invalid logical resource path " + path);
+  std::transform(path.begin(), path.end(), path.begin(),
+                 [](unsigned char c) { return char(std::tolower(c)); });
+  Require(Begins(path, "assets/") || Begins(path, "packages/"),
+          "invalid logical resource path " + path);
+  for (size_t start = 0; start < path.size();) {
+    const auto end = path.find('/', start);
+    const auto part = path.substr(start, end == path.npos ? path.size() - start : end - start);
+    Require(!part.empty() && part != "." && part != "..",
+            "invalid logical resource path " + path);
+    if (end == path.npos) break;
+    start = end + 1;
+  }
+  return path;
+}
 inline Identity Source(const Settings& v, const std::string& prefix) {
-  Identity id{v.at(prefix + "path"), v.at(prefix + "asset")};
-  Require(Begins(id.path, "assets/") && id.path.find('\\') == id.path.npos &&
-              id.path.find("..") == id.path.npos,
-          "invalid logical resource path " + id.path);
-  std::transform(id.path.begin(),id.path.end(),id.path.begin(),[](unsigned char c){return char(std::tolower(c));});
+  Identity id{LogicalResourcePath(v.at(prefix + "path")), v.at(prefix + "asset")};
   return id;
 }
 #include "eiem_shape_animation_types.h"

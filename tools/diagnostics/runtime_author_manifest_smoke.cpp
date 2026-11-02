@@ -17,22 +17,31 @@ int main() {
         "[ShapeAnimationWalk]\npath=author/controls.effres\n\n"
         "[MaterialAnimationGlow]\npath=author/controls.effres\n\n"
         "[EffectAttachmentSpark]\npath=author/controls.effres\nauthor=ResourceEffectAuthor_Spark\n\n"
-        "[MaterialBody]\npath=author/materials/body.mat\nsource.path=assets/base/body.mat\nsource.asset=Body\ntexture._BaseMap=TextureBody\n\n"
+        "[MaterialBody]\npath=author/materials/body.mat\nsource.path=packages/com.hg.render-pipelines/runtime/renderpipelineresources/material/defaultmaterial.mat\nsource.asset=Body\ntexture._BaseMap=TextureBody\n\n"
         "[TextureBody]\npath=author/textures/body.texmeta\ndds=editable/custom/body.dds\n"
+        "source.path=packages/com.hg.render-pipelines/runtime/renderpipelineresources/texture/defaulttexture.tex\nsource.asset=DefaultTexture\n"
         "linear=true\nfilter=2\nwrap=1\naniso=8\nmip_bias=-0.5\n\n"
         "[ResourceEffect_0123456789ABCDEF]\ntype=effect\npath=effects/spark.effres\ntargets=ReplaceBody\n\n"
         "[ResourceEffectAuthor_Spark]\ntype=effect-author\npath=effects/author/spark.effres\n\n"
         "[ResourceControls]\ntype=controls\npath=author/controls.effres\n\n"
         "[PartBody]\nmesh=MeshBody\nmaterial=MaterialBody\nvisible=1\n\n"
-        "[ReplaceBody]\ntarget.path=assets/base/body.asset\ntarget.asset=Body\nparts=PartBody\n";
+        "[ReplaceBody]\ntarget.path=packages/com.hg.game/runtime/characters/body.asset\ntarget.asset=Body\nparts=PartBody\n";
     { std::ofstream output(root / "mod.ini", std::ios::binary); output << ini; }
 
     auto manifest = EiemRuntimeAuthorManifest::Read(root);
     Require(manifest.id == "FormatThree" && manifest.resources.size() == 9 &&
                 manifest.parts.size() == 1 && manifest.targets.size() == 1,
             "format 3 relationships differ");
+    Require(manifest.targets.front().source.path ==
+                "packages/com.hg.game/runtime/characters/body.asset",
+            "Format 3 Mesh package target identity was not preserved");
     Require(manifest.resources.at("TextureBody").dds == "editable/custom/body.dds",
             "user-selected DDS path was not preserved");
+    Require(manifest.resources.at("MaterialBody").source.path ==
+                "packages/com.hg.render-pipelines/runtime/renderpipelineresources/material/defaultmaterial.mat" &&
+                manifest.resources.at("TextureBody").source.path ==
+                "packages/com.hg.render-pipelines/runtime/renderpipelineresources/texture/defaulttexture.tex",
+            "Format 3 Material/Texture package source identities were not preserved");
     const auto& sampling = manifest.resources.at("TextureBody").textureSettings;
     Require(sampling.linear && sampling.filter == 2 && sampling.wrap == 1 &&
                 sampling.aniso == 8 && sampling.mipBias == -0.5,
@@ -56,6 +65,19 @@ int main() {
              << "../outside.mesh\n" << ini.substr(ini.find("\n\n[MaterialBody]")); }
     try { (void)EiemRuntimeAuthorManifest::Read(root); } catch (const std::exception&) { traversalRejected = true; }
     Require(traversalRejected, "format 3 accepted a resource path outside the Mod root");
+
+    { std::ofstream output(root / "mod.ini", std::ios::binary | std::ios::trunc);
+      auto invalidTarget = ini;
+      const auto oldTarget = std::string("target.path=packages/com.hg.game/runtime/characters/body.asset");
+      const auto targetAt = invalidTarget.find(oldTarget);
+      Require(targetAt != invalidTarget.npos, "smoke target path fixture is absent");
+      invalidTarget.replace(targetAt, oldTarget.size(),
+          "target.path=packages/../assets/body.asset");
+      output << invalidTarget; }
+    bool traversalTargetRejected = false;
+    try { (void)EiemRuntimeAuthorManifest::Read(root); }
+    catch (const std::exception&) { traversalTargetRejected = true; }
+    Require(traversalTargetRejected, "format 3 accepted a traversing Mesh target path");
 
     { std::ofstream output(root / "mod.ini", std::ios::binary | std::ios::trunc);
       output << ini << "\n[TextureAlias]\npath=author/textures/body.texmeta\n"
