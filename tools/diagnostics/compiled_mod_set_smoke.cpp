@@ -75,7 +75,14 @@ void AssemblySelectionRegression(){
  auto bytes=[](const Description& value){EiemOfflinePackage::Writer writer;EiemOfflinePackage::WriteAssembly(writer,value);return writer.b;};
  Require(bytes(EiemCompiledModSet::MergeAssembly(pristine,variants))==bytes(expected),"single-copy assembly lost bone/LOD/helper/source order");
  Require(bytes(EiemCompiledModSet::MergeAssembly(pristine,{}))==bytes(pristine.assembly),"pristine assembly changed without contributors");
- variants[1].second={{"fixture-cab",10}};Rejected([&]{EiemCompiledModSet::MergeAssembly(pristine,variants);});
+ // Overlapping target ownership uses later-Mod precedence for the native
+ // Renderer while retaining distinct generated extensions from both Mods.
+ variants[1].second={{"fixture-cab",10}};
+ auto overlap=pristine.assembly;overlap.sources[0].targets.push_back(extra);
+ overlap.lods[0].levels[0].renderers={overlap.sources[0].targets[0].renderer,extra.renderer,overlap.sources[1].targets[0].renderer};
+ overlap.helpers[0].renderers=overlap.lods[0].levels[0].renderers;overlap.helpers[0].custom=true;
+ Require(bytes(EiemCompiledModSet::MergeAssembly(pristine,variants))==bytes(overlap),"overlapping Renderer precedence lost independent extensions or changed an unclaimed Renderer");
+ variants[1].second={{"fixture-cab",999}};Rejected([&]{EiemCompiledModSet::MergeAssembly(pristine,variants);});
  Require(pristine.assembly.sources[0].targets.size()==1&&!pristine.assembly.helpers[0].custom,"assembly composition mutated immutable source roots");
 }
 
@@ -158,7 +165,7 @@ void MappedAuthorResourceRegression(){
 void PristineProofReuseRegression(){
  using namespace EiemCompiledMod;
  Fixture fixture;fixture.cab="CAB-"+std::string(32,'a');
- auto& bundleType=fixture.types[4];auto nameNode=bundleType.nodes.size();bundleType.nodes.push_back({"string","m_Name",false,{}});bundleType.nodes[0].children.push_back(nameNode);auto bundleName=EmptyValue(bundleType,nameNode);SetString(bundleType,bundleName,"fixture-bundle");fixture.V(300).children.push_back(std::move(bundleName));
+ auto& bundleType=fixture.types[4];SetString(bundleType,Child(bundleType,fixture.V(300),"m_Name"),"fixture-bundle");
  auto bytes=fixture.BytesOf();auto bundle=EndfieldInput::Decode(Bundle(bytes,fixture.cab));
  Plan plan;plan.originals.push_back({"fixture",Hash(Bundle(bytes,fixture.cab)),{},0,0});
  plan.names.members[fixture.cab]="CAB-"+std::string(32,'b');
@@ -212,7 +219,7 @@ void NativeRegistrationRegression(){
 void GenericObjectRegression(unsigned storeFormat=0){
  using namespace EiemCompiledMod;
  Fixture f;f.cab="CAB-"+std::string(32,'a');f.Add(700,5);
- auto& bundleType=f.types[4];auto nameNode=bundleType.nodes.size();bundleType.nodes.push_back({"string","m_Name",false,{}});bundleType.nodes[0].children.push_back(nameNode);auto bundleName=EmptyValue(bundleType,nameNode);SetString(bundleType,bundleName,"fixture-bundle");f.V(300).children.push_back(std::move(bundleName));
+ auto& bundleType=f.types[4];SetString(bundleType,Child(bundleType,f.V(300),"m_Name"),"fixture-bundle");
  const auto before=f.BytesOf(),original=Bundle(before,f.cab);auto base=ParseSerialized(before);
  auto parent=std::filesystem::weakly_canonical(std::filesystem::temp_directory_path());
  auto folder=parent/("eff-generic-objects-"+std::to_string(GetCurrentProcessId()));
@@ -220,7 +227,7 @@ void GenericObjectRegression(unsigned storeFormat=0){
  struct Cleanup{std::filesystem::path parent,folder;~Cleanup(){if(folder.parent_path()==parent)std::filesystem::remove_all(folder);}}cleanup{parent,folder};
  auto file=folder/"input";EiemResourceReloadPlan::Save(file,original);
  EiemCompiledModSet::Set set;EiemCompiledModSet::Catalog catalog;catalog.source={"fixture",Hash(original),file,0,original.size()};{MemberProof proof;proof.before=base;catalog.members[f.cab]=EiemCompiledModSet::PristineMember(proof);}
- set.catalog={catalog};set.contributors={{{0,0},{1,0}}};set.frames.resize(2);set.manifest.plan.names.members[f.cab]="CAB-"+std::string(32,'b');set.manifest.plan.names.bundles["fixture-bundle"]="merged--bundle";
+ set.catalog={catalog};set.overlappingTargets.resize(set.catalog.size());set.contributors={{{0,0},{1,0}}};set.frames.resize(2);set.manifest.plan.names.members[f.cab]="CAB-"+std::string(32,'b');set.manifest.plan.names.bundles["fixture-bundle"]="merged--bundle";
  auto artifact=[&](const Bytes& edited){
   auto a=std::make_shared<Artifact>();auto& p=a->manifest.plan;p.rulesOnly=p.spanRecipes=true;
   p.startupHashes={Hash(EndfieldInput::Encode(original,{{f.cab,0,edited}}))};
@@ -359,7 +366,7 @@ void SharedSchemaDictionaryRegression(){
 
 void PreloadIntervalRegression(){
  using namespace EiemCompiledMod;
- Fixture f;auto& type=f.types[4];auto nameNode=type.nodes.size();type.nodes.push_back({"string","m_Name",false,{}});type.nodes[0].children.push_back(nameNode);auto bundleName=EmptyValue(type,nameNode);SetString(type,bundleName,"fixture-bundle");f.V(300).children.push_back(std::move(bundleName));auto& containers=ArrayValue(type,Child(type,f.V(300),"m_Container"));
+ Fixture f;auto& type=f.types[4];SetString(type,Child(type,f.V(300),"m_Name"),"fixture-bundle");auto& containers=ArrayValue(type,Child(type,f.V(300),"m_Container"));
  SetInteger(type,Child(type,Child(type,containers.children[0],"second"),"preloadSize"),4);
  SetInteger(type,Child(type,Child(type,containers.children[1],"second"),"preloadIndex"),4);
  SetInteger(type,Child(type,Child(type,containers.children[1],"second"),"preloadSize"),6);
@@ -392,13 +399,13 @@ void LargePreloadRegression(size_t contributors=3){
 void ExternalDependencyRegression(){
  using namespace EiemCompiledMod;
  Fixture f;f.cab="CAB-"+std::string(32,'a');
- auto& bundleType=f.types[4];auto nameNode=bundleType.nodes.size();bundleType.nodes.push_back({"string","m_Name",false,{}});bundleType.nodes[0].children.push_back(nameNode);auto bundleName=EmptyValue(bundleType,nameNode);SetString(bundleType,bundleName,"fixture-bundle");f.V(300).children.push_back(std::move(bundleName));
+ auto& bundleType=f.types[4];SetString(bundleType,Child(bundleType,f.V(300),"m_Name"),"fixture-bundle");
  const std::string originalCab="CAB-"+std::string(32,'b'),firstCab="CAB-"+std::string(32,'c'),secondCab="CAB-"+std::string(32,'d'),sharedCab="CAB-"+std::string(32,'e');
  auto layout=ParseSerialized(f.BytesOf());layout.externals={originalCab};auto before=BuildSerialized(f.BytesOf(),layout,{});
  auto originalRefs=EiemLoadingGraphAudit::ReadExternals(before,ParseSerialized(before));before[originalRefs.front().guidOffset]=0xA5;
  auto original=Bundle(before,f.cab);auto root=std::filesystem::weakly_canonical(std::filesystem::temp_directory_path());auto folder=root/("eff-external-smoke-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));
  Require(std::filesystem::create_directory(folder),"external fixture already exists");struct Cleanup{std::filesystem::path path,root;~Cleanup(){if(path.parent_path()==root)std::filesystem::remove_all(path);}}cleanup{folder,root};auto file=folder/"input";EiemResourceReloadPlan::Save(file,original);
- EiemCompiledModSet::Set set;EiemCompiledModSet::Catalog catalog;catalog.source={"fixture",Hash(original),file,0,original.size()};{MemberProof proof;proof.before=ParseSerialized(before);catalog.members[f.cab]=EiemCompiledModSet::PristineMember(proof);}set.catalog={catalog};set.contributors={{{0,0},{1,0}}};set.frames.resize(2);
+ EiemCompiledModSet::Set set;EiemCompiledModSet::Catalog catalog;catalog.source={"fixture",Hash(original),file,0,original.size()};{MemberProof proof;proof.before=ParseSerialized(before);catalog.members[f.cab]=EiemCompiledModSet::PristineMember(proof);}set.catalog={catalog};set.overlappingTargets.resize(set.catalog.size());set.contributors={{{0,0},{1,0}}};set.frames.resize(2);
  for(const auto& cab:{f.cab,firstCab,secondCab,sharedCab})set.manifest.plan.names.members[cab]="CAB-"+EiemLoadingGeneration::Token("external-regression",cab,32);
  set.manifest.plan.names.bundles["fixture-bundle"]="merged--bundle";
  for(int mod=0;mod<2;++mod){auto own=ParseSerialized(before);auto id=int64_t(mod?23:13);auto value=ObjectValue(before,own,id);const auto& type=own.types.at(own.objects.at(id).type);auto& materials=ArrayValue(type,Child(type,value,"m_Materials"));
@@ -426,12 +433,12 @@ void ExternalDependencyRegression(){
 void SharedInputRegression(){
  using namespace EiemCompiledMod;
  Fixture f;f.cab="CAB-"+std::string(32,'a');f.List(15,"customRenderers",{23});
- auto& fixtureBundleSchema=f.types[4];auto nameNode=fixtureBundleSchema.nodes.size();fixtureBundleSchema.nodes.push_back({"string","m_Name",false,{}});fixtureBundleSchema.nodes[0].children.push_back(nameNode);auto bundleName=EmptyValue(fixtureBundleSchema,nameNode);SetString(fixtureBundleSchema,bundleName,"fixture-bundle");f.V(300).children.push_back(std::move(bundleName));
+ auto& fixtureBundleSchema=f.types[4];SetString(fixtureBundleSchema,Child(fixtureBundleSchema,f.V(300),"m_Name"),"fixture-bundle");
  auto& levels=ArrayValue(f.T(14),Child(f.T(14),f.V(14),"m_LODs"));auto& renderers=ArrayValue(f.T(14),Child(f.T(14),levels.children[0],"renderers"));auto extra=ArrayElement(f.T(14),renderers);SetReference(f.T(14),Child(f.T(14),extra,"renderer"),{f.cab,23},f.refs,f.cab);renderers.children.push_back(extra);renderers.count=2;
  f.types[5]=Schema(43,{{"string","m_Name",{}},{"StreamingInfo","m_StreamData",{{"UInt64","offset",{}},{"UInt32","size",{}},{"string","path",{}}}}});f.objects.at(100).second=EmptyValue(f.types[5],0);auto& originalStream=Child(f.T(100),f.V(100),"m_StreamData");SetInteger(f.T(100),Child(f.T(100),originalStream,"size"),4);SetString(f.T(100),Child(f.T(100),originalStream,"path"),"archive:/"+f.cab+"/"+f.cab+".resS");
  auto before=f.BytesOf();Bytes stream{1,2,3,4};auto header=Bundle(before,f.cab);auto original=EndfieldInput::Encode(header,{{f.cab,0,before},{f.cab+".resS",0,stream}});
  auto temp=std::filesystem::weakly_canonical(std::filesystem::temp_directory_path());auto folder=temp/("eff-compiled-smoke-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));Require(std::filesystem::create_directory(folder),"fixture already exists");struct Cleanup{std::filesystem::path path,root;~Cleanup(){if(path.parent_path()==root)std::filesystem::remove_all(path);}}cleanup{folder,temp};auto file=folder/"input";EiemResourceReloadPlan::Save(file,original);
- EiemCompiledModSet::Set set;EiemCompiledModSet::Catalog catalog;catalog.source={"fixture",Hash(original),file,0,original.size()};{MemberProof proof;proof.before=ParseSerialized(before);catalog.members[f.cab]=EiemCompiledModSet::PristineMember(proof);}set.catalog={catalog};set.contributors={{{0,0},{1,0}}};set.frames.resize(2);set.manifest.plan.names.members={{f.cab,"CAB-"+std::string(32,'b')},{f.cab+".resS","CAB-"+std::string(32,'b')+".resS"}};set.manifest.plan.names.bundles["fixture-bundle"]="merged--bundle";
+ EiemCompiledModSet::Set set;EiemCompiledModSet::Catalog catalog;catalog.source={"fixture",Hash(original),file,0,original.size()};{MemberProof proof;proof.before=ParseSerialized(before);catalog.members[f.cab]=EiemCompiledModSet::PristineMember(proof);}set.catalog={catalog};set.overlappingTargets.resize(set.catalog.size());set.contributors={{{0,0},{1,0}}};set.frames.resize(2);set.manifest.plan.names.members={{f.cab,"CAB-"+std::string(32,'b')},{f.cab+".resS","CAB-"+std::string(32,'b')+".resS"}};set.manifest.plan.names.bundles["fixture-bundle"]="merged--bundle";
  for(int mod=0;mod<2;++mod){auto next=f;int64_t renderer=mod?23:13,addedRenderer=mod?523:413,mesh=mod?102:101,child=mod?501:401;next.List(11,"m_Children",{child});next.Add(child,1);next.Pointer(child,"m_GameObject",mod?500:400);next.Add(mod?500:400,0);next.Add(addedRenderer,3);next.Pointer(addedRenderer,"m_GameObject",mod?500:400);next.List(15,"customRenderers",{addedRenderer});auto& lod=ArrayValue(next.T(14),Child(next.T(14),next.V(14),"m_LODs"));auto& list=ArrayValue(next.T(14),Child(next.T(14),lod.children[0],"renderers"));auto value=ArrayElement(next.T(14),list);SetReference(next.T(14),Child(next.T(14),value,"renderer"),{next.cab,addedRenderer},next.refs,next.cab);list.children.insert(list.children.begin()+(mod?2:1),value);list.count=list.children.size();
   next.List(renderer,"m_Materials",{mod?202:201});next.List(300,"m_PreloadTable",{child,addedRenderer,mesh});SetInteger(next.T(300),Child(next.T(300),Child(next.T(300),next.V(300),"m_MainAsset"),"preloadSize"),13);auto& containers=ArrayValue(next.T(300),Child(next.T(300),next.V(300),"m_Container"));for(auto& row:containers.children)SetInteger(next.T(300),Child(next.T(300),Child(next.T(300),row,"second"),"preloadSize"),13);
   next.Add(mesh,5);auto& info=Child(next.T(mesh),next.V(mesh),"m_StreamData");SetInteger(next.T(mesh),Child(next.T(mesh),info,"offset"),4);SetInteger(next.T(mesh),Child(next.T(mesh),info,"size"),mod?5:3);SetString(next.T(mesh),Child(next.T(mesh),info,"path"),"archive:/"+next.cab+"/"+next.cab+".resS");auto edited=next.BytesOf();auto bytes=stream;bytes.insert(bytes.end(),mod?5:3,mod?9:8);auto a=std::make_shared<Artifact>();auto& plan=a->manifest.plan;plan.spanRecipes=plan.rulesOnly=true;plan.startupHashes={Hash(EndfieldInput::Encode(original,{{f.cab,0,edited},{f.cab+".resS",0,bytes}}))};plan.memberRecipes.resize(1);
@@ -491,8 +498,8 @@ void NativeResidencyRegression(){
 void SharedAuthorModelRegression(bool differentTemplates=false){
  using namespace EiemCompiledMod;
  Fixture f;f.cab="CAB-"+std::string(32,'a');
- auto& bt=f.types[4];auto nameNode=bt.nodes.size();bt.nodes.push_back({"string","m_Name",false,{}});bt.nodes[0].children.push_back(nameNode);
- auto bundleName=EmptyValue(bt,nameNode);SetString(bt,bundleName,"fixture-bundle");f.V(300).children.push_back(std::move(bundleName));
+ auto& bt=f.types[4];
+ SetString(bt,Child(bt,f.V(300),"m_Name"),"fixture-bundle");
  f.types[6]=Schema(21,{{"string","m_Name",{}},Ref("m_Shader"),Ref("texture")});f.objects.at(200).second=EmptyValue(f.types[6],0);
  f.types.push_back(Schema(28,{{"string","m_Name",{}},{"StreamingInfo","m_StreamData",{{"UInt64","offset",{}},{"UInt32","size",{}},{"string","path",{}}}}}));
  size_t textureType=f.types.size()-1;f.Add(201,textureType);f.Pointer(200,"texture",201);
@@ -505,7 +512,7 @@ void SharedAuthorModelRegression(bool differentTemplates=false){
  auto input=folder/"input";EiemResourceReloadPlan::Save(input,original);
  EiemCompiledModSet::Set set;EiemCompiledModSet::Catalog catalog;catalog.source={"fixture",Hash(original),input,0,original.size()};
  {MemberProof proof;proof.before=ParseSerialized(before);catalog.members[f.cab]=EiemCompiledModSet::PristineMember(proof);}
- set.catalog={catalog};set.contributors={{{0,0},{1,0}}};set.frames.resize(2);
+ set.catalog={catalog};set.overlappingTargets.resize(set.catalog.size());set.contributors={{{0,0},{1,0}}};set.frames.resize(2);
  set.manifest.plan.names.members={{f.cab,"CAB-"+std::string(32,'b')},{f.cab+".resS","CAB-"+std::string(32,'b')+".resS"}};
  set.manifest.plan.names.bundles["fixture-bundle"]="merged--bundle";
  std::vector<int64_t> materialIds,textureIds;
@@ -775,6 +782,7 @@ void ComparePrunedArtifacts(const std::filesystem::path& game,const std::filesys
  auto packet=EiemCompiledMod::Encode(after,game);auto roundtrip=EiemCompiledMod::Decode(packet,afterRoot,game);Require(EiemCompiledMod::Encode(roundtrip,game)==packet,"pruned artifact roundtrip differs");
  std::cout<<"PASS pruned artifact: beforeInputs="<<a.inputs.size()<<" afterInputs="<<b.inputs.size()<<" removedReadOnly="<<removed<<" roots="<<b.roots.size()<<" authorAndAssembliesAndEditedBytesUnchanged=1 roundtrip=1\n";
 }
+template<class F> void CheckRegression(const char* name,F f){try{f();}catch(const std::exception& e){throw std::runtime_error(std::string(name)+": "+e.what());}}
 int main(int argc,char** argv){try{
  if(argc==2&&std::string(argv[1])=="--target-overlap-object-smoke"){
   using namespace EiemCompiledMod;using namespace EiemCompiledModSet;Fixture fixture;auto bytes=fixture.BytesOf();auto layout=ParseSerialized(bytes);Identity shared{"assets/static.mesh","Static"},solo{"assets/solo.mesh","Solo"};
@@ -792,7 +800,7 @@ int main(int argc,char** argv){try{
   Rejected([&]{MergeObject(rendererType,EncodeValue(rendererType,renderer),{EncodeValue(rendererType,a),EncodeValue(rendererType,b)},targets.count(rendererId)!=0);});
   std::cout<<"PASS overlapping target object scope: target Mesh/Renderer use deterministic precedence; unrelated Renderer conflicts remain rejected\n";return 0;
  }
- if(argc==2&&std::string(argv[1])=="--large-preload-smoke"){PreloadIntervalRegression();LargePreloadRegression();LargePreloadRegression(80);return 0;}
+ if(argc==2&&std::string(argv[1])=="--large-preload-smoke"){CheckRegression("PreloadIntervalRegression",[&]{PreloadIntervalRegression();});CheckRegression("LargePreloadRegression",[&]{LargePreloadRegression();});CheckRegression("LargePreloadRegression",[&]{LargePreloadRegression(80);});return 0;}
  if(argc==4&&std::string(argv[1])=="--runtime-view-audit"){
   auto game=std::filesystem::u8path(argv[2]),mods=std::filesystem::u8path(argv[3]);auto set=EiemCompiledModSet::Read(game,{},mods);Require(bool(set),"runtime view audit has no compiled Mods");auto context=EiemCompiledModSet::Context(set);size_t changed=0,bytes=0;
   for(const auto& row:set->startup){auto i=row.first;++changed;auto view=context->startupViews.find(i);Require(view!=context->startupViews.end(),"runtime startup view absent");auto actual=EiemInputSpanView::Digest(*view->second);
@@ -811,10 +819,10 @@ int main(int argc,char** argv){try{
   Require(bool(set),"profile has no compiled Mods");size_t shared=0;for(const auto& contributors:set->contributors)if(contributors.size()>1)++shared;
   std::cout<<"PASS production Mod-set read: mods="<<set->mods.size()<<" inputs="<<set->catalog.size()<<" roots="<<set->manifest.plan.roots.size()<<" sharedInputs="<<shared<<" views="<<set->views.size()<<"\n";return 0;
  }
- if(argc==2&&std::string(argv[1])=="--readonly-range-smoke"){ReadonlyRangeRegression();std::cout<<"PASS read-only mapped source and replaceable author snapshot\n";return 0;}
- if(argc==2&&std::string(argv[1])=="--store-snapshot-smoke"){StoreSnapshotPinsRegression();return 0;}
+ if(argc==2&&std::string(argv[1])=="--readonly-range-smoke"){CheckRegression("ReadonlyRangeRegression",[&]{ReadonlyRangeRegression();});std::cout<<"PASS read-only mapped source and replaceable author snapshot\n";return 0;}
+ if(argc==2&&std::string(argv[1])=="--store-snapshot-smoke"){CheckRegression("StoreSnapshotPinsRegression",[&]{StoreSnapshotPinsRegression();});return 0;}
  if(argc==2&&std::string(argv[1])=="--semantic-compat-smoke"){
-  GameUpdateCarryoverRegression();SemanticReplayCompatibilityRegression();LogicalRouteRegression();
+  CheckRegression("GameUpdateCarryoverRegression",[&]{GameUpdateCarryoverRegression();});CheckRegression("SemanticReplayCompatibilityRegression",[&]{SemanticReplayCompatibilityRegression();});CheckRegression("LogicalRouteRegression",[&]{LogicalRouteRegression();});
   std::cout<<"PASS semantic compatibility source routing and resource refresh policy\n";return 0;
  }
  if(argc==4&&std::string(argv[1])=="--profile-proof-codec"){
@@ -825,9 +833,9 @@ int main(int argc,char** argv){try{
   for(size_t i=0;i<artifact.manifest.plan.inputs.size();++i)afterBytes+=EiemCompiledSourceRecords::Proof(artifact,i,EiemCompiledSourceRecords::Directory(artifact,i,owners),&schemas).size();auto encoded=std::chrono::steady_clock::now();
   auto milliseconds=[](auto a,auto b){return std::chrono::duration<double,std::milli>(b-a).count();};std::cout<<"PROOF-CODEC inputs="<<artifact.manifest.plan.inputs.size()<<" schemas="<<artifact.sharedSchemas.size()<<" oldBytes="<<beforeBytes<<" newBytes="<<afterBytes<<" dictionaryBytes="<<EiemCompiledSourceRecords::EncodeSchemas(artifact.sharedSchemas).size()<<" hydrateMs="<<milliseconds(begin,hydrated)<<" finalizeMs="<<milliseconds(hydrated,finalized)<<" prepareMs="<<milliseconds(finalized,prepared)<<" encodeMs="<<milliseconds(prepared,encoded)<<'\n';return 0;
  }
- GameUpdateCarryoverRegression();
- SemanticReplayCompatibilityRegression();
- LogicalRouteRegression();
+ CheckRegression("GameUpdateCarryoverRegression",[&]{GameUpdateCarryoverRegression();});
+ CheckRegression("SemanticReplayCompatibilityRegression",[&]{SemanticReplayCompatibilityRegression();});
+ CheckRegression("LogicalRouteRegression",[&]{LogicalRouteRegression();});
  if(argc==5&&std::string(argv[1])=="--compare-pruned-artifacts"){ComparePrunedArtifacts(std::filesystem::u8path(argv[2]),std::filesystem::u8path(argv[3]),std::filesystem::u8path(argv[4]));return 0;}
  if(argc==5&&std::string(argv[1])=="--write-runtime-index"){
   using namespace EiemCompiledMod;auto game=std::filesystem::u8path(argv[2]),source=std::filesystem::u8path(argv[3]),destination=std::filesystem::u8path(argv[4]);
@@ -852,14 +860,14 @@ int main(int argc,char** argv){try{
   }
   std::cout<<"SHARED-TOTAL inputs="<<uses.size()<<" shared="<<shared<<" readOnly="<<readOnly<<" singleWriter="<<singleWriter<<" multipleWriters="<<multipleWriters<<" gameLoads=0 writes=0\n";return 0;
  }
- AddressedRecipeRegression();
- SourceSnapshotRegression();ReadonlyRangeRegression();ValueEqualityRegression();
+ CheckRegression("AddressedRecipeRegression",[&]{AddressedRecipeRegression();});
+ CheckRegression("SourceSnapshotRegression",[&]{SourceSnapshotRegression();});CheckRegression("ReadonlyRangeRegression",[&]{ReadonlyRangeRegression();});CheckRegression("ValueEqualityRegression",[&]{ValueEqualityRegression();});
  if(argc==5&&std::string(argv[1])=="--compare-artifacts"){CompareCompiledArtifacts(std::filesystem::u8path(argv[2]),std::filesystem::u8path(argv[3]),std::filesystem::u8path(argv[4]));return 0;}
- InputSpanViewRegression();
+ CheckRegression("InputSpanViewRegression",[&]{InputSpanViewRegression();});
  if(argc==2&&std::string(argv[1])=="--input-view-smoke"){std::cout<<"PASS compiled input span views: seek/read bounds, source/literal ownership, failed reads, native directory ABI, unchanged encoded blocks, overlapping windows\n";return 0;}
  if(argc==4&&std::string(argv[1])=="--profile-original-blocks"){ProfileOriginalBlocks(std::filesystem::u8path(argv[2]),std::filesystem::u8path(argv[3]));return 0;}
  if(argc==4&&std::string(argv[1])=="--profile-native-views"){ProfileNativeViews(std::filesystem::u8path(argv[2]),std::filesystem::u8path(argv[3]));return 0;}
- AssemblySelectionRegression();
+ CheckRegression("AssemblySelectionRegression",[&]{AssemblySelectionRegression();});
  if(argc==4&&std::string(argv[1])=="--profile-set"){
   std::mutex mutex;std::map<std::string,double> costs;auto start=std::chrono::steady_clock::now();
   auto set=EiemCompiledModSet::Read(std::filesystem::u8path(argv[2]),{},std::filesystem::u8path(argv[3]),[&](const char* stage,double ms){std::lock_guard<std::mutex> lock(mutex);costs[stage]+=ms;});
@@ -878,7 +886,7 @@ int main(int argc,char** argv){try{
   std::cout<<"PASS canonical compiled artifacts; staging folder names excluded from comparison\n";
   return 0;
  }
- PristineProofReuseRegression();
+ CheckRegression("PristineProofReuseRegression",[&]{PristineProofReuseRegression();});
  if(argc==4&&std::string(argv[1])=="--profile-root-proof"){
   using namespace EiemCompiledMod;
   using Clock=std::chrono::steady_clock;
@@ -1009,25 +1017,25 @@ int main(int argc,char** argv){try{
   }
   Require(preserved==artifact->manifest.package.materials.size(),"not all authored materials verified");std::cout<<"PASS preserved Shader/keywords/pass fields: materials="<<preserved<<" shaders="<<shaders.size()<<" exactRootAssemblies="<<assembly<<'\n';return 0;
  }
- DeferredSemanticRegression();
- SharedLiteralViewRegression();
- FixedWidthSkipRegression();
- AuthorSourceRegression();
- GenericResourceRegression();
- MappedAuthorResourceRegression();
- NativeRegistrationRegression();
- GenericObjectRegression();
- GenericObjectRegression(1);
- GenericObjectRegression(2);
- StoreSnapshotPinsRegression();
- SharedSchemaDictionaryRegression();
- PreloadIntervalRegression();
- NativeResidencyRegression();
- InputRetentionRegression();
- SharedInputRegression();
- SharedAuthorModelRegression();
- SharedAuthorModelRegression(true);
- ExternalDependencyRegression();
+ CheckRegression("DeferredSemanticRegression",[&]{DeferredSemanticRegression();});
+ CheckRegression("SharedLiteralViewRegression",[&]{SharedLiteralViewRegression();});
+ CheckRegression("FixedWidthSkipRegression",[&]{FixedWidthSkipRegression();});
+ CheckRegression("AuthorSourceRegression",[&]{AuthorSourceRegression();});
+ CheckRegression("GenericResourceRegression",[&]{GenericResourceRegression();});
+ CheckRegression("MappedAuthorResourceRegression",[&]{MappedAuthorResourceRegression();});
+ CheckRegression("NativeRegistrationRegression",[&]{NativeRegistrationRegression();});
+ CheckRegression("GenericObjectRegression",[&]{GenericObjectRegression();});
+ CheckRegression("GenericObjectRegression",[&]{GenericObjectRegression(1);});
+ CheckRegression("GenericObjectRegression",[&]{GenericObjectRegression(2);});
+ CheckRegression("StoreSnapshotPinsRegression",[&]{StoreSnapshotPinsRegression();});
+ CheckRegression("SharedSchemaDictionaryRegression",[&]{SharedSchemaDictionaryRegression();});
+ CheckRegression("PreloadIntervalRegression",[&]{PreloadIntervalRegression();});
+ CheckRegression("NativeResidencyRegression",[&]{NativeResidencyRegression();});
+ CheckRegression("InputRetentionRegression",[&]{InputRetentionRegression();});
+ CheckRegression("SharedInputRegression",[&]{SharedInputRegression();});
+ CheckRegression("SharedAuthorModelRegression",[&]{SharedAuthorModelRegression();});
+ CheckRegression("SharedAuthorModelRegression",[&]{SharedAuthorModelRegression(true);});
+ CheckRegression("ExternalDependencyRegression",[&]{ExternalDependencyRegression();});
  auto binding=OriginalBoneBinding({11,22,33},{101,202,303},{33,44,11});
  Require(binding==std::map<size_t,int64_t>{{0,303},{2,101}},"native palette correspondence lost reordered/original bones");
  Require(OriginalBoneBinding({11,22,33,44,55},{101,404},{22,44,11}).empty(),
@@ -1044,9 +1052,10 @@ int main(int argc,char** argv){try{
  auto& ca=ArrayValue(type,Child(type,a,"m_Children"));auto value=ArrayElement(type,ca);SetReference(type,value,{fixture.cab,200},layout,fixture.cab);ca.children.push_back(value);ca.count=ca.children.size();
  auto& cb=ArrayValue(type,Child(type,b,"m_Children"));value=ArrayElement(type,cb);SetReference(type,value,{fixture.cab,300},layout,fixture.cab);cb.children.push_back(value);cb.count=cb.children.size();
  auto merged=MergeObject(type,EncodeValue(type,original),{EncodeValue(type,a),EncodeValue(type,b)});auto tree=DecodeValue(type,0,merged);Require(ArrayValue(type,Child(type,tree,"m_Children")).children.size()==ArrayValue(type,Child(type,original,"m_Children")).children.size()+2,"two Mods on same original Transform lost a child");
- auto first=original,second=original;SetString(type,Child(type,first,"m_Name"),"first-mod");SetString(type,Child(type,second,"m_Name"),"later-mod");
- auto override=DecodeValue(type,0,MergeObject(type,EncodeValue(type,original),{EncodeValue(type,first),EncodeValue(type,second)},true));
- Require(Text(Child(type,override,"m_Name").raw.data(),Child(type,override,"m_Name").raw.size())=="later-mod","overlapping target field did not follow deterministic later-Mod precedence");
+ const auto& gameObjectType=layout.types.at(layout.objects.at(10).type);auto gameObject=ObjectValue(before,layout,10);
+ auto first=gameObject,second=gameObject;SetString(gameObjectType,Child(gameObjectType,first,"m_Name"),"first-mod");SetString(gameObjectType,Child(gameObjectType,second,"m_Name"),"later-mod");
+ auto override=DecodeValue(gameObjectType,0,MergeObject(gameObjectType,EncodeValue(gameObjectType,gameObject),{EncodeValue(gameObjectType,first),EncodeValue(gameObjectType,second)},true));
+ Require(Text(Child(gameObjectType,override,"m_Name").raw.data(),Child(gameObjectType,override,"m_Name").raw.size())=="later-mod","overlapping target field did not follow deterministic later-Mod precedence");
  if(argc==4&&(std::string(argv[1])=="--read-set"||std::string(argv[1])=="--namespace-replay-audit")){auto started=std::chrono::steady_clock::now();auto set=EiemCompiledModSet::Read(std::filesystem::u8path(argv[2]),{},std::filesystem::u8path(argv[3]));auto preparedMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();Require(set&&(!set->isolated.empty()||!set->views.empty()),"real set was not prepared");auto context=EiemCompiledModSet::Context(set);size_t cachedBytes=0;
  for(size_t i=0;i<set->catalog.size();++i){bool changed=set->manifest.plan.startupHashes[i]!=set->catalog[i].source.hash;Require((set->startup.count(i)+set->startupViews.count(i))==size_t(changed),"startup delivery coverage differs from modified inputs");if(changed){
   auto runtimeView=context->startupViews.find(i);Require(runtimeView!=context->startupViews.end(),"runtime startup view absent");

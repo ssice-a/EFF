@@ -36,6 +36,7 @@ Build the production DLL before verifying the native author tools:
 
 ```powershell
 cmd /c build.bat
+python tools/diagnostics/prepare_texconv.py
 cmd /c tools\diagnostics\build_author_core.cmd
 cmd /c tools\build_resource_pack.cmd
 cmd /c tools\build_source_index.cmd
@@ -43,3 +44,5 @@ python -m unittest discover -s tools/release -v
 ```
 
 The DLL and tools are local build outputs until the Release workflow creates and publishes the exact tagged assets.
+
+A workflow-only packaging fix may be dispatched from the reviewed workflow branch while checking out the existing immutable release tag. Record both the source tag commit and workflow commit in the release receipt; never silently move a tag to repair a packaging environment.

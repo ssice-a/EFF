@@ -23,8 +23,13 @@ the installed resources before patching.
 Eight project files under `G:/zmd` were repaired and saved, with original
 copies in each project's `EFF_weight_repair_20261102_backup` directory.
 Across 179 inspected Mesh objects, 157,268 author vertices matched and
-105,025 changed weights. Cleanup removed 10,848 empty vertex groups while
+105,025 vertex weight replacements were issued. Cleanup removed 10,848 empty vertex groups while
 preserving every positive weight, including very small positive values.
+All eight saved projects were reopened in an isolated Blender process and
+compared with their backups: geometry, UVs and shapes remained identical,
+cleanup-only Mesh weights remained exact, and matched named weights agreed
+with their saved repair snapshots. Some assignments round to the original
+Float32 value, so replacement counts exceed the number of stored changes.
 The Blender exporter also compacts unused serialized bone palettes, and
 its undoable empty-group cleanup is included in EFF Blender v0.50.0.
 

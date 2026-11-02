@@ -50,7 +50,8 @@ struct Fixture {
   Add(30,0);SetString(T(30),Child(T(30),V(30),"m_Name"),"UnusedFilter");Add(31,1);Pointer(31,"m_GameObject",30);Add(32,2);Pointer(32,"m_GameObject",30);Pointer(32,"m_Mesh",100);List(30,"m_Component",{31,32},"component");
  }
 };
-template<class F> void Rejected(F f){bool rejected=false;try{f();}catch(const std::exception&){rejected=true;}Require(rejected,"invalid static assembly accepted");}
+template<class F> void RejectedAt(int line,F f){bool rejected=false;try{f();}catch(const std::exception&){rejected=true;}Require(rejected,"invalid fixture accepted at source line "+std::to_string(line));}
+#define Rejected(...) RejectedAt(__LINE__, __VA_ARGS__)
 void PerRendererMaterialDonorRegression(){
  Fixture f;f.Add(201,6);f.SetList(13,"m_Materials",{200,201});f.SetList(23,"m_Materials",{});
  Package p;p.id="per-renderer-material";Identity target{"assets/static.mesh","Static"};p.targetIndex[target]="R";p.rules["R"].parts={"P","Q"};
