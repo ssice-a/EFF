@@ -165,11 +165,14 @@ void Checks() {
   Install({Make("B")},true);Frame();Require(selected=="B","deleting current character Mod did not select remaining Mod");
   Install({},true);Frame();Require(selected.empty()&&keys.empty()&&specs.empty()&&panel.Read()->graph->empty(),"deleting last Mod left live controls");
   Install({Make("B")},true);Frame();Require(selected=="B","readding character Mod after empty set failed default selection");
-  for(UINT vk:{UINT(VK_INSERT),UINT(VK_F10),UINT(VK_F9)}){
+  for(UINT vk:{UINT(VK_INSERT),UINT(VK_F10)}){
     auto reserved=Make("reserved");reserved.bindings.front().key={vk,MOD_CONTROL};bool rejected=false;
     try{Prepare(Graph({reserved}),EiemGlobalConfig{});}catch(const std::exception&){rejected=true;}
-    Require(rejected,"Mod shortcut bypassed reserved global GUI/reload/effects key");
+    Require(rejected,"Mod shortcut bypassed reserved global GUI/reload key");
   }
+  auto f9=Make("f9-available");f9.bindings.front().key={VK_F9,MOD_CONTROL};bool f9Rejected=false;
+  try{Prepare(Graph({f9}),EiemGlobalConfig{});}catch(const std::exception&){f9Rejected=true;}
+  Require(!f9Rejected,"F9 remained reserved after all global reloads moved to F10");
   auto view=panel.Read();panel.open=true;Queue(Action::Keyboard,"B",{},0,view);Frame();
   Require(!keySwitchEnabled.at("B"),"checkbox did not disable its Mod");
   Install({Make("C"),Make("D")});view=panel.Read();
