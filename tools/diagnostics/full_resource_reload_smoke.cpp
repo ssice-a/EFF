@@ -1918,11 +1918,53 @@ void ProfileLoadMisses(){
  }
  FullResourceReload::enabled=false;Reset();StartupDependencyHookRegression(true);
 }
+void ReloadDispatchRegression(){
+ using namespace Entry;
+ auto folder=std::filesystem::temp_directory_path()/("eff-reload-dispatch-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));
+ auto oldGame=gameDirectory;auto oldGeneration=generation.load();auto oldPublished=std::atomic_load(&published);
+ auto oldInstalled=std::atomic_load(&DemandLoadingProbe::installedGeneration);
+ auto oldInstalledSerial=DemandLoadingProbe::installedGenerationSerial;auto oldSettings=settings.Get();
+ auto oldConfigured=FullResourceReload::configured.load(),oldEnabled=FullResourceReload::enabled.load();
+ auto oldLatest=std::atomic_load(&FullResourceReload::latest);auto oldRequested=std::atomic_load(&FullResourceReload::requested);
+ auto oldReloadPending=RuntimeAttachments::reloadPending.load();auto oldPendingStandalone=RuntimeAttachments::pendingStandalone;
+ auto oldPendingEffects=RuntimeAttachments::pendingEffects;auto oldPendingForce=RuntimeAttachments::pendingForceReload;
+ auto oldUnifiedGeneration=RuntimeAttachments::pendingUnifiedGeneration;auto oldUnifiedConfig=RuntimeAttachments::pendingUnifiedConfig;
+ auto oldUnifiedPending=RuntimeAttachments::unifiedGenerationPending;
+ struct Restore {
+  std::filesystem::path folder,game;unsigned generation;std::shared_ptr<const std::vector<Package>> published;
+  std::shared_ptr<const DemandLoadingProbe::InstalledGeneration> installed;uint64_t installedSerial;
+  EiemGlobalConfig settings;bool configured,enabled;std::shared_ptr<const FullResourceReload::Ticket> requested;
+  std::shared_ptr<const EiemOfflinePackage::Pointer> latest;bool reloadPending;
+  std::shared_ptr<const std::vector<Package>> pendingStandalone;std::map<std::string,std::map<std::string,EffectAttachment>> pendingEffects;bool pendingForce;
+  std::shared_ptr<const DemandLoadingProbe::InstalledGeneration> pendingUnified;EiemEntrySettings::Snapshot unifiedConfig;bool unifiedPending;
+  ~Restore(){
+   gameDirectory=game;generation=::Entry::generation.load();::Entry::generation=this->generation;
+   std::atomic_store(&::Entry::published,published);std::atomic_store(&DemandLoadingProbe::installedGeneration,installed);
+   DemandLoadingProbe::installedGenerationSerial=installedSerial;
+   ::Entry::settings.Publish(settings);FullResourceReload::configured=configured;FullResourceReload::enabled=enabled;
+   std::atomic_store(&FullResourceReload::latest,std::move(latest));std::atomic_store(&FullResourceReload::requested,std::move(requested));
+   RuntimeAttachments::reloadPending=reloadPending;RuntimeAttachments::pendingStandalone=std::move(pendingStandalone);
+   RuntimeAttachments::pendingEffects=std::move(pendingEffects);RuntimeAttachments::pendingForceReload=pendingForce;
+   RuntimeAttachments::pendingUnifiedGeneration=std::move(pendingUnified);RuntimeAttachments::pendingUnifiedConfig=std::move(unifiedConfig);RuntimeAttachments::unifiedGenerationPending=unifiedPending;
+   reload=false;std::filesystem::remove_all(folder);
+  }
+ } restore{folder,oldGame,oldGeneration,oldPublished,oldInstalled,oldInstalledSerial,oldSettings,oldConfigured,oldEnabled,oldRequested,oldLatest,oldReloadPending,oldPendingStandalone,oldPendingEffects,oldPendingForce,oldUnifiedGeneration,oldUnifiedConfig,oldUnifiedPending};
+ std::filesystem::create_directories(folder/"plugin"/"mods");gameDirectory=folder;
+ FullResourceReload::configured=true;FullResourceReload::enabled=true;
+ reload=false;
+ const auto beforeGraph=std::atomic_load(&published);const auto beforeCatalog=std::atomic_load(&DemandLoadingProbe::installedGeneration);const auto beforeGeneration=generation.load();
+ reload=true;ProcessReloadRequests();
+ Require(!reload.load()&&generation.load()==beforeGeneration&&std::atomic_load(&published)==beforeGraph&&
+         std::atomic_load(&DemandLoadingProbe::installedGeneration)==beforeCatalog&&
+         RuntimeAttachments::unifiedGenerationPending&&!RuntimeAttachments::reloadPending.load(),
+         "F10 did not stage effects and runtime controls for the unified Unity-frame transaction");
+}
 int main(int argc,char** argv){
  using namespace Test;using namespace FullResourceReload;
  try{
   if(argc==2&&std::string(argv[1])=="--profile-load-misses"){ProfileLoadMisses();return 0;}
   Setup();Reset();
+  ReloadDispatchRegression();
   AssemblyAddressRegression();
   SerializedBoneAddressRegression();
   MaterialShaderRegression();

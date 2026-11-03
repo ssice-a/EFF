@@ -319,6 +319,17 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
 
     effect_state = {}
     for effect in effects:
+        prefab = effect.get("targetPrefab", "")
+        renderer_path = effect.get("rendererPath", "")
+        target_path = effect.get("targetPath", "")
+        target_asset = effect.get("targetAsset", "")
+        target_bones = effect.get("bones", [])
+        require(prefab.startswith("assets/") and prefab.endswith(".prefab") and ".." not in prefab and
+                not renderer_path.startswith("/") and "\\" not in renderer_path and ".." not in renderer_path and "//" not in renderer_path and
+                target_path.startswith("assets/") and ".." not in target_path and target_asset,
+                "Format 3 Effect requires exact Prefab/Renderer/Mesh source proof")
+        require(not effect.get("bone") or target_bones,
+                "Format 3 bone-mounted Effect requires a source bone palette")
         identity = effect["id"]
         variable = "$fx_" + _identifier(identity)
         default(variable, int(effect.get("autoplay", True)))
@@ -336,7 +347,7 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
                    targetPrefab=effect.get("targetPrefab", ""),
                    rendererPath=effect.get("rendererPath", ""),
                    targetPath=effect.get("targetPath", ""), targetAsset=effect.get("targetAsset", ""),
-                   targetBones=effect.get("bones", []),
+                   targetBones=target_bones,
                    native=dict(key=native["key"], prefab=native["prefab"], rootName=native["rootName"],
                        root=native["root"], particles=native["particles"], bundles=[]))
         for index, bundle in enumerate(native["bundles"]):

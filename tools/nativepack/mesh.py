@@ -175,9 +175,10 @@ def frame_stream(source_channels, positions, normals, tangents):
                                    tangentMaxError=float(np.max(np.abs(stream[:,6:10]-tangents))))
 
 
-def game_texture_coordinates(uv_channels, tangents, count):
-    """Preserve authored UV coordinates and tangent handedness in native Mesh data."""
+def game_texture_coordinates(uv_channels, tangents, count, *, coordinate='unity-y-up-left-handed'):
+    """Encode author UV/tangent values using the native Mesh coordinate convention."""
     require(count > 0 and len(uv_channels) == 8, 'UV channel count')
+    blender_coordinates = coordinate == 'Blender'
     converted = []
     for channel, values in enumerate(uv_channels):
         if not values:
@@ -186,8 +187,14 @@ def game_texture_coordinates(uv_channels, tangents, count):
         dimension = len(values) // count
         require(2 <= dimension <= 4 and len(values) == count * dimension, 'UV shape')
         uv = np.asarray(values, dtype='<f4').reshape(count, dimension)
+        if blender_coordinates:
+            uv = uv.copy()
+            uv[:, 1] = 1.0 - uv[:, 1]
         converted.append(uv)
     tangent_values = np.asarray(tangents, dtype=np.float64).reshape(count, 4)
+    if blender_coordinates and uv_channels[0]:
+        tangent_values = tangent_values.copy()
+        tangent_values[:, 3] *= -1.0
     return converted, tangent_values
 
 
@@ -197,7 +204,9 @@ def native_mesh(template, author, name):
     positions = np.asarray(author['vertices'],dtype=np.float64).reshape(count,3)
     require(count>0 and np.all(np.isfinite(positions)), 'empty or nonfinite author geometry')
     normals = np.asarray(author['normals'],dtype=np.float64).reshape(count,3)
-    uvs, tangents = game_texture_coordinates(author['uvs'], author['tangents'], count)
+    uvs, tangents = game_texture_coordinates(
+        author['uvs'], author['tangents'], count,
+        coordinate=author.get('coordinate', 'unity-y-up-left-handed'))
     require(not author['additional'], 'additional native shape-normal payload is unsupported by the source schema')
     require(not mesh['m_CollisionMeshBaked'].data and not mesh['m_CollisionMeshOnly'].data, 'collision-only source Mesh unsupported')
     source_channels = mesh['m_VertexData']['m_Channels'].items()
@@ -432,7 +441,7 @@ def decode_native_mesh(mesh, bone_paths):
             uvs.append(values.reshape(-1).tolist())
         else:
             uvs.append([])
-    if any(uvs[0]):
+    if uvs[0]:
         tangents[:, 3] *= -1.0
 
     colors = channel(3)

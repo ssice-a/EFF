@@ -106,6 +106,13 @@ class _SourceCollection:
         return _unique_source(self.sources, kind, path, asset)[1]
 
 
+def _prepare_migrated_mesh_fields(tree, fields):
+    """Persist expanded native frame data while keeping its UV streams intact."""
+    from .mesh import expand_shaped_frames
+    if expand_shaped_frames(tree):
+        fields["m_VertexData"] = encode(tree["m_VertexData"])
+
+
 def _unique_source(sources, kind, path, asset):
     matches = [(source, source.find_all(kind, path, asset)) for source in sources]
     rows = [(source, row) for source, values in matches for row in values]
@@ -312,6 +319,8 @@ def _prepare_textures(package, sources, texconv):
                                     texture_source, source_texture, source_format))
 
     output_textures, remap = [], {}
+    output_ids = set()
+    shared_textures = {}
     for texture_id, rows in textures_by_id.items():
         require(uses[texture_id], "legacy Texture is not bound by a Material: " + texture_id)
         pixels = texture_resources[rows["file"]]["blocks"]["pixels"]
@@ -325,8 +334,6 @@ def _prepare_textures(package, sources, texconv):
             color_space, _source_identity, source_format = key
             suffix = "_srgb" if color_space else "_linear"
             output_id = rows["id"] + suffix
-            require(output_id not in {item["id"] for item in output_textures},
-                    "migrated Texture identifier collision: " + output_id)
             width, height, mip_count = rows["width"], rows["height"], rows["mipCount"]
             if source_format == "RGBA32":
                 target_format, format_id, encoded = "RGBA32", 4, pixels
@@ -344,12 +351,24 @@ def _prepare_textures(package, sources, texconv):
                 target_format = encoded_result["format"]
                 format_id = encoded_result["formatId"]
                 encoded = encoded_result["pixels"]
-            output_textures.append(dict(
-                id=output_id, sourcePath=source_texture["logicalPath"],
-                sourceAsset=source_texture["name"], width=width, height=height,
-                mipCount=mip_count, format=target_format, formatId=format_id,
-                colorSpace=color_space, filter=rows["filter"], wrap=rows["wrap"],
-                aniso=rows["aniso"], mipBias=rows["mipBias"], pixels=encoded))
+            signature = (
+                width, height, mip_count, target_format, format_id, color_space,
+                rows["filter"], rows["wrap"], rows["aniso"], rows["mipBias"], encoded,
+            )
+            shared_id = shared_textures.get(signature)
+            if shared_id is None:
+                require(output_id not in output_ids,
+                        "migrated Texture identifier collision: " + output_id)
+                output_ids.add(output_id)
+                shared_textures[signature] = output_id
+                output_textures.append(dict(
+                    id=output_id, sourcePath=source_texture["logicalPath"],
+                    sourceAsset=source_texture["name"], width=width, height=height,
+                    mipCount=mip_count, format=target_format, formatId=format_id,
+                    colorSpace=color_space, filter=rows["filter"], wrap=rows["wrap"],
+                    aniso=rows["aniso"], mipBias=rows["mipBias"], pixels=encoded))
+            else:
+                output_id = shared_id
             for material_id, property_name, used_color_space, used_source, used_texture, used_format in uses[texture_id]:
                 if (used_color_space, used_texture["identity"], used_format) == key:
                     remap[(material_id, property_name)] = output_id
@@ -462,8 +481,7 @@ def migrate_package(source_dir, destination, *, workspace, source_root=None,
             tree.data[name] = decode(tree[name].schema, data)
             require(encode(tree[name]) == data,
                     "legacy Mesh field failed its native schema roundtrip: " + name)
-        from .mesh import expand_shaped_frames
-        expand_shaped_frames(tree)
+        _prepare_migrated_mesh_fields(tree, fields)
         author = decode_native_mesh(tree, part["bonePaths"])
         author["source"] = path + "\n" + asset
         author["name"] = part["object"]
@@ -472,9 +490,7 @@ def migrate_package(source_dir, destination, *, workspace, source_root=None,
     _prepare_controls(package, parts)
     effects = copy.deepcopy(package["effects"])
     author_files = _effect_author_files(effects, source_root or workspace, eiem_format)
-    template_sources = [source for source in sources
-                        if getattr(source, "migration_priority", 0) == 0]
-    templates = resolve_templates(template_sources, package["rules"], include_texture=True)
+    templates = resolve_templates(sources, package["rules"], include_texture=True)
     native_meshes, native_textures = eiem_native_export.format3_native_records(
         author_format3, _SourceCollection(sources), parts, textures,
         package["rules"])

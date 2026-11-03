@@ -196,6 +196,7 @@ void LazyOwnerMetadataChecks(){
  mesh.binding.hashes={1};mesh.binding.boneBounds.resize(1);
  save("body.effres",F::Encode(1,M::EncodeMesh(mesh),Bytes{1,2}));
  EffectAttachment effect;effect.id="test";effect.part="PartBody";effect.bone="Right";effect.variable="$fx_test";effect.native=EffectTest::Manifest('6');
+ effect.targetPrefab="assets/effect.prefab";effect.rendererPath="Body";effect.targetPath="assets/body.mesh";effect.targetAsset="Body";effect.targetBones={"Bone"};
  const auto& input=effect.native->bundles.front();
  save("effect.effres",F::Encode(5,M::EncodeEffect("ResourceEffect",input.file,input.hash,input.Size()),*input.bytes));
  EiemAuthorControlMetadata::State controls;controls.defaults[effect.variable]=1;controls.controls[effect.variable]={"effect",0,1};controls.effects.emplace(effect.id,effect);
@@ -239,7 +240,9 @@ void Checks(){
  RuntimeControls::Spec spec;spec.package=p.id;spec.part="PartBody";spec.marker="marker";RuntimeControls::specs["marker"]=spec;
  A::revision=RuntimeControls::revision;A::ModelReady(Test::oldRoot);Require(A::bindings.size()==1,"effect owner marker did not bind exact Mod part");
  auto tick=[](){for(unsigned frame=0;frame<12;++frame){for(auto& row:Test::scheduleDone)row.second=true;Test::done=1;A::Frame();D::Collect();}};tick();auto& b=A::bindings.begin()->second;
- Require(b.instance&&b.instance->owner.Get()==Test::oldRoot&&EffectTest::cloneParents.at(b.instance->object.Get())==Test::oldRoot,"effect did not mount independent instance at owner root");auto old=b.instance;
+ auto actualParent=EffectTest::cloneParents.at(b.instance->object.Get());
+ Require(b.instance&&b.instance->owner.Get()==Test::oldRoot&&actualParent==Test::oldRenderer,
+  "renderer-mounted effect did not attach to its owning Renderer Transform: actual="+std::to_string(reinterpret_cast<uintptr_t>(actualParent))+" expected="+std::to_string(reinterpret_cast<uintptr_t>(Test::oldRenderer)));auto old=b.instance;
  auto replacement=effect;replacement.native=EffectTest::Manifest('2');A::Reload(p.id,replacement);Require(b.instance==old,"effect reload retired visible instance before replacement ready");tick();Require(b.instance!=old&&old->removed&&old->destroyAttempted,"effect reload failed transactional instance swap");
  auto retained=b.instance;auto broken=effect;auto brokenNative=std::const_pointer_cast<D::Manifest>(EffectTest::Manifest('3'));
  auto secondBundle=brokenNative->bundles.front();secondBundle.file="runtime/bundles/second.ab";brokenNative->bundles.push_back(secondBundle);broken.native=brokenNative;

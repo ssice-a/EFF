@@ -27,7 +27,7 @@ $activeCase = $null
 $cases = @(
     '单角色静置', '多角色同时可见', '多 Mod 安装但场上角色不变',
     'UI 角色反复切换', '大地图往返切换', 'NPC 多实例',
-    '固定战斗与技能序列', 'F9 特效更新', 'F10 完整重载', '长时间往返与回收'
+    '固定战斗与技能序列', 'F10 统一重载 (Mod、模型与特效)', '长时间往返与回收'
 )
 function Get-GameProcessId {
     $processes = @(Get-Process -Name Endfield -ErrorAction SilentlyContinue)

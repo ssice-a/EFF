@@ -67,11 +67,11 @@ struct InstalledGeneration {
   std::map<std::string,std::shared_ptr<N::Author>> authors;
   std::vector<EiemMeshTargetDirectory::Target> targets;
   std::shared_ptr<const std::vector<Package>> packages;
+  std::shared_ptr<const std::vector<Package>> standalone;
 };
 // Immutable declarations are shared between manifest generations. Opening
 // them never opens Mesh/Texture/effect payloads or old compiled consumers.
 std::shared_ptr<const InstalledGeneration> installedGeneration;
-std::shared_ptr<const InstalledGeneration> pendingInstalledGeneration;
 uint64_t installedGenerationSerial=0;
 std::map<uint64_t,ScopeAuthors> authors;
 std::map<uint64_t,std::vector<BuiltMeshPart>> scopeParts;
@@ -588,7 +588,8 @@ void Report(int frame) noexcept {
   Log("[DEMAND-PROBE-STATS] frame=%d fileEvents=%llu unassociated=%llu unrelated=%llu inspected=%llu meshBindings=%llu exactRendererRefs=%llu assetEvents=%llu gaps=%llu liveRoutes=%zu vfsEvents=%llu matchedVfs=%llu readBytes=%llu decodedBytes=%llu inspectMs=%.3f maxInspectMs=%.3f nativeObjectsCreatedByEff=0",frame,fileEvents.load(),unknownFiles.load(),unrelatedFiles.load(),candidateFiles.load(),exactBindings.load(),exactReferences.load(),assetEvents.load(),gaps.load(),registry.Size(),vfsEvents.load(),matchedVfs.load(),readBytes.load(),decodedBytes.load(),inspectMicros.load()/1000.0,maxInspectMicros.load()/1000.0);
 }
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
-std::shared_ptr<const InstalledGeneration> BuildInstalledPackages(){
+std::shared_ptr<const InstalledGeneration> BuildInstalledGeneration(
+    const std::shared_ptr<const std::vector<Package>>& expectedPackages={}){
   auto begin=std::chrono::steady_clock::now();std::map<std::string,std::shared_ptr<N::Author>> next;auto graph=std::make_shared<std::vector<Package>>();std::vector<EiemMeshTargetDirectory::Target> selected;
   for(const auto& root:DiscoverModRoots()){
     auto catalog=std::make_shared<EiemDemandAuthorResources::Catalog>(root);
@@ -597,13 +598,51 @@ std::shared_ptr<const InstalledGeneration> BuildInstalledPackages(){
     for(const auto& rule:author->package.rules)for(const auto& target:rule.second.targets){EiemMeshTargetDirectory::Target row;row.mod=mod;row.root=root;row.rule=rule.first;row.source=target.second;row.lod=target.first;row.partIds=rule.second.parts;row.parts=row.partIds.size();row.skip=rule.second.skip;selected.push_back(std::move(row));}
   }
   auto result=std::make_shared<InstalledGeneration>();result->serial=++installedGenerationSerial;result->authors=std::move(next);result->targets=std::move(selected);result->packages=graph;
+  auto standalone=std::make_shared<std::vector<Package>>();
+  for(const auto& row:result->authors)if(EiemCompiledModSet::StandaloneEffectRoot(row.second->catalog->Root()))standalone->push_back(row.second->package);
+  result->standalone=standalone;
+  if(expectedPackages){
+    std::set<std::string> expectedIds;
+    for(const auto& package:*expectedPackages){
+      expectedIds.insert(package.id);auto found=result->authors.find(package.id);
+      Require(found!=result->authors.end()&&found->second->catalog->Root()==std::filesystem::canonical(package.root),
+        "F10 demand candidate Mod identity/root differs: "+package.id);
+      const auto& actual=found->second->package.rules;
+      Require(actual.size()==package.rules.size(),"F10 demand candidate target count differs: "+package.id);
+      auto sameTargets=[](const auto& a,const auto& b){if(a.size()!=b.size())return false;auto left=a.begin(),right=b.begin();
+        for(;left!=a.end();++left,++right)if(left->first!=right->first||left->second.path!=right->second.path||left->second.asset!=right->second.asset)return false;
+        return true;};
+      for(const auto& rule:package.rules){auto row=actual.find(rule.first);Require(row!=actual.end()&&row->second.parts==rule.second.parts&&
+        sameTargets(row->second.targets,rule.second.targets)&&row->second.skip==rule.second.skip,
+        "F10 demand candidate target declaration differs: "+package.id+"/"+rule.first);}
+    }
+    for(const auto& row:result->authors)if(!expectedIds.count(row.first))
+      Require(row.second->package.rules.empty(),"F10 discovered an uncompiled target Mod: "+row.first);
+    auto runtime=std::make_shared<std::vector<Package>>(*expectedPackages);
+    runtime->insert(runtime->end(),standalone->begin(),standalone->end());
+    result->packages=runtime;
+  }
   Log("[DEMAND-AUTHOR-DECLARATIONS] generation=%llu mods=%zu targets=%zu ms=%.3f meshTextureEffectPayloadBytes=0 compiledInputsRead=0 consumerPfbEnumeration=0",
     (unsigned long long)result->serial,graph->size(),result->targets.size(),std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count());return result;
 }
-std::shared_ptr<const std::vector<Package>> PrepareInstalledPackages(){pendingInstalledGeneration=BuildInstalledPackages();return pendingInstalledGeneration->packages;}
-void PublishPreparedInstalledPackages(){Require(bool(pendingInstalledGeneration),"format 3 reload candidate is absent");std::atomic_store(&installedGeneration,pendingInstalledGeneration);pendingInstalledGeneration.reset();}
-void DiscardPreparedInstalledPackages()noexcept{pendingInstalledGeneration.reset();}
-std::shared_ptr<const std::vector<Package>> ReadInstalledPackages(){auto packages=PrepareInstalledPackages();PublishPreparedInstalledPackages();return packages;}
+bool SameTargetDeclarations(const InstalledGeneration& a,const InstalledGeneration& b){
+  auto signature=[](const InstalledGeneration& value){std::vector<std::string> rows;rows.reserve(value.targets.size());
+    for(const auto& target:value.targets){std::string row=target.mod+"\n"+target.rule+"\n"+target.source.path+"\n"+target.source.asset+"\n"+std::to_string(target.lod)+"\n"+(target.skip?"1":"0");
+      for(const auto& part:target.partIds)row+="\n"+part;rows.push_back(std::move(row));}
+    std::sort(rows.begin(),rows.end());return rows;};
+  return signature(a)==signature(b);
+}
+std::shared_ptr<const InstalledGeneration> PrepareInstalledGeneration(
+    const std::shared_ptr<const std::vector<Package>>& expectedPackages){
+  return BuildInstalledGeneration(expectedPackages);
+}
+std::shared_ptr<const InstalledGeneration> PrepareInstalledGeneration(){return BuildInstalledGeneration();}
+std::shared_ptr<const InstalledGeneration> CurrentInstalledGeneration(){return std::atomic_load(&installedGeneration);}
+void PublishInstalledGeneration(std::shared_ptr<const InstalledGeneration> next) noexcept {
+  if(next)std::atomic_store(&installedGeneration,std::move(next));
+}
+std::shared_ptr<const std::vector<Package>> StandalonePackages(const std::shared_ptr<const InstalledGeneration>& value){return value?value->standalone:nullptr;}
+std::shared_ptr<const std::vector<Package>> ReadInstalledPackages(){auto next=PrepareInstalledGeneration();auto packages=next->packages;PublishInstalledGeneration(std::move(next));return packages;}
 #endif
 void ReadInstalledTargets(){auto begin=std::chrono::steady_clock::now();size_t mods=0;
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)

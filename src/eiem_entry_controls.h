@@ -93,7 +93,7 @@ State Prepare(const std::shared_ptr<const std::vector<Package>>& graph,const Eie
   Require(bool(graph),"runtime control graph unavailable");
   State state;state.graph=graph;
   for (const auto& package:*graph) {
-    auto validateKey=[&](const EiemKeyChord& key){Require(!key.vk||(key.vk!=config.reload.vk&&key.vk!=config.gui.vk&&key.vk!=config.effectsReload.vk),"Mod shortcut overlaps a global shortcut: "+package.id);};
+    auto validateKey=[&](const EiemKeyChord& key){Require(!key.vk||(key.vk!=config.reload.vk&&key.vk!=config.gui.vk),"Mod shortcut overlaps a global shortcut: "+package.id);};
     for(const auto& key:package.bindings)validateKey(key.key);
     for(const auto& clip:package.shapeAnimations)validateKey(clip.second.key);
     state.variables[package.id]=package.defaults;state.keys[package.id]=package.bindings;
@@ -109,6 +109,29 @@ State Prepare(const std::shared_ptr<const std::vector<Package>>& graph,const Eie
       }
   }
   PreviewPreferences(state);PreparePanel(state);return state;
+}
+void AppendPackages(State& state,const std::shared_ptr<const std::vector<Package>>& extra,
+                    const EiemGlobalConfig& config) {
+  if(!extra||extra->empty())return;
+  Require(bool(state.graph),"runtime control base graph unavailable");
+  auto combined=std::make_shared<std::vector<Package>>(*state.graph);
+  const size_t offset=combined->size();
+  auto add=Prepare(extra,config);
+  for(const auto& package:*extra){
+    Require(std::none_of(combined->begin(),combined->end(),[&](const Package& old){return old.id==package.id;}),
+      "runtime standalone Mod id overlaps model Mod");
+    combined->push_back(package);
+  }
+  state.specs.insert(std::make_move_iterator(add.specs.begin()),std::make_move_iterator(add.specs.end()));
+  state.variables.insert(std::make_move_iterator(add.variables.begin()),std::make_move_iterator(add.variables.end()));
+  state.keys.insert(std::make_move_iterator(add.keys.begin()),std::make_move_iterator(add.keys.end()));
+  state.animations.insert(std::make_move_iterator(add.animations.begin()),std::make_move_iterator(add.animations.end()));
+  state.held.insert(std::make_move_iterator(add.held.begin()),std::make_move_iterator(add.held.end()));
+  state.keySwitchEnabled.insert(std::make_move_iterator(add.keySwitchEnabled.begin()),std::make_move_iterator(add.keySwitchEnabled.end()));
+  for(auto key:add.animationKeys){key.package+=offset;state.animationKeys.push_back(std::move(key));}
+  for(auto index:add.animationPackages)state.animationPackages.push_back(index+offset);
+  if(state.selected.empty())state.selected=std::move(add.selected);
+  state.graph=std::move(combined);PreparePanel(state);
 }
 void Swap(State& state) noexcept {
   specs.swap(state.specs);variables.swap(state.variables);keys.swap(state.keys);animations.swap(state.animations);

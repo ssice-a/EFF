@@ -705,13 +705,15 @@ bool CurrentGeneration() {
   auto graph=std::atomic_load(&published);
   if (current!=generation.load()) return false;
   checkedGeneration=current;
-  if (!graph || !controlGraph || graph->size()!=controlGraph->size()) return false;
-  for (size_t i=0;i<graph->size();++i)
-    if (EiemNativeInput::PackageDigest(graph->at(i))!=EiemNativeInput::PackageDigest(controlGraph->at(i))) {
-      Log("[CONTROL-RUNTIME-GENERATION] generation=%u changedPackage=1 requiresPreparedInputsAndRestart=1",current);return false;
-    }
+  if (!graph || !controlGraph) return false;
+  if(graph!=controlGraph){
+    bool same=graph->size()==controlGraph->size();
+    for(size_t i=0;same&&i<graph->size();++i)
+      same=EiemNativeInput::PackageDigest(graph->at(i))==EiemNativeInput::PackageDigest(controlGraph->at(i));
+    if(!same)Log("[CONTROL-RUNTIME-GENERATION] generation=%u committedGraphMismatch=1 activeControlsRetained=1 registrationContinues=1",current);
+  }
   packageGeneration=current;
-  Log("[CONTROL-RUNTIME-GENERATION] generation=%u unchangedPackage=1 currentValuesRetained=1",current);
+  Log("[CONTROL-RUNTIME-GENERATION] generation=%u activeControlGraph=1 registrationContinues=1",current);
   return true;
 }
 // The game's model completion callback supplies this exact instance root.

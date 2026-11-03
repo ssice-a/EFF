@@ -85,9 +85,14 @@ void RememberListPool(void*,void*) noexcept;
 void Dependencies(void*,uint64_t,void*,bool,bool) noexcept;
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
 std::shared_ptr<const std::vector<Package>> ReadInstalledPackages();
-std::shared_ptr<const std::vector<Package>> PrepareInstalledPackages();
-void PublishPreparedInstalledPackages();
-void DiscardPreparedInstalledPackages() noexcept;
+struct InstalledGeneration;
+std::shared_ptr<const InstalledGeneration> PrepareInstalledGeneration(
+    const std::shared_ptr<const std::vector<Package>>&);
+std::shared_ptr<const InstalledGeneration> PrepareInstalledGeneration();
+std::shared_ptr<const InstalledGeneration> CurrentInstalledGeneration();
+std::shared_ptr<const std::vector<Package>> StandalonePackages(
+    const std::shared_ptr<const InstalledGeneration>&);
+void PublishInstalledGeneration(std::shared_ptr<const InstalledGeneration>) noexcept;
 bool SharedDependencies(void*,uint64_t,void*,bool,bool&) noexcept;
 bool AppendSharedDependencies(void*,uint64_t,void*,bool,bool) noexcept;
 bool SharedVfsLoad(uint64_t,uint32_t,bool,void*&) noexcept;
@@ -171,7 +176,6 @@ FILE *logFile = nullptr;
 FILE *logMirror = nullptr;
 std::filesystem::path gameDirectory, sessionDirectory;
 std::atomic_bool active{true}, reload{false};
-std::atomic_bool effectsReload{false};
 std::atomic<uint64_t> reloadClock{0};
 std::atomic<unsigned> generation{0};
 EiemEntrySettings settings;
@@ -191,6 +195,11 @@ void Completed(void*,void*,const char*);
 void Asset(void*,void*,const char*,void*,int64_t,void*,uint64_t);
 void Unloaded(void*);
 void Frame(int);
+}
+namespace RuntimeAttachments {
+void CommitResourceGeneration(
+    const std::shared_ptr<const DemandLoadingProbe::InstalledGeneration>&) noexcept;
+void PrepareStandaloneOnlyReload();
 }
 #if defined(EIEM_PREFAB_ADAPTATION_PROBE)
 namespace PrefabAdaptationProbe {
@@ -539,39 +548,15 @@ void LoadInitialPackages() {
   auto config=EiemEntrySettings::Read(gameDirectory);
   auto next=DemandLoadingProbe::ReadInstalledPackages();
   for(const auto& p:*next) for(const auto& key:p.bindings)
-    Require(key.key.vk!=config.reload.vk && key.key.vk!=config.gui.vk&&key.key.vk!=config.effectsReload.vk,"Mod key overlaps reserved global shortcut: "+p.id+"/"+key.id);
+    Require(key.key.vk!=config.reload.vk && key.key.vk!=config.gui.vk,"Mod key overlaps reserved global shortcut: "+p.id+"/"+key.id);
   settings.Publish(config);
   std::atomic_store(&published,next);
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+  RuntimeAttachments::CommitResourceGeneration(DemandLoadingProbe::CurrentInstalledGeneration());
+#endif
   ++generation;
   Log("[ENTRY-GENERATION] initial=%u mods=%zu",generation.load(),next->size());
 }
-#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
-void ReloadDemandPackages() {
-  const auto started=std::chrono::steady_clock::now();
-  try {
-    auto config=EiemEntrySettings::Read(gameDirectory);
-    auto next=DemandLoadingProbe::PrepareInstalledPackages();
-    Require(bool(next),"format 3 reload candidate is absent");
-    for(const auto& package:*next)for(const auto& key:package.bindings)
-      Require(key.key.vk!=config.reload.vk&&key.key.vk!=config.gui.vk&&key.key.vk!=config.effectsReload.vk,
-        "Mod key overlaps reserved global shortcut: "+package.id+"/"+key.id);
-    settings.Publish(config);
-    std::atomic_store(&published,next);
-    DemandLoadingProbe::PublishPreparedInstalledPackages();
-    const auto nextGeneration=++generation;
-    Log("[DEMAND-RELOAD-COMMIT] generation=%u mods=%zu elapsedMs=%.3f oldRequestsKeepGeneration=1 loadedOwnersRefreshOnNextGameRequest=1",
-      nextGeneration,next->size(),std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count());
-  } catch(const std::exception& error) {
-    DemandLoadingProbe::DiscardPreparedInstalledPackages();
-    Log("[DEMAND-RELOAD-REJECT] elapsedMs=%.3f previousGenerationPreserved=1 reason=%s",
-      std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count(),error.what());
-  } catch(...) {
-    DemandLoadingProbe::DiscardPreparedInstalledPackages();
-    Log("[DEMAND-RELOAD-REJECT] elapsedMs=%.3f previousGenerationPreserved=1 reason=unknown",
-      std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count());
-  }
-}
-#endif
 #if defined(EIEM_DIAGNOSTICS)
 void Sample(const char *kind, void *identity, const void *data, size_t length,
             const std::string &path) {
@@ -1237,6 +1222,34 @@ void CompleteRuleInput(void* request,void* bundle){NativeBundle::CompleteMemory(
 #include "eiem_entry_effect_attachments.h"
 #include "eiem_entry_reload.h"
 
+void ProcessReloadRequests() {
+#if defined(EIEM_DEMAND_LOADING_PROBE)
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+  DemandLoadingProbe::Watchdog();
+  if(reload.exchange(false)){
+    if(FullResourceReload::configured&&FullResourceReload::enabled){
+      auto roots=DiscoverModRoots();bool standaloneOnly=std::all_of(roots.begin(),roots.end(),[](const auto& root){return EiemCompiledModSet::StandaloneEffectRoot(root);});
+      FullResourceReload::Prepare();
+      if(standaloneOnly)RuntimeAttachments::PrepareStandaloneOnlyReload();
+    }else Log("[FULL-RELOAD-REJECT] phase=trigger reason=requiredNativeBindingsUnavailable configurationFallbackRefused=1");
+  }
+  if(FullResourceReload::configured)FullResourceReload::PollOffline();
+#else
+  if(reload.exchange(false))Log("[DEMAND-PROBE-TEST] reloadRequested=1 compiledBackendDisabled=1 replacementApplied=0");
+#endif
+#elif defined(EIEM_MESH_TARGET_PROBE)
+  if(reload.exchange(false))Log("[MESH-TARGET-TEST] reloadRequested=1 compiledBackendDisabled=1 replacementApplied=0");
+#else
+  if (reload.exchange(false)) {
+    if(FullResourceReload::configured) {
+      if(FullResourceReload::enabled) {auto current=std::atomic_load(&published);if(current&&current->empty()&&DiscoverModRoots().empty())EntryReload::Prepare();else FullResourceReload::Prepare();RuntimeAttachments::PrepareDiskReload(false);}
+      else Log("[FULL-RELOAD-REJECT] phase=trigger reason=requiredNativeBindingsUnavailable configurationFallbackRefused=1");
+    } else {Log("[FULL-RELOAD-REJECT] phase=trigger reason=nativeReloadNotConfigured");}
+  }
+  if(FullResourceReload::configured) FullResourceReload::PollOffline();
+#endif
+}
+
 void InstallHooks(void **assemblies, size_t count) {
   RuntimeShapes::InstallOptional(assemblies,count);
   // Arm depends on the capture completion trampoline. Finish that binding
@@ -1449,29 +1462,7 @@ void InstallHooks(void **assemblies, size_t count) {
 DWORD WINAPI ProcessJobs(void *) {
   for (;;) {
     WaitForSingleObject(queueEvent, 1000);
-#if defined(EIEM_DEMAND_LOADING_PROBE)
-#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
-    DemandLoadingProbe::Watchdog();
-#endif
-    effectsReload=false;
-#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
-    if(reload.exchange(false))ReloadDemandPackages();
-#else
-    if(reload.exchange(false))Log("[DEMAND-PROBE-TEST] reloadRequested=1 compiledBackendDisabled=1 replacementApplied=0");
-#endif
-#elif defined(EIEM_MESH_TARGET_PROBE)
-    effectsReload=false;
-    if(reload.exchange(false))Log("[MESH-TARGET-TEST] reloadRequested=1 compiledBackendDisabled=1 replacementApplied=0");
-#else
-    if(effectsReload.exchange(false))RuntimeAttachments::PrepareDiskReload(true);
-    if (reload.exchange(false)) {
-      if(FullResourceReload::configured) {
-        if(FullResourceReload::enabled) {auto current=std::atomic_load(&published);if(current&&current->empty()&&DiscoverModRoots().empty())EntryReload::Prepare();else FullResourceReload::Prepare();RuntimeAttachments::PrepareDiskReload(false);}
-        else Log("[FULL-RELOAD-REJECT] phase=trigger reason=requiredNativeBindingsUnavailable configurationFallbackRefused=1");
-      } else {Log("[FULL-RELOAD-REJECT] phase=trigger reason=nativeReloadNotConfigured");}
-    }
-    if(FullResourceReload::configured) FullResourceReload::PollOffline();
-#endif
+    ProcessReloadRequests();
 #if defined(EIEM_DIAGNOSTICS)
     for (;;) {
       Job job;
@@ -1661,7 +1652,7 @@ DWORD StartImpl() {
 #if !defined(EIEM_MESH_TARGET_PROBE) && (!defined(EIEM_DEMAND_LOADING_PROBE) || defined(EIEM_DEMAND_NATIVE_ACCEPTANCE))
   RuntimeAttachments::PrepareDiskReload(false);
 #endif
-  EiemControlPanel::Shortcut reloadKey, guiKey,effectsKey;
+  EiemControlPanel::Shortcut reloadKey, guiKey;
 #if defined(EIEM_DIAGNOSTICS)
   ULONGLONG report = GetTickCount64();
 #endif
@@ -1683,8 +1674,6 @@ DWORD StartImpl() {
     }
     if(!active) RuntimeControls::panel.open=false;
     auto shortcut=settings.Get().reload;
-    auto effectShortcut=settings.Get().effectsReload;
-    if(effectsKey.Press(effectShortcut,RuntimeControls::Down(effectShortcut),active&&process==GetCurrentProcessId())){effectsReload=true;SetEvent(queueEvent);Log("[EFFECT-RELOAD] requested vk=%u modifiers=%u",effectShortcut.vk,effectShortcut.modifiers);}
     bool physical=RuntimeControls::Down(shortcut);
     if (reloadKey.Press(shortcut,physical,active && process==GetCurrentProcessId())) {
       reloadClock.store(NativeBundle::Clock());
@@ -1795,7 +1784,6 @@ APPLEPIE_PLUGIN_EXPORT int AP_GetHotkeys(AP_HotkeyInfo *output, int maximum) {
     output[0] = {"Reload Mod configuration", "reload", int(Entry::settings.Get().reload.vk)};
     if(maximum>1) {
       output[1]={"Open Mod controls", "gui", int(Entry::settings.Get().gui.vk)};
-      if(maximum>2){output[2]={"Reload effects", "effects_reload",int(Entry::settings.Get().effectsReload.vk)};return 3;}
       return 2;
     }
     return 1;

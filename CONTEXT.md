@@ -173,7 +173,7 @@
 
 以下约束覆盖后文历史阶段记录：特效由根 Empty 持有，在对象属性直接展开全部节点/模块/数组/曲线，保留原生名称和数值类型。未知名称为 unknown，64 位整数为精确十进制文本。添加块目前启用已有 schema 槽，完整新增发射器/外部依赖未开放。子 Transform 与 TRS 同步，根 TRS 为挂载偏移。
 
-普通 eff.dll 支持人物附加与独立 [Mod] type=effect 包。独立包不需要人物 Mod/compiled.bin；精确 Mesh/Renderer 来源与完整骨骼 palette 证明目标，骨骼必填，默认跟随 Mesh enabled/activeInHierarchy。F9 读取特效完整磁盘快照，不重建人物，增删/改挂点有效，失败保留旧实例。配置为 [Hotkeys] effects_reload，改键后 F10 重读。Blender 不承担 PID/实例或游戏重载，事件触发暂不支持。
+普通 eff.dll 支持人物附加与独立 [Mod] type=effect 包。独立包不需要人物 Mod/compiled.bin；精确 Prefab、Renderer 路径和 Mesh 来源证明目标。骨骼可选：留空挂到已匹配 Renderer Transform，选择骨骼时需完整骨架调色板。默认跟随 Mesh enabled/activeInHierarchy。F9 读取特效完整磁盘快照，不重建人物，增删/改挂点有效，失败保留旧实例。配置为 [Hotkeys] effects_reload，改键后 F10 重读。Blender 不承担 PID/实例或游戏重载，事件触发暂不支持。
 
 实际 Mesh/UV/PNG 可预览基本发射/运动/大小/颜色/透明度、图集与世界/局部跟随，以及简单形状范围线框。Noise/Shader 近似，未还原模块显式提示。已准备小光点/粉花瓣/梨花瓣示例，见 tools/Blender/docs/effects-editor.md。协议新增 effectTarget/standaloneEffect 能力，DLL、能力清单与作者编译器必须配套。自动测试/部署不等于实机画面验收；游戏脚本/音频/长期生命周期与性能仍需确认。
 

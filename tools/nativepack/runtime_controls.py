@@ -91,8 +91,17 @@ def effect_encode(owner, effect):
         data.extend(struct.pack('<Q',len(b['data'])));data.extend(b['data'])
     blocks={'@effect-attachment':data}
     if effect.get('targetPrefab'):
-        require(effect.get('rendererPath') and effect.get('targetPath') and effect.get('targetAsset') and effect.get('bones'),'effect source attachment proof missing')
-        blocks['@effect-target']=encode_strings([effect['targetPrefab'],effect['rendererPath'],effect['targetPath'],effect['targetAsset']]+list(effect['bones']))
+        renderer_path=effect.get('rendererPath','')
+        target_path=effect.get('targetPath','')
+        target_asset=effect.get('targetAsset','')
+        target_bones=list(effect.get('bones',[]))
+        require(effect['targetPrefab'].startswith('assets/') and effect['targetPrefab'].endswith('.prefab') and '..' not in effect['targetPrefab'] and
+                not renderer_path.startswith('/') and '\\' not in renderer_path and '..' not in renderer_path and '//' not in renderer_path and
+                target_path.startswith('assets/') and '..' not in target_path and target_asset and
+                len(target_bones)==len(set(target_bones)) and all(target_bones) and
+                (not effect.get('bone') or target_bones),
+                'effect source attachment proof missing or invalid')
+        blocks['@effect-target']=encode_strings([effect['targetPrefab'],renderer_path,target_path,target_asset]+target_bones)
     return encode_resource(EFFECT,'00'*16,blocks)
 
 def effect_decode(resource):
@@ -117,7 +126,12 @@ def effect_decode(resource):
                           root=root, particles=particles, bundles=bundles)
     if '@effect-target' in resource['blocks']:
         from .resource_file import decode_strings
-        target=decode_strings(resource['blocks']['@effect-target']);require(len(target)>4 and target[0].startswith('assets/') and target[0].endswith('.prefab'),'invalid effect target proof')
+        target=decode_strings(resource['blocks']['@effect-target'])
+        require(len(target)>=4 and target[0].startswith('assets/') and target[0].endswith('.prefab') and '..' not in target[0] and
+                (not target[1] or not target[1].startswith('/')) and '\\' not in target[1] and '..' not in target[1] and '//' not in target[1] and
+                target[2].startswith('assets/') and '..' not in target[2] and target[3] and
+                len(target[4:])==len(set(target[4:])) and all(target[4:]) and
+                (not bone or target[4:]), 'invalid effect target proof')
         result.update(targetPrefab=target[0],rendererPath=target[1],targetPath=target[2],targetAsset=target[3],bones=target[4:])
     return result
 

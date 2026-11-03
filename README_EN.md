@@ -37,7 +37,7 @@ The production DLL and proxies statically link their own C/C++ runtime implement
 - **Ins** opens independent keyboard checkboxes for each Mod, all enabled by default. Multiple Mods can respond to the same key. The dropdown selects the Mod whose buttons and sliders are shown. Key switches, shape controls and saved player values remain supported.
 - **F10** reads the full current Mod set, handles additions/removals/changes and the empty set, and reloads supported world/display owners with animation, weapon and audio rebinding. Failed preparation or submission keeps the current generation.
 - Shape Keys clips have independent playback groups and play/stop shortcuts. Ins provides pause and persistent live speed controls without resetting playback phase.
-- Effects can ship as standalone Mods or attach to a character Mesh bone. They follow the model lifecycle, can be toggled by key, reload through F9, and cover all LODs.
+- Effects can ship as standalone Mods or attach to a character Mesh bone. They follow the model lifecycle, can be toggled by key, reload with all Mod resources through F10, and cover all LODs.
 - Animated material parameters and effect resources use the same Mod export and reload pipeline; Mods are discovered recursively below `plugin/mods`.
 
 UI and world instances of a Mod share control values. UI reload uses the game's

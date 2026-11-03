@@ -13,8 +13,17 @@ std::map<std::pair<std::string,std::string>,EffectAttachment> overrides;
 std::map<std::string,std::map<std::string,EffectAttachment>> diskEffects;
 const std::map<std::string,EffectAttachment>& Effects(const Package& p){auto found=diskEffects.find(p.id);return found==diskEffects.end()?p.effects:found->second;}
 std::shared_ptr<const std::vector<Package>> standalone=std::make_shared<const std::vector<Package>>();
+bool IsStandalonePackage(const Package& package){return standalone&&std::any_of(standalone->begin(),standalone->end(),[&](const Package& row){return row.id==package.id&&row.root==package.root;});}
+std::vector<const Package*> RuntimePackages(){std::vector<const Package*> result;auto graph=RuntimeControls::controlGraph;
+ if(graph)for(const auto& package:*graph)if(!IsStandalonePackage(package))result.push_back(&package);
+ if(standalone)for(const auto& package:*standalone)result.push_back(&package);return result;}
 std::shared_ptr<const std::vector<Package>> pendingStandalone;
 std::map<std::string,std::map<std::string,EffectAttachment>> pendingEffects;
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+std::shared_ptr<const DemandLoadingProbe::InstalledGeneration> pendingUnifiedGeneration;
+EiemEntrySettings::Snapshot pendingUnifiedConfig;
+bool unifiedGenerationPending=false;
+#endif
 struct AttachmentStamp {std::string part,bone,variable,nativeKey,targetPrefab,rendererPath,targetPath,targetAsset;bool autoplay=true;std::array<float,3> position{0,0,0},scale{1,1,1};std::array<float,4> rotation{0,0,0,1};std::vector<std::string> targetBones;
  bool operator==(const AttachmentStamp& other)const{return part==other.part&&bone==other.bone&&variable==other.variable&&nativeKey==other.nativeKey&&targetPrefab==other.targetPrefab&&rendererPath==other.rendererPath&&targetPath==other.targetPath&&targetAsset==other.targetAsset&&autoplay==other.autoplay&&position==other.position&&scale==other.scale&&rotation==other.rotation&&targetBones==other.targetBones;}
  bool operator!=(const AttachmentStamp& other)const{return !(*this==other);}
@@ -27,7 +36,7 @@ std::map<void*,Ref> retryOwners;
 void QueueOwnerReady(void* root){if(root&&!pendingOwners.count(root))pendingOwners.emplace(root,Ref::Make(root,true));}
 std::string OwnerPath(void* root){for(const auto& row:FullResourceReload::liveParts)if(row.second.root.Get()==root)return row.second.path;auto ui=FullResourceReload::liveUIModels.find(root);if(ui!=FullResourceReload::liveUIModels.end())return ui->second.path;for(const auto& row:FullResourceReload::liveHelperModels)if(row.second.root.Get()==root)return "render-helper";return {};}
 void AddStamps(AttachmentStamps& result,unsigned source,const std::string& package,const std::map<std::string,EffectAttachment>& effects,bool applyOverrides){for(const auto& row:effects){const EffectAttachment* effect=&row.second;if(applyOverrides){auto replacement=overrides.find({package,row.first});if(replacement!=overrides.end())effect=&replacement->second;}AttachmentStamp stamp;stamp.part=effect->part;stamp.bone=effect->bone;stamp.variable=effect->variable;stamp.nativeKey=effect->native?effect->native->key:std::string();stamp.targetPrefab=effect->targetPrefab;stamp.rendererPath=effect->rendererPath;stamp.targetPath=effect->targetPath;stamp.targetAsset=effect->targetAsset;stamp.targetBones=effect->targetBones;stamp.autoplay=effect->autoplay;stamp.position=effect->position;stamp.rotation=effect->rotation;stamp.scale=effect->scale;result.emplace(std::make_tuple(source,package,row.first),std::move(stamp));}}
-AttachmentStamps CaptureStamps(){AttachmentStamps result;auto graph=RuntimeControls::controlGraph;if(graph)for(const auto& p:*graph){AddStamps(result,0,p.id,p.effects,false);AddStamps(result,1,p.id,Effects(p),true);}if(standalone)for(const auto& p:*standalone)AddStamps(result,2,p.id,Effects(p),true);return result;}
+AttachmentStamps CaptureStamps(){AttachmentStamps result;auto graph=RuntimeControls::controlGraph;if(graph)for(const auto& p:*graph)if(!IsStandalonePackage(p)){AddStamps(result,0,p.id,p.effects,false);AddStamps(result,1,p.id,Effects(p),true);}if(standalone)for(const auto& p:*standalone)AddStamps(result,2,p.id,Effects(p),true);return result;}
 void PrepareDiskReload(bool force=true){try{
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::EffectDisk);
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
@@ -38,12 +47,31 @@ void PrepareDiskReload(bool force=true){try{
 #else
  StandaloneEffects::PublishReadLock publication(gameDirectory/"plugin/mods");
  auto own=std::make_shared<const std::vector<Package>>(StandaloneEffects::ReadAll(gameDirectory));std::map<std::string,std::map<std::string,EffectAttachment>> attached;auto config=settings.Get();
- for(const auto& p:*own)for(const auto& key:p.bindings)Require(key.key.vk!=config.reload.vk&&key.key.vk!=config.gui.vk&&key.key.vk!=config.effectsReload.vk,"effect Mod key overlaps global shortcut");
+ for(const auto& p:*own)for(const auto& key:p.bindings)Require(key.key.vk!=config.reload.vk&&key.key.vk!=config.gui.vk,"effect Mod key overlaps global shortcut");
  auto graph=std::atomic_load(&published);if(graph)for(const auto& p:*graph)attached[p.id]=StandaloneEffects::ReadAttached(p);
 #endif
  std::lock_guard<std::mutex> lock(reloadMutex);pendingStandalone=std::move(own);pendingEffects=std::move(attached);pendingForceReload=pendingForceReload||force;reloadPending=true;
  performance.hit=true;Log("[EFFECT-RELOAD] prepared=1 modelRebuilds=0");
  }catch(const std::exception& e){{std::lock_guard<std::mutex> lock(reloadMutex);pendingStandalone.reset();pendingEffects.clear();pendingForceReload=false;reloadPending=false;}Log("[EFFECT-RELOAD-REJECT] reason=%s oldEffectsRetained=1",e.what());}}
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+void PrepareStandaloneOnlyReload(){try{
+ EiemLoadPerformance::Scope performance(EiemLoadPerformance::EffectDisk);
+ auto next=DemandLoadingProbe::PrepareInstalledGeneration();Require(bool(next)&&next->targets.empty(),"standalone-only F10 unexpectedly contains Mesh targets");
+ for(const auto& row:next->authors)Require(EiemCompiledModSet::StandaloneEffectRoot(row.second->catalog->Root()),"standalone-only F10 discovered a character Mod: "+row.first);
+ auto config=EiemEntrySettings::Read(gameDirectory);
+ for(const auto& package:*next->packages)for(const auto& key:package.bindings)
+   Require(key.key.vk!=config.reload.vk&&key.key.vk!=config.gui.vk,"Mod shortcut overlaps reserved global shortcut: "+package.id+"/"+key.id);
+ std::lock_guard<std::mutex> lock(reloadMutex);pendingUnifiedGeneration=std::move(next);pendingUnifiedConfig=EiemEntrySettings::Prepare(config);unifiedGenerationPending=true;
+ performance.hit=true;Log("[FULL-RELOAD-PREPARED] mode=standalone-only resources=effects generation=unity-frame");
+ }catch(const std::exception& e){std::lock_guard<std::mutex> lock(reloadMutex);pendingUnifiedGeneration.reset();pendingUnifiedConfig.reset();unifiedGenerationPending=false;Log("[FULL-RELOAD-REJECT] phase=standalone-prepare reason=%s previousGenerationRetained=1",e.what());}}
+void CommitResourceGeneration(const std::shared_ptr<const DemandLoadingProbe::InstalledGeneration>& next) noexcept {
+ if(!next)return;DemandLoadingProbe::PublishInstalledGeneration(next);
+ standalone=next->standalone;
+ diskEffects.clear();overrides.clear();needed=bool(standalone&&!standalone->empty());
+ for(const auto& package:*standalone)needed|=!package.effects.empty();
+ {std::lock_guard<std::mutex> lock(reloadMutex);pendingUnifiedGeneration.reset();pendingUnifiedConfig.reset();unifiedGenerationPending=false;pendingStandalone.reset();pendingEffects.clear();pendingForceReload=false;reloadPending=false;}
+}
+#endif
 void Stop(Binding& b){if(b.instance){--b.instance->generation->externalPins;Native::Retire(b.instance);b.instance.reset();}}
 void Release(Binding& b){Stop(b);if(b.generation){--b.generation->externalPins;b.generation.reset();Native::nativeWork=true;}}
 std::shared_ptr<Native::Generation> Acquire(const std::shared_ptr<const EiemEffectNative::Manifest>& manifest){
@@ -56,7 +84,7 @@ std::shared_ptr<Native::Generation> Acquire(const std::shared_ptr<const EiemEffe
 }
 void* Parent(void* root,void* renderer,const Package& p,const EffectAttachment& effect){
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::EffectMount);
- if(effect.bone.empty())return FullResourceReload::Call(FullResourceReload::api.goTransform,root);
+ if(effect.bone.empty()){Require(RuntimeShapes::RendererKind(renderer)!=0,"renderer-mounted effect owner Renderer absent");auto gameObject=FullResourceReload::Call(FullResourceReload::api.componentGo,renderer);Require(RuntimeShapes::Alive(gameObject),"renderer-mounted effect owner GameObject absent");auto transform=FullResourceReload::Call(FullResourceReload::api.goTransform,gameObject);Require(RuntimeShapes::Alive(transform),"renderer-mounted effect owner Transform absent");return transform;}
  Require(RuntimeShapes::RendererKind(renderer)==137,"bone effect requires a skinned owner mesh");auto expected=effect.part.empty()?effect.targetBones:p.meshes.at(p.parts.at(effect.part).mesh).bones;
  if(effect.part.empty())if(auto spec=RuntimeShapes::Match(RuntimeShapes::SourceMesh(renderer)))if(RuntimeControls::controlGraph)for(const auto& author:*RuntimeControls::controlGraph)if(author.id==spec->package)expected=author.meshes.at(author.parts.at(spec->part).mesh).bones;
  auto array=Ref::Make(FullResourceReload::Call(RuntimeShapes::api.bones,renderer),false);size_t count=0;
@@ -73,7 +101,7 @@ void ModelReadyDetails(void* root,bool audit){
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::EffectBind);
  if(!root||!Native::enabled||!RuntimeShapes::Main())return;
  if(!RuntimeShapes::Alive(root)){retryOwners.erase(root);return;}
- std::vector<const Package*> packages;if(RuntimeControls::controlGraph)for(const auto& p:*RuntimeControls::controlGraph)packages.push_back(&p);for(const auto& p:*standalone)packages.push_back(&p);
+ auto packages=RuntimePackages();
  bool any=false;for(auto p:packages)any|=!Effects(*p).empty();if(!any){retryOwners.erase(root);return;}performance.hit=true;bool retry=false;
  auto renderers=FullResourceReload::Components(root);
  for(auto package:packages){const auto& p=*package;std::map<std::string,EffectAttachment> effects=Effects(p);for(const auto& replacement:overrides)if(replacement.first.first==p.id)effects[replacement.first.second]=replacement.second;
@@ -124,18 +152,34 @@ void OwnerReleasing(void* root) noexcept {
 }
 void Frame(){
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::EffectFrame);
- bool diskReload=false,forceDiskReload=false;if(reloadPending.load()){std::lock_guard<std::mutex> lock(reloadMutex);if(reloadPending.exchange(false)){standalone=std::move(pendingStandalone);overrides.clear();diskEffects=std::move(pendingEffects);pendingEffects.clear();diskReload=true;forceDiskReload=pendingForceReload;pendingForceReload=false;needed=!standalone->empty();for(const auto& p:diskEffects)needed|=!p.second.empty();if(forceDiskReload)for(auto& b:bindings){b.second.failed=false;if(b.second.generation&&b.second.generation->phase==Native::Phase::Rejected)b.second.generation->retryRequested=true;}}}
- bool controlsChanged=revision!=RuntimeControls::revision;
- if(controlsChanged){revision=RuntimeControls::revision;if(!diskReload)overrides.clear();needed=false;if(RuntimeControls::controlGraph)for(const auto& p:*RuntimeControls::controlGraph)needed|=!Effects(p).empty();}
+ bool diskReload=false,forceDiskReload=false;
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+ std::shared_ptr<const DemandLoadingProbe::InstalledGeneration> unified;EiemEntrySettings::Snapshot unifiedConfig;
+ {std::lock_guard<std::mutex> lock(reloadMutex);if(unifiedGenerationPending){unified=std::move(pendingUnifiedGeneration);unifiedConfig=std::move(pendingUnifiedConfig);unifiedGenerationPending=false;}}
+ if(unified)try{
+  auto current=std::atomic_load(&DemandLoadingProbe::installedGeneration);
+  Require(current&&current->targets.empty()&&unified->targets.empty()&&DemandLoadingProbe::SameTargetDeclarations(*current,*unified),
+    "standalone-only F10 cannot change Mesh target declarations");
+ auto controls=RuntimeControls::Prepare(unified->packages,*unifiedConfig);RuntimeControls::MergeLive(controls);
+  auto nextGraph=controls.graph;RuntimeControls::Swap(controls);std::atomic_store(&published,nextGraph);settings.PublishPrepared(unifiedConfig);
+  DemandLoadingProbe::PublishInstalledGeneration(unified);standalone=unified->standalone;diskEffects.clear();overrides.clear();
+  auto nextGeneration=generation.load()+1;RuntimeShapes::packageGeneration=nextGeneration;RuntimeShapes::checkedGeneration=nextGeneration;generation.store(nextGeneration);
+  diskReload=true;forceDiskReload=true;needed=bool(standalone&&!standalone->empty());
+  Log("[FULL-RELOAD-COMMIT] mode=standalone-only generation=%u mods=%zu targets=0 unityFrame=1",nextGeneration,nextGraph->size());
+ }catch(const std::exception& error){Log("[FULL-RELOAD-REJECT] phase=standalone-commit reason=%s previousGenerationRetained=1",error.what());}
+#endif
+ if(reloadPending.load()){std::lock_guard<std::mutex> lock(reloadMutex);if(reloadPending.exchange(false)){standalone=std::move(pendingStandalone);overrides.clear();diskEffects=std::move(pendingEffects);pendingEffects.clear();diskReload=true;forceDiskReload=pendingForceReload;pendingForceReload=false;needed=!standalone->empty();for(const auto& p:diskEffects)needed|=!p.second.empty();if(forceDiskReload)for(auto& b:bindings){b.second.failed=false;if(b.second.generation&&b.second.generation->phase==Native::Phase::Rejected)b.second.generation->retryRequested=true;}}}
+  bool controlsChanged=revision!=RuntimeControls::revision;
+ if(controlsChanged){revision=RuntimeControls::revision;if(!diskReload)overrides.clear();needed=false;if(RuntimeControls::controlGraph)for(const auto& p:*RuntimeControls::controlGraph)if(!IsStandalonePackage(p))needed|=!Effects(p).empty();}
  needed=needed||!standalone->empty();bool sourceChanged=controlsChanged||diskReload;bool definitionsChanged=false;
  if(sourceChanged||!stampsInitialized){auto next=CaptureStamps();definitionsChanged=!stampsInitialized||next!=activeStamps;activeStamps=std::move(next);stampsInitialized=true;}
  bool reconcileAll=definitionsChanged||(diskReload&&forceDiskReload);
  if(!needed&&bindings.empty()&&!sourceChanged){pendingOwners.clear();return;}if(!Native::enabled||!RuntimeShapes::Main())return;
  if(reconcileAll){
-  for(auto it=bindings.begin();it!=bindings.end();){bool exists=false;for(const auto& p:*standalone)exists|=p.id==it->second.package&&Effects(p).count(it->second.id);if(RuntimeControls::controlGraph)for(const auto& p:*RuntimeControls::controlGraph)exists|=p.id==it->second.package&&Effects(p).count(it->second.id);if(!exists){Release(it->second);it=bindings.erase(it);}else ++it;}
+  for(auto it=bindings.begin();it!=bindings.end();){bool exists=false;for(const auto& p:*standalone)exists|=p.id==it->second.package&&Effects(p).count(it->second.id);if(RuntimeControls::controlGraph)for(const auto& p:*RuntimeControls::controlGraph)if(!IsStandalonePackage(p))exists|=p.id==it->second.package&&Effects(p).count(it->second.id);if(!exists){Release(it->second);it=bindings.erase(it);}else ++it;}
   pendingOwners.clear();retryOwners.clear();auto owners=Native::Owners();for(auto& owner:owners)ModelReadyDetails(owner.second.Get(),forceDiskReload);reconcileClock=NativeBundle::Clock();
   if(forceDiskReload){for(auto& row:bindings){auto& b=row.second;Log("[EFFECT-ATTACHMENT-STATE] package=%s effect=%s owner=%p parent=%p renderers=%zu instance=%p failed=%d desiredDefault=%d",b.package.c_str(),b.id.c_str(),b.owner.Get(),b.parent.Get(),b.renderers.size(),b.instance?b.instance->object.Get():nullptr,int(b.failed),int(b.attachment.autoplay));
-    if(b.instance){Native::Observation::Capture(*b.instance,"after-F9");b.instance->observationClock=NativeBundle::Clock();b.instance->observationStep=0;}}}
+    if(b.instance){Native::Observation::Capture(*b.instance,"after-F10");b.instance->observationClock=NativeBundle::Clock();b.instance->observationStep=0;}}}
   Log("[EFFECT-RELOAD] committed standalone=%zu owners=%zu bindings=%zu diskReload=%d definitionsChanged=%d forced=%d modelRebuilds=0",standalone->size(),owners.size(),bindings.size(),int(diskReload),int(definitionsChanged),int(forceDiskReload));}
  else if(!pendingOwners.empty()){
   auto owners=std::move(pendingOwners);pendingOwners.clear();
@@ -158,7 +202,7 @@ void Frame(){
   if(!desired){Stop(b);++it;continue;}
   auto& g=*b.generation;if(!b.failed&&g.phase!=Native::Phase::Ready&&(g.phase!=Native::Phase::Rejected||g.retryRequested)&&stepped.insert(&g).second){try{
     if(g.phase==Native::Phase::Rejected){
-     // F9 may retry identical content only after all prior native requests and
+     // F10 may retry identical content only after all prior native requests and
      // owned containers drain. Preserve the shared generation identity/pins;
      // no clone can have been created from a rejected preparation.
      if(!g.quarantined&&Native::Drain(g)){auto manifest=g.manifest;auto pins=g.externalPins;g=Native::Generation{};g.manifest=std::move(manifest);g.externalPins=pins;g.clock=NativeBundle::Clock();g.bundles.resize(g.manifest->bundles.size());Log("[EFFECT-ATTACHMENT-RETRY] key=%s previousRequestsDrained=1",g.manifest->key.c_str());}

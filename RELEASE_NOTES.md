@@ -1,4 +1,15 @@
-# EFF v2.0.5
+# EFF v2.0.6
+
+配套 EFF Blender v0.50.3、EFF Mod Manager v0.2.2、AnimeStudio v1.9.1；Windows x64。运行时仍只接受 Format 3。
+
+- 统一 F10 热重载入口，让 Format 3 Mod 控制与独立特效使用同一资源代际和刷新事务。
+- 修正 Format 2 迁移的 Mesh 坐标约定：作者快照转换到 Blender 坐标，运行时 Mesh 保留游戏原生 UV；形态键压缩帧展开时保留原 UV 值。
+- 迁移时复用内容和采样语义完全相同的贴图，避免同一 DDS 被重复写出。
+- 增加 UV 原值、形态键帧展开、贴图行序和共享工具发布预检回归。
+
+共享工具包：`EFF_Shared_Native_Tools_v2.0.6.zip`。
+
+## EFF v2.0.5
 
 配套 EFF Blender v0.50.2、AnimeStudio v1.9.1；Windows x64。运行时仍只接受 Format 3。
 

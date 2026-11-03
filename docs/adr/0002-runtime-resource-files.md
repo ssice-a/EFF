@@ -24,9 +24,17 @@
    index, or cache is required for correctness.
 4. Mesh resource files contain the native serialized Mesh and an `EFFMESH`
    author snapshot so Blender can round-trip geometry, bindings, and target
-   metadata. Native Mesh UV coordinates and tangent handedness preserve their
-   authored values; source-image row orientation is normalized during DDS
-   encoding. The `EFFMESH` author snapshot retains the same UV values. Material resource
+   metadata. Runtime Mesh UV coordinates and tangent handedness remain in the
+   source game's convention. An author snapshot marked `Blender` stores V and
+   UV0 tangent handedness in Blender's convention; the native Mesh writer
+   converts those fields back once. A snapshot in the Unity coordinate
+   convention passes those fields through. Format 2 migration derives author
+   data separately and preserves native UV values in the runtime buffer; it
+   expands packed frame channels only when CPU shape jobs require Float32.
+   Unchanged source DDS files are copied byte-for-byte. Newly compressed
+   top-down image rows are converted to the Unity Texture2D mip-row convention;
+   Blender effect buffers already use that row order and are passed through.
+   Material resource
    files contain only a sparse `EFFMAT` edit document plus its logical source
    path and asset name; they do not contain a native Material snapshot. When a
    declared Mesh target is prepared, the DLL

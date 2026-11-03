@@ -41,6 +41,9 @@ inline const EiemResourceReloadPlan::Root* FindRoot(const Plan& plan,const std::
 }
 struct Prepared {
  std::shared_ptr<const Plan> plan;RuntimeControls::State controls;EiemEntrySettings::Snapshot config;
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+ std::shared_ptr<const DemandLoadingProbe::InstalledGeneration> demandGeneration;
+#endif
  std::map<size_t,std::shared_ptr<NativeBundle::FileHold>> files;
  std::shared_ptr<EiemPrefabRules::Context> rules;std::map<size_t,std::shared_ptr<const Bytes>> ruleInputs;
  std::map<size_t,std::shared_ptr<const EiemInputSpanView::View>> ruleViews;
@@ -94,7 +97,11 @@ struct Api {
 std::atomic<bool> configured{false},enabled{false},busy{false};std::mutex mutex;
 std::atomic<bool> testAuthorCommitted{false};
 std::shared_ptr<Prepared> pending;std::shared_ptr<Attempt> attempt,activeNative;
-struct Ticket {EiemOfflinePackage::Pointer pointer;uint64_t clock=0;RuntimeControls::State controls;EiemEntrySettings::Snapshot config;};
+struct Ticket {EiemOfflinePackage::Pointer pointer;uint64_t clock=0;RuntimeControls::State controls;EiemEntrySettings::Snapshot config;
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+ std::shared_ptr<const DemandLoadingProbe::InstalledGeneration> demandGeneration;
+#endif
+};
 std::shared_ptr<const Ticket> requested;
 std::shared_ptr<const EiemOfflinePackage::Pointer> latest;
 std::shared_ptr<const std::string> failedKey;
@@ -794,7 +801,7 @@ RuntimeControls::State CompiledControls(const std::shared_ptr<const std::vector<
  Require(bool(graph),"offline control graph unavailable");RuntimeControls::State state;state.graph=graph;
  std::map<std::string,std::pair<const Package*,std::string>> owners;
  for(const auto& package:*graph){
-  auto validateKey=[&](const EiemKeyChord& key){Require(!key.vk||(key.vk!=config.reload.vk&&key.vk!=config.gui.vk&&key.vk!=config.effectsReload.vk),"Mod shortcut overlaps a global shortcut: "+package.id);};for(const auto& key:package.bindings)validateKey(key.key);for(const auto& clip:package.shapeAnimations)validateKey(clip.second.key);
+  auto validateKey=[&](const EiemKeyChord& key){Require(!key.vk||(key.vk!=config.reload.vk&&key.vk!=config.gui.vk),"Mod shortcut overlaps a global shortcut: "+package.id);};for(const auto& key:package.bindings)validateKey(key.key);for(const auto& clip:package.shapeAnimations)validateKey(clip.second.key);
   state.variables[package.id]=package.defaults;state.keys[package.id]=package.bindings;
   state.keySwitchEnabled[package.id]=RuntimeControls::keySettings.Preview(package);
   RuntimeControls::PrepareAnimations(state,package);
@@ -807,6 +814,13 @@ RuntimeControls::State CompiledControls(const std::shared_ptr<const std::vector<
   RuntimeControls::Spec spec{package.id,owner.second,expected.marker,part.mesh,mesh.vertices,mesh.shapes,part.shapes,part.visible};
   spec.material=part.material;Require(state.specs.emplace(spec.marker,std::move(spec)).second,"offline control provenance collision");
  }RuntimeControls::PreviewPreferences(state);RuntimeControls::PreparePanel(state);return state;
+}
+RuntimeControls::State CompiledRuntimeControls(const std::shared_ptr<const std::vector<Package>>& graph,
+    const Plan& plan,const EiemGlobalConfig& config,
+    const std::shared_ptr<const DemandLoadingProbe::InstalledGeneration>& demandGeneration){
+ auto state=CompiledControls(graph,plan,config);
+ RuntimeControls::AppendPackages(state,DemandLoadingProbe::StandalonePackages(demandGeneration),config);
+ return state;
 }
 struct PackagePayload {
  std::map<const Resource*,uint64_t> resources;
@@ -840,7 +854,11 @@ void PollCompiled(bool trigger){
    auto p=std::make_shared<Prepared>();p->pointer=pointer;p->base=generation.load();p->graph=std::make_shared<const std::vector<Package>>(preparedCompiledSet->manifest.packages);p->authorFiles=preparedCompiledSet->files;p->plan=std::make_shared<const Plan>(preparedCompiledSet->manifest.plan);
    if(refresh)p->rules=diskPrepared->rules;else p->rules=EiemCompiledModSet::Context(preparedCompiledSet);p->ruleInputs=std::move(preparedCompiledSet->isolated);p->ruleViews=preparedCompiledSet->views;
    if(retry)for(auto index:p->plan->closure)if(!p->ruleInputs.count(index)&&!p->ruleViews.count(index))p->ruleInputs.emplace(index,std::make_shared<const Bytes>(p->rules->Materialize(index,true)));
-   auto config=EiemEntrySettings::Read(gameDirectory);p->controls=CompiledControls(p->graph,*p->plan,config);p->config=EiemEntrySettings::Prepare(config);Require(AuthorFilesUnchanged(*p),"Mod changed during compiled rule validation");
+   auto config=EiemEntrySettings::Read(gameDirectory);
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+   p->demandGeneration=DemandLoadingProbe::PrepareInstalledGeneration(p->graph);
+#endif
+   p->controls=CompiledRuntimeControls(p->graph,*p->plan,config,p->demandGeneration);p->config=EiemEntrySettings::Prepare(config);Require(AuthorFilesUnchanged(*p),"Mod changed during compiled rule validation");
    {std::lock_guard<std::mutex> lock(mutex);pending=p;}lastPrepared=pointer;diskPrepared=p;
    auto publishedGraph=std::atomic_load(&published);auto oldPayload=publishedGraph?Payload(*publishedGraph):PackagePayload{};auto nextPayload=Payload(*p->graph);
    auto oldBytes=PayloadBytes(oldPayload),nextBytes=PayloadBytes(nextPayload),sharedBytes=SharedPayloadBytes(oldPayload,nextPayload);
@@ -849,7 +867,17 @@ void PollCompiled(bool trigger){
    Log("[FULL-RELOAD-PREPARED] key=%s workerMs=%.6f compiledPerMod=1 authorCompilation=0 nativeSubmission=pendingUnityFrame",pointer.key.c_str(),NativeBundle::Ms(clock));
   }
   std::atomic_store(&latest,std::make_shared<const EiemOfflinePackage::Pointer>(pointer));
-  if(trigger){auto ticket=std::make_shared<Ticket>();ticket->pointer=pointer;ticket->clock=clock;auto config=EiemEntrySettings::Read(gameDirectory);ticket->controls=CompiledControls(diskPrepared->graph,*diskPrepared->plan,config);ticket->config=EiemEntrySettings::Prepare(config);std::atomic_store(&requested,std::shared_ptr<const Ticket>(ticket));Log("[FULL-RELOAD-REQUEST] key=%s compiledPerMod=1 authorCompilation=0",pointer.key.c_str());}
+  if(trigger){auto ticket=std::make_shared<Ticket>();ticket->pointer=pointer;ticket->clock=clock;auto config=EiemEntrySettings::Read(gameDirectory);
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+   ticket->demandGeneration=diskPrepared->demandGeneration;
+#endif
+   ticket->controls=CompiledRuntimeControls(diskPrepared->graph,*diskPrepared->plan,config,
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+     diskPrepared->demandGeneration
+#else
+     {}
+#endif
+   );ticket->config=EiemEntrySettings::Prepare(config);std::atomic_store(&requested,std::shared_ptr<const Ticket>(ticket));Log("[FULL-RELOAD-REQUEST] key=%s compiledPerMod=1 authorCompilation=0",pointer.key.c_str());}
   lastError.clear();failedStamp.clear();
  }catch(const std::exception& e){try{failedStamp=EiemCompiledModSet::DirectoryStamp(gameDirectory/"plugin/mods");}catch(...){failedStamp.clear();}std::atomic_store(&latest,std::shared_ptr<const EiemOfflinePackage::Pointer>{});std::atomic_store(&requested,std::shared_ptr<const Ticket>{});if(trigger||lastError!=e.what()){lastError=e.what();Log("[FULL-RELOAD-REJECT] phase=compiled-mod reason=%s previousGenerationRetained=%u",e.what(),generation.load());}}
 }
@@ -1443,6 +1471,9 @@ void Rebuild(Attempt& a){
   Log("[FULL-RELOAD-ROLLBACK] previousRoutesRestored=1 previousControlsRetained=1 ownersRestored=%d",int(restored));throw;
  }
  auto stage=NativeBundle::Clock();auto graph=a.prepared->controls.graph;RuntimeControls::Swap(a.prepared->controls);std::atomic_store(&published,graph);settings.PublishPrepared(a.prepared->config);
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+ RuntimeAttachments::CommitResourceGeneration(a.prepared->demandGeneration);
+#endif
  RuntimeShapes::RetireAllRenderers();RuntimeShapes::cached.clear();
  // Installed original-namespace substitutions stay frozen. Future instances
  // receive generation prefabs through the exact native source route.
@@ -1609,7 +1640,11 @@ void Frame(){
  RetireSuperseded();
  std::shared_ptr<Prepared> next;{std::lock_guard<std::mutex> lock(mutex);next=pending;}
  if(next){
-  if(attempt&&attempt->prepared->pointer==next->pointer&&attempt->phase!=Phase::Drained&&attempt->phase!=Phase::Reject){attempt->prepared->authorFiles=next->authorFiles;attempt->prepared->graph=next->graph;next->ruleInputs.clear();std::lock_guard<std::mutex> lock(mutex);if(pending==next)pending.reset();}
+  if(attempt&&attempt->prepared->pointer==next->pointer&&attempt->phase!=Phase::Drained&&attempt->phase!=Phase::Reject){attempt->prepared->authorFiles=next->authorFiles;attempt->prepared->graph=next->graph;
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+   attempt->prepared->demandGeneration=next->demandGeneration;
+#endif
+   next->ruleInputs.clear();std::lock_guard<std::mutex> lock(mutex);if(pending==next)pending.reset();}
   else if(attempt&&attempt->phase!=Phase::Passed&&attempt->phase!=Phase::Drained){AbortUIStaging(*attempt);attempt->phase=Phase::Reject;}
   else{if(attempt){if(attempt->exposed||attempt->quarantined)retained.push_back(std::move(attempt));else attempt.reset();}
    {std::lock_guard<std::mutex> lock(mutex);if(pending==next)pending.reset();}
@@ -1654,11 +1689,17 @@ void Frame(){
     Log("[FULL-RELOAD-REJECT] phase=unchanged-preflight reason=Mod-files-changed previousGenerationRetained=%u",generation.load());return;
    }
    auto controls=ticket->controls;RuntimeControls::MergeLive(controls);RuntimeControls::Swap(controls);settings.PublishPrepared(ticket->config);
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+   RuntimeAttachments::CommitResourceGeneration(ticket->demandGeneration);
+#endif
    a.prepared->graph=RuntimeControls::controlGraph;std::atomic_store(&published,a.prepared->graph);
    std::shared_ptr<const Ticket> expected=ticket;std::atomic_compare_exchange_strong(&requested,&expected,std::shared_ptr<const Ticket>{});
    Log("[FULL-RELOAD-UNCHANGED] key=%s controlsRefreshed=1 nativeLoads=0 modelsRebuilt=0 requestMs=%.6f",ticket->pointer.key.c_str(),NativeBundle::Ms(ticket->clock));return;
   }
   a.prepared->base=generation.load();a.prepared->controls=ticket->controls;a.prepared->config=ticket->config;
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+  a.prepared->demandGeneration=ticket->demandGeneration;
+#endif
   a.owners.clear();a.mutated=0;a.cloneCount=0;a.previousRoutes.reset();a.nextRoutes.reset();a.uiStaged=false;a.requestClock=ticket->clock;a.phase=Phase::Owners;
   std::shared_ptr<const Ticket> expected=ticket;std::atomic_compare_exchange_strong(&requested,&expected,std::shared_ptr<const Ticket>{});
  }

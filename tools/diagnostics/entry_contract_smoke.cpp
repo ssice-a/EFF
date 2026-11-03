@@ -25,6 +25,16 @@ int main() {
     EiemGlobalConfig defaultConfig;std::istringstream defaultText(kEiemDefaultGlobalConfig);std::string configError;
     Require(EiemParseGlobalConfig(defaultText, &defaultConfig, configError) && defaultConfig.reload.vk == VK_F10,
             "generated configuration disagrees with default reload shortcut");
+    Require(std::string(kEiemDefaultGlobalConfig).find("effects_reload") == std::string::npos,
+            "generated configuration still advertises a separate effects reload shortcut");
+    std::istringstream legacyText("[Hotkeys]\nreload=F10\ngui=INSERT\neffects_reload=F9\n");
+    EiemGlobalConfig legacyConfig;
+    Require(EiemParseGlobalConfig(legacyText,&legacyConfig,configError)&&legacyConfig.reload.vk==VK_F10,
+            "legacy effects_reload setting changed or invalidated the unified F10 binding");
+    AP_HotkeyInfo hotkeys[3]{};
+    Require(AP_GetHotkeys(hotkeys,3)==2&&std::string(hotkeys[0].configKey)=="reload"&&
+            std::string(hotkeys[1].configKey)=="gui",
+            "plugin API still advertises a separate effects hotkey");
     auto mods = root / "plugin/mods";
     Require(DiscoverModRoots().empty()&&InstalledAuthorsMatch({}),"deleted/missing mods directory is not an empty set");
     std::filesystem::create_directories(mods);
