@@ -2,6 +2,8 @@
 #include "eiem_native_view_writer.h"
 #include "eiem_serialized_writer.h"
 #include "eiem_input_span_view.h"
+#include <array>
+#include <atomic>
 #include <list>
 
 // No game objects, author indexes or consumer lists. A source is only the
@@ -29,8 +31,9 @@ class File {
   size_t available_ = 0;
   BY_HANDLE_FILE_INFORMATION stamp_{};
   std::mutex mutex_;
+  bool frozen_ = false;
 public:
-  File(const std::filesystem::path& path, uint64_t offset) : offset_(offset) {
+  File(const std::filesystem::path& path, uint64_t offset, bool immutableAuthor = false) : offset_(offset) {
     handle_ = CreateFileW(path.c_str(), GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -41,11 +44,61 @@ public:
       Require(offset <= size && size - offset <= SIZE_MAX && size <= INT64_MAX,
               "native range source offset differs");
       available_ = size_t(size - offset);
+      if (immutableAuthor) Freeze();
     } catch (...) { if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_); throw; }
   }
   ~File() { if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_); }
   File(const File&) = delete;
   size_t Size() const { return available_; }
+  // A retained handle survives rename/delete, but does not isolate in-place
+  // writes. Only actual author payload demands freeze their backing bytes.
+  // Metadata-only catalog reads and original game ranges stay lazy. The copy
+  // uses bounded scratch memory and is deleted by Windows on close/crash.
+  void Freeze() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (frozen_) return;
+    struct Handles {
+      HANDLE source = INVALID_HANDLE_VALUE, snapshot = INVALID_HANDLE_VALUE;
+      ~Handles() { if (source != INVALID_HANDLE_VALUE) CloseHandle(source);
+                   if (snapshot != INVALID_HANDLE_VALUE) CloseHandle(snapshot); }
+    } held;
+    // Reopen the same file object, not its possibly replaced pathname. Deny
+    // concurrent writers while copying, while allowing atomic replacement.
+    held.source = ReOpenFile(handle_, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
+                             FILE_FLAG_SEQUENTIAL_SCAN);
+    Require(held.source != INVALID_HANDLE_VALUE, "author resource is being written; retry loading after replacement completes");
+    VerifyStable();
+    wchar_t temporary[MAX_PATH + 1]{};
+    auto length = GetTempPathW(MAX_PATH + 1, temporary);
+    Require(length && length <= MAX_PATH, "author snapshot temporary path unavailable");
+    auto directory = std::filesystem::path(temporary) / L"EFF-demand-snapshots";
+    std::error_code error; std::filesystem::create_directories(directory, error);
+    Require(!error, "author snapshot temporary directory unavailable");
+    static std::atomic<uint64_t> serial{0};
+    auto path = directory / (std::to_wstring(GetCurrentProcessId()) + L"-" +
+        std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(serial.fetch_add(1)) + L".snapshot");
+    held.snapshot = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    Require(held.snapshot != INVALID_HANDLE_VALUE, "author resource snapshot creation failed");
+    LARGE_INTEGER position{}; position.QuadPart = LONGLONG(offset_);
+    Require(SetFilePointerEx(held.source, position, nullptr, FILE_BEGIN), "author snapshot source seek failed");
+    std::array<unsigned char, 64 * 1024> scratch{};
+    for (size_t at = 0; at < available_;) {
+      auto count = DWORD(std::min(available_ - at, scratch.size())); DWORD read = 0, written = 0;
+      Require(ReadFile(held.source, scratch.data(), count, &read, nullptr) && read == count,
+              "author snapshot source read truncated");
+      Require(WriteFile(held.snapshot, scratch.data(), count, &written, nullptr) && written == count,
+              "author resource snapshot write failed");
+      at += count;
+    }
+    VerifyStable();
+    BY_HANDLE_FILE_INFORMATION snapshotStamp{};
+    Require(GetFileInformationByHandle(held.snapshot, &snapshotStamp), "author snapshot stamp unavailable");
+    CloseHandle(handle_); handle_ = held.snapshot; held.snapshot = INVALID_HANDLE_VALUE;
+    offset_ = 0; stamp_ = snapshotStamp; frozen_ = true;
+  }
+  size_t SnapshotBytes() const { return frozen_ ? available_ : 0; }
   void ReadAt(size_t at, unsigned char* output, size_t size) {
     Require(at <= available_ && size <= available_ - at, "native file read exceeds observed range");
     std::lock_guard<std::mutex> lock(mutex_);

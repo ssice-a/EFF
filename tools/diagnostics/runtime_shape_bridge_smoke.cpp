@@ -409,8 +409,8 @@ int main(int argc,char** argv) {
       Require(RuntimeShapes::GetEnabled(hidden)&&!RuntimeShapes::ActualEnabled(hidden),"pooled author-hidden Renderer lost its native intent view");
       RuntimeShapes::SetEnabled(hidden,false);Require(!RuntimeShapes::GetEnabled(hidden),"pooled Renderer lost a native disable");
       RuntimeShapes::SetEnabled(hidden,true);RuntimeShapes::RegisterRenderer(hidden,mesh,true);state(1,0);
-      EntryReload::Mutation write{hidden,-1,0,1};EntryReload::Write(write,1);EntryReload::Write(write,0);
-      Require(!RuntimeShapes::ActualEnabled(hidden)&&RuntimeShapes::GetEnabled(hidden),"reload readback/rollback contaminated native intent");
+      state(0,0);state(1,0);
+      Require(!RuntimeShapes::ActualEnabled(hidden)&&RuntimeShapes::GetEnabled(hidden),"visibility readback contaminated native intent");
       Test::renderMeshes[hidden]=(void*)0x73080;
       Require(!RuntimeShapes::GetEnabled(hidden),"stale Mesh binding virtualized an unrelated replacement");Test::renderMeshes[hidden]=mesh;
       bool otherThread=true;std::thread reader([&]{otherThread=RuntimeShapes::GetEnabled(hidden);});reader.join();
@@ -510,7 +510,8 @@ int main(int argc,char** argv) {
         Require(Test::renderEnabled.at(binding.first),"pending model filtered a native enable before baseline capture");
       }
       auto pendingControls=RuntimeControls::Prepare(graph,settings.Get());
-      EntryReload::ApplyControls(pendingControls,Test::KeyDown);
+      RuntimeControls::MergeLive(pendingControls,Test::KeyDown);
+      RuntimeControls::Swap(pendingControls);
       for(const auto& binding:RuntimeShapes::bound)
         Require(Test::renderEnabled.at(binding.first),"controls-only reload contaminated an unfinished model's enabled snapshot");
       // Native code can call the resolved Unity setter directly. Completion

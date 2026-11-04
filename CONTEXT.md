@@ -2,6 +2,10 @@
 
 ## 当前设计权威（2026-10-30）
 
+2026-11-05 07:42 lx 替换闪退：用户确认运行中替换 Mod 后未按 F10，打开 lx 人物页面时闪退。PID 8284 的 Player.log 在 `CAB-7756f57445e1b670571986226b9a02ea` 报 `Position out of bounds` 后由 Unity 主动终止；dump 为 `EXCEPTION_BREAKPOINT`，不是已证明的悬空指针访问。当前 lx 副本的 23 个 Mesh 原生载荷 SHA、作者快照、资源封装/声明及 DDS 校验通过。真实按需载体回归复现：保留文件句柄可以隔离重命名，却无法隔离同一文件的原地覆盖；已发布视图会用旧布局读到新字节。
+
+按需作者输入现仅在 Mesh、贴图骨架/DDS 和特效实际打开时用 64 KiB 工作缓冲复制到自动删除的临时磁盘文件；控制 Mesh 元数据仍只读取描述，首次载荷命中才冻结，并验证描述摘要，不能把旧控制布局应用到新文件。原始游戏范围不复制，未命中的 Mod 载荷不打开。原生载体、特效双代并发、完整 F10、形态桥接及生产 DLL 隔离加载通过；真实 lx 副本的 DDS/骨架/特效覆盖和截断回放通过。现场与验证记录见 [lx 替换闪退诊断](docs/crash-lx-replacement-20261105.md)。此项尚未取得游戏内修复后验收，不能将离线通过写成实机通过。
+
 2026-11-05 03:50 F10 根因设计修正：PID 31196 的 02:38 日志显示旧 owner 和 Prefab cache 已释放，但变更资源 Bundle `BCF637E9F4F0F70E` 仍有 `references=1`，流程等待引用归零后在 `bundle-unload` 失败。引用屏障本身阻止了新 owner 请求。现以每个不可变 Manifest 快照独立的 `GenerationNamespace` 隔离 Prefab root 与所有作者 CAB Bundle 身份；旧代继续由游戏对象/proxy lease 持有，新代可立即按需加载，维持 `preload=0`。添加和删除目标通过旧/新 target 声明差分把源 Bundle 带入新代，删除后由当前 Mod 集恢复原始源输入。回归覆盖相同 CAB/root 的双代身份、旧引用非零仍开始新请求和删除目标恢复；完整 F10 smoke、代际差分 smoke、Format 3 正式构建及 DLL 校验通过。已部署 DLL SHA-256 `D51D286232D778845D6EF456F9F6D83B0EC0FBFA0353321A6423BCA7CF94140A`，回执 `bin/local-deployments/20261105-035049-015/Dll.json`。游戏当前未运行，尚待实机修改/新增/删除 Mod 后按 F10及地图切换验收。以下 02:38 前的 Bundle 退休屏障记录为历史，不代表当前实现。
 
 2026-11-05 F10 新 owner 仍使用旧资源续接：用户确认这一轮后大世界和 UI 都仍显示旧资源，不能把新 root 或 generation commit 当作资源已刷新。PID 33188 的 01:58:42 日志显示 generation 2 修改 Chen，Prefab 根 Bundle `A804871EAFDCB109` 已退休且新 owner 就绪；但 `[DEMAND-F10-BUNDLE-SCOPE]` 明确为 `dependencyBundlesRetired=0`，随后仅根包被卸载，依赖闭包有 58 个 Bundle。根因是只退休 Prefab 根缓存，游戏仍复用已加载的资源 Bundle。`affectedTargets=0` 表示目标声明未变化，不表示资源文件未变化。

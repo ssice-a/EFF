@@ -27,6 +27,7 @@ struct MeshSnapshot {
   std::shared_ptr<R::File> file;
   EiemAuthorResourceFile::Layout envelope;
   D::MeshAsset declaration;
+  std::array<unsigned char,32> metadataDigest{};
 };
 struct Texture {
   D::TextureAsset declaration;
@@ -69,14 +70,14 @@ inline MeshSnapshot ReadMeshMetadata(const std::filesystem::path& root,const D::
     AddSize(described.nativeBytes,described.authorBytes)==layout.payloadBytes,
     "native/editable author Mesh metadata extents differ");
   file->VerifyStable();
-  return {std::move(file),layout,std::move(described)};
+  return {std::move(file),layout,std::move(described),Sha(metadata.data(),metadata.size())};
 }
 inline Bytes AuthorMetadata(const std::shared_ptr<R::File>& file,const EiemAuthorResourceFile::Layout& layout) {
   return EiemAuthorResourceFile::ReadMetadata(layout,[file](size_t at,unsigned char* output,size_t size){file->ReadAt(at,output,size);});
 }
 inline std::shared_ptr<const EiemInputSpanView::View> OpenEffectInput(
     const std::filesystem::path& root,const EiemEffectNative::Bundle& declaration) {
-  auto file=std::make_shared<R::File>(AssetPath(root,declaration.file),0);
+  auto file=std::make_shared<R::File>(AssetPath(root,declaration.file),0,true);
   auto layout=AuthorLayout(file,5);
   Require(layout.payloadBytes==declaration.Size(),"native effect input extent differs");
   auto metadata=EiemAuthorResourceFile::ReadMetadata(layout,
@@ -97,10 +98,15 @@ inline std::shared_ptr<const EiemInputSpanView::View> OpenEffectInput(
 inline std::shared_ptr<const Mesh> OpenMesh(const std::filesystem::path& root,const D::MeshAsset& declaration,
                                             const MeshSnapshot* snapshot=nullptr) {
   auto file=snapshot?snapshot->file:std::make_shared<R::File>(AssetPath(root,declaration.file),0);
-  auto envelope=snapshot?snapshot->envelope:AuthorLayout(file,1);
+  file->Freeze();
+  Bytes metadata;
+  auto envelope=EiemAuthorResourceFile::Parse(file->Size(),
+    [file](size_t at,unsigned char* out,size_t n){file->ReadAt(at,out,n);},&metadata);
   Require(envelope.kind==1,"native author Mesh metadata kind differs");
+  Require(!snapshot||snapshot->metadataDigest==Sha(metadata.data(),metadata.size()),
+    "control-dependent Mesh changed before F10; reload the Mod generation");
   auto described=snapshot?snapshot->declaration:
-      EiemAuthorResourceMetadata::DecodeMesh(AuthorMetadata(file,envelope));
+      EiemAuthorResourceMetadata::DecodeMesh(metadata);
   Require(described.part==declaration.part&&described.nativeBytes>0&&described.authorBytes>0&&
     AddSize(described.nativeBytes,described.authorBytes)==envelope.payloadBytes,
     "native/editable author Mesh payload extents differ");
@@ -120,7 +126,7 @@ inline std::shared_ptr<const Mesh> OpenMesh(const std::filesystem::path& root,co
 inline std::shared_ptr<const Texture> OpenTexture(const std::filesystem::path& root,
     const D::TextureAsset& declaration,
     const EiemRuntimeAuthorManifest::TextureSettings& settings = {}) {
-  auto textureFile=std::make_shared<R::File>(AssetPath(root,declaration.file),0);
+  auto textureFile=std::make_shared<R::File>(AssetPath(root,declaration.file),0,true);
   auto envelope=AuthorLayout(textureFile,3);
   Require(!envelope.metadataBytes&&envelope.payloadBytes,
     "native author Texture must contain a Texture2D scaffold only");
@@ -139,7 +145,7 @@ inline std::shared_ptr<const Texture> OpenTexture(const std::filesystem::path& r
   const auto& asset=names.front();
   Require(asset.classId==28,"native author Texture asset is not Texture2D");
 
-  auto dds=std::make_shared<R::File>(AssetPath(root,declaration.ddsFile),0);
+  auto dds=std::make_shared<R::File>(AssetPath(root,declaration.ddsFile),0,true);
   Bytes ddsHeader(std::min(dds->Size(),size_t(148)));dds->ReadAt(0,ddsHeader.data(),ddsHeader.size());
   auto ddsLayout=EiemDdsTexture::Parse(ddsHeader,dds->Size());
   Require(ddsLayout.bytes<=INT_MAX&&asset.cab==member.name,

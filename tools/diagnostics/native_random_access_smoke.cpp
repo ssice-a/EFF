@@ -353,7 +353,32 @@ void PreloadIntervals() {
   Rejected([&]{ExpandNativePreloads(type,bundle,layout,f.cab,{{anchor,{{"",1}}}},referenced);});
   std::cout<<"PASS native preload intervals: cross-CAB references, overlapping/nested/empty ranges, repeated anchors, minimal closure and idempotent replay\n";
 }
+void RetainedEffectSnapshot() {
+  namespace A=EiemDemandAuthorResources;namespace F=EiemAuthorResourceFile;namespace M=EiemAuthorResourceMetadata;
+  auto folder=std::filesystem::temp_directory_path()/("eff-effect-snapshot-"+std::to_string(GetCurrentProcessId()));
+  Require(!std::filesystem::exists(folder),"effect snapshot fixture exists");std::filesystem::create_directory(folder);
+  struct Cleanup{std::filesystem::path root;~Cleanup(){std::error_code ignored;std::filesystem::remove_all(root,ignored);}}cleanup{folder};
+  auto path=folder/"effect.effres";
+  auto publish=[&](const Bytes& native){EiemEffectNative::Bundle declaration;declaration.file="effect.effres";declaration.size=native.size();
+    auto digest=Sha(native.data(),native.size());declaration.hash=Hex(digest.data(),digest.size());
+    EiemResourceReloadPlan::Save(path,F::Encode(5,M::EncodeEffect("ResourceEffect",declaration.file,declaration.hash,native.size()),native));return declaration;};
+  auto original=Bundle(Bytes(4096,17),"CAB-original"),replacement=Bundle(Bytes(6144,51),"CAB-replacement");
+  auto declaration=publish(original);auto first=A::OpenEffectInput(folder,declaration);
+  auto nextDeclaration=publish(replacement);
+  Require(Materialize(first)==original,"in-place Effect replacement changed a published native archive");
+  auto second=A::OpenEffectInput(folder,nextDeclaration);Require(Materialize(second)==replacement,"new Effect generation missed replacement");
+  EiemResourceReloadPlan::Save(path,{});
+  std::atomic<bool> correct{true};std::vector<std::thread> readers;
+  for(size_t i=0;i<4;++i)readers.emplace_back([&,i]{try{const auto& expected=i&1?replacement:original;
+    EiemInputSpanView::Cursor cursor(i&1?second:first);Bytes bytes(63);
+    for(size_t at=0;at+bytes.size()<expected.size();at+=97){cursor.Seek(int64_t(at),0);
+      if(cursor.Read(bytes.data(),bytes.size())!=bytes.size()||!std::equal(bytes.begin(),bytes.end(),expected.begin()+at))correct=false;}
+  }catch(...){correct=false;}});
+  for(auto& reader:readers)reader.join();Require(correct,"truncated author file changed concurrent old/new native Effect streams");
+  std::cout<<"PASS Effect overwrite: growing replacement and truncation, old/new native archives byte-exact through four concurrent cursors\n";
+}
 void NativeCatalogAssembly() {
+  RetainedEffectSnapshot();
   namespace D=EiemRuntimeAuthorDirectory;namespace N=EiemDemandNativeAssembly;
   namespace M=EiemAuthorResourceMetadata;namespace F=EiemAuthorResourceFile;
   auto folder=std::filesystem::temp_directory_path()/("eff-native-catalog-"+std::to_string(GetCurrentProcessId()));
@@ -421,6 +446,37 @@ void NativeCatalogAssembly() {
       const auto& type=after.types.at(after.objects.at(part.renderer).type);auto value=ObjectValue(actual.members[0].bytes,after,part.renderer);const auto& materials=ConstArray(type,Child(type,value,"m_Materials"));
       Require(NullableReference(type,materials.children[0],after,fixture.cab).second==(part.sourceRenderer==13?200:201),"source-material mode reused another renderer's Material: source="+std::to_string(part.sourceRenderer)+" renderer="+std::to_string(part.renderer)+" material="+std::to_string(NullableReference(type,materials.children[0],after,fixture.cab).second));}
     Require(shared.size()==count,"native carrier generated duplicate resources per consumer");
+    if(count==1){
+      // The game can deserialize a prepared carrier again when its UI model
+      // is reopened, before F10. Explorer-style overwrites must not alter its
+      // deferred author spans, even when the replacement has the same size.
+      auto pinnedView=single.Bind(read);auto before=Materialize(pinnedView);
+      const auto path=folder/std::filesystem::u8path(directory.meshes.front().file);
+      auto original=EiemDirectory::Read(path);auto replacementMesh=directory.meshes.front();
+      auto metadataOnly=EiemDemandAuthorResources::ReadMeshMetadata(folder,replacementMesh,replacementMesh.part);
+      Require(!metadataOnly.file->SnapshotBytes(),"control metadata eagerly copied Mesh payload");
+      auto value=fixture.V(100);SetString(mt,Child(mt,value,"m_Name"),replacementMesh.marker);
+      Child(mt,value,"m_VertexData").raw.assign(1024*1024+37,0x5a);
+      auto asset=EiemAuthorMeshBundle::Isolate(raw,fixture.cab,100,replacementMesh.path,value,std::string(64,'f'));
+      replacementMesh.nativeBytes=asset.bytes.size();auto digest=Sha(asset.bytes.data(),asset.bytes.size());replacementMesh.hash=Hex(digest.data(),digest.size());
+      Bytes editable{'E','F','F','M','E','S','H',0,6,0,0,0};auto payload=asset.bytes;payload.insert(payload.end(),editable.begin(),editable.end());
+      auto replacement=F::Encode(1,M::EncodeMesh(replacementMesh),payload);
+      Require(replacement.size()==original.size(),"valid overwrite fixture does not preserve file size");
+      EiemResourceReloadPlan::Save(path,replacement);
+      Require(Materialize(pinnedView)==before,"in-place Mod overwrite changed a published native carrier before F10");
+      Rejected([&]{EiemDemandAuthorResources::OpenMesh(folder,replacementMesh,&metadataOnly);});
+      auto nextCatalog=std::make_shared<EiemDemandAuthorResources::Catalog>(folder);N::Author nextAuthor(nextCatalog);
+      R::Reader nextCurrent(source->size(),read);auto nextCarrier=N::PrepareCarrier(nextCurrent,0,nextCurrent.Layout(nextCurrent.directory.members[0]),nextAuthor,targets);
+      auto nextView=S::BuildRanges(nextCurrent,{nextCarrier.plan.rewrite}).Bind(read);
+      Require(Materialize(nextView)!=Materialize(view),"new author generation did not observe replacement Mesh");
+      auto nextNative=EndfieldInput::Decode(Materialize(nextView));auto nextLayout=ParseSerialized(nextNative.members.front().bytes);
+      auto nextValue=ObjectValue(nextNative.members.front().bytes,nextLayout,100);
+      Require(Child(nextLayout.types.at(nextLayout.objects.at(100).type),nextValue,"m_VertexData").raw==Bytes(1024*1024+37,0x5a),
+        "new Mesh generation did not deserialize the replacement vertex field");
+      Require(!nextCatalog->OpenTextures()&&nextCatalog->OpenMeshes()==1,"Mesh overwrite opened unrelated resources");
+      EiemResourceReloadPlan::Save(path,original);
+      std::cout<<"PASS live author overwrite: valid same-size replacement, immutable old Mesh stream, changed metadata refused, new generation reads replacement, unhit resources unopened\n";
+    }
     if(count){
       EiemNativeEditTransaction::Member variants(current,0,layout);auto variantCarrier=N::StageCarrier(variants,current,0,author,targets);
       auto materialType=layout.objects.at(200).type;auto variant200=EncodeValue(layout.types.at(materialType),variants.Object(200));

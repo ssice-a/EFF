@@ -164,6 +164,7 @@ try {
     Invoke-BuiltSmoke 'tools\diagnostics\build_full_resource_reload_smoke.cmd' 'bin/resource-directory-entry-v35/full_resource_reload_smoke.exe'
     Invoke-Checked 'cmd.exe' @('/d', '/c', 'tools\diagnostics\build_demand_generation_diff_smoke.cmd') 'Demand generation diff regression build and run'
     Invoke-Checked 'cmd.exe' @('/d', '/c', 'tools\diagnostics\build_demand_resource_regressions.cmd') 'Demand resource regression build'
+    Invoke-Checked 'cmd.exe' @('/d', '/c', 'tools\diagnostics\build_native_random_access_smoke.cmd') 'Demand native stream and live author replacement regressions'
     Invoke-BuiltSmoke 'tools\diagnostics\build_runtime_shape_bridge_smoke.cmd' 'bin/resource-directory-entry/runtime_shape_bridge_smoke.exe'
     Invoke-BuiltSmoke 'tools\diagnostics\build_production_dll_load_smoke.cmd' 'bin/production-dll-load/production_dll_load_smoke.exe' @((Resolve-Path 'bin/resource-directory-entry-format3/eff.dll').Path, "$env:WINDIR\System32")
     Invoke-BuiltSmoke 'tools\diagnostics\build_compiled_mod_set_smoke.cmd' 'bin/compiled-mod-set/compiled_mod_set_smoke.exe'
