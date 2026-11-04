@@ -101,7 +101,7 @@ try {
 
     Invoke-Checked 'cmd.exe' @('/d', '/c', 'build.bat') 'Production Format 3 DLL and proxy build'
 
-    $pythonVersion = (& python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")').Trim()
+    $pythonVersion = (& python -c 'import sys; print(str(sys.version_info.major) + chr(46) + str(sys.version_info.minor))' | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $pythonVersion -ne '3.11') { throw "Release tool packaging requires Python 3.11; found $pythonVersion" }
     Invoke-Checked 'python' @('-m', 'pip', 'install', '--disable-pip-version-check', 'PyInstaller==6.21.0', 'Pillow==12.3.0', 'numpy==2.3.5') 'Pinned migration packager dependencies'
 
