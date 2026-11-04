@@ -261,7 +261,9 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
                     ("Increase", control["hotkey_increase"], control["maximum"], "Increase"),
                     ("Decrease", control["hotkey_decrease"], control["minimum"], "Decrease")):
                     if chord:
-                        bindings.append(("KeyShape" + _identifier(control["identity"]) + suffix,
+                        binding_key = "\0".join((token, control["identity"], variable))
+                        binding_id = hashlib.sha256(binding_key.encode("utf-8")).hexdigest()[:16]
+                        bindings.append(("KeyShape" + binding_id + suffix,
                                          variable, "hold", *_key_chord(chord),
                                          float(control["hotkey_speed"]), control["label"],
                                          [float(target)]))

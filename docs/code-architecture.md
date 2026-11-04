@@ -1,8 +1,10 @@
 # DLL architecture
 
-> This document describes the current legacy compiled-set runtime. The accepted replacement design is [ADR-0001](adr/0001-authoritative-mod-directory.md), with implementation status tracked in [the demand-driven design](demand-driven-native-resource-loading.md). Keep this document as migration and behavior evidence until the new DLL path is complete.
+The production DLL accepts Format 3 Mods. Startup and F10 parse `mod.ini` declarations and resource metadata, then create an immutable author generation. Mesh, Material, Texture, Physics, control-state and Effect payloads are opened only when a matching game request needs them. F10 compares declared-file metadata and target declarations, publishes the new generation on the Unity frame, and rebuilds affected live game owners through the game's ModelPart/UIModelLoader lifecycle. It does not read `compiled.bin`, run the legacy compiled-set pipeline, preload all Mod payloads, or enumerate consumer PFBs.
 
-2026-10-28 development direction: [demand-driven native resource loading](demand-driven-native-resource-loading.md) moves Mesh-consumer discovery out of offline PFB compilation, follows actual game requests, and shares native author resources across consumers. A bounded random-access reader and creation-before observation DLL are implemented and locally tested; the second observation DLL trace on 2026-10-28 confirmed creation-before routing for world, NPC and UI inputs (61 inspected inputs, 145 exact Renderer references, 88.623 ms aggregate inspection). A splice-view foundation passes byte-level differential tests but is not wired to native submission. Candidate Asset detail logging needs a separate bounded allowance. A separate single-Mesh native-input acceptance build is now wired and locally verified for chen body/world/UI input bytes; real replacement, native sharing and metadata behavior still await a game run. Full migration is not implemented; the production path described below remains the comparison baseline. Old-package migration belongs to Mod Manager; the new runtime will read only the new format.
+The current Format 3 implementation is in `eiem_entry_demand_loading_probe.h`, `eiem_demand_author_resources.h`, `eiem_demand_generation_diff.h` and `eiem_entry_demand_generation_reload.h`. `eiem_entry_full_resource_reload.h` still supplies the exact game lifecycle hooks, typed IL2CPP bindings and owner records used to request game-owned rebuilds; its compiled-set preparation and `PollOffline` transaction are not part of the Format 3 F10 path. Old-format conversion remains a Mod Manager responsibility.
+
+Historical compiled-set descriptions and evidence below are retained for migration context. They do not describe the current startup or F10 author-resource path.
 
 The production translation unit is `src/eiem_resource_entry.cpp`. The retired
 `eiem.cpp`, base-resource setter backend, render executor and restore ledger are
@@ -67,8 +69,11 @@ Blender compiles each Mod independently before publication. Startup and F10 read
 Startup loads the latest complete manifest and its loading table, validates the
 field structures and source/output hashes, then submits substituted inputs along
 the game's own loading path. Startup files keep original Bundle/CAB names.
-Hot reload loads a separately named generation and verifies its complete
-closure before mutation. Disk publication and runtime commit are distinct.
+Hot reload prepares a separately named generation off-thread. On the Unity
+thread, it opens only the isolated Bundle dependency closure for roots already
+observed by the game and verifies those roots before mutation. Unobserved roots
+do not trigger native Bundle or Asset loads; a later game request prepares that
+root's closure on demand. Disk publication and runtime commit are distinct.
 F10 (the current source default) commits additions, removals and edits together.
 Watchers only prepare disk generations. All baseline roots enter the candidate,
 so removal restores pristine resources, including an empty set. Game model load

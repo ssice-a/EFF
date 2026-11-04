@@ -345,7 +345,7 @@ def _prepare_textures(package, sources, texconv):
                 encoded_result = compress_rgba(
                     pixels[:width * height * 4], width, height,
                     mip_count > 1, source_format,
-                    color_space, texconv, flip_y=True)
+                    color_space, texconv, flip_y=False)
                 require(encoded_result["mipCount"] == mip_count,
                         "compressed Texture mip count differs from AnimeStudio source")
                 target_format = encoded_result["format"]

@@ -1,12 +1,36 @@
 #include "../../src/eiem_author_resource_metadata.h"
 #include "../../src/eiem_author_resource_file.h"
+#include <fstream>
 #include <iostream>
 
 using namespace EiemDirectory;
 namespace M=EiemAuthorResourceMetadata;
 namespace D=EiemRuntimeAuthorDirectory;
 
-int main(){try{
+static Bytes LegacyDuplicateShapeBindings(bool conflict){
+  auto w=M::Start(6);w.N(1);w.N(2);w.S("$shape_mesh0");w.D(0);w.S("$shape_mesh1");w.D(0);
+  w.N(0);w.N(0);w.N(2);
+  auto binding=[&](const char* variable,unsigned key){w.S("KeyShape9fbd721b8bdb4c82Increase");w.S(variable);w.S("hold");w.N(key);w.N(0);w.D(1);w.S("Vagina Open");w.N(1);w.D(1);};
+  binding("$shape_mesh0",38);binding("$shape_mesh1",conflict?39:38);
+  w.N(0);w.N(0);w.N(0);w.N(0);w.N(0);return std::move(w.b);
+}
+
+int main(int argc,char** argv){try{
+  if(argc==2){
+    std::ifstream input(argv[1],std::ios::binary);Require(bool(input),"cannot open controls resource");
+    Bytes bytes((std::istreambuf_iterator<char>(input)),std::istreambuf_iterator<char>());
+    auto read=[&](size_t at,unsigned char* output,size_t size){
+      Require(at<=bytes.size()&&size<=bytes.size()-at,"controls read exceeds file");
+      if(size)memcpy(output,bytes.data()+at,size);
+    };
+    auto layout=EiemAuthorResourceFile::Parse(bytes.size(),read);Require(layout.kind==6,"resource is not Controls");
+    auto controls=M::DecodeControls(EiemAuthorResourceFile::ReadMetadata(layout,read));
+    std::cout<<"PASS controls bindings="<<controls.bindings.size()<<" defaults="<<controls.defaults.size()<<'\n';
+    for(const auto& binding:controls.bindings)std::cout<<binding.id<<" variable="<<binding.variable<<
+      " vk="<<binding.key.vk<<" modifiers="<<binding.key.modifiers<<" speed="<<binding.speed<<
+      " values="<<binding.values.size()<<" type="<<binding.type<<'\n';
+    return 0;
+  }
   D::MeshAsset mesh;mesh.part="PartBody";mesh.file="meshes/body.mesh";mesh.path="assets/body.mesh";
   mesh.marker="Body";mesh.hash=std::string(64,'A');mesh.material="MaterialBody";mesh.vertices=3;mesh.indices=3;
   mesh.fields={"m_IndexBuffer","m_Name","m_VertexData"};
@@ -75,6 +99,15 @@ int main(){try{
   EiemAuthorControlMetadata::State controls;
   auto controlsRoundtrip=M::DecodeControls(M::EncodeControls(controls));
   Require(controlsRoundtrip.defaults.empty(),"controls metadata roundtrip differs");
+  auto legacyControls=M::DecodeControls(LegacyDuplicateShapeBindings(false));
+  Require(legacyControls.bindings.size()==2&&legacyControls.bindings[0].id!=legacyControls.bindings[1].id&&
+      legacyControls.bindings[0].variable=="$shape_mesh0"&&legacyControls.bindings[1].variable=="$shape_mesh1"&&
+      legacyControls.bindings[0].key.vk==legacyControls.bindings[1].key.vk&&
+      legacyControls.bindings[0].values==legacyControls.bindings[1].values,
+    "legacy shared-shape key bindings were not normalized without changing behavior");
+  bool conflictingLegacyRejected=false;try{M::DecodeControls(LegacyDuplicateShapeBindings(true));}
+    catch(const std::runtime_error&){conflictingLegacyRejected=true;}
+  Require(conflictingLegacyRejected,"legacy duplicate binding ID with conflicting key semantics was accepted");
   std::string effectAuthorHash(64,'F');
   auto effectAuthor=M::DecodeEffectAuthor(M::EncodeEffectAuthor(
     "ResourceEffectAuthor_Test","effects/author/test.effres",256,effectAuthorHash));

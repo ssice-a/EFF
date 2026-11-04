@@ -1,4 +1,5 @@
 #pragma once
+#include "eiem_demand_generation_diff.h"
 #include "eiem_runtime_author_directory.h"
 #include "eiem_runtime_author_manifest.h"
 #include "eiem_dds_texture.h"
@@ -351,6 +352,20 @@ public:
   }
   const D::Directory& Directory()const{return directory_;}
   const std::filesystem::path& Root()const{return root_;}
+  std::map<std::string,std::string> FileFingerprints()const {
+    std::map<std::string,std::string> result;
+    auto add=[&](const std::string& relative){
+      if(relative.empty())return;
+      auto path=AssetPath(root_,relative);
+      result.emplace(relative,EiemDemandGenerationDiff::FileFingerprint(path));
+    };
+    add("mod.ini");
+    for(const auto& row:manifest_.resources){
+      add(row.second.path);
+      add(row.second.dds);
+    }
+    return result;
+  }
   void BindEffects(Package& package)const {
     for(auto& row:package.effects){auto manifest=std::make_shared<EiemEffectNative::Manifest>(*row.second.native);
       for(auto& input:manifest->bundles){auto root=root_;auto declaration=input;

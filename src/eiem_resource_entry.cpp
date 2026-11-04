@@ -180,6 +180,7 @@ std::atomic<uint64_t> reloadClock{0};
 std::atomic<unsigned> generation{0};
 EiemEntrySettings settings;
 void CommitPendingReload();
+namespace DemandGenerationReload {void Prepare();void Frame();}
 namespace ReloadObservation {
 uint64_t Clock();
 void Asset(void*,void*,void*,uint64_t);
@@ -199,7 +200,6 @@ void Frame(int);
 namespace RuntimeAttachments {
 void CommitResourceGeneration(
     const std::shared_ptr<const DemandLoadingProbe::InstalledGeneration>&) noexcept;
-void PrepareStandaloneOnlyReload();
 }
 #if defined(EIEM_PREFAB_ADAPTATION_PROBE)
 namespace PrefabAdaptationProbe {
@@ -1220,34 +1220,16 @@ void CompleteRuleInput(void* request,void* bundle){NativeBundle::CompleteMemory(
 #include "eiem_entry_material_animation.h"
 #include "eiem_standalone_effect_mods.h"
 #include "eiem_entry_effect_attachments.h"
+#include "eiem_entry_demand_generation_reload.h"
 #include "eiem_entry_reload.h"
 
 void ProcessReloadRequests() {
-#if defined(EIEM_DEMAND_LOADING_PROBE)
-#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
   DemandLoadingProbe::Watchdog();
   if(reload.exchange(false)){
-    if(FullResourceReload::configured&&FullResourceReload::enabled){
-      auto roots=DiscoverModRoots();bool standaloneOnly=std::all_of(roots.begin(),roots.end(),[](const auto& root){return EiemCompiledModSet::StandaloneEffectRoot(root);});
-      FullResourceReload::Prepare();
-      if(standaloneOnly)RuntimeAttachments::PrepareStandaloneOnlyReload();
-    }else Log("[FULL-RELOAD-REJECT] phase=trigger reason=requiredNativeBindingsUnavailable configurationFallbackRefused=1");
+    if(FullResourceReload::enabled&&DemandLoadingProbe::enabled.load())
+      DemandGenerationReload::Prepare();
+    else Log("[DEMAND-F10-REJECT] phase=trigger reason=format3DemandRuntimeUnavailable previousGenerationRetained=1");
   }
-  if(FullResourceReload::configured)FullResourceReload::PollOffline();
-#else
-  if(reload.exchange(false))Log("[DEMAND-PROBE-TEST] reloadRequested=1 compiledBackendDisabled=1 replacementApplied=0");
-#endif
-#elif defined(EIEM_MESH_TARGET_PROBE)
-  if(reload.exchange(false))Log("[MESH-TARGET-TEST] reloadRequested=1 compiledBackendDisabled=1 replacementApplied=0");
-#else
-  if (reload.exchange(false)) {
-    if(FullResourceReload::configured) {
-      if(FullResourceReload::enabled) {auto current=std::atomic_load(&published);if(current&&current->empty()&&DiscoverModRoots().empty())EntryReload::Prepare();else FullResourceReload::Prepare();RuntimeAttachments::PrepareDiskReload(false);}
-      else Log("[FULL-RELOAD-REJECT] phase=trigger reason=requiredNativeBindingsUnavailable configurationFallbackRefused=1");
-    } else {Log("[FULL-RELOAD-REJECT] phase=trigger reason=nativeReloadNotConfigured");}
-  }
-  if(FullResourceReload::configured) FullResourceReload::PollOffline();
-#endif
 }
 
 void InstallHooks(void **assemblies, size_t count) {

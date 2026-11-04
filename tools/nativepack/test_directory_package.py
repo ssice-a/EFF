@@ -103,6 +103,65 @@ def fixture():
 
 
 class DirectoryTests(unittest.TestCase):
+    def test_shared_shape_identity_keeps_each_mesh_binding_with_unique_id(self):
+        from nativepack import author_format3
+
+        control = dict(shape="VaginaOpen", identity="9fbd721b8bdb4c82", enabled=True,
+                       label="Vagina Open", default=0.0, minimum=0.0, maximum=1.0,
+                       hotkey_increase="UP", hotkey_decrease="", hotkey_speed=1.0)
+        parts = [dict(partId="BodyMat0", object="MeshBodyMat0",
+                      visibilityExpression=("number", 1.0, "", None, None),
+                      shapeControls=[dict(control, shape="VaginaOpen_mat0")]),
+                 dict(partId="BodyMat1", object="MeshBodyMat1",
+                      visibilityExpression=("number", 1.0, "", None, None),
+                      shapeControls=[dict(control, shape="VaginaOpen_mat1")])]
+        encoded, _ = author_format3._controls_resource("SharedShape", parts, [], [], [])
+        header = author_format3.HEADER.unpack_from(encoded)
+        metadata = memoryview(encoded)[author_format3.HEADER.size:
+                                       author_format3.HEADER.size + header[3]]
+        offset = 0
+
+        def integer():
+            nonlocal offset
+            value = struct.unpack_from("<Q", metadata, offset)[0]
+            offset += 8
+            return value
+
+        def string():
+            nonlocal offset
+            size = integer()
+            value = bytes(metadata[offset:offset + size]).decode("utf-8")
+            offset += size
+            return value
+
+        self.assertEqual(string(), "EFF_AUTHOR_RESOURCE_METADATA/3")
+        self.assertEqual(integer(), 6)
+        integer()  # key switch enabled
+        for _ in range(integer()):
+            string(); offset += 8  # default value
+        for _ in range(integer()):
+            string()
+        for _ in range(integer()):
+            string(); string(); offset += 16  # control domain
+
+        bindings = []
+        for _ in range(integer()):
+            identity, variable, kind = string(), string(), string()
+            vk, modifiers = integer(), integer()
+            offset += 8  # speed
+            label = string()
+            values = [struct.unpack_from("<d", metadata, offset + index * 8)[0]
+                      for index in range(integer())]
+            offset += len(values) * 8
+            bindings.append((identity, variable, kind, vk, modifiers, label, values))
+
+        shape_bindings = [binding for binding in bindings if binding[2] == "hold"]
+        self.assertEqual(len(shape_bindings), 2)
+        self.assertEqual(len({binding[0] for binding in shape_bindings}), 2)
+        self.assertEqual(len({binding[1] for binding in shape_bindings}), 2)
+        self.assertEqual({binding[3] for binding in shape_bindings}, {0x26})
+        self.assertEqual({binding[4] for binding in shape_bindings}, {0})
+
     def test_format3_material_validator_accepts_package_source_paths(self):
         from nativepack.author_format3 import _validate_material_resource, encode_material_resource
 

@@ -1,4 +1,17 @@
-# EFF v2.0.6
+# EFF v2.0.7
+
+配套 EFF Blender 0.50.4（continuous 通道）、EFF Mod Manager v0.2.3、AnimeStudio v1.9.2；Windows x64。运行时仍只接受 Format 3。
+
+- 修复 F10 后仍引用旧资源及角色消失的问题：按资源代际更新路由，补齐同步加载入口和已发布依赖图的就绪查询。
+- 修复作者材质/贴图错误继承 Prefab 原生依赖；继续只准备游戏实际命中的替换资源，不批量预载整个 Mod。
+- Blender 单材质导入同时支持 EFFSOURCE `.mat` 与 Format 3 `.effres`，分别绑定解包图片与 Mod DDS；修复 Mod 材质再次导出的原生来源选择。
+- 改进 Manager 的 Mod 列表刷新、打开目录、更新缓存和安装暂存位置；大体积缓存使用非系统盘资源位置。
+- AnimeStudio 构建支持独立输出目录；四端产物在本地构建、验证后上传，发布过程不重复触发云端构建。
+- 增加资源代际、同步原生加载、材质导入/DDS 回读及发布包内容回归。F10 已由用户实机确认恢复；任意物理或特效结构变更仍需分别验证。
+
+共享工具包：`EFF_Shared_Native_Tools_v2.0.7.zip`。Blender 通过插件更新检查获取 continuous 产物；Mod 材质再次导出需要对应的 EFFSOURCE 基线。
+
+## EFF v2.0.6
 
 配套 EFF Blender v0.50.3、EFF Mod Manager v0.2.2、AnimeStudio v1.9.1；Windows x64。运行时仍只接受 Format 3。
 

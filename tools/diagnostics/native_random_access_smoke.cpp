@@ -206,6 +206,9 @@ void SerializedPlanDifferential() {
   RejectRead([&]{P::Build(reader,0,native,{},{},{999});},"object plan absent deletion");
   auto wrong=native;++wrong.objects.at(10).size;RejectRead([&]{P::Build(reader,0,wrong,{{10,owned}});},"object plan stale source extent");
   auto noChange=P::Build(reader,0,native,{});Require(noChange.changedBytes==0&&noChange.retainedBytes==raw.size(),"empty object plan did work");
+  auto passthrough=S::BuildRanges(reader,{}).Bind(read);Bytes passthroughBytes(passthrough->Size());
+  Require(passthrough->ReadAt(0,passthroughBytes.data(),passthroughBytes.size())==passthroughBytes.size()&&
+          passthroughBytes==*source,"no-op native input view did not preserve the original Bundle bytes");
   std::set<int64_t> all(native.order.begin(),native.order.end());auto empty=P::Build(reader,0,native,{},{},all);
   auto emptyInput=EndfieldInput::Decode(Materialize(S::BuildRanges(reader,{empty.rewrite}).Bind(read)));
   Require(ParseSerialized(emptyInput.members[0].bytes).objects.empty(),"object plan failed zero-object output");

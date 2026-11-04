@@ -7,11 +7,35 @@
 // game's dependency lists, BundleProxy and unload machinery own live objects.
 namespace EiemDemandSharedGraph {
 using EiemNativeInput::Require;
+using PreparedRootViews = std::map<uint64_t,
+    std::shared_ptr<const EiemInputSpanView::View>>;
+
+inline bool ReusePreparedRootView(PreparedRootViews& group,uint64_t token,
+    bool ready,bool blocked,
+    const std::shared_ptr<const EiemInputSpanView::View>& view) {
+  if(!ready)return false;
+  Require(!blocked,"cached native root preparation failed");
+  Require(token&&view,"cached native root has no prepared generation view");
+  auto inserted=group.emplace(token,view);
+  Require(inserted.second||inserted.first->second==view,
+      "native root token resolved to different views in one dependency group");
+  return true;
+}
+
+inline std::shared_ptr<const EiemInputSpanView::View> RequirePreparedRootView(
+    const PreparedRootViews& group,uint64_t token) {
+  auto found=group.find(token);
+  Require(found!=group.end()&&found->second,
+      "versioned source Bundle has no prepared generation view");
+  return found->second;
+}
+
 struct Input {
   uint64_t key=0,categorySource=0;
   std::string name,cab;
   std::shared_ptr<const EiemInputSpanView::View> view;
   std::vector<uint64_t> dependencies;
+  bool versionedRoot=false;
 };
 class Graph {
   mutable std::mutex mutex_;
@@ -44,7 +68,7 @@ public:
     // Keep the first native scheduling category; the consuming PFB is not
     // part of the immutable resource identity.
     auto same=[](const Input& left,const Input& right){return left.name==right.name&&left.cab==right.cab&&
-      left.view==right.view&&left.dependencies==right.dependencies;};
+      left.view==right.view&&left.dependencies==right.dependencies&&left.versionedRoot==right.versionedRoot;};
     for(const auto& input:inputs){Require(input.key&&input.categorySource&&!input.name.empty()&&!input.cab.empty()&&input.view,
         "shared native input declaration incomplete");
       auto prior=inputs_.find(input.key);if(prior!=inputs_.end())Require(same(prior->second,input),"shared native input key collision");

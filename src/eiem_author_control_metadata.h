@@ -19,6 +19,29 @@ struct State {
   std::map<std::string,EffectAttachment> effects;
   bool keySwitchEnabled=true;
 };
+inline bool LegacyShapeBindingId(const std::string& id){
+  constexpr size_t prefix=8,digest=16;
+  const bool increase=id.size()==prefix+digest+8&&id.compare(0,prefix,"KeyShape")==0&&id.compare(prefix+digest,8,"Increase")==0;
+  const bool decrease=id.size()==prefix+digest+8&&id.compare(0,prefix,"KeyShape")==0&&id.compare(prefix+digest,8,"Decrease")==0;
+  if(!increase&&!decrease)return false;
+  for(size_t i=prefix;i<prefix+digest;++i){const auto c=id[i];if(!((c>='0'&&c<='9')||(c>='a'&&c<='f')))return false;}
+  return true;
+}
+inline void NormalizeLegacyShapeBindingIds(State& s){
+  std::map<std::string,std::vector<size_t>> duplicateIds;
+  for(size_t i=0;i<s.bindings.size();++i)duplicateIds[s.bindings[i].id].push_back(i);
+  for(const auto& group:duplicateIds){
+    if(group.second.size()<2||!LegacyShapeBindingId(group.first))continue;
+    const auto& first=s.bindings[group.second.front()];std::set<std::string> variables;bool compatible=true;
+    for(auto index:group.second){const auto& b=s.bindings[index];
+      compatible=compatible&&!b.variable.empty()&&variables.insert(b.variable).second&&
+        b.type==first.type&&b.key==first.key&&b.speed==first.speed&&b.label==first.label&&b.values==first.values;
+    }
+    if(!compatible)continue;
+    for(auto index:group.second){auto& b=s.bindings[index];auto digest=Sha(reinterpret_cast<const unsigned char*>(b.variable.data()),b.variable.size());
+      b.id=group.first+"_"+Hex(digest.data(),digest.size());}
+  }
+}
 inline State Capture(const Package& p){
   State s;s.defaults=p.defaults;s.persistent=p.persistent;s.controls=p.controls;s.bindings=p.bindings;
   s.animations=p.shapeAnimations;s.materialAnimations=p.materialAnimationIds;s.materialTracks=p.materialTracks;s.effects=p.effects;s.keySwitchEnabled=p.keySwitchEnabled;
@@ -36,7 +59,14 @@ inline void Validate(const State& s){
   for(const auto& name:s.persistent)Require(s.defaults.count(name),"author persistent variable absent");
   for(const auto& row:s.controls){const auto& c=row.second;Require(s.defaults.count(row.first)&&std::isfinite(c.minimum)&&std::isfinite(c.maximum)&&c.minimum<=c.maximum&&s.defaults.at(row.first)>=c.minimum&&s.defaults.at(row.first)<=c.maximum,"author control domain differs");}
   std::set<std::string> keys;
-  for(const auto& b:s.bindings){Require(!b.id.empty()&&keys.insert(b.id).second&&s.defaults.count(b.variable)&&b.key.vk&&b.key.vk<=255&&!(b.key.modifiers&~(MOD_SHIFT|MOD_ALT|MOD_CONTROL))&&std::isfinite(b.speed)&&b.speed>0&&!b.values.empty()&&(b.type=="cycle"||b.type=="press"||b.type=="hold"),"author key binding differs");
+  for(const auto& b:s.bindings){const bool unique=keys.insert(b.id).second;
+    const bool valid=!b.id.empty()&&unique&&s.defaults.count(b.variable)&&b.key.vk&&b.key.vk<=255&&
+      !(b.key.modifiers&~(MOD_SHIFT|MOD_ALT|MOD_CONTROL))&&std::isfinite(b.speed)&&b.speed>0&&
+      !b.values.empty()&&(b.type=="cycle"||b.type=="press"||b.type=="hold");
+    if(!valid)throw std::runtime_error("author key binding differs: id="+b.id+" variable="+b.variable+
+      " declared="+std::to_string(s.defaults.count(b.variable))+" unique="+std::to_string(unique)+
+      " vk="+std::to_string(b.key.vk)+" modifiers="+std::to_string(b.key.modifiers)+
+      " speed="+std::to_string(b.speed)+" values="+std::to_string(b.values.size())+" type="+b.type);
     for(auto value:b.values)Require(std::isfinite(value),"author key value nonfinite");}
   for(const auto& row:s.parts){std::string error;Require(!row.first.empty()&&row.second.visible,"author Part visibility absent");
     std::map<const EiemExpression*,unsigned char> seen;std::vector<std::pair<const EiemExpression*,bool>> pending{{row.second.visible.get(),false}};
@@ -75,6 +105,7 @@ template<class R>State Read(R& r){
   auto set=[&](auto& values){for(auto name:r.Strings())Require(values.insert(std::move(name)).second,"duplicate author control set entry");};set(s.persistent);
   n=r.Count();for(size_t i=0;i<n;++i){auto name=r.S();Control c;c.label=r.S();c.minimum=r.D();c.maximum=r.D();Require(s.controls.emplace(name,std::move(c)).second,"duplicate author control");}
   n=r.Count();for(size_t i=0;i<n;++i){Binding b;b.id=r.S();b.variable=r.S();b.type=r.S();b.key.vk=r.U();b.key.modifiers=r.U();b.speed=r.D();b.label=r.S();auto count=r.Count();for(size_t j=0;j<count;++j)b.values.push_back(r.D());s.bindings.push_back(std::move(b));}
+  NormalizeLegacyShapeBindingIds(s);
   n=r.Count();for(size_t i=0;i<n;++i){auto name=r.S();PartState p;p.visible=r.Expr();auto count=r.Count();for(size_t j=0;j<count;++j){auto shape=r.S(),variable=r.S();Require(p.shapes.emplace(shape,variable).second,"duplicate author shape binding");}Require(s.parts.emplace(name,std::move(p)).second,"duplicate author Part controls");}
   n=r.Count();for(size_t i=0;i<n;++i){ShapeAnimation a;a.id=r.S();a.label=r.S();a.speedVariable=r.S();a.key.vk=r.U();a.key.modifiers=r.U();a.duration=r.D();a.speed=r.D();a.loop=r.B();a.autoplay=r.B();auto count=r.Count();for(size_t j=0;j<count;++j){auto variable=r.S();std::vector<float> values;auto samples=r.Count();for(size_t k=0;k<samples;++k){auto v=r.D();Require(std::abs(v)<=FLT_MAX,"author sampled value exceeds float");values.push_back(float(v));}Require(a.tracks.emplace(variable,std::move(values)).second,"duplicate author animation channel");}Require(s.animations.emplace(a.id,std::move(a)).second,"duplicate author animation");}
   set(s.materialAnimations);n=r.Count();for(size_t i=0;i<n;++i){auto variable=r.S();MaterialTrack t;t.material=r.S();t.property=r.S();t.kind=r.S();t.component=r.U();Require(s.materialTracks.emplace(variable,std::move(t)).second,"duplicate author material channel");}

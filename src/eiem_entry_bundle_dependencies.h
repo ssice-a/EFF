@@ -10,14 +10,17 @@ using InitFn=void(*)(void*,uint64_t,void*,void*);
 using ClearFn=void(*)(void*,void*);
 Query originalAll=nullptr,originalDirect=nullptr;InitFn originalInit=nullptr;ClearFn originalClear=nullptr;
 struct Api {
- void *bundleName=nullptr,*listClass=nullptr,*listCtor=nullptr,*listHeapCtor=nullptr,*listHeapCapacityCtor=nullptr,*listAdd=nullptr,*allInfo=nullptr;
+ void *bundleName=nullptr,*listClass=nullptr,*listCtor=nullptr,*listHeapCtor=nullptr,*listHeapCapacityCtor=nullptr,*listAdd=nullptr,*allInfo=nullptr,*directInfo=nullptr;
  void *managerManifest=nullptr,*proxyManagerField=nullptr,*listItems=nullptr,*listSize=nullptr;
  void *scalarClass=nullptr,*poolField=nullptr,*poolClass=nullptr,*poolAllocate=nullptr,*listDispose=nullptr;
+ void *proxyAssetBundle=nullptr,*proxyIsLoading=nullptr,*proxyIsUnloading=nullptr,*proxyIsUnloaded=nullptr,*proxyIsUnloadLocked=nullptr;
+ void *proxyGetRefCount=nullptr,*proxyUnloadSync=nullptr,*proxyUnloadAllLoadedObjects=nullptr;
  void *manifestData=nullptr,*bundles=nullptr,*mappedBase=nullptr,*mappedLength=nullptr,*mappedData=nullptr,*bundleClass=nullptr;
  size_t arraySize=0,arrayCount=0,arrayHead=0,bundleSize=0,bundleNameOffset=0,bundleKeyOffset=0;
  bool capacityCtor=false,boxedAdd=false;
 } api;
 struct Snapshot {Ref proxy,manifest;uint64_t hash=0;std::shared_ptr<const Names> graph;};
+struct BundleProxyLease {Ref proxy,manifest;uint64_t hash=0;};
 struct Index {Ref manifest,data;uintptr_t address=0;int64_t length=0;bool ready=false;std::weak_ptr<const Names> graph;Keys keys;std::set<std::pair<uint64_t,bool>> logged;};
 std::mutex mutex;std::map<void*,Snapshot> snapshots;std::map<std::pair<void*,const Names*>,std::shared_ptr<Index>> indexes;
 std::map<std::pair<void*,uint64_t>,void*> snapshotKeys;
@@ -184,6 +187,12 @@ void RecordInit(void* proxy,uint64_t hash,void* manager){
  Snapshot snapshot{Ref::Make(proxy,true),Ref::Make(manifest,true),hash,CurrentGraph()};
  std::lock_guard<std::mutex> lock(mutex);auto old=snapshots.find(proxy);if(old!=snapshots.end())snapshotKeys.erase({old->second.manifest.Get(),old->second.hash});snapshotKeys[{manifest,hash}]=proxy;snapshots[proxy]=std::move(snapshot);
 }
+std::vector<BundleProxyLease> ProxiesForBundle(uint64_t hash){
+ std::vector<BundleProxyLease> result;std::lock_guard<std::mutex> lock(mutex);
+ for(const auto& row:snapshots)if(row.second.hash==hash){auto proxy=row.second.proxy.Get(),manifest=row.second.manifest.Get();
+  if(proxy&&manifest)result.push_back({Ref::Make(proxy,false),Ref::Make(manifest,false),hash});}
+ return result;
+}
 void Init(void* self,uint64_t hash,void* manager,void* info){
 #if defined(EIEM_DEMAND_LOADING_PROBE)
  if(enabled)try{auto manifest=Call(api.managerManifest,manager);if(manifest)DemandLoadingProbe::BundleRequest(manifest,hash,"proxy-init-enter");}catch(const std::exception& e){Log("[DEMAND-PROBE-GAP] phase=proxy-init reason=%s",e.what());}
@@ -318,11 +327,26 @@ void Install(void** assemblies,size_t count){
   Require(api.bundleName,"game dependency identity API absent");BindManifestFields(manifest);
   auto proxy=FindClass("","BundleProxy",assemblies,count);Require(proxy,"game Bundle proxy class absent");api.proxyManagerField=Field(proxy,"m_manager");auto manager=il2cpp_class_from_type(il2cpp_field_get_type(api.proxyManagerField));
   api.managerManifest=Exact(manager,"get_getRuntimeManifest",{},"Beyond.ManifestBinary.RuntimeManifestBinary",false);Require(api.managerManifest,"game Bundle manager manifest getter absent");
+  api.proxyAssetBundle=Exact(proxy,"get_assetBundle",{},"UnityEngine.AssetBundle",false);
+  api.proxyIsLoading=Exact(proxy,"get_isLoading",{},"System.Boolean",false);
+  api.proxyIsUnloading=Exact(proxy,"get_isUnloading",{},"System.Boolean",false);
+  api.proxyIsUnloaded=Exact(proxy,"get_isUnloaded",{},"System.Boolean",false);
+  api.proxyIsUnloadLocked=Exact(proxy,"get_isUnloadLocked",{},"System.Boolean",false);
+  api.proxyGetRefCount=Exact(proxy,"GetBundleRefCount",{},"System.Int32",false);
+  api.proxyUnloadSync=Exact(proxy,"UnloadSync",{},"System.Void",false);
+  api.proxyUnloadAllLoadedObjects=Field(proxy,"m_unloadAllLoadedObjects");
+  Require(api.proxyAssetBundle&&api.proxyIsLoading&&api.proxyIsUnloading&&api.proxyIsUnloaded&&
+    api.proxyIsUnloadLocked&&api.proxyGetRefCount&&api.proxyUnloadSync&&api.proxyUnloadAllLoadedObjects,
+    "game BundleProxy reload lifecycle API absent");
+  Require(TypeName(il2cpp_field_get_type(api.proxyUnloadAllLoadedObjects))=="System.Boolean",
+    "game BundleProxy unload object policy is not Boolean");
+  Log("[STARTUP-BUNDLE-RELOAD-API] methods=UnloadSync,GetBundleRefCount,isLoading,isUnloading,isUnloaded,isUnloadLocked preserveLoadedObjects=1");
   auto managerName=TypeName(il2cpp_field_get_type(api.proxyManagerField));
   Require(Entry::Install(proxy,"Init",{scalar.c_str(),managerName.c_str()},"System.Void",false,(void*)Init,(void**)&originalInit),"game Bundle Init observation absent");
   Require(Entry::Install(proxy,"ClearAll",{},"System.Void",false,(void*)Clear,(void**)&originalClear),"game Bundle ClearAll observation absent");
   Require(Entry::Install(manifest,"TryGetBundleDeps",{scalar.c_str(),listName.c_str()},"System.Boolean",false,(void*)All,(void**)&originalAll),"game dependency query hook absent");
-  Require(Entry::Install(manifest,"TryGetBundleDirectDeps",{scalar.c_str(),listName.c_str()},"System.Boolean",false,(void*)Direct,(void**)&originalDirect),"game direct dependency query hook absent");
+  api.directInfo=Exact(manifest,"TryGetBundleDirectDeps",{scalar.c_str(),listName.c_str()},"System.Boolean",false);
+  Require(api.directInfo&&Entry::Install(manifest,"TryGetBundleDirectDeps",{scalar.c_str(),listName.c_str()},"System.Boolean",false,(void*)Direct,(void**)&originalDirect),"game direct dependency query hook absent");
   enabled=true;Log("[STARTUP-DEPENDENCIES-READY] nativeQueue=1 resourceLoadsByPlugin=0 compiledEdgesOnly=1");
  }catch(const std::exception& e){Log("[STARTUP-DEPENDENCY-GAP] phase=bind reason=%s",e.what());}
 }

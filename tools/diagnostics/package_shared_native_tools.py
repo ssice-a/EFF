@@ -25,7 +25,8 @@ def _write_file(target, source):
     shutil.copy2(source, target)
 
 
-def package(output, framework_tag=None, manifest_output=None):
+def package(output, framework_tag=None, manifest_output=None,
+            source_exporter=None, migrator=None):
     if not framework_tag:
         raise ValueError('--framework-tag is required for shared tools')
     output = Path(output).resolve()
@@ -40,9 +41,9 @@ def package(output, framework_tag=None, manifest_output=None):
         'nativepack/eff_author_assets.dll': ROOT / 'bin/author-assets/eff_author_assets_format3.dll',
         'nativepack/eff_author_core.dll': ROOT / 'bin/author-core/eff_author_core.dll',
         'nativepack/texconv.exe': ROOT / 'bin/texconv/texconv.exe',
-        'nativepack/eff_migrate_mods.exe': ROOT / 'bin/legacy-migrator/dist/eff_migrate_mods.exe',
+        'nativepack/eff_migrate_mods.exe': Path(migrator) if migrator else ROOT / 'bin/legacy-migrator/dist/eff_migrate_mods.exe',
     }
-    source_exporter = ROOT / 'bin/legacy-source-exporter'
+    source_exporter = Path(source_exporter) if source_exporter else ROOT / 'bin/legacy-source-exporter'
     vendor = ROOT / 'bin/author-core/vendor'
     if not (vendor / 'PIL/__init__.py').is_file():
         raise FileNotFoundError('Build Pillow for Blender Python under bin/author-core/vendor')
@@ -105,6 +106,10 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--framework-tag', required=True)
     parser.add_argument('--manifest-output', type=Path)
+    parser.add_argument('--source-exporter', type=Path)
+    parser.add_argument('--migrator', type=Path)
     args = parser.parse_args()
     package(args.output, framework_tag=args.framework_tag,
-            manifest_output=args.manifest_output)
+            manifest_output=args.manifest_output,
+            source_exporter=args.source_exporter,
+            migrator=args.migrator)

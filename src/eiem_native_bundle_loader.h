@@ -18,8 +18,8 @@ struct Api {
   StreamFn streamIcall=nullptr,streamAsyncIcall=nullptr;
 } api;
 std::atomic<bool> enabled{false};
-struct MemoryRequest {Ref request,stream;std::shared_ptr<const void> owner;std::shared_ptr<EiemInputSpanView::Cursor> view;std::shared_ptr<const EiemNativeInput::Bytes> bytes;std::function<void(void*)> completed;};
-struct MemoryBundle {Ref bundle,stream;std::shared_ptr<const void> owner;std::shared_ptr<EiemInputSpanView::Cursor> view;std::shared_ptr<const EiemNativeInput::Bytes> bytes;};
+struct MemoryRequest {Ref request,stream;std::shared_ptr<const void> owner;std::shared_ptr<EiemInputSpanView::Cursor> view;std::shared_ptr<const EiemNativeInput::Bytes> bytes;std::function<void(void*)> completed;std::string fileIdentity;};
+struct MemoryBundle {Ref bundle,stream;std::shared_ptr<const void> owner;std::shared_ptr<EiemInputSpanView::Cursor> view;std::shared_ptr<const EiemNativeInput::Bytes> bytes;std::string fileIdentity;};
 struct MemoryUnload {Ref request;void* bundle=nullptr;std::shared_ptr<uint32_t> identity;};
 std::mutex memoryMutex;
 std::map<void*,MemoryRequest> memoryRequests;
@@ -71,20 +71,28 @@ void ReleasedMemory(void* bundle,const std::shared_ptr<uint32_t>& identity){
 void Unload(void* bundle,bool destroy){
  auto identity=MemoryIdentity(bundle);originalUnload(bundle,destroy);ReleasedMemory(bundle,identity);
 }
+size_t UnloadIdentity(const std::string& fileIdentity){
+ if(fileIdentity.empty())return 0;std::vector<void*> bundles;
+ {std::lock_guard<std::mutex> lock(memoryMutex);for(const auto& row:memoryBundles)
+   if(row.second.fileIdentity==fileIdentity)bundles.push_back(row.first);}
+ for(auto bundle:bundles)Unload(bundle,false);
+ if(!bundles.empty())Log("[NATIVE-BUNDLE-RELOAD-UNLOAD] file=%s bundles=%zu preserveLoadedObjects=1",fileIdentity.c_str(),bundles.size());
+ return bundles.size();
+}
 void* UnloadAsync(void* bundle,bool destroy){
  auto identity=MemoryIdentity(bundle);auto request=originalUnloadAsync(bundle,destroy);
  if(identity&&request){auto rooted=Ref::Make(request,false);std::lock_guard<std::mutex> lock(memoryMutex);
   memoryUnloads.emplace(request,MemoryUnload{std::move(rooted),bundle,std::move(identity)});memoryWork=true;
  }return request;
 }
-void RetainMemory(void* request,const Ref& stream,std::shared_ptr<const void> owner={},std::shared_ptr<EiemInputSpanView::Cursor> view={},std::function<void(void*)> completed={}){
- auto rooted=Ref::Make(request,false);std::lock_guard<std::mutex> lock(memoryMutex);memoryRequests.emplace(request,MemoryRequest{std::move(rooted),stream,std::move(owner),std::move(view),{},std::move(completed)});memoryWork=true;
+void RetainMemory(void* request,const Ref& stream,std::shared_ptr<const void> owner={},std::shared_ptr<EiemInputSpanView::Cursor> view={},std::function<void(void*)> completed={},std::string fileIdentity={}){
+ auto rooted=Ref::Make(request,false);std::lock_guard<std::mutex> lock(memoryMutex);memoryRequests.emplace(request,MemoryRequest{std::move(rooted),stream,std::move(owner),std::move(view),{},std::move(completed),std::move(fileIdentity)});memoryWork=true;
 }
 void CompleteMemory(void* request,void* bundle){
  std::function<void(void*)> completed;
  {
   std::lock_guard<std::mutex> lock(memoryMutex);auto it=memoryRequests.find(request);if(it==memoryRequests.end())return;
-  if(bundle)memoryBundles.emplace(bundle,MemoryBundle{Ref::Make(bundle,false),it->second.stream,it->second.owner,it->second.view,it->second.bytes});
+  if(bundle)memoryBundles.emplace(bundle,MemoryBundle{Ref::Make(bundle,false),it->second.stream,it->second.owner,it->second.view,it->second.bytes,it->second.fileIdentity});
   else Log("[ENTRY-RULE-LOAD-FAILED] request=%p archiveStream=1 nativeBundleNull=1",request);
   completed=std::move(it->second.completed);memoryRequests.erase(it);memoryWork=!memoryRequests.empty()||!memoryUnloads.empty();
  }
@@ -139,7 +147,7 @@ void BindMemoryStream(void* bundle,void** assemblies,size_t count){
   if(!api.streamAsync)api.streamAsyncIcall=(Api::StreamFn)il2cpp_resolve_icall("UnityEngine.AssetBundle::LoadFromStreamAsyncInternal");
  }
 }
-void* SubmitStream(Ref stream,std::shared_ptr<const void> owner,uint32_t crc,bool asynchronous,std::shared_ptr<EiemInputSpanView::Cursor> view={},std::function<void(void*)> completed={}){
+void* SubmitStream(Ref stream,std::shared_ptr<const void> owner,uint32_t crc,bool asynchronous,std::shared_ptr<EiemInputSpanView::Cursor> view={},std::function<void(void*)> completed={},std::string fileIdentity={}){
  Require(stream.Get()&&
              (asynchronous?(api.streamAsync||api.streamAsyncIcall):(api.stream||api.streamIcall)),"rule archive stream bindings absent");
  uint32_t bufferSize=0;auto icall=asynchronous?api.streamAsyncIcall:api.streamIcall;
@@ -147,8 +155,8 @@ void* SubmitStream(Ref stream,std::shared_ptr<const void> owner,uint32_t crc,boo
  // The archive stream entry preserves CAB members and external resource data.
  // LoadFromMemory eagerly decompresses through a different game reader.
  auto result=icall?icall(stream.Get(),crc,bufferSize):RuntimeShapes::Call(asynchronous?api.streamAsync:api.stream,nullptr,args);
- if(result){if(asynchronous)RetainMemory(result,stream,std::move(owner),std::move(view),std::move(completed));else{
-  auto rooted=Ref::Make(result,false);std::lock_guard<std::mutex> lock(memoryMutex);memoryBundles.emplace(result,MemoryBundle{std::move(rooted),std::move(stream),std::move(owner),std::move(view),{}});
+ if(result){if(asynchronous)RetainMemory(result,stream,std::move(owner),std::move(view),std::move(completed),std::move(fileIdentity));else{
+  auto rooted=Ref::Make(result,false);std::lock_guard<std::mutex> lock(memoryMutex);memoryBundles.emplace(result,MemoryBundle{std::move(rooted),std::move(stream),std::move(owner),std::move(view),{},std::move(fileIdentity)});
  }}return result;
 }
 void* LoadMemory(void* array,uint32_t crc,bool asynchronous){
@@ -157,7 +165,7 @@ void* LoadMemory(void* array,uint32_t crc,bool asynchronous){
  bool writable=false;void* constructor[]={array,&writable};RuntimeShapes::Call(api.streamCtor,stream.Get(),constructor);
  return SubmitStream(std::move(stream),{},crc,asynchronous);
 }
-void* LoadView(const std::shared_ptr<const EiemInputSpanView::View>& view,uint32_t crc,bool asynchronous,std::function<void(void*)> completed={}){
+void* LoadView(const std::shared_ptr<const EiemInputSpanView::View>& view,uint32_t crc,bool asynchronous,std::function<void(void*)> completed={},std::string fileIdentity={}){
  Require(viewCallbacksReady&&view&&view->Size()&&api.streamClass&&api.streamCtor&&il2cpp_object_new,"compiled native view stream bindings absent");
  // The facade is an empty readable MemoryStream. A missed callback returns
  // EOF, rather than exposing fabricated native pointers or a giant allocation.
@@ -167,7 +175,7 @@ void* LoadView(const std::shared_ptr<const EiemInputSpanView::View>& view,uint32
  {std::lock_guard<std::mutex> lock(viewMutex);for(auto it=viewStreams.begin();it!=viewStreams.end();)if(it->second.expired())it=viewStreams.erase(it);else ++it;
   Require(viewStreams.emplace(stream.Get(),cursor).second,"compiled view stream pointer reused before retirement");viewStreamsPresent=true;
  }
- auto result=SubmitStream(std::move(stream),{},crc,asynchronous,std::move(cursor),std::move(completed));return result;
+ auto result=SubmitStream(std::move(stream),{},crc,asynchronous,std::move(cursor),std::move(completed),std::move(fileIdentity));return result;
 }
 void* LoadBytes(const unsigned char* data,size_t size,std::shared_ptr<const void> owner,uint32_t crc,bool asynchronous){
  Require(data&&owner&&size&&size<=INT64_MAX,"rule native stream byte extent differs");

@@ -20,4 +20,4 @@ F10 在后台准备隔离候选，Unity 线程加载依赖闭包并验证 Prefab
 
 玩家分发作者资源、INI 与 compiled.bin；source-inputs.bin 是来源准备的派生描述。索引、原游戏快照、Blender 工具和 AnimeStudio DLL 不进入游戏运行包。实测 LZY 原作者目录 131.17 MiB，编译规则 11.25 MiB，合计 142.42 MiB；没有保存完整原包。兼容性以数据结构、引用及来源摘要核验。
 
-静态 Mesh 资源支持不自动扩大 F10 的生命周期覆盖。独立场景物件与人群 NPC 仍需对应游戏 owner 的重建/状态保持入口；未知活动 owner 拒绝刷新并保留旧代际。跨文件根、persistent pool 与完整多代资源退休仍有验收边界。详见[输出契约](offline-resource-package-format.md)和[当前测试](hot-reload-testing.md)。
+Format 3 F10 按变更 Mod 匹配已加载 prefab proxy 的源对象；即使没有登记到活动 Owner，也会清理对应模型池并卸载 prefab proxy 缓存，保证后续请求重新走当前资源代际。若游戏仍持有该 proxy，卸载失败会让该路径保持待处理并重试。当前 owner 未登记时不会直接重建它的现有显示实例；跨文件根、persistent pool 与完整多代资源退休仍有验收边界。详见[输出契约](offline-resource-package-format.md)和[当前测试](hot-reload-testing.md)。

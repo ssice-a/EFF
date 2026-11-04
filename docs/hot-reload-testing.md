@@ -1,3 +1,51 @@
+## 2026-11-05 同步原生提交缺失、错误依赖继承与 UI 就绪查询
+
+PID 37460 使用 DLL `B799A9716A512136E3C27A28E500B8DD3B4D0032A0A0870664F12EDB06AC8BC2`。06:52:15 的 F10 已发布新代际；06:52:16 世界 Prefab `A804871EAFDCB109` 的 alias `D66F21E0381AC4CD` 已准备，但没有任何该组的原生输入提交，随后 owner 失败，最终 `refreshed=0 failed=1`。`Player.log` 明确报告 `eff/3/root/A804871EAFDCB109.ab` 加载失败，栈经过 `AssetProxy._LoadImmediate`、`Manager._FastLoadAssetSync`。后续动画/移动空引用是模型缺失的下游表现。06:52:18 UI 根包虽异步完成，但没有本代作者依赖提交，因此不能把 root completion 当作 UI 资源刷新成功。
+
+本轮三个回归均先在旧行为失败：
+
+- `SyntheticInputDirectOwnershipRegression`：作者 Texture/Material 错用消费方 Prefab 的 `categorySource` 继承原生直接依赖；实机无显式依赖的 Texture 被附加 25 项依赖。只允许 `versionedRoot` 继承并映射自身的原生依赖，作者输入只使用显式声明的边。
+- `SyntheticProxySyncLifecycleRegression`：`LoadSync` / 直接 `_LoadImmediate` 没有异步入口对应的原生视图提交，转而打开不存在的合成路径。按当前游戏元数据精确绑定 `_FinishWithBundle(UnityEngine.AssetBundle)`，只提交已命中的惰性输入，由游戏完成状态和请求清理。已有异步请求仍交给原生完成流程；重复成功请求、终态失败/卸载和未命中请求不新增提交。空 Bundle 交给游戏的失败分支，不伪造成功。
+- `SyntheticDependenciesOutsideTreeRegression`：树外 `IsAllDependenciesLoaded` / `UpdateLoading` 的合成 key 查询被 `sharedRequestDepth` 拒绝，游戏把原生 manifest 查询失败当作没有依赖。现允许已发布合成图在加载树外回答查询；普通原生 key 的扩展仍受真实请求范围限制。回归断言查询不准备资源、不提交加载、不触发原生依赖扫描。
+
+只读元数据/原生控制流与故障日志保存在 `bin/f10-log-audit-20261105-pid37460/`。回归核对的是上述调用边界，不能替代真实世界/UI 画面验收。资源继续按命中准备，不在启动或 F10 全量预载 Mod。当前仍使用同 CAB 提交前 `Unload(false)` 退休旧容器，没有实现内部 CAB 的完整新旧代隔离；Demand F10 在释放旧 owner 后遇到其他加载异常也尚无完整自动回滚，不能承诺任意失败都保留角色。
+
+完整 `full_resource_reload_smoke`、`native_random_access_smoke`（含 1 GiB 未命中载荷零准备读取）、`build_demand_resource_regressions.cmd`、正式构建和生产二进制检查通过。部署脚本还修正了游戏进程隐藏 Path 时被误判为已退出的问题，并通过模拟进程守卫验证。确认游戏已退出后于 07:06 部署 DLL，SHA-256 `09FDAFCBCB4811822A8CBCDBB03AE21D849AE60A4B87F4BD047880481B00224F`，2,963,968 字节；回执 `bin/local-deployments/20261105-070637-695/Dll.json` 记录备份。安装与构建哈希一致，`eff.ini`、Chen `mod.ini` 和协议内容与部署前哈希一致；未写入 DDS/Mod 资源。尚无本次 DLL 的实机 F10 结果。下一轮需在新进程核对世界同步请求的 `DEMAND-PROXY-SYNC-COMPLETE`、作者依赖提交与 UI 树外依赖查询，并确认修改的网格/贴图实际显示、无新增模型加载失败；root completion 或离线模拟通过均不能单独作为验收。
+
+## 2026-11-05 代际资源路由取代 Bundle 清零屏障
+
+02:38:29 的 PID 31196 实机日志复现了根因：F10 已释放旧 owner 并清掉 Prefab 缓存，但变更资源 Bundle `BCF637E9F4F0F70E` 仍有一个引用。流程把资源 Bundle 引用归零当作新 owner 的前置条件，因此 30 秒后以 `phase=bundle-unload` 失败。共享对象/游戏缓存可以合法持有旧 Bundle；等待其归零会阻止热重载，也会让地图生命周期放大等待。
+
+现在每个发布的 Format 3 Manifest 快照有独立的 `GenerationNamespace`。它同时为源 Prefab Bundle alias 和作者资源 CAB 生成代际唯一身份；旧代由仍存活的游戏 BundleProxy/异步请求继续持有，新 owner 立即通过新代际身份按需加载，不要求旧引用先归零。旧 scope 仍由原生 proxy lease 管理，资源保持 `preload=0`。目标差分把被删除目标的旧源 Bundle 也放入新 Manifest，故新代会以剩余 Mods 重建该输入；没有剩余修改时回到游戏原始字节。增加、删除、修改沿用同一份不可变代际路由。
+
+`VersionedGenerationRouteRegression` 验证同一源 Bundle/CAB 的新旧命名隔离、旧 Bundle 引用保持 7 时新请求仍启动，以及已删除目标源仍进入恢复集合。`full_resource_reload_smoke`、Format 3 生产构建和 `verify_production_dll.py` 均通过。已部署 DLL SHA-256 `D51D286232D778845D6EF456F9F6D83B0EC0FBFA0353321A6423BCA7CF94140A`，回执 `bin/local-deployments/20261105-035049-015/Dll.json`。部署不代表实机修复验收：仍需启动游戏，验证资源修改、增加/删除目标、连续切图后按 F10，并确认大世界/UI/NPC 使用新资源且等待状态可结束。
+
+以下较早记录描述的是代际 namespace 接入前的实现与日志，作为历史保留。
+
+## 2026-11-05 跨依赖组缓存遗漏代际输入视图
+
+PID 24824 的 04:18:44-04:18:47 F10 日志复现了本轮失效：世界 owner 新建成功，但随后 token 39 的 UI 共享依赖组在 `stage-versioned-root-inputs` 报 `versioned source Bundle has no prepared generation view`，并记录 `DEMAND-NATIVE-FALLBACK ... originalInputPreserved=1`。Format 3 的 `Prepare()` 对已完成的全局 `preparedInputs` 缓存命中后直接返回，没有将该输入视图登记进当前依赖组的 `prepared` 表；`VersionedRoot()` 因而无法构造本代 root，整组回退原始字节。旧 Format 2 attempt 将输入视图保存在同一个候选事务内，不存在这条跨依赖组缓存命中分支。
+
+修复将缓存命中的 target view 显式挂入当前组；未修改的 target 也发布惰性原字节视图。共享图现在只接受带可读 view 的代际输入，缺失视图会在提交前失败，不能静默使用旧输入。`PreparedRootViewCacheRegression` 覆盖跨组复用及缺失拒绝，`native_random_access_smoke` 核对透传 view 与源 Bundle 字节一致；`full_resource_reload_smoke`、两项原生 smoke、Format 3 DLL build 和生产验证通过。
+
+DLL SHA-256 为 `13AC12AAAA81A77FF9473DB80C807C21C6A4B6C786B28B4FCFA3F47DFBC60193`，已部署，回执 `bin/local-deployments/20261105-054517-157/Dll.json`。部署不证明 UI 网格画面已修复；下一次实机 F10 仍需确认大世界/UI 网格、贴图和骨骼无旧输入混用，并检查日志没有 `versioned source Bundle has no prepared generation view` 或该 token 的 native fallback。
+
+## 2026-11-05 F10 新 owner 仍使用旧资源
+
+用户确认上一轮 F10 后大世界和 UI 都显示旧资源，虽然大世界角色不再消失。PID 33188 的 01:58:42 日志显示 generation 2 检测到 Chen 包文件变化，Prefab 根 Bundle `A804871EAFDCB109` 已退休，世界新 owner 也成功就绪；但 `[DEMAND-F10-BUNDLE-SCOPE]` 记录 `dependencyBundlesRetired=0`，该 Prefab 的共享加载组包含 58 个 native dependency Bundle。根 owner 新建不代表其材质、贴图等底层 Bundle 已更换。`affectedTargets=0` 仅说明目标声明没变化。
+
+修复为按 `PrepareReplacement` 实际改写的 Bundle 哈希记录 Mod 使用关系。F10 从旧 generation 中只筛选命中变化 Mod 的已加载 BundleProxy，先退休 Prefab 根，再退休这些资源 Bundle，之后才请求新 owner；其它依赖 Bundle 不因处于同一闭包而被退休，资源仍按需加载。自动化回归覆盖精确 Mod 筛选、相同 Bundle 哈希的不同 manifest，以及无关 Mod；完整 `full_resource_reload_smoke`、Format 3 生产构建和 `verify_production_dll.py` 通过。
+
+已部署 DLL SHA-256 `7A23B3CF131D5A0877A92FC71B62F84F9EB532E7EA0475A07446AA813287B4A5`，部署回执 `bin/local-deployments/20261105-023227-063/Dll.json`。实机确认尚未完成；下次启动后修改资源并按 F10，需检查 `[DEMAND-F10-RESOURCE-BUNDLE-SCOPE]` 与 `[DEMAND-F10-BUNDLE-RETIRED] kind=resource`，并确认世界及 UI 显示修改后的内容。若资源 Bundle 因引用未归零而等待，先检查对应 owner 是否都已释放，不能把 owner-ready 当作画面验收。
+
+## 2026-11-05 世界角色等待递归 Bundle 退休
+
+用户确认同一次操作中的其余 UI 模型可热重载，但大世界角色消失。PID 14396 的 01:36:27 F10 日志显示 Chen 的旧 owner 已释放、Prefab 缓存已失效，随后递归 Bundle 闭包收集 55 个代理；`B7FDB9B459EC1824` 引用数从 14 降至 9 后持续被等待，30 秒内没有新的 owner 请求，最终路径以 `bundle-unload` 失败。日志没有记录该 Bundle 是否为 Prefab 根，因此不能从旧记录确认根 Bundle 本身是否被占用。
+
+F10 现在只等待实际承载受影响 Prefab 的根 Bundle 代理卸载完成，递归依赖保留给其他游戏消费者，不再参与 owner 重建门槛。多个历史 Prefab 代理可拥有不同根 Bundle；每个根代理仍需引用数归零，并以 `Unload(false)` 保留已加载 Unity 对象的策略退休。新 `[DEMAND-F10-BUNDLE-SCOPE]` 记录根 Bundle 数量，`[DEMAND-F10-BUNDLE-WAIT]` 与 `[DEMAND-F10-BUNDLE-RETIRED]` 标注 `prefabRoot=1`，所有按需资源仍 `preload=0`。
+
+新增共享依赖仍被 9 个引用持有时继续请求 Prefab 的回归；完整 `full_resource_reload_smoke` 通过。Format 3 生产 DLL 已部署，SHA-256 `4F7FB2E339C57535F0D2CC7EEE8F92D36E1E4B07A4D67F439530DAF7AF70EEC5`，回执 `bin/local-deployments/20261105-015338-749/Dll.json`。真实游戏中的新 owner 请求、完成标记和角色画面仍待一次 F10 验收；若被等待的 `prefabRoot=1` 仍有引用，根 Bundle 缓存本身还未退休。
+
 ## 2026-10-28 多 Mod 准备内存与区间共享
 
 真实安装的 8 个 Mod、398 个输入中，111 个有多个实际修改者。独立准备进程同一组数据的基线为 10.622 秒、峰值私有提交 7328.50 MiB；本轮空闲复测为 6.500 秒、2557.58 MiB。完整合并启动缓冲从 1990.84 MiB 降为 0，改为共享来源和作者载荷区间。上述未清空操作系统缓存，不是冷盘测试，也不是 Endfield 总内存或显存测量。游戏历史日志的 16.790 秒来自另一运行环境。

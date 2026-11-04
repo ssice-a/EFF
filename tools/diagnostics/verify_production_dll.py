@@ -65,8 +65,18 @@ for marker in (
 if not format3_runtime:
     for marker in (b'[DEMAND-PROBE-', b'[DEMAND-NATIVE-'):
         assert marker not in checked, f'Production DLL contains diagnostic marker: {marker!r}'
+functional_markers = [b"[FULL-RELOAD-REJECT]", b"eff_log.txt"]
+if format3_runtime:
+    functional_markers.extend((
+        b"[DEMAND-F10-PREPARED]", b"[DEMAND-F10-COMMIT]",
+        b"[DEMAND-F10-OWNER-READY]", b"resourcePayloadsLoadedOnDemand=1",
+        b"compiledBinRead=0", b"payloadsPreloaded=0",
+        b"_FinishWithBundle", b"[DEMAND-PROXY-SYNC-COMPLETE]",
+    ))
+else:
+    functional_markers.append(b"[FULL-RELOAD-COMMIT]")
 for marker in (
-    b"[FULL-RELOAD-COMMIT]", b"[FULL-RELOAD-REJECT]", b"eff_log.txt",
+    *functional_markers,
     b"ForceExitAllPerformOnEntity", b"_PreloadSpIdlePerform", b"_PreloadSpDashPerform",
     b"ChangeAnimationConfig", b"UpdateAllWeaponMountPoint", b"ReloadWeapon",
     b"[SHAPE-CAPTURE-COMPLETION]",

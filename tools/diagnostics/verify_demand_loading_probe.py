@@ -18,7 +18,7 @@ probe = Path('src/eiem_entry_demand_loading_probe.h').read_bytes()
 prepare = probe[probe.index(b'void PrepareReplacement('):probe.index(b'bool SubmitPrepared(')]
 empty_rewrite = prepare.index(b'if(rewrites.empty())')
 empty_state_commit = prepare.find(b'commitScope();', empty_rewrite)
-empty_publish = prepare.find(b'publish({});', empty_rewrite)
+empty_publish = prepare.find(b'publish(std::move(identityView));', empty_rewrite)
 assert 0 <= empty_state_commit < empty_publish, 'No-op target input must commit scope identities before publishing passthrough'
 for marker in (
     b"mode=format3-runtime" if format3_runtime else b"mode=demand-native-acceptance" if acceptance else b"mode=demand-loading-observation",

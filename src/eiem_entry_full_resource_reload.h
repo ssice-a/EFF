@@ -1,8 +1,8 @@
 #pragma once
 #include "eiem_model_pool_discard.h"
 #include "eiem_offline_resource_package.h"
-// Resource reload transaction: offline manifest -> preloaded isolated graph ->
-// native graph -> exact prefab content/owner preflight -> game-owned rebuild.
+// Resource reload transaction: offline manifest -> prepared isolated inputs ->
+// root-scoped native Bundle graph -> prefab/owner preflight -> game-owned rebuild.
 // No Renderer Mesh setters or private native/job memory writes are used.
 namespace EffectDebug { void OwnerReleasing(void*) noexcept; }
 namespace FullResourceReload {
@@ -35,6 +35,9 @@ inline std::string NormalizeAssetPath(std::string value) {
 inline bool SameAssetPath(const std::string& a,const std::string& b) {
  return NormalizeAssetPath(a)==NormalizeAssetPath(b);
 }
+void RememberPrefabProxy(uint64_t hash,void* proxy,void* source=nullptr);
+size_t InvalidatePrefabProxyCache(uint64_t hash,const std::string& path);
+size_t InvalidatePrefabProxyCache(const Owner& owner);
 inline const EiemResourceReloadPlan::Root* FindRoot(const Plan& plan,const std::string& path) {
  for(const auto& root:plan.roots)if(SameAssetPath(root.path,path))return &root;
  return nullptr;
@@ -91,9 +94,11 @@ struct Api {
  void *uiLuaInstance=nullptr,*uiLuaDo=nullptr,*uiLuaCall=nullptr,*uiArraySet=nullptr,*uiObjectClass=nullptr;
  void *uiLuaKey=nullptr,*uiLuaEncode=nullptr,*uiLuaDecode=nullptr,*uiLuaCodeEquals=nullptr;
  void *uiLuaExceptionMessage=nullptr;
- void *proxyAsset=nullptr,*proxyHash=nullptr,*proxyGet=nullptr,*pathHashField=nullptr;
+ void *proxyAsset=nullptr,*proxyHash=nullptr,*proxyGet=nullptr,*proxyTryUnloadImmediately=nullptr,*pathHashField=nullptr;
  void *handleUntrackedField=nullptr,*handleUntrackedClass=nullptr,*untrackedAssetGet=nullptr;
 } api;
+std::map<uint64_t,std::vector<Ref>> prefabProxiesByPath;
+std::map<uint64_t,std::vector<Ref>> prefabProxySourcesByPath;
 std::atomic<bool> configured{false},enabled{false},busy{false};std::mutex mutex;
 std::atomic<bool> testAuthorCommitted{false};
 std::shared_ptr<Prepared> pending;std::shared_ptr<Attempt> attempt,activeNative;
@@ -184,6 +189,34 @@ void* InstantiateParent(void* source,void* parent,void* position,void* rotation)
 void* InstantiateImmediate(void* source,void* parent,bool world){return originalInstantiateImmediate(Routed(source,"immediate-parent"),parent,world);}
 void* InstantiateAsync(void* source,int count,void* parent,void* position,void* rotation){return originalInstantiateAsync(Routed(source,"async-parent"),count,parent,position,rotation);}
 void* Call(void* m,void* self=nullptr,void** args=nullptr){return RuntimeShapes::Call(m,self,args);}
+void RememberPrefabProxy(uint64_t hash,void* proxy,void* source){
+ Require(hash&&proxy,"prefab cache identity is absent");auto& proxies=prefabProxiesByPath[hash];bool seen=false;
+ for(auto it=proxies.begin();it!=proxies.end();){auto value=it->Get();if(!value){it=proxies.erase(it);continue;}seen=seen||value==proxy;++it;}
+ if(!seen)proxies.push_back(Ref::Make(proxy,true));
+ if(source){auto& sources=prefabProxySourcesByPath[hash];bool known=false;
+  for(auto it=sources.begin();it!=sources.end();){auto value=it->Get();if(!value){it=sources.erase(it);continue;}known=known||value==source;++it;}
+  if(!known)sources.push_back(Ref::Make(source,true));}
+}
+size_t InvalidatePrefabProxyCache(uint64_t hash,const std::string& path,bool requireObserved){
+ Require(api.proxyTryUnloadImmediately,"game prefab proxy unload API unavailable");auto found=prefabProxiesByPath.find(hash);
+ if(found==prefabProxiesByPath.end()){
+  Require(!requireObserved,"affected prefab proxy was not observed before reload: "+path);
+  Log("[FULL-RELOAD-PREFAB-CACHE] path=%s hash=%016llX proxies=0 unloaded=0 noCachedProxyObserved=1",
+    path.c_str(),(unsigned long long)hash);prefabProxySourcesByPath.erase(hash);return 0;
+ }
+ size_t live=0,unloaded=0;for(const auto& proxyRef:found->second){auto proxy=proxyRef.Get();if(!proxy)continue;++live;void* args[]={proxy};
+  if(RuntimeShapes::Scalar<unsigned char>(api.proxyTryUnloadImmediately,nullptr,args))++unloaded;}
+ Log("[FULL-RELOAD-PREFAB-CACHE] path=%s hash=%016llX proxies=%zu unloaded=%zu",path.c_str(),(unsigned long long)hash,live,unloaded);
+ if(!requireObserved&&!live){prefabProxiesByPath.erase(found);prefabProxySourcesByPath.erase(hash);return 0;}
+ Require(live&&unloaded==live,"game retained an affected prefab proxy; refusing stale-resource reload: "+path);
+ prefabProxiesByPath.erase(found);prefabProxySourcesByPath.erase(hash);return unloaded;
+}
+size_t InvalidatePrefabProxyCache(uint64_t hash,const std::string& path){return InvalidatePrefabProxyCache(hash,path,true);}
+size_t InvalidatePrefabProxyCache(const Owner& owner){
+ Require(owner.pathHash.Get()&&api.pathHashField,"affected prefab path hash unavailable: "+owner.path);
+ uint64_t hash=0;il2cpp_field_get_value(owner.pathHash.Get(),api.pathHashField,&hash);
+ return InvalidatePrefabProxyCache(hash,owner.path);
+}
 void* Method(void* klass,const char* name,std::initializer_list<const char*> parameters,const char* result,bool isStatic){
  auto method=Exact(klass,name,parameters,result,isStatic);if(method)return method;
  std::string identity="<missing class>";if(klass){auto text=il2cpp_type_get_name(il2cpp_class_get_type(klass));if(text){identity=text;il2cpp_free((void*)text);}}
@@ -736,6 +769,7 @@ void ProxyPreload(void* self,bool asynchronous,void* info){
  proxyContext=false;proxyUIOverride={};
  try{auto asset=Call(api.proxyAsset,self);if(Inherits(asset,"","AssetProxy")){auto source=Call(api.proxyGet,asset);
    if(Inherits(source,"UnityEngine","GameObject")&&RuntimeShapes::Alive(source)){scope.held=Ref::Make(source,false);proxySource=source;proxyPathHash=RuntimeShapes::Scalar<uint64_t>(api.proxyHash,asset);
+     RememberPrefabProxy(proxyPathHash,self,source);
 #if defined(EIEM_PREFAB_ADAPTATION_PROBE)
     PrefabAdaptationProbe::ObserveProxy(source,proxyPathHash,asset);
 #endif
@@ -910,6 +944,18 @@ void Install(void** assemblies,size_t count){
   auto proxy=FindClass("Beyond.Resource.Runtime","PrefabInstantiateProxy",assemblies,count),assetProxy=FindClass("","AssetProxy",assemblies,count);
   api.proxyAsset=Method(proxy,"get_assetHandles",{},"Beyond.Resource.IAssetProxy",false);api.proxyGet=Method(assetProxy,"Get",{},"UnityEngine.Object",false);
   api.proxyHash=Exact(assetProxy,"get_pathOrNameHash",{},"System.Int64",false);if(!api.proxyHash)api.proxyHash=Method(assetProxy,"get_pathOrNameHash",{},"System.UInt64",false);
+  auto proxyManager=FindClass("Beyond.Resource.Runtime","PrefabInstantiateProxyManager",assemblies,count);
+  void* unloadIterator=nullptr;while(auto method=il2cpp_class_get_methods(proxyManager,&unloadIterator)){
+   if(strcmp(il2cpp_method_get_name(method),"TryUnloadImmediately")||il2cpp_method_get_param_count(method)!=1)continue;
+   auto param=il2cpp_type_get_name(il2cpp_method_get_param(method,0));bool expected=param&&!strcmp(param,"Beyond.Resource.Runtime.PrefabInstantiateProxy");if(param)il2cpp_free((void*)param);
+   uint32_t impl=0;auto flags=il2cpp_method_get_flags(method,&impl);Require(expected&&(flags&0x10),"game TryUnloadImmediately signature/static contract differs");
+   Require(!api.proxyTryUnloadImmediately,"game TryUnloadImmediately overload is ambiguous");api.proxyTryUnloadImmediately=method;
+  }
+  Require(api.proxyTryUnloadImmediately,"game PrefabInstantiateProxyManager.TryUnloadImmediately API absent");
+  auto resultType=il2cpp_type_get_name(il2cpp_method_get_return_type(api.proxyTryUnloadImmediately));
+  bool returnsBoolean=resultType&&!strcmp(resultType,"System.Boolean");if(resultType)il2cpp_free((void*)resultType);
+  Require(returnsBoolean,"game TryUnloadImmediately return type differs from Boolean");
+  Log("[FULL-RELOAD-PREFAB-CACHE-API] method=PrefabInstantiateProxyManager.TryUnloadImmediately static=1 parameter=PrefabInstantiateProxy return=Boolean");
   Require(Entry::Install(proxy,"_PreloadPrefab",{"System.Boolean"},"System.Void",false,(void*)ProxyPreload,(void**)&originalProxyPreload),"game prefab instantiate lifecycle hook unavailable");
   api.rootCategory=Enum(FindClass("Beyond.Resource","RootCategory",assemblies,count),"Main");api.priority=Enum(FindClass("Beyond.Resource","EResourceRequestPriority",assemblies,count),"Default");
   auto go=FindClass("UnityEngine","GameObject",assemblies,count),renderer=FindClass("UnityEngine","Renderer",assemblies,count);
@@ -1149,7 +1195,10 @@ void CaptureConsumers(Owner& owner){
  owner.performManager=Ref::Make(ReadBoundObject(api.performManager,world.Get()),false);
  Require(owner.performManager.Get(),"reload character performance manager unavailable");
  owner.animation=Ref::Make(Call(api.animationCom,owner.entity.Get()),false);
- if(owner.animation.Get()){owner.animationData=Ref::Make(Call(api.animationData,owner.animation.Get()),false);Require(owner.animationData.Get(),"reload animation data unavailable");VerifyAnimation(owner,owner.root.Get());}
+ // The component can temporarily report invalid while its current model is
+ // transitioning. Keep its data and validate the binding after the game has
+ // applied ChangeAnimationConfig to the replacement root.
+ if(owner.animation.Get()){owner.animationData=Ref::Make(Call(api.animationData,owner.animation.Get()),false);Require(owner.animationData.Get(),"reload animation data unavailable");}
  if(Inherits(owner.animation.Get(),"Beyond.Gameplay.View","CharacterAnimationComponent"))
   Require(api.animationIdlePreload&&api.animationDashPreload,"reload native character performance preloads unavailable");
 #if defined(EIEM_DIAGNOSTICS)
@@ -1349,6 +1398,15 @@ void DiscoverOwners(Attempt& a){
 }
 void* ModelManager(){return ReadManager(api.modelManager);}
 void Follow(const Owner& owner){if(owner.viewPart)return;auto effects=Ref::Make(ReadManager(api.effectManager),false);Require(effects.Get(),"reload EffectManager unavailable");void* args[]={owner.entity.Get()};Call(api.follow,effects.Get(),args);}
+void DiscardPool(void* manager,uint64_t hash){
+ Require(manager&&api.discard&&api.pathHashField,"model pool hash invalidation API unavailable");
+ uint32_t alignment=0;auto size=il2cpp_class_value_size(api.pathClass,&alignment);
+ auto fieldOffset=il2cpp_field_get_offset(api.pathHashField);Require(size>0&&fieldOffset>=2*sizeof(void*),"StringPathHash value layout unavailable");
+ auto offset=size_t(fieldOffset-2*sizeof(void*));Require(offset+sizeof(hash)<=size,"StringPathHash hash field outside value layout");
+  Bytes pathValue(size);memcpy(pathValue.data()+offset,&hash,sizeof(hash));
+  EiemModelPoolDiscard::Discard({api.discard,api.discardHasUnloadImmediately},manager,pathValue.data(),
+   [&](void* method,void* receiver,void** callArgs){Call(method,receiver,callArgs);});
+}
 void AbortUIStaging(Attempt& a){
  if(!a.uiStaged)return;
  // During the asynchronous wait public routes already belong to the old
@@ -1543,7 +1601,8 @@ void CheckBundle(Attempt& a,size_t index,Bundle& b){
  Log("[FULL-RELOAD-BUNDLE] file=%s nativeId=%d namespaceIsolated=1",a.prepared->plan->inputs[index].file.c_str(),b.id);
 }
 std::vector<size_t> RequiredBundles(const Plan& plan,const std::set<size_t>& roots){
- if(plan.inputDependencies.size()!=plan.inputs.size()||plan.inputs.empty())return plan.closure;
+ if(roots.empty())return {};
+ Require(plan.inputDependencies.size()==plan.inputs.size(),"reload dependency index coverage differs");
  std::set<size_t> isolated(plan.closure.begin(),plan.closure.end()),selected;std::vector<size_t> pending;
  for(auto root:roots)pending.push_back(plan.roots.at(root).input);
  while(!pending.empty()){auto input=pending.back();pending.pop_back();
