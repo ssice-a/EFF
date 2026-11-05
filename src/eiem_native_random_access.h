@@ -384,6 +384,32 @@ public:
     }
     return result;
   }
+  // A prefab's embedded objects need not have their own container entries.
+  // Only expose references owned by the exact requested container's native
+  // preload interval; callers still verify the referenced object's class/name.
+  std::vector<NativeReference> ContainerPreloads(const EiemNativeViewWriter::Member& member,
+      const SerializedLayout& layout,const std::string& path) {
+    std::set<NativeReference> result;
+    for(auto id:layout.order){const auto& type=layout.types.at(layout.objects.at(id).type);if(type.classId!=142)continue;
+      auto fields=Fields(member,layout,id,{"m_Container"});
+      std::vector<std::pair<size_t,size_t>> ranges;
+      for(const auto& row:ArrayValue(type,fields.at("m_Container")).children){const auto& key=Child(type,row,"first");
+        auto logical=Text(key.raw.data(),key.raw.size());
+        std::transform(logical.begin(),logical.end(),logical.begin(),[](unsigned char c){return char(std::tolower(c));});
+        if(logical!=path)continue;const auto& info=Child(type,row,"second");
+        ranges.emplace_back(size_t(Integer(Child(type,info,"preloadIndex"))),size_t(Integer(Child(type,info,"preloadSize"))));
+      }
+      if(ranges.empty())continue;
+      auto preloads=Fields(member,layout,id,{"m_PreloadTable"});const auto& values=ArrayValue(type,preloads.at("m_PreloadTable")).children;
+      for(const auto& range:ranges){Require(range.first<=values.size()&&range.second<=values.size()-range.first,"native container preload range differs");
+        for(size_t i=range.first;i<range.first+range.second;++i){const auto& pointer=values[i];auto file=Integer(Child(type,pointer,"m_FileID"));
+          Require(file<=layout.externals.size(),"native container preload external index differs");
+          auto object=int64_t(Integer(Child(type,pointer,"m_PathID")));if(object)result.emplace(file?layout.externals[size_t(file)-1]:member.name,object);
+        }
+      }
+    }
+    return {result.begin(),result.end()};
+  }
   std::map<uint64_t,Asset> HashAssets(const EiemNativeViewWriter::Member& member, const SerializedLayout& layout) {
     std::map<uint64_t,Asset> result;
     for (auto id : layout.order) {

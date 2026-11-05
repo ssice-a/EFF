@@ -71,7 +71,13 @@ public:
       left.view==right.view&&left.dependencies==right.dependencies&&left.versionedRoot==right.versionedRoot;};
     for(const auto& input:inputs){Require(input.key&&input.categorySource&&!input.name.empty()&&!input.cab.empty()&&input.view,
         "shared native input declaration incomplete");
-      auto prior=inputs_.find(input.key);if(prior!=inputs_.end())Require(same(prior->second,input),"shared native input key collision");
+      auto prior=inputs_.find(input.key);if(prior!=inputs_.end()){if(!same(prior->second,input))Require(false,
+        "shared native input key collision: key="+std::to_string(input.key)+" name="+input.name+
+        " nameSame="+std::to_string(prior->second.name==input.name)+
+        " cabSame="+std::to_string(prior->second.cab==input.cab)+
+        " viewSame="+std::to_string(prior->second.view==input.view)+
+        " dependenciesSame="+std::to_string(prior->second.dependencies==input.dependencies)+
+        " versionedRootSame="+std::to_string(prior->second.versionedRoot==input.versionedRoot));}
       else{auto inserted=stagedInputs.emplace(input.key,input);Require(inserted.second||same(inserted.first->second,input),"shared native input batch key collision");
         auto named=names_.find(input.name);Require(named==names_.end()||named->second==input.key,"shared native input name collision");
         auto stagedName=stagedNames.emplace(input.name,input.key);Require(stagedName.second||stagedName.first->second==input.key,"shared native input batch name collision");}

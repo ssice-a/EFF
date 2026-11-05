@@ -88,6 +88,7 @@ struct Api {
  void *weaponCom=nullptr,*weaponUnload=nullptr,*weaponReload=nullptr,*weaponMounts=nullptr,*weaponValid=nullptr,*componentLookup=nullptr,*audioInvalidate=nullptr;
  void *instanceId=nullptr,*parent=nullptr,*isChild=nullptr,*goTransform=nullptr;
  void *helperInited=nullptr;
+ void *cloneDone=nullptr,*cloneResults=nullptr;
  void *childCount=nullptr,*getChild=nullptr,*componentGo=nullptr,*directComponents=nullptr;
  void *partRelease=nullptr,*partLoad=nullptr,*partSetup=nullptr;
  void *uiLoad=nullptr,*uiAsyncLoad=nullptr,*uiUnload=nullptr,*uiDictionaryContains=nullptr,*uiCallbackInvoke=nullptr,*uiUntrackedGet=nullptr,*uiActiveHierarchy=nullptr;
@@ -182,12 +183,62 @@ void* Routed(void* source,const char* entry="clone") noexcept {
   if(proxyContext)return RouteProxySource(source);
  }catch(const std::exception& e){if(proxyContext)Log("[FULL-RELOAD-PROXY-GAP] reason=%s gameSourcePreserved=1",e.what());}catch(...){}return source;
 }
-void* Clone(void* source){return originalClone(Routed(source));}
-void* CloneParent(void* source,void* parent,bool world){return originalCloneParent(Routed(source),parent,world);}
-void* Instantiate(void* source,void* position,void* rotation){return originalInstantiate(Routed(source,"position"),position,rotation);}
-void* InstantiateParent(void* source,void* parent,void* position,void* rotation){return originalInstantiateParent(Routed(source,"parent-position"),parent,position,rotation);}
-void* InstantiateImmediate(void* source,void* parent,bool world){return originalInstantiateImmediate(Routed(source,"immediate-parent"),parent,world);}
-void* InstantiateAsync(void* source,int count,void* parent,void* position,void* rotation){return originalInstantiateAsync(Routed(source,"async-parent"),count,parent,position,rotation);}
+// Asset callbacks expose only inputs actually requested by the game. Discover
+// provenance on that exact Prefab, without filtering the shared template.
+// Weak sources never retain a Bundle or introduce a resource load.
+std::map<void*,Ref> controlledPrefabSources,pendingControlledClones;
+bool Inherits(void* object,const char* ns,const char* name);
+void ObservePrefabSource(void* source) noexcept {
+ try{
+  if(!RuntimeShapes::enabled||!RuntimeShapes::Main()||!RuntimeShapes::Alive(source)||!Inherits(source,"UnityEngine","GameObject"))return;
+  for(auto it=controlledPrefabSources.begin();it!=controlledPrefabSources.end();)if(!it->second.Get())it=controlledPrefabSources.erase(it);else ++it;
+  auto known=controlledPrefabSources.find(source);if(known!=controlledPrefabSources.end()&&known->second.Get()==source)return;
+  unsigned char inactive=1;void* args[]={RuntimeShapes::api.rendererType,&inactive};
+  auto objects=Ref::Make(RuntimeShapes::Call(RuntimeShapes::api.modelRenderers,source,args),false);size_t count=0;
+  Require(ArrayLength(objects.Get(),&count),"requested Prefab Renderer array absent");
+  for(size_t i=0;i<count;++i){void* renderer=nullptr;Require(CopyRaw((char*)objects.Get()+32+i*sizeof(void*),&renderer,sizeof(renderer)),"requested Prefab Renderer element");
+   if(!RuntimeShapes::Alive(renderer)||!RuntimeShapes::RendererKind(renderer))continue;
+   if(RuntimeShapes::Match(renderer,RuntimeShapes::SourceMesh(renderer))){controlledPrefabSources[source]=Ref::Make(source,true);return;}
+  }
+ }catch(const std::exception& e){Log("[CONTROL-RUNTIME-GAP] prefabProvenance=%s",e.what());}catch(...){}
+}
+bool ControlledCloneSource(void* source) noexcept {
+ try{if(!RuntimeShapes::enabled||!RuntimeShapes::Main())return false;
+  auto found=controlledPrefabSources.find(source);return found!=controlledPrefabSources.end()&&found->second.Get()==source&&RuntimeShapes::Alive(source);
+ }catch(...){return false;}
+}
+void* CompleteControlledClone(void* instance,bool controlled) noexcept {
+ if(controlled)try{
+  if(RuntimeShapes::Alive(instance)&&Inherits(instance,"UnityEngine","GameObject")){
+   auto ready=RuntimeShapes::RegisterModel(instance);
+   if(ready){controlledPrefabSources[instance]=Ref::Make(instance,true);
+    Log("[CONTROL-RUNTIME-CLONE] instance=%p ready=%zu sharedModState=1 sceneDiscovery=0",instance,ready);}
+  }
+ }catch(const std::exception& e){Log("[CONTROL-RUNTIME-GAP] cloneCompletion=%s",e.what());}catch(...){}
+ return instance;
+}
+void PollControlledClones() noexcept {
+ try{if(!RuntimeShapes::Main()||RuntimeShapes::registrationPaused)return;}catch(...){return;}
+ for(auto it=pendingControlledClones.begin();it!=pendingControlledClones.end();){auto current=it++;auto key=current->first;try{
+   auto operation=current->second.Get();if(!operation){pendingControlledClones.erase(key);continue;}
+   if(!RuntimeShapes::Scalar<unsigned char>(api.cloneDone,operation))continue;
+   auto results=Ref::Make(RuntimeShapes::Call(api.cloneResults,operation),false);pendingControlledClones.erase(key);
+   if(!results.Get())continue;size_t count=0;Require(ArrayLength(results.Get(),&count),"completed clone result array absent");
+   for(size_t i=0;i<count;++i){void* instance=nullptr;Require(CopyRaw((char*)results.Get()+32+i*sizeof(void*),&instance,sizeof(instance)),"completed clone result element");CompleteControlledClone(instance,true);}
+  }catch(const std::exception& e){pendingControlledClones.erase(key);Log("[CONTROL-RUNTIME-GAP] asyncCloneCompletion=%s",e.what());}
+  catch(...){pendingControlledClones.erase(key);}
+ }
+}
+void* Clone(void* source){auto routed=Routed(source);auto controlled=ControlledCloneSource(routed);return CompleteControlledClone(originalClone(routed),controlled);}
+void* CloneParent(void* source,void* parent,bool world){auto routed=Routed(source);auto controlled=ControlledCloneSource(routed);return CompleteControlledClone(originalCloneParent(routed,parent,world),controlled);}
+void* Instantiate(void* source,void* position,void* rotation){auto routed=Routed(source,"position");auto controlled=ControlledCloneSource(routed);return CompleteControlledClone(originalInstantiate(routed,position,rotation),controlled);}
+void* InstantiateParent(void* source,void* parent,void* position,void* rotation){auto routed=Routed(source,"parent-position");auto controlled=ControlledCloneSource(routed);return CompleteControlledClone(originalInstantiateParent(routed,parent,position,rotation),controlled);}
+void* InstantiateImmediate(void* source,void* parent,bool world){auto routed=Routed(source,"immediate-parent");auto controlled=ControlledCloneSource(routed);return CompleteControlledClone(originalInstantiateImmediate(routed,parent,world),controlled);}
+void* InstantiateAsync(void* source,int count,void* parent,void* position,void* rotation){
+ auto routed=Routed(source,"async-parent");auto controlled=ControlledCloneSource(routed);auto operation=originalInstantiateAsync(routed,count,parent,position,rotation);
+ if(controlled&&operation)try{pendingControlledClones[operation]=Ref::Make(operation,true);}catch(const std::exception& e){Log("[CONTROL-RUNTIME-GAP] asyncCloneTrack=%s",e.what());}
+ return operation;
+}
 void* Call(void* m,void* self=nullptr,void** args=nullptr){return RuntimeShapes::Call(m,self,args);}
 void RememberPrefabProxy(uint64_t hash,void* proxy,void* source){
  Require(hash&&proxy,"prefab cache identity is absent");auto& proxies=prefabProxiesByPath[hash];bool seen=false;
@@ -1043,6 +1094,8 @@ void Install(void** assemblies,size_t count){
   Require(Entry::Install(complexPart,"PostDealLoadedModel",{},"System.Void",false,(void*)PartFinished,(void**)&originalPartFinished),"model part lifecycle hook unavailable");
   auto effect=FindClass("Beyond.Gameplay","EffectManager",assemblies,count);api.follow=Method(effect,"ChangeEntityFollowEffect",{"Beyond.Gameplay.Core.Entity"},"System.Void",false);
   auto object=FindClass("UnityEngine","Object",assemblies,count);api.instanceId=Method(object,"GetInstanceID",{},"System.Int32",false);
+  api.cloneDone=Method(FindClass("UnityEngine","AsyncOperation",assemblies,count),"get_isDone",{},"System.Boolean",false);
+  api.cloneResults=Method(FindClass("UnityEngine","AsyncInstantiateOperation",assemblies,count),"get_Result",{},"UnityEngine.Object[]",false);
   auto transform=FindClass("UnityEngine","Transform",assemblies,count);api.isChild=Method(transform,"IsChildOf",{"UnityEngine.Transform"},"System.Boolean",false);api.parent=Method(transform,"get_parent",{},"UnityEngine.Transform",false);
 #if defined(EIEM_DIAGNOSTICS)
   try{

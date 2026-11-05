@@ -1,6 +1,7 @@
 #pragma once
 
 void CommitPendingReload() {
+  FullResourceReload::PollControlledClones();
   DemandGenerationReload::Frame();
   NativeBundle::CollectMemory();
   ::Entry::EffectDebug::Frame();

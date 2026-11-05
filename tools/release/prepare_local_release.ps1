@@ -162,6 +162,8 @@ try {
     Invoke-Checked 'dotnet' @('run', '--project', 'tools/AnimeStudio/AnimeStudio.UpdateTests/AnimeStudio.UpdateTests.csproj', '-c', 'Release', '-p:TargetFrameworks=net9.0-windows') 'AnimeStudio source update regression suite'
     Invoke-Checked 'python' @('-m', 'unittest', 'discover', '-s', 'tools/release', '-v') 'Release packaging regression suite'
     Invoke-BuiltSmoke 'tools\diagnostics\build_full_resource_reload_smoke.cmd' 'bin/resource-directory-entry-v35/full_resource_reload_smoke.exe'
+    Invoke-BuiltSmoke 'tools\diagnostics\build_runtime_author_manifest_smoke.cmd' 'bin/runtime-author-manifest/runtime_author_manifest_smoke.exe'
+    Invoke-Checked 'python' @('tools/Blender/test_author_format3.py') 'Logical Mesh route export and publication regressions'
     Invoke-Checked 'cmd.exe' @('/d', '/c', 'tools\diagnostics\build_demand_generation_diff_smoke.cmd') 'Demand generation diff regression build and run'
     Invoke-Checked 'cmd.exe' @('/d', '/c', 'tools\diagnostics\build_demand_resource_regressions.cmd') 'Demand resource regression build'
     Invoke-Checked 'cmd.exe' @('/d', '/c', 'tools\diagnostics\build_native_random_access_smoke.cmd') 'Demand native stream and live author replacement regressions'

@@ -66,7 +66,7 @@ ManifestState State(void* manifest){
  ManifestState state;il2cpp_field_get_value(manifest,api.manifestData,&state.data);
  if(state.data){il2cpp_field_get_value(state.data,api.mappedBase,&state.address);il2cpp_field_get_value(state.data,api.mappedLength,&state.length);}return state;
 }
-std::map<std::string,uint64_t> ManifestKeys(void* manifest,const ManifestState& state,const Names& graph){
+std::map<std::string,uint64_t> ManifestKeys(void* manifest,const ManifestState& state,const Names& graph,bool requireAll=true){
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::DependencyIndex);
  auto start=std::chrono::steady_clock::now();
  Require(state.data&&state.address&&state.length>0&&uint64_t(state.length)<=UINTPTR_MAX-state.address,"manifest mapped range absent");
@@ -87,7 +87,7 @@ std::map<std::string,uint64_t> ManifestKeys(void* manifest,const ManifestState& 
   auto found=wanted.find(label);if(found==wanted.end())continue;uint64_t key=0;memcpy(&key,row+api.bundleKeyOffset,sizeof(key));
   auto inserted=result.emplace(found->second,key);Require(inserted.second||inserted.first->second==key,"ambiguous manifest Bundle name");
  }
- Require(result.size()==wanted.size(),"compiled Bundle absent from game manifest (matched="+std::to_string(result.size())+" required="+std::to_string(wanted.size())+")");
+ Require(!requireAll||result.size()==wanted.size(),"compiled Bundle absent from game manifest (matched="+std::to_string(result.size())+" required="+std::to_string(wanted.size())+")");
  for(const auto& row:result){auto value=row.second;void* args[]={&value};Require(String(Call(api.bundleName,manifest,args))==row.first,"manifest Bundle key/name round trip differs: "+row.first);}
  Log("[STARTUP-DEPENDENCY-KEYS] manifestBundles=%d selectedNames=%zu nativeStoredKeys=1 indexMs=%.3f",count,result.size(),std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());
  return result;

@@ -1,4 +1,19 @@
-# EFF v2.0.7
+# EFF v2.0.8
+
+本次为剧情加载、武器替换及共享资源生命周期修复版。配套 EFF Blender 0.50.5（continuous 通道）、EFF Mod Manager v0.2.3、AnimeStudio v1.9.2；Windows x64，运行时仍只接受 Format 3。
+
+- 修复大型剧情 Prefab 检查时重复解压相同数据块、耗尽累计读取预算而导致转场黑屏的问题；按源位置读取所需字段，不增加缓存或读取上限。准备失败时仍保留游戏自身获取 BundleProxy 的调用语义。
+- 补齐剧情 Timeline 直接克隆实例的控制登记，使其继承同一 Mod 的当前开关状态；保持游戏自身的隐藏状态，不扫描场景。
+- 修复依赖型静态武器 Mesh 缺少公开资源入口时未登记路由的问题。Blender 导出精确的来源 Bundle 声明，运行时仍按完整逻辑路径和子资源身份验证。
+- 修复武器详情页内嵌材质寻址，以及同包贴图回指原 Prefab 形成的依赖环；保留材质实际引用的本地资源闭包和流式贴图范围。本机同一武器详情页已由用户反馈替换生效。
+- 修复不同消费者复用共享输入时丢失材质依赖声明的冲突；补齐游戏卸载合成 Bundle 时的直接依赖引用释放，继续由游戏管理共享引用生命周期。
+- 继续只准备游戏实际命中的替换资源，不批量预载 Mod；新增逻辑路由、内嵌材质/贴图闭包、跨消费者共享及卸载生命周期回归。
+
+共享工具包：`EFF_Shared_Native_Tools_v2.0.8.zip`。武器导出请同时更新 Blender continuous 插件和共享工具；新增 Bundle 路由声明需要本版运行时支持。
+
+已知边界：部分 lx UI 粒子实例仍会记录 `renderInUI` 设置未生效的告警，粒子模拟可继续，实际绘制需单独核验；本版不宣称解决该问题。原剧情的完整播放、剧情/世界按键同步及长期切图回收仍需更多实机场景验证。Tangtang 水特效的完整技能时间轴、其它 VAT 类型与蒙皮预览不属于本次修复承诺；约 20 秒加载的责任归因也未完成严格对照。
+
+## EFF v2.0.7
 
 配套 EFF Blender 0.50.4（continuous 通道）、EFF Mod Manager v0.2.3、AnimeStudio v1.9.2；Windows x64。运行时仍只接受 Format 3。
 
@@ -57,7 +72,7 @@
 
 ## 安装与迁移
 
-退出游戏后，将 EFF_v2.0.3_dll.zip 解压到游戏根目录。保留个人 plugin/eff.ini、plugin/mods 与 state.ini。旧 Mod 先用 EFF Mod Manager v0.2.0 迁移为 Format 3，或用配套 Blender 重新导出。共享作者工具供离线作者与迁移工具使用，无需安装到游戏目录。
+退出游戏后，将 EFF_v2.0.8_dll.zip 解压到游戏根目录。保留个人 plugin/eff.ini、plugin/mods 与 state.ini。旧 Mod 先用 EFF Mod Manager v0.2.3 迁移为 Format 3，或用配套 Blender 重新导出。共享作者工具供离线作者与迁移工具使用，无需安装到游戏目录。
 
 ## 验证
 

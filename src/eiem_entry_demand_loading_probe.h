@@ -71,6 +71,8 @@ struct InstalledGeneration {
   std::shared_ptr<const std::vector<Package>> standalone;
   EiemDemandGenerationDiff::Snapshot snapshot;
   EiemDemandGenerationDiff::Delta delta;
+  std::set<std::string> deltaBundles;
+  std::map<Identity,std::set<std::string>> deltaRoutes;
 };
 // Immutable declarations are shared between manifest generations. Opening
 // them never opens Mesh/Texture/effect payloads or old compiled consumers.
@@ -112,7 +114,7 @@ void PrepareReplacement(uint64_t token,uint64_t scope,R::Reader& reader,const st
       phase("match-target-meshes");
       std::map<std::string,AssetIndex> selectedByMod;std::map<std::string,std::set<size_t>> bindingIndices;auto hashes=reader.HashAssets(member,layout);std::vector<Asset> names;
       for(size_t bi=0;bi<manifest->bindings.size();++bi){const auto& binding=manifest->bindings[bi];if(binding.bundle!=record.bundle)continue;const auto& target=manifest->catalog->targets.at(binding.target);
-        const EiemNativeInput::Asset* selected=nullptr;auto hashed=hashes.find(binding.asset);if(hashed!=hashes.end()&&hashed->second.classId==43&&nativeName(hashed->second.cab)==nativeName(member.name))selected=&hashed->second;
+        const EiemNativeInput::Asset* selected=nullptr;auto hashed=hashes.find(binding.asset);if(binding.asset&&hashed!=hashes.end()&&hashed->second.classId==43&&nativeName(hashed->second.cab)==nativeName(member.name))selected=&hashed->second;
         if(!selected){if(names.empty())names=reader.Assets(member,layout);for(const auto& candidate:names)if(candidate.classId==43&&candidate.cab==member.name&&nativeName(candidate.path)==nativeName(target.source.path)&&candidate.asset==target.source.asset){selected=&candidate;break;}}
         if(!selected)continue;auto asset=*selected;asset.path=target.source.path;asset.asset=target.source.asset;
         if(target.skip)Log("[DEMAND-SKIP-MESH] token=%llu mod=%s target=%s#%s cab=%s pathId=%lld",token,target.mod.c_str(),target.source.path.c_str(),target.source.asset.c_str(),asset.cab.c_str(),asset.pathId);
@@ -219,7 +221,7 @@ void VerifyAsset(uint64_t token,void* object){
     const auto& expected=row.second.author->package.meshes.at(partId);
     auto vertices=RuntimeShapes::Scalar<int>(RuntimeShapes::api.vertexCount,mesh);auto shapes=RuntimeShapes::Scalar<int>(RuntimeShapes::api.shapeCount,mesh);
     auto poses=Ref::Make(Call(RuntimeShapes::api.bindPoses,mesh),false);size_t bindCount=0;Require(ArrayLength(poses.Get(),&bindCount),"demand native bindpose readback absent");
-    size_t boneCount=0;if(renderer){auto bones=Ref::Make(Call(RuntimeShapes::api.bones,renderer),false);Require(ArrayLength(bones.Get(),&boneCount),"demand native Renderer bones absent");}
+    size_t boneCount=0;if(renderer&&RuntimeShapes::RendererKind(renderer)==137){auto bones=Ref::Make(Call(RuntimeShapes::api.bones,renderer),false);Require(ArrayLength(bones.Get(),&boneCount),"demand native Renderer bones absent");}
     Identity source;bool hasSource=false;for(const auto& target:row.second.author->package.targetIndex){const auto& rule=row.second.author->package.rules.at(target.second);
       if(std::find(rule.parts.begin(),rule.parts.end(),partId)!=rule.parts.end()){source=target.first;hasSource=true;break;}}
     Require(hasSource,"native readback part has no source Mesh target");auto native=row.second.targets.find(source);Require(native!=row.second.targets.end(),"native readback source Mesh identity is absent");
@@ -256,7 +258,7 @@ void VerifyAsset(uint64_t token,void* object){
   }
   };
   if(!strcmp(name,"Mesh"))check(object,nullptr);
-  for(auto renderer:renderers)check(Call(RuntimeShapes::api.mesh,renderer),renderer);
+  for(auto renderer:renderers)if(RuntimeShapes::RendererKind(renderer))check(RuntimeShapes::SourceMesh(renderer),renderer);
 }
 #endif
 void PruneSharedLocked();
@@ -307,17 +309,37 @@ std::shared_ptr<Manifest> Current(void* object) {
   state->catalog=catalog;
 #endif
   auto begin=std::chrono::steady_clock::now();
+  StartupDependencies::Names hintNames;
+  for(const auto& target:activeTargets)if(!target.bundle.empty())hintNames[target.bundle];
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+  for(const auto& name:catalog->deltaBundles)hintNames[name];
+#endif
+  std::map<std::string,uint64_t> hintKeys;
+  if(!hintNames.empty())try{hintKeys=StartupDependencies::ManifestKeys(object,StartupDependencies::State(object),hintNames,false);}
+  catch(const std::exception& e){Log("[DEMAND-TARGET-ROUTE-GAP] scope=%llu reason=%s",state->serial,e.what());}
   for(size_t i=0;i<activeTargets.size();++i){const auto& source=activeTargets[i].source;Bytes info(api.packSize);bool found=false;
+    const auto& hint=activeTargets[i].bundle;auto hinted=hintKeys.find(hint);
+    if(!hint.empty()&&hinted!=hintKeys.end()){
+      // Some dependency-only Meshes have no standalone RuntimeManifest asset
+      // entry. A logical Bundle route locates their current native input; the
+      // payload is still opened only on a game request, then path+asset checked.
+      state->bindings.push_back({i,hinted->second,0});state->bundles.insert(hinted->second);
+      Log("[DEMAND-TARGET-BUNDLE-ROUTE] scope=%llu mod=%s target=%s#%s logical=%s bundle=%016llX payloadBytes=0",
+        state->serial,activeTargets[i].mod.c_str(),source.path.c_str(),source.asset.c_str(),hint.c_str(),hinted->second);continue;
+    }
     if(source.path.size()>=4&&source.path.substr(source.path.size()-4)==".fbx"){
       auto path=Ref::Make(il2cpp_string_new(source.path.c_str()),false),name=Ref::Make(il2cpp_string_new(source.asset.c_str()),false);void* args[]={path.Get(),info.data(),name.Get()};found=RuntimeShapes::Scalar<unsigned char>(api.subLookup,object,args)!=0;
     }else{auto path=FullResourceReload::Path(source.path);uint64_t hash=0;il2cpp_field_get_value(path.Get(),FullResourceReload::api.pathHashField,&hash);void* args[]={&hash,info.data()};found=RuntimeShapes::Scalar<unsigned char>(api.lookup,object,args)!=0;}
-    if(!found){if(activeTargets[i].skip)Log("[DEMAND-SKIP-MANIFEST] scope=%llu mod=%s target=%s#%s resolved=0",state->serial,activeTargets[i].mod.c_str(),source.path.c_str(),source.asset.c_str());continue;}
+    if(!found){Log("[DEMAND-TARGET-UNRESOLVED] scope=%llu mod=%s target=%s#%s bundleHint=%s replacementUnavailable=1",state->serial,activeTargets[i].mod.c_str(),source.path.c_str(),source.asset.c_str(),hint.c_str());if(activeTargets[i].skip)Log("[DEMAND-SKIP-MANIFEST] scope=%llu mod=%s target=%s#%s resolved=0",state->serial,activeTargets[i].mod.c_str(),source.path.c_str(),source.asset.c_str());continue;}
     Binding binding;binding.target=i;std::memcpy(&binding.bundle,info.data()+api.bundleOffset,8);std::memcpy(&binding.asset,info.data()+api.assetOffset,8);state->bindings.push_back(binding);state->bundles.insert(binding.bundle);
     if(activeTargets[i].skip)Log("[DEMAND-SKIP-MANIFEST] scope=%llu mod=%s target=%s#%s resolved=1 bundle=%016llX asset=%016llX",state->serial,activeTargets[i].mod.c_str(),source.path.c_str(),source.asset.c_str(),binding.bundle,binding.asset);
   }
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+  for(const auto& name:catalog->deltaBundles){auto key=hintKeys.find(name);if(key!=hintKeys.end())state->bundles.insert(key->second);}
   EiemDemandGenerationRoutes::IncludeTargetRoots(state->bundles,catalog->delta.targets,
     [&](const std::string& path,const std::string& asset){
+      auto routed=catalog->deltaRoutes.find({path,asset});
+      if(routed!=catalog->deltaRoutes.end())for(const auto& name:routed->second)if(hintKeys.count(name))return uint64_t(0);
       Bytes info(api.packSize);bool found=false;
       if(path.size()>=4&&path.substr(path.size()-4)==".fbx"){
         auto sourcePath=Ref::Make(il2cpp_string_new(path.c_str()),false),name=Ref::Make(il2cpp_string_new(asset.c_str()),false);
@@ -578,6 +600,7 @@ void AssetSubmitted(void* bundle,void* result,bool asynchronous) noexcept {
       if(requests.size()<8192)requests[result]={std::move(weak),token,std::chrono::steady_clock::now(),std::move(lease)};else {++gaps;LogGap("asset-submit-track","request map capacity exceeded");}}
     else {if(++candidateAssetCompletions<=256)Log("[DEMAND-PROBE-ASSET-COMPLETE] token=%llu async=0 object=%p",token,result);
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+      FullResourceReload::ObservePrefabSource(result);
       VerifyAsset(token,result);
 #endif
     }
@@ -588,7 +611,7 @@ void AssetCompleted(void* request,void* object) noexcept {
     if(found!=requests.end()&&found->second.weak.Get()==request){token=found->second.token;started=found->second.submittedAt;if(++candidateAssetCompletions<=256)Log("[DEMAND-PROBE-ASSET-COMPLETE] token=%llu async=1 request=%p object=%p",token,request,object);requests.erase(found);}}
     if(token&&started.time_since_epoch().count())LogTiming(token,"asset-async-complete",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count(),"async=1");
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
-    if(token)VerifyAsset(token,object);
+    if(token){FullResourceReload::ObservePrefabSource(object);VerifyAsset(token,object);}
 #endif
   }catch(const std::exception& e){++gaps;LogGap("asset-complete",e.what());}catch(...){++gaps;LogGap("asset-complete","unknown");}
 }
@@ -636,9 +659,8 @@ std::shared_ptr<const InstalledGeneration> BuildInstalledGeneration(
       mod=catalog->Directory().mod;auto author=std::make_shared<N::Author>(std::move(catalog));author->package.root=root;
       EiemDemandGenerationDiff::Mod fingerprint;fingerprint.root=author->catalog->Root().generic_u8string();
       fingerprint.files=author->catalog->FileFingerprints();
-      std::vector<EiemMeshTargetDirectory::Target> modTargets;
+      auto modTargets=author->catalog->Targets();
       for(const auto& rule:author->package.rules)for(const auto& target:rule.second.targets){
-        EiemMeshTargetDirectory::Target row;row.mod=mod;row.root=root;row.rule=rule.first;row.source=target.second;row.lod=target.first;row.partIds=rule.second.parts;row.parts=row.partIds.size();row.skip=rule.second.skip;modTargets.push_back(std::move(row));
         EiemDemandGenerationDiff::Target diff;diff.rule=rule.first;diff.lod=target.first;diff.path=target.second.path;diff.asset=target.second.asset;diff.parts.insert(rule.second.parts.begin(),rule.second.parts.end());diff.skip=rule.second.skip;fingerprint.targets.insert(std::move(diff));
       }
       Require(!next.count(mod),"duplicate native Mod id");
@@ -651,6 +673,9 @@ std::shared_ptr<const InstalledGeneration> BuildInstalledGeneration(
   }
   auto result=std::make_shared<InstalledGeneration>();result->serial=++installedGenerationSerial;result->authors=std::move(next);result->targets=std::move(selected);result->packages=graph;result->snapshot=std::move(snapshot);
   auto previous=std::atomic_load(&installedGeneration);result->delta=EiemDemandGenerationDiff::Compare(previous?previous->snapshot:EiemDemandGenerationDiff::Snapshot{},result->snapshot);
+  auto retainRoutes=[&](const auto& targets){for(const auto& target:targets)if(!target.bundle.empty()&&result->delta.targets.count({target.source.path,target.source.asset})){
+    result->deltaBundles.insert(target.bundle);result->deltaRoutes[target.source].insert(target.bundle);}};
+  retainRoutes(result->targets);if(previous)retainRoutes(previous->targets);
   if(expectedPackages){
     std::set<std::string> expectedIds;
     for(const auto& package:*expectedPackages){

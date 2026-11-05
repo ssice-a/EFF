@@ -159,7 +159,7 @@ def read_package(root, resource_cache=None):
             bindings.append(dict(id=name, key=values["key"], type=values["type"], variable=variable,
                                  values=numbers, speed=speed, label=values.get("label", "")))
         elif name.startswith("Replace"):
-            values = keys(name, ("target.path", "target.asset"), ("parts", "handling"), ("lod.",))
+            values = keys(name, ("target.path", "target.asset"), ("parts", "handling", "target.bundle"), ("lod.",))
             hidden = values.get("handling") == "skip"
             require(values.get("handling") in (None, "skip") and hidden == ("parts" not in values),
                     "rule must declare parts or handling=skip")
@@ -170,11 +170,11 @@ def read_package(root, resource_cache=None):
             for key, value in values.items():
                 if not key.startswith("lod."):
                     continue
-                match = re.fullmatch(r"lod\.([1-9][0-9]*)\.(path|asset)", key)
+                match = re.fullmatch(r"lod\.([1-9][0-9]*)\.(path|asset|bundle)", key)
                 require(match, "invalid LOD declaration")
                 lods.setdefault(int(match[1]), {})[match[2]] = value
             for level, target in sorted(lods.items()):
-                require(set(target) == {"path", "asset"}, "incomplete LOD identity")
+                require({"path", "asset"} <= set(target) <= {"path", "asset", "bundle"}, "incomplete LOD identity")
                 targets.append(dict(level=level, sourcePath=target["path"], sourceAsset=target["asset"]))
             rules.append(dict(id=name, sourcePath=values["target.path"], sourceAsset=values["target.asset"],
                     hidden=hidden, parts=part_ids, targets=targets))

@@ -60,8 +60,14 @@ template<class Project> inline std::vector<MeshConsumer> ProjectedMeshConsumers(
   std::set<NativeReference> lookup=selected;
   if(canonical){lookup.clear();for(auto reference:selected){reference.first=canonical(std::move(reference.first));lookup.insert(std::move(reference));}}
   std::vector<MeshConsumer> result;
-  for(auto id:layout.order){const auto& type=layout.types.at(layout.objects.at(id).type);
-    if(type.classId!=137&&type.classId!=33)continue;
+  std::vector<int64_t> ordered;std::map<int64_t,size_t> ordinals;
+  for(auto id:layout.order){const auto kind=layout.types.at(layout.objects.at(id).type).classId;
+    if(kind==137||kind==33){ordinals.emplace(id,ordered.size());ordered.push_back(id);}}
+  std::sort(ordered.begin(),ordered.end(),[&](int64_t a,int64_t b){
+    const auto left=layout.objects.at(a).offset,right=layout.objects.at(b).offset;
+    return left!=right?left<right:ordinals.at(a)<ordinals.at(b);
+  });
+  for(auto id:ordered){const auto& type=layout.types.at(layout.objects.at(id).type);
     auto value=project(id,{"m_Mesh","m_GameObject"});auto mesh=NullableReference(type,Child(type,value,"m_Mesh"),layout,cab);
     auto key=mesh;if(canonical)key.first=canonical(key.first);
     if(!mesh.second||!lookup.count(key))continue;
@@ -85,7 +91,12 @@ template<class Project> inline std::vector<MeshConsumer> ProjectedMeshConsumers(
     if(!renderers)continue; // A MeshFilter alone is not a visual consumer.
     Require(renderers==1,"static MeshFilter has multiple referenced MeshRenderers");
     result.push_back({renderer,id,mesh});
-  }return result;
+  }
+  // IO order must not change consumer/part ordering or allocated identities.
+  std::sort(result.begin(),result.end(),[&](const auto& a,const auto& b){
+    return ordinals.at(a.filter?a.filter:a.renderer)<ordinals.at(b.filter?b.filter:b.renderer);
+  });
+  return result;
 }
 inline std::vector<MeshConsumer> MeshConsumers(const Bytes& bytes,const SerializedLayout& layout,
     const std::string& cab,const std::set<NativeReference>& selected,std::string (*canonical)(std::string)=nullptr) {
@@ -457,8 +468,20 @@ class RendererMemberBuilder {
     return candidates.front();
   }
   void Hierarchy() {
-    for (auto id : layout.order) {
-      if (!IsTransformClass(Schema(id).classId)) continue;
+    // PathID order is unrelated to payload/block order in large cutscene
+    // members. Keep the same projected values, but read each hierarchy pass
+    // in source order so a bounded decoded-block cache can make progress.
+    auto sourceOrder=[&](std::vector<int64_t>& ids){
+      std::sort(ids.begin(),ids.end(),[&](int64_t a,int64_t b){
+        const auto left=layout.objects.at(a).offset,right=layout.objects.at(b).offset;
+        return left!=right?left<right:a<b;
+      });
+    };
+    std::vector<int64_t> ordered;
+    for(auto id:layout.order)if(IsTransformClass(Schema(id).classId))ordered.push_back(id);
+    sourceOrder(ordered);
+    std::vector<int64_t> namedOwners;
+    for (auto id : ordered) {
       const auto& type = Schema(id);
       const auto& tree = InspectHierarchy(id);
       auto owner = Local(type, Child(type, tree, "m_GameObject"), 1);
@@ -466,7 +489,10 @@ class RendererMemberBuilder {
       auto parent = NullableReference(type, Child(type, tree, "m_Father"), layout, cab);
       Require(parent.first == cab && (!parent.second || IsTransformClass(Schema(parent.second).classId)), "nonlocal/invalid Transform parent");
       parents[id] = parent.second;
+      if(parent.second)namedOwners.push_back(owner);
     }
+    sourceOrder(namedOwners);
+    for(auto owner:namedOwners)InspectHierarchy(owner);
     std::set<int64_t> visiting;
     std::function<void(int64_t)> visit = [&](int64_t id) {
       if (roots.count(id)) return;

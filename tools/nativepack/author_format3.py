@@ -473,7 +473,7 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
                             switches, material_clips, effects, physics=(),
                             author_files=None, state_defaults=None,
                             persistent_states=None, key_bindings=None,
-                            key_switch_enabled=True):
+                            key_switch_enabled=True, target_bundles=None):
     """Write one final Format 3 author directory from typed Blender records."""
     import hashlib
     import os
@@ -482,6 +482,7 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
     require(root.is_dir(), "Format 3 output directory must exist")
     mod_id = _identifier(mod_id)
     author_files = dict(author_files or {})
+    target_bundles = dict(target_bundles or {})
     ini = configparser.ConfigParser(interpolation=None, delimiters=("=",), strict=True)
     ini.optionxform = str
     ini["Mod"] = {"format": "3", "id": mod_id,
@@ -569,6 +570,8 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         base = min(rule["targets"], key=lambda row: row["level"])
         section = _identifier("Replace" + base["sourceAsset"])
         values = {"target.path": base["sourcePath"], "target.asset": base["sourceAsset"]}
+        bundle = target_bundles.get((base["sourcePath"], base["sourceAsset"]))
+        if bundle: values["target.bundle"] = bundle
         if rule["hidden"]: values["handling"] = "skip"
         else: values["parts"] = ",".join(ids_by_part[row] for row in rule["parts"])
         levels = set()
@@ -579,6 +582,8 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
             if level:
                 values["lod." + str(level) + ".path"] = target["sourcePath"]
                 values["lod." + str(level) + ".asset"] = target["sourceAsset"]
+                bundle = target_bundles.get((target["sourcePath"], target["sourceAsset"]))
+                if bundle: values["lod." + str(level) + ".bundle"] = bundle
         require(0 in levels, "Format 3 Replace target lacks LOD0")
         ini[section] = values
 
@@ -682,6 +687,25 @@ def _template(source, kind, path, asset, resource, verified_snapshots):
         require(_digest(snapshot) == key[1], "EFFSOURCE snapshot checksum differs: " + native["cab"])
         verified_snapshots.add(key)
     return [kind, path, asset, native["cab"], str(native["pathId"]), str(snapshot), file["snapshot"]["sha256"]], file
+
+
+def resolve_target_bundles(sources, rules):
+    """Route exact Mesh identities, including dependency-only static meshes."""
+    wanted = {(target["sourcePath"], target["sourceAsset"])
+              for rule in rules for target in rule["targets"]}
+    result = {}
+    for source in sources:
+        for resource in source.manifest["resources"]:
+            identity = resource.get("logicalPath"), resource.get("name")
+            if resource.get("type") != "Mesh" or identity not in wanted:
+                continue
+            bundle = str(resource.get("sourceBundle", "")).replace("\\", "/").lower()
+            require(bundle.startswith("bundles/windows/") and bundle.endswith(".ab") and
+                    all(part not in (".", "..") for part in bundle.split("/")),
+                    "Mesh source lacks a valid logical Bundle route: " + repr(identity))
+            prior = result.setdefault(identity, bundle)
+            require(prior == bundle, "conflicting logical Mesh Bundle routes: " + repr(identity))
+    return result
 
 
 def resolve_templates(sources, rules, *, include_texture=False, additional=()):
@@ -873,7 +897,7 @@ def _validate_physics_resource(root, relative, section, ini, payload_bytes):
         for key in values:
             if not key.startswith("lod."):
                 continue
-            match = re.fullmatch(r"lod\.([1-9][0-9]*)\.(path|asset)", key)
+            match = re.fullmatch(r"lod\.([1-9][0-9]*)\.(path|asset|bundle)", key)
             require(match, "format-3 Physics rule has an invalid LOD target: " + rule)
             lod_levels.add(match.group(1))
         for level in lod_levels:

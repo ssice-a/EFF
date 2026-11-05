@@ -35,6 +35,17 @@ int main() {
     Require(manifest.targets.front().source.path ==
                 "packages/com.hg.game/runtime/characters/body.asset",
             "Format 3 Mesh package target identity was not preserved");
+    {
+      auto routed=ini;auto pos=routed.find("target.asset=Body\n");
+      routed.insert(pos+std::string("target.asset=Body\n").size(),
+        "target.bundle=Bundles/Windows/main/weapon.ab\nlod.1.path=assets/weapon.fbx\nlod.1.asset=LOD1\nlod.1.bundle=Bundles/Windows/main/weapon-lod.ab\n");
+      {std::ofstream output(root/"mod.ini",std::ios::binary);output<<routed;}
+      auto targets=EiemRuntimeAuthorManifest::Read(root).targets;
+      Require(targets.size()==2,"dependency-only Mesh route lost an LOD target");
+      Require(targets[0].bundle=="main/weapon.ab"&&targets[1].bundle=="main/weapon-lod.ab",
+        "dependency-only Mesh route changed its logical Bundle identity");
+      {std::ofstream output(root/"mod.ini",std::ios::binary);output<<ini;}
+    }
     Require(manifest.resources.at("TextureBody").dds == "editable/custom/body.dds",
             "user-selected DDS path was not preserved");
     Require(manifest.resources.at("MaterialBody").source.path ==

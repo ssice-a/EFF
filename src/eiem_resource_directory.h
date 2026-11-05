@@ -683,7 +683,7 @@ inline Package LoadImpl(const std::filesystem::path& directory,const Package* ve
         Require(b.values.size() == 1, "press/hold requires one target");
       p.bindings.push_back(std::move(b));
     } else if (Begins(s.id, "Replace")) {
-      Keys(s, {"target.path", "target.asset"}, {"parts", "handling"}, {"lod."});
+      Keys(s, {"target.path", "target.asset"}, {"parts", "handling", "target.bundle"}, {"lod."});
       Rule rule;
       rule.skip = v.count("handling") != 0;
       Require(!rule.skip || v.at("handling") == "skip", "unknown handling");
@@ -700,12 +700,13 @@ inline Package LoadImpl(const std::filesystem::path& directory,const Package* ve
         if (Begins(row.first, "lod.")) {
           std::smatch match;
           Require(
-              std::regex_match(row.first, match, std::regex("lod\\.([1-9][0-9]*)\\.(path|asset)")),
+              std::regex_match(row.first, match, std::regex("lod\\.([1-9][0-9]*)\\.(path|asset|bundle)")),
               "invalid LOD key");
           lods[Integer(match[1])][match[2]] = row.second;
         }
       for (const auto& lod : lods) {
-        Require(lod.second.size() == 2, "incomplete LOD identity");
+        Require(lod.second.count("path")&&lod.second.count("asset")&&
+          (lod.second.size()==2||(lod.second.size()==3&&lod.second.count("bundle"))), "incomplete LOD identity");
         rule.targets.emplace(lod.first, Source(lod.second, ""));
       }
       for (const auto& target : rule.targets)

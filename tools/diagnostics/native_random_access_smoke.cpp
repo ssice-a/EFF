@@ -9,13 +9,79 @@
 #include "../../src/eiem_native_splice_view.h"
 #include "../../src/eiem_native_object_graft.h"
 #include "../../src/eiem_demand_native_assembly.h"
+#include "../../src/eiem_demand_material_build.h"
 #include <chrono>
+#include <random>
 
 namespace R=EiemNativeRandomAccess;
 namespace S=EiemNativeSpliceView;
 template<class F> void RejectRead(F&& f,const char* label) {
   bool rejected=false;try{f();}catch(const std::exception&){rejected=true;}
   Require(rejected,std::string("invalid partial input accepted: ")+label);
+}
+void ExactContainerPreloads() {
+  Fixture fixture;SetString(fixture.T(200),Child(fixture.T(200),fixture.V(200),"m_Name"),"Water");
+  for(int64_t id:{201,202}){fixture.Add(id,6);SetString(fixture.T(id),Child(fixture.T(id),fixture.V(id),"m_Name"),"Water");}
+  fixture.SetList(300,"m_PreloadTable",{10,200,200,20,201});
+  auto& container=ArrayValue(fixture.T(300),Child(fixture.T(300),fixture.V(300),"m_Container"));
+  for(auto& row:container.children){auto& info=Child(fixture.T(300),row,"second");const auto& name=Child(fixture.T(300),row,"first");
+    auto path=Text(name.raw.data(),name.raw.size());
+    SetInteger(fixture.T(300),Child(fixture.T(300),info,"preloadIndex"),path=="assets/a.prefab"?0:3);
+    SetInteger(fixture.T(300),Child(fixture.T(300),info,"preloadSize"),path=="assets/a.prefab"?3:path=="assets/b.prefab"?2:0);
+  }
+  auto inspect=[&](const char* path){auto input=Bundle(fixture.BytesOf(),fixture.cab);
+    R::Reader reader(input.size(),[&](size_t at,unsigned char* out,size_t size){std::memcpy(out,input.data()+at,size);});
+    const auto& member=reader.directory.members.at(0);auto layout=reader.Layout(member);
+    return reader.ContainerPreloads(member,layout,path);
+  };
+  Require(inspect("assets/a.prefab")==std::vector<NativeReference>{{fixture.cab,10},{fixture.cab,200}},
+    "prefab preload lookup lost exact path ownership or failed to deduplicate repeated Material references");
+  Require(inspect("assets/b.prefab")==std::vector<NativeReference>{{fixture.cab,20},{fixture.cab,201}},
+    "same-name Material from another prefab entered the requested container scope");
+  Require(inspect("assets/missing.prefab").empty(),"missing prefab fell back to unrelated named objects");
+  auto& info=Child(fixture.T(300),container.children[0],"second");
+  SetInteger(fixture.T(300),Child(fixture.T(300),info,"preloadSize"),6);
+  RejectRead([&]{inspect("assets/a.prefab");},"container preload size");
+  Require(inspect("assets/b.prefab").size()==2,"invalid unrelated container blocked an exact valid preload range");
+  SetInteger(fixture.T(300),Child(fixture.T(300),info,"preloadSize"),0);
+  SetInteger(fixture.T(300),Child(fixture.T(300),info,"preloadIndex"),uint64_t(-1));
+  RejectRead([&]{inspect("assets/a.prefab");},"negative container preload index");
+  std::cout<<"PASS exact container preload ownership, same-name prefab isolation, duplicate references and invalid ranges\n";
+}
+void EmbeddedMaterialClosure() {
+  Fixture fixture;fixture.types[6]=Schema(21,{{"string","m_Name",{}},Ref("m_Shader"),
+    {"Properties","m_SavedProperties",{Arr("m_TexEnvs",{"pair","data",{{"string","first",{}},{"TexEnv","second",{Ref("m_Texture")}}}})}}});
+  fixture.objects.at(200).second=EmptyValue(fixture.types[6],0);
+  SetString(fixture.T(200),Child(fixture.T(200),fixture.V(200),"m_Name"),"Water");
+  SetReference(fixture.T(200),Child(fixture.T(200),fixture.V(200),"m_Shader"),{"CAB-shader",700},fixture.refs,fixture.cab);
+  auto textureType=fixture.types.size();fixture.types.push_back(Schema(28,{{"string","m_Name",{}},
+    {"StreamingInfo","m_StreamData",{{"UInt64","offset",{}},{"UInt32","size",{}},{"string","path",{}}}}}));
+  for(int64_t id:{201,202}){fixture.Add(id,textureType);SetString(fixture.T(id),Child(fixture.T(id),fixture.V(id),"m_Name"),"NativeWater");}
+  const auto& type=fixture.T(201);auto& stream=Child(type,fixture.V(201),"m_StreamData");
+  SetInteger(type,Child(type,stream,"offset"),5);SetInteger(type,Child(type,stream,"size"),11);
+  SetString(type,Child(type,stream,"path"),"archive:/"+fixture.cab+"/"+fixture.cab+".resS");
+  const auto& materialType=fixture.T(200);auto& list=ArrayValue(materialType,Child(materialType,Child(materialType,fixture.V(200),"m_SavedProperties"),"m_TexEnvs"));
+  auto texture=ArrayElement(materialType,list);SetString(materialType,Child(materialType,texture,"first"),"_MainTex");
+  SetReference(materialType,Child(materialType,Child(materialType,texture,"second"),"m_Texture"),{fixture.cab,201},fixture.refs,fixture.cab);list.children={texture};list.count=1;
+  Bytes pixels(1024*1024);for(size_t i=0;i<pixels.size();++i)pixels[i]=uint8_t(i*7);
+  auto source=EndfieldInput::Encode(EiemAuthorMeshBundle::EnvelopeHeader(),{{fixture.cab,4,fixture.BytesOf()},{fixture.cab+".resS",0,pixels}});
+  R::Reader reader(source.size(),[&](size_t at,unsigned char* out,size_t size){std::memcpy(out,source.data()+at,size);});
+  auto layout=reader.Layout(reader.directory.members.at(0));EiemAuthorMaterialEdits::Author author;author.source="assets/a.prefab";
+  auto input=EiemDemandMaterialBuild::Build(reader,0,layout,200,{author.source,"Water"},author,{},
+    [&](size_t at,unsigned char* out,size_t size){std::memcpy(out,source.data()+at,size);});
+  Require(input.dependencies==std::set<NativeReference>{{"CAB-shader",700}},"embedded Texture created a dependency back to the donor PFB");
+  Require(reader.stats.encodedBytes<65536&&input.view->Size()<65536,"Material preparation materialized unrelated pixel data");
+  R::Reader output(input.view->Size(),[view=input.view](size_t at,unsigned char* out,size_t size){Require(view->ReadAt(at,out,size)==size,"standalone fixture view truncated");});
+  Require(output.directory.members.size()==2,"embedded Texture resource stream was not retained");
+  const auto& member=output.directory.members.at(0);auto current=output.Layout(member);
+  Require(current.objects.size()==3&&current.objects.count(200)&&current.objects.count(201)&&!current.objects.count(202),"standalone Material retained unrelated source objects or lost its exact local Texture");
+  auto material=output.Object(member,current,200);auto refs=EiemDemandAuthorResources::MaterialReferences(current.types.at(current.objects.at(200).type),material,current,input.cab);
+  Require(refs==std::set<NativeReference>{{"CAB-shader",700},{input.cab,201}},"standalone Material contains dangling or incorrectly rebased pointers");
+  auto fields=output.Fields(member,current,201,{"m_StreamData"});const auto& descriptor=fields.at("m_StreamData");const auto& currentType=current.types.at(current.objects.at(201).type);
+  const auto& path=Child(currentType,descriptor,"path");Require(Text(path.raw.data(),path.raw.size())=="archive:/"+input.cab+"/"+input.cab+".resS"&&Integer(Child(currentType,descriptor,"offset"))==0&&Integer(Child(currentType,descriptor,"size"))==11,"embedded Texture stream was not rebased to its actual native carrier");
+  const auto& resource=output.directory.members.at(1);auto bytes=output.ReadAt(resource.offset,resource.size,32);
+  Require(resource.size==11&&bytes==Bytes(pixels.begin()+5,pixels.begin()+16),"standalone Texture selected the wrong source pixel range");
+  std::cout<<"PASS embedded Material closure: exact local Texture, rebased pointers and lazy 11-byte stream; unrelated 1MiB pixels not prepared\n";
 }
 void SparseInput() {
   constexpr size_t size=size_t(1024)*1024*1024;
@@ -59,6 +125,39 @@ void CompressedRanges() {
   auto truncated=input;truncated.resize(prefix+1);
   RejectRead([&]{R::Reader invalid(truncated.size(),[&](size_t p,unsigned char* out,size_t n){std::memcpy(out,truncated.data()+p,n);});},"truncated source");
   std::cout<<"PASS compressed cross-block reads, bounded cache, malformed input, production decode agreement\n";
+}
+void CutsceneHierarchyReadOrder() {
+  Fixture fixture;
+  auto& children=ArrayValue(fixture.T(11),Child(fixture.T(11),fixture.V(11),"m_Children"));
+  for(int64_t i=0;i<300;++i){const auto go=1000+i*2,transform=go+1;
+    fixture.Add(go,0);SetString(fixture.T(go),Child(fixture.T(go),fixture.V(go),"m_Name"),std::to_string(i)+std::string(800,'x'));
+    fixture.Add(transform,1);fixture.Pointer(transform,"m_GameObject",go);fixture.Pointer(transform,"m_Father",11);
+    fixture.List(go,"m_Component",{transform},"component");
+    auto child=ArrayElement(fixture.T(11),children);SetReference(fixture.T(11),child,{fixture.cab,transform},fixture.refs,fixture.cab);
+    children.children.push_back(std::move(child));
+  }
+  children.count=children.children.size();auto raw=fixture.BytesOf();auto original=ParseSerialized(raw);
+  // The object table's PathID order need not match physical payload order.
+  std::vector<size_t> order(original.order.size());for(size_t i=0;i<order.size();++i)order[i]=i;
+  std::mt19937 random(0xEFF);std::shuffle(order.begin(),order.end(),random);auto before=raw;
+  for(size_t i=0;i<order.size();++i)std::copy_n(before.data()+original.tableStart+order[i]*24,24,raw.data()+original.tableStart+i*24);
+  std::vector<EiemNativeViewWriter::Block> blocks;std::vector<Bytes> encoded;
+  for(size_t at=0;at<raw.size();at+=8192){auto n=std::min(size_t(8192),raw.size()-at);encoded.push_back(LiteralBlock(Bytes(raw.begin()+at,raw.begin()+at+n)));blocks.push_back({n,encoded.back().size(),5});}
+  auto input=std::make_shared<Bytes>(EiemNativeViewWriter::Prefix(EiemAuthorMeshBundle::EnvelopeHeader(),blocks,{{fixture.cab,4,0,raw.size()}}));
+  for(const auto& block:encoded)input->insert(input->end(),block.begin(),block.end());
+  R::Limits limits;limits.cacheBytes=16384;limits.readBytes=input->size()*4;
+  R::Reader reader(input->size(),[input](size_t at,unsigned char* out,size_t n){std::memcpy(out,input->data()+at,n);},limits);
+  const auto& member=reader.directory.members[0];auto layout=reader.Layout(member);Package package;package.id="cutscene-read-order";
+  Identity target{"assets/static.mesh","Static"};package.targetIndex[target]="R";package.rules["R"].skip=true;
+  AssetIndex assets;assets[target].cab=fixture.cab;assets[target].pathId=100;assets[target].classId=43;
+  const std::vector<BuiltMeshPart> parts;
+  RendererMemberBuilder oracle(raw,fixture.cab,package,assets,parts);auto full=oracle.Build();
+  RendererMemberBuilder sparse(layout,member.name,package,assets,parts,
+    [&](int64_t id,const std::set<std::string>& fields){return reader.Project(member,layout,id,fields);},
+    [&](int64_t id){return reader.Object(member,layout,id);});
+  auto actual=sparse.Build();Require(actual.matches==full.matches&&sparse.TakeChanges()==oracle.TakeChanges(),"cutscene locality changed native renderer edits");
+  Require(reader.stats.cachePeak<=limits.cacheBytes&&reader.stats.encodedBytes<limits.readBytes,"cutscene projections exceeded bounded IO/cache");
+  std::cout<<"PASS shuffled cutscene hierarchy: objects="<<layout.objects.size()<<" inputBytes="<<input->size()<<" readBytes="<<reader.stats.encodedBytes<<" cachePeak="<<reader.stats.cachePeak<<" nativeEditsMatch=1\n";
 }
 void CompressedDecodedView() {
   Bytes first(4096),middle(4096),last(4096);
@@ -674,5 +773,5 @@ void RealInputs(const std::filesystem::path& game,const std::filesystem::path& m
   }
   Require(count,"no real input fixtures inspected");
 }
-int main(int argc,char** argv) {try{if(argc==8&&std::string(argv[1])=="--native-author-observed"){InspectNativeAuthor(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[6]),argv[7],std::filesystem::u8path(argv[4]),std::stoull(argv[5]));return 0;}if(argc==4&&std::string(argv[1])=="--inspect"){InspectObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]));return 0;}if(argc==6&&std::string(argv[1])=="--author-observed"){InspectAuthorObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[4]),argv[5]);return 0;}if(argc==8&&std::string(argv[1])=="--author-consumer-observed"){InspectAuthorObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[6]),argv[7],std::filesystem::u8path(argv[4]),std::stoull(argv[5]));return 0;}SparseInput();CompressedRanges();CompressedDecodedView();SpliceCompressed();SpliceMetadata();SpliceSparse();SpliceDifferential();SerializedPlanDifferential();SerializedPlanSparse();ProjectedRendererAssembly();StreamedAuthorGraft();PreloadIntervals();NativeCatalogAssembly();RetainedSourceLease();if(argc==3)RealInputs(std::filesystem::u8path(argv[1]),std::filesystem::u8path(argv[2]));else Require(argc==1,"usage: native_random_access_smoke [game mod]");std::cout<<"PASS native random access; no author payloads or native game objects created\n";return 0;}catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}}
+int main(int argc,char** argv) {try{if(argc==8&&std::string(argv[1])=="--native-author-observed"){InspectNativeAuthor(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[6]),argv[7],std::filesystem::u8path(argv[4]),std::stoull(argv[5]));return 0;}if(argc==4&&std::string(argv[1])=="--inspect"){InspectObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]));return 0;}if(argc==6&&std::string(argv[1])=="--author-observed"){InspectAuthorObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[4]),argv[5]);return 0;}if(argc==8&&std::string(argv[1])=="--author-consumer-observed"){InspectAuthorObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[6]),argv[7],std::filesystem::u8path(argv[4]),std::stoull(argv[5]));return 0;}ExactContainerPreloads();EmbeddedMaterialClosure();SparseInput();CompressedRanges();CutsceneHierarchyReadOrder();CompressedDecodedView();SpliceCompressed();SpliceMetadata();SpliceSparse();SpliceDifferential();SerializedPlanDifferential();SerializedPlanSparse();ProjectedRendererAssembly();StreamedAuthorGraft();PreloadIntervals();NativeCatalogAssembly();RetainedSourceLease();if(argc==3)RealInputs(std::filesystem::u8path(argv[1]),std::filesystem::u8path(argv[2]));else Require(argc==1,"usage: native_random_access_smoke [game mod]");std::cout<<"PASS native random access; no author payloads or native game objects created\n";return 0;}catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}}
 

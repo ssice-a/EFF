@@ -22,6 +22,12 @@ int main(){using namespace EiemLoadPerformance;
  auto operation=find("operation=managed-invoke ");if(operation.find("calls=7 ")==std::string::npos||operation.find("mainCalls=2")==std::string::npos)return 5;
  if(find("runtimeWorkload=1 ").find("mods=4 ")==std::string::npos||find("window=1 windowId=1 ").empty())return 6;
  logs.clear();Record(File,true,Frequency()*2);Flush(true);if(find("stage=file changed=1").find("p95UpperMs=-1.000000")==std::string::npos)return 7;
+ // Native calls inside a detour must not be charged to EFF's observation.
+ {Scope sample(DemandProxySelect);sample.hit=true;sample.Pause();auto saved=sample.elapsed;
+  sample.Pause();if(sample.running||sample.elapsed!=saved)return 8;
+  sample.Resume();if(!sample.running)return 9;sample.Pause();sample.elapsed=5*ms;}
+ logs.clear();Flush(true);auto selection=find("stage=demand-proxy-select changed=1");
+ if(selection.find("calls=1 ")==std::string::npos||selection.find("totalMs=5.000000")==std::string::npos||selection.find("mainCalls=1 ")==std::string::npos)return 10;
  auto started=Clock();for(unsigned i=0;i<100000;++i){Scope sample(File);}double overheadUs=double(Clock()-started)*1000000/Frequency()/100000;
  printf("PASS performance aggregation: mainAndWorkerPartitioned=1 backingKindSplit=1 readBytes=7168 mainP95P99=1 overflowHistogram=1 resetWindow=1 operationsAndWorkload=1 uptimeWindows=1 wholeProcessMemoryLabelled=1 diagnosticScopeAverageUs=%.6f\n",overheadUs);return 0;
 }

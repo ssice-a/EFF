@@ -3,8 +3,8 @@
 #include "eiem_author_mesh_bundle.h"
 
 // An independent native carrier, assembled from the CURRENT game's schema.
-// Only the asset and its native AssetBundle directory survive. Dependency
-// references are explicit; callers must schedule them before deserialization.
+// Only the asset, its selected local resource closure and native directory
+// survive. External dependencies are scheduled before deserialization.
 namespace EiemNativeStandaloneInput {
 using namespace EiemNativeInput;
 namespace R=EiemNativeRandomAccess;namespace S=EiemNativeSpliceView;namespace P=EiemNativeSerializedSplice;
@@ -14,6 +14,7 @@ struct Input {
   std::shared_ptr<const EiemInputSpanView::View> view;
   size_t literalBytes=0,streamedBytes=0;
 };
+struct StreamRange {size_t offset=0,size=0;};
 inline void RebaseReferences(const Type& type,Value& value,const SerializedLayout& source,const std::string& sourceCab,
     SerializedLayout& destination,const std::string& destinationCab,std::set<NativeReference>& references,size_t depth=0) {
   Require(depth<type.nodes.size(),"standalone native reference schema cycle");const auto& node=type.nodes.at(value.node);
@@ -29,7 +30,8 @@ inline void RebaseReferences(const Type& type,Value& value,const SerializedLayou
 }
 inline Input Build(R::Reader& reader,size_t memberIndex,const SerializedLayout& source,int64_t assetId,
     const SerializedLayout& references,P::RangePayload payload,const std::string& token,
-    const std::set<NativeReference>& dependencies,R::ReadRange lease) {
+    const std::set<NativeReference>& dependencies,R::ReadRange lease,
+    const std::map<int64_t,P::RangePayload>& localObjects={},const std::vector<StreamRange>& streams={}) {
   Require(bool(lease)&&token.size()==64&&token.find_first_not_of("0123456789abcdefABCDEF")==std::string::npos,
     "standalone native source lease/token absent");
   const auto& member=reader.directory.members.at(memberIndex);auto asset=source.objects.find(assetId);
@@ -49,6 +51,7 @@ inline Input Build(R::Reader& reader,size_t memberIndex,const SerializedLayout& 
   auto& preloads=ArrayValue(type,Child(type,bundle,"m_PreloadTable"));reset(preloads);
   auto append=[&](const NativeReference& reference){auto value=ArrayElement(type,preloads);SetReference(type,value,reference,output,result.cab);preloads.children.push_back(std::move(value));};
   for(const auto& dependency:dependencies){Require(dependency.second&&!dependency.first.empty()&&dependency.first!=result.cab,"standalone native dependency invalid");append(dependency);}
+  for(const auto& local:localObjects){Require(local.first!=assetId&&local.first!=bundleId&&source.objects.count(local.first),"standalone native local object differs");append({result.cab,local.first});}
   append(result.asset);preloads.count=preloads.children.size();
   auto info=[&](Value& value){SetInteger(type,Child(type,value,"preloadIndex"),0);SetInteger(type,Child(type,value,"preloadSize"),preloads.count);
     SetReference(type,Child(type,value,"asset"),result.asset,output,result.cab);};
@@ -60,16 +63,21 @@ inline Input Build(R::Reader& reader,size_t memberIndex,const SerializedLayout& 
   auto& main=Child(type,bundle,"m_MainAsset");SetInteger(type,Child(type,main,"preloadIndex"),0);SetInteger(type,Child(type,main,"preloadSize"),0);SetReference(type,Child(type,main,"asset"),{result.cab,0},output,result.cab);
   auto bytes=std::make_shared<const Bytes>(EncodeValue(type,bundle));
   std::map<int64_t,P::RangePayload> edits;edits.emplace(assetId,std::move(payload));edits[bundleId].pieces.push_back({0,bytes->size(),bytes,{}});
-  std::set<int64_t> removed;for(auto id:source.order)if(id!=assetId&&id!=bundleId)removed.insert(id);
+  edits.insert(localObjects.begin(),localObjects.end());
+  std::set<int64_t> removed;for(auto id:source.order)if(id!=assetId&&id!=bundleId&&!localObjects.count(id))removed.insert(id);
   auto plan=P::BuildRanges(reader,memberIndex,output,edits,{},removed);
-  std::vector<EiemNativeViewWriter::Block> blocks;for(size_t left=plan.size;left;){auto n=std::min(left,size_t(UINT32_MAX));blocks.push_back({n,n,0});left-=n;}
-  auto prefix=std::make_shared<const Bytes>(EiemNativeViewWriter::Prefix(EiemAuthorMeshBundle::EnvelopeHeader(),blocks,{{result.cab,4,0,plan.size}}));
+  size_t streamBytes=0;for(const auto& stream:streams){Require(stream.offset<=reader.directory.decoded&&stream.size<=reader.directory.decoded-stream.offset,"standalone native resource stream range differs");streamBytes=AddSize(streamBytes,stream.size);}
+  std::vector<EiemNativeViewWriter::Block> blocks;for(size_t left=AddSize(plan.size,streamBytes);left;){auto n=std::min(left,size_t(UINT32_MAX));blocks.push_back({n,n,0});left-=n;}
+  std::vector<EiemNativeViewWriter::Member> members{{result.cab,4,0,plan.size}};
+  if(streamBytes)members.push_back({result.cab+".resS",0,plan.size,streamBytes});
+  auto prefix=std::make_shared<const Bytes>(EiemNativeViewWriter::Prefix(EiemAuthorMeshBundle::EnvelopeHeader(),blocks,members));
   auto backing=reader.UncompressedView(std::move(lease));std::vector<std::shared_ptr<const EiemInputSpanView::View>> inputs{backing};
   std::vector<EiemInputSpanView::Span> spans{{EiemInputSpanView::literalSource,0,prefix->size(),prefix}};result.literalBytes=prefix->size();
   for(const auto& piece:plan.rewrite.pieces){if(piece.bytes){spans.push_back({EiemInputSpanView::literalSource,0,piece.size,piece.bytes});result.literalBytes=AddSize(result.literalBytes,piece.size);}
     else{size_t sourceId=0;auto offset=AddSize(member.offset,piece.offset);
       if(piece.view){sourceId=inputs.size();inputs.push_back(piece.view);offset=piece.offset;}
       spans.push_back({sourceId,offset,piece.size,{}});result.streamedBytes=AddSize(result.streamedBytes,piece.size);}}
+  for(const auto& stream:streams)if(stream.size){spans.push_back({0,stream.offset,stream.size,{}});result.streamedBytes=AddSize(result.streamedBytes,stream.size);}
   std::vector<size_t> sizes;for(const auto& input:inputs)sizes.push_back(input->Size());
   result.view=std::make_shared<const EiemInputSpanView::View>(std::move(spans),sizes,
     [inputs=std::move(inputs)](size_t id,size_t at,unsigned char* out,size_t n){Require(inputs.at(id)->ReadAt(at,out,n)==n,"standalone native source read truncated");});

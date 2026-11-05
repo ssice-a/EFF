@@ -12,7 +12,8 @@ enum Stage { File, DependencyAll, DependencyDirect, Prefab, Controls, StreamLife
  ResourcePrepare, ReloadDrain, DependencyIndex, Logging, ModelRegister, CaptureSnapshot, CaptureRetire, CaptureMatrices, ShapeAnimation,
  UpdateEntry, MaterialFrame, MaterialRegister, MaterialSlot, MaterialGlobal, MaterialRead,
  EffectFrame, EffectDisk, EffectBind, EffectMount, EffectOwners, EffectLoad, EffectCreate, EffectRetire, EffectCollect,
- ReloadOwners, ReloadRebuild, ReloadRetire, UIRegister, WorldRegister, InstantiationRoute, DiagnosticLogging, Count };
+ ReloadOwners, ReloadRebuild, ReloadRetire, UIRegister, WorldRegister, InstantiationRoute, DiagnosticLogging,
+ DemandLookup, DemandProxyIdentity, DemandPrepare, DemandDependencies, DemandProxySelect, DemandReady, DemandOperation, DemandAssetTree, Count };
 enum class Operation { ManagedInvoke, HandleCreate, HandleFree, ShapeRead, ShapeWrite, MaterialValueWrite, EffectVisibility, EffectCreate, EffectRetire, Count };
 enum class Workload { Mods, Parts, UIModels, PendingUI, ShapeBindings, ShapeCache, CaptureGroups, CaptureSnapshots,
  MaterialBindings, ActiveAnimations, AnimationChannels, EffectBindings, EffectInstances, EffectGenerations, EffectRetired,
@@ -48,9 +49,11 @@ inline void Record(Stage stage,bool hit,uint64_t ticks){
 }
 inline void Bytes(Stage stage,uint64_t bytes,bool hit=true){counters[stage][hit].bytes.fetch_add(bytes,std::memory_order_relaxed);}
 struct Scope {
- Stage stage;uint64_t start;bool hit=false;
+ Stage stage;uint64_t start,elapsed=0;bool hit=false,running=true;
  explicit Scope(Stage value):stage(value),start(Clock()){}
- ~Scope(){Record(stage,hit,Clock()-start);}
+ void Pause(){if(running){elapsed+=Clock()-start;running=false;}}
+ void Resume(){if(!running){start=Clock();running=true;}}
+ ~Scope(){Pause();Record(stage,hit,elapsed);}
 };
 inline void Frame(double seconds){
  const double ms=seconds*1000;unsigned bucket=ms<=8.34?0:ms<=16.67?1:ms<=33.34?2:ms<=50?3:ms<=100?4:5;
@@ -64,7 +67,8 @@ inline void Flush(bool force=false){
  const char* names[]={"file","dependency-all","dependency-direct","prefab","controls","stream-lifetime","reload","plugin-frame","control-input","control-bindings","stream-route","view-read","view-seek","backing-read","resource-prepare","reload-drain","dependency-index","logging","model-register","capture-snapshot","capture-retire","capture-matrices","shape-animation",
  "update-entry","material-frame","material-register","material-slot-hook","material-global-hook","material-read-hook",
  "effect-frame","effect-disk-prepare","effect-bind","effect-mount","effect-owners","effect-load-step","effect-create","effect-retire","effect-collect",
- "reload-owners","reload-rebuild","reload-retire","ui-register","world-register","instantiate-route","diagnostic-logging"};
+ "reload-owners","reload-rebuild","reload-retire","ui-register","world-register","instantiate-route","diagnostic-logging",
+ "demand-lookup","demand-proxy-identity","demand-prepare","demand-dependencies","demand-proxy-select","demand-ready-observe","demand-operation-observe","demand-asset-tree"};
  static_assert(sizeof(names)/sizeof(names[0])==Count,"load performance stage names differ");
  for(unsigned stage=0;stage<Count;++stage)for(unsigned hit=0;hit<2;++hit){auto& value=counters[stage][hit];auto count=value.calls.exchange(0,std::memory_order_relaxed);if(!count)continue;
   auto total=value.ticks.exchange(0,std::memory_order_relaxed),longest=value.longest.exchange(0,std::memory_order_relaxed);
@@ -90,7 +94,7 @@ inline void Flush(bool force=false){
  }
 }
 #else
-struct Scope {bool hit=false;explicit Scope(Stage) {}};
+struct Scope {bool hit=false;explicit Scope(Stage) {}void Pause(){}void Resume(){}};
 inline void ObserveMainThread(){}
 inline void Add(Operation,uint64_t=1){}
 inline void Set(Workload,uint64_t){}

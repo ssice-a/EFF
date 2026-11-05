@@ -72,6 +72,7 @@ if format3_runtime:
         b"[DEMAND-F10-OWNER-READY]", b"resourcePayloadsLoadedOnDemand=1",
         b"compiledBinRead=0", b"payloadsPreloaded=0",
         b"_FinishWithBundle", b"[DEMAND-PROXY-SYNC-COMPLETE]",
+        b"[DEMAND-SHARED-DEPENDENCIES-RELEASED]",
     ))
 else:
     functional_markers.append(b"[FULL-RELOAD-COMMIT]")

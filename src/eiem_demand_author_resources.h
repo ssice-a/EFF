@@ -244,6 +244,7 @@ class Catalog {
   std::map<std::string,std::shared_ptr<const Material>> materials_;
   std::map<std::string,std::shared_ptr<const Physics>> physics_;
 public:
+  const std::vector<EiemMeshTargetDirectory::Target>& Targets() const{return manifest_.targets;}
   struct CacheCounts {size_t meshes=0,textures=0,materials=0,physics=0;};
   explicit Catalog(const std::filesystem::path& root):root_(std::filesystem::canonical(root)),manifest_(EiemRuntimeAuthorManifest::Read(root_)) {
     directory_.mod=manifest_.id;
