@@ -39,6 +39,16 @@ public:
   }return result;
  }
 };
+inline bool SameBytes(const View& left,const View& right){
+ if(left.Size()!=right.Size())return false;
+ constexpr size_t blockSize=64*1024;Bytes a(std::min(left.Size(),blockSize)),b(a.size());
+ for(size_t position=0;position<left.Size();){auto count=std::min(a.size(),left.Size()-position);
+  Require(left.ReadAt(position,a.data(),count)==count&&right.ReadAt(position,b.data(),count)==count,
+    "compiled input view content comparison read failed");
+  if(std::memcmp(a.data(),b.data(),count)!=0)return false;position+=count;
+ }
+ return true;
+}
 class Cursor {
  std::shared_ptr<const View> view_;
  std::mutex mutex_;

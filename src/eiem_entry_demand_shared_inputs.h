@@ -814,15 +814,14 @@ struct DependencyGroup {
       Require(prior->second.classId==declaration.classId,"logical game dependency class differs");
       Open(prior->second.bundle);Native(prior->second.bundle);return prior->second;
     }
-    Bytes info(api.packSize);bool found=false;const auto& identity=declaration.logical;
-    if(identity.path.size()>=4&&identity.path.substr(identity.path.size()-4)==".fbx"){
-      auto path=Ref::Make(il2cpp_string_new(identity.path.c_str()),false),name=Ref::Make(il2cpp_string_new(identity.asset.c_str()),false);
-      void* args[]={path.Get(),info.data(),name.Get()};found=RuntimeShapes::Scalar<unsigned char>(api.subLookup,manifest->object.Get(),args)!=0;
-    }else{
-      auto path=FullResourceReload::Path(identity.path);uint64_t hash=0;
+    Bytes info(api.packSize);const auto& identity=declaration.logical;
+    auto byPath=[&](){std::fill(info.begin(),info.end(),static_cast<unsigned char>(0));auto path=FullResourceReload::Path(identity.path);uint64_t hash=0;
       il2cpp_field_get_value(path.Get(),FullResourceReload::api.pathHashField,&hash);void* args[]={&hash,info.data()};
-      found=RuntimeShapes::Scalar<unsigned char>(api.lookup,manifest->object.Get(),args)!=0;
-    }
+      return RuntimeShapes::Scalar<unsigned char>(api.lookup,manifest->object.Get(),args)!=0;};
+    auto byPathAndAsset=[&](){std::fill(info.begin(),info.end(),static_cast<unsigned char>(0));
+      auto path=Ref::Make(il2cpp_string_new(identity.path.c_str()),false),name=Ref::Make(il2cpp_string_new(identity.asset.c_str()),false);
+      void* args[]={path.Get(),info.data(),name.Get()};return RuntimeShapes::Scalar<unsigned char>(api.subLookup,manifest->object.Get(),args)!=0;};
+    const bool found=EiemLogicalAssetLookup::Find(identity.path,byPath,byPathAndAsset);
     Require(found,"declared game dependency logical path is absent: "+identity.path);
     uint64_t bundle=0,asset=0;memcpy(&bundle,info.data()+api.bundleOffset,8);memcpy(&asset,info.data()+api.assetOffset,8);
     auto source=Open(bundle);Native(bundle);NativeReference resolved;size_t matches=0;

@@ -1,6 +1,7 @@
 #include "../../src/eiem_demand_shared_graph.h"
 #include "../../src/eiem_demand_dependency_source.h"
 #include "../../src/eiem_demand_dependency_scope.h"
+#include "../../src/eiem_demand_logical_asset_lookup.h"
 #include <iostream>
 using namespace EiemDemandSharedGraph;
 int main(){try{
@@ -34,6 +35,25 @@ int main(){try{
       openedSourceDependencyKeys==std::vector<uint64_t>({17,23,31}),
     "CAB referenced by a logical source Material was outside the bounded dependency search");
   std::cout<<"PASS logical source Material CAB lookup includes its direct native dependencies without a game-wide scan\n";
+  std::vector<std::string> lookupOrder;
+  auto fallbackFound=EiemLogicalAssetLookup::Find("assets/weapon/materials/m_weapon.mat",
+      [&]{lookupOrder.push_back("path");return false;},
+      [&]{lookupOrder.push_back("path+asset");return true;});
+  Require(fallbackFound&&lookupOrder==std::vector<std::string>({"path","path+asset"}),
+      "non-FBX logical dependency did not fall back to path-plus-asset lookup");
+  lookupOrder.clear();
+  auto directFound=EiemLogicalAssetLookup::Find("assets/weapon/materials/m_weapon.mat",
+      [&]{lookupOrder.push_back("path");return true;},
+      [&]{lookupOrder.push_back("path+asset");return true;});
+  Require(directFound&&lookupOrder==std::vector<std::string>({"path"}),
+      "successful logical path lookup unnecessarily queried the named fallback");
+  lookupOrder.clear();
+  auto fbxFound=EiemLogicalAssetLookup::Find("assets/weapon/models/weapon.fbx",
+      [&]{lookupOrder.push_back("path");return true;},
+      [&]{lookupOrder.push_back("path+asset");return false;});
+  Require(fbxFound&&lookupOrder==std::vector<std::string>({"path+asset","path"}),
+      "FBX subasset lookup order or fallback differs");
+  std::cout<<"PASS logical dependency lookup falls back between path and path-plus-asset indexes\n";
   auto bytes=std::make_shared<const EiemNativeInput::Bytes>(EiemNativeInput::Bytes{1,2,3});
   auto view=std::make_shared<const EiemInputSpanView::View>(std::vector<EiemInputSpanView::Span>{{SIZE_MAX,0,bytes->size(),bytes}},std::vector<size_t>{},EiemInputSpanView::ReadRange{});
   Graph graph;Input texture{100,1,"eff/texture.ab","CAB-texture",view,{}},material{101,1,"eff/material.ab","CAB-material",view,{100,3}};
@@ -53,6 +73,23 @@ int main(){try{
   graph.Commit({anotherConsumerTexture,anotherConsumerMaterial},{{4,{101}}},native);
   Input retained;Require(graph.Find(101,retained)&&retained.categorySource==1&&graph.Size()==2,
     "shared Material/Texture identity changed with the consuming PFB category source");
+  auto duplicateBytes=std::make_shared<const EiemNativeInput::Bytes>(EiemNativeInput::Bytes{1,2,3});
+  auto duplicateView=std::make_shared<const EiemInputSpanView::View>(
+      std::vector<EiemInputSpanView::Span>{{SIZE_MAX,0,duplicateBytes->size(),duplicateBytes}},
+      std::vector<size_t>{},EiemInputSpanView::ReadRange{});
+  Graph identicalInputs;Input firstVariant{201,1,"eff/2/cab-shared.ab","CAB-shared",view,{}};
+  identicalInputs.Commit({firstVariant},{},{});
+  auto secondVariant=firstVariant;secondVariant.categorySource=2;secondVariant.view=duplicateView;
+  identicalInputs.Commit({secondVariant},{},{});
+  Require(identicalInputs.Size()==1&&identicalInputs.Find(201,retained)&&retained.categorySource==1,
+      "byte-identical native inputs from separate Mods were not shared");
+  auto differentBytes=std::make_shared<const EiemNativeInput::Bytes>(EiemNativeInput::Bytes{1,2,4});
+  auto differentView=std::make_shared<const EiemInputSpanView::View>(
+      std::vector<EiemInputSpanView::Span>{{SIZE_MAX,0,differentBytes->size(),differentBytes}},
+      std::vector<size_t>{},EiemInputSpanView::ReadRange{});
+  auto conflictingVariant=firstVariant;conflictingVariant.categorySource=3;conflictingVariant.view=differentView;
+  bool differingRejected=false;try{identicalInputs.Commit({conflictingVariant},{},{});}catch(const std::exception&){differingRejected=true;}
+  Require(differingRejected&&identicalInputs.Size()==1,"different native input bytes bypassed shared-key conflict detection");
   Input output;Require(graph.FindName("eff/material.ab",output)&&output.key==101&&!graph.FindName("material.ab",output),"synthetic input name was guessed");
   bool rejected=false;try{auto cycle=material;cycle.key=102;cycle.name="eff/cycle.ab";cycle.cab="CAB-cycle";cycle.dependencies={1};graph.Commit({cycle},{{1,{102}}},native);}catch(const std::exception&){rejected=true;}
   Require(rejected&&graph.Size()==2&&!graph.Find(102,output)&&graph.Edges(1)==std::vector<uint64_t>{101},"failed dependency transaction changed the live graph");

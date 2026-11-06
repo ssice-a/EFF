@@ -67,15 +67,19 @@ public:
     // A resource may first be requested by either a world or a UI consumer.
     // Keep the first native scheduling category; the consuming PFB is not
     // part of the immutable resource identity.
-    auto same=[](const Input& left,const Input& right){return left.name==right.name&&left.cab==right.cab&&
-      left.view==right.view&&left.dependencies==right.dependencies&&left.versionedRoot==right.versionedRoot;};
+    auto same=[](const Input& left,const Input& right,bool* contentSame=nullptr){
+      const bool viewSame=left.view==right.view||EiemInputSpanView::SameBytes(*left.view,*right.view);
+      if(contentSame)*contentSame=viewSame;
+      return left.name==right.name&&left.cab==right.cab&&viewSame&&
+        left.dependencies==right.dependencies&&left.versionedRoot==right.versionedRoot;};
     for(const auto& input:inputs){Require(input.key&&input.categorySource&&!input.name.empty()&&!input.cab.empty()&&input.view,
         "shared native input declaration incomplete");
-      auto prior=inputs_.find(input.key);if(prior!=inputs_.end()){if(!same(prior->second,input))Require(false,
+      auto prior=inputs_.find(input.key);if(prior!=inputs_.end()){bool contentSame=false;if(!same(prior->second,input,&contentSame))Require(false,
         "shared native input key collision: key="+std::to_string(input.key)+" name="+input.name+
         " nameSame="+std::to_string(prior->second.name==input.name)+
         " cabSame="+std::to_string(prior->second.cab==input.cab)+
-        " viewSame="+std::to_string(prior->second.view==input.view)+
+        " viewPointerSame="+std::to_string(prior->second.view==input.view)+
+        " viewContentSame="+std::to_string(contentSame)+
         " dependenciesSame="+std::to_string(prior->second.dependencies==input.dependencies)+
         " versionedRootSame="+std::to_string(prior->second.versionedRoot==input.versionedRoot));}
       else{auto inserted=stagedInputs.emplace(input.key,input);Require(inserted.second||same(inserted.first->second,input),"shared native input batch key collision");
