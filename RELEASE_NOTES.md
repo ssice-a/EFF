@@ -1,4 +1,13 @@
-# EFF v2.0.9
+# EFF v2.0.10
+
+本次修复多个武器 Mod 共用游戏原生材质输入时的误冲突。Windows x64，运行时仍只接受 Format 3；兼容 EFF Blender 0.50.5、EFF Mod Manager v0.2.3 和 AnimeStudio v1.9.2。
+
+- 跨 Mod 材质输入现在按 CAB、资源身份、依赖和编译后字节判断是否相同；相同输入可以共享，不同内容或身份仍会明确拒绝，避免错误复用。
+- 增加独立 View、跨依赖组共享及不同输入冲突的回归覆盖。
+
+共享工具包：`EFF_Shared_Native_Tools_v2.0.10.zip`。本次仅更新 DLL 运行逻辑，无需重新导出现有 Mod。
+
+## EFF v2.0.9
 
 本次为多武器 Mod 材质修复版。配套 EFF Blender 0.50.5（continuous 通道）、EFF Mod Manager v0.2.3、AnimeStudio v1.9.2；Windows x64，运行时仍只接受 Format 3。
 
@@ -82,7 +91,7 @@
 
 ## 安装与迁移
 
-退出游戏后，将 EFF_v2.0.9_dll.zip 解压到游戏根目录。保留个人 plugin/eff.ini、plugin/mods 与 state.ini。旧 Mod 先用 EFF Mod Manager v0.2.3 迁移为 Format 3，或用配套 Blender 重新导出。共享作者工具供离线作者与迁移工具使用，无需安装到游戏目录。
+退出游戏后，将 EFF_v2.0.10_dll.zip 解压到游戏根目录。保留个人 plugin/eff.ini、plugin/mods 与 state.ini。旧 Mod 先用 EFF Mod Manager v0.2.3 迁移为 Format 3，或用配套 Blender 重新导出。共享作者工具供离线作者与迁移工具使用，无需安装到游戏目录。
 
 ## 验证
 
