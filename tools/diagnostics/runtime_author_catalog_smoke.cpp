@@ -1,3 +1,4 @@
+#define NOMINMAX
 #include "../../src/eiem_demand_author_resources.h"
 #include "../../src/eiem_demand_material_assembly.h"
 #include "../../src/eiem_runtime_shape_identity.h"
@@ -18,6 +19,14 @@ static EiemNativeStandaloneInput::Input DummyMaterialInput(const EiemDemandAutho
   auto token=Hex(digest.data(),digest.size());EiemNativeStandaloneInput::Input input;
   input.cab="CAB-"+token.substr(0,32);input.bundle="eff/"+token+".ab";input.path="assets/eff/"+token;
   input.asset={input.cab,1};auto literal=std::make_shared<const Bytes>(Bytes{1});
+  input.view=std::make_shared<const EiemInputSpanView::View>(
+    std::vector<EiemInputSpanView::Span>{{EiemInputSpanView::literalSource,0,literal->size(),literal}},
+    std::vector<size_t>{},EiemInputSpanView::ReadRange{});
+  return input;
+}
+static EiemNativeStandaloneInput::Input DummyMaterialInput(const std::string& cab,int64_t pathId,const Bytes& bytes){
+  EiemNativeStandaloneInput::Input input;input.cab=cab;input.bundle="eff/shared.ab";input.path="assets/eff/shared";
+  input.asset={cab,pathId};auto literal=std::make_shared<const Bytes>(bytes);
   input.view=std::make_shared<const EiemInputSpanView::View>(
     std::vector<EiemInputSpanView::Span>{{EiemInputSpanView::literalSource,0,literal->size(),literal}},
     std::vector<size_t>{},EiemInputSpanView::ReadRange{});
@@ -185,6 +194,8 @@ int main(int argc,char** argv){
     nativeMesh.insert(nativeMesh.end(),authorMesh.begin(),authorMesh.end());
     Save(root/mesh.file,F::Encode(1,M::EncodeMesh(mesh),nativeMesh));
     Save(root/material.file,F::Encode(2,M::EncodeMaterial(material),authorMaterial));
+    D::MaterialEntry twin=material;twin.id="MaterialTwin";twin.file="custom/materials/twin.author";
+    Save(root/twin.file,F::Encode(2,M::EncodeMaterial(twin),authorMaterial));
     Save(root/texture.file,F::Encode(3,{},Bytes{7,8,9}));
     auto dds=EiemDdsTexture::Header(1,1,1,4,false);dds.insert(dds.end(),{1,2,3,4});
     Save(root/"artist/albedo-final.dds",dds);
@@ -199,6 +210,7 @@ int main(int argc,char** argv){
       "[Constants]\n\n"
       "[MeshBody]\npath=custom/geometry/body.author\n\n"
       "[MaterialBody]\npath=custom/materials/body.author\nsource.path=assets/edited/body.mat\nsource.asset=EditedMaterial\n\n"
+      "[MaterialTwin]\npath=custom/materials/twin.author\nsource.path=assets/edited/body.mat\nsource.asset=EditedMaterial\n\n"
       "[TextureBody]\npath=custom/texture/albedo.author\ndds=artist/albedo-final.dds\n\n"
       "[MeshUnhit]\npath=missing/geometry/unhit.author\n\n"
       "[MaterialUnhit]\npath=missing/materials/unhit.author\nsource.path=assets/unhit/material.mat\nsource.asset=UnhitMaterial\ntexture._BaseMap=TextureUnhit\n\n"
@@ -220,7 +232,7 @@ int main(int argc,char** argv){
 
     A::Catalog catalog(root);const auto& directory=catalog.Directory();
     Require(directory.mod=="CatalogSmoke"&&directory.meshes.size()==2&&
-      directory.materials.size()==2&&directory.textures.size()==2&&directory.rules.size()==2,
+      directory.materials.size()==3&&directory.textures.size()==2&&directory.rules.size()==2,
       "format 3 Catalog relationships differ");
     Require(directory.meshes[0].shapes==std::vector<std::string>{"Smile"},
       "format 3 Catalog did not read the controlled Mesh channel descriptor");
@@ -259,6 +271,28 @@ int main(int argc,char** argv){
     auto shared=MatAsm::PrepareShared(nativeAuthor,uses,[&](const auto& material,const auto&){++prepareCalls;return DummyMaterialInput(material);});
     Require(shared.references.size()==2&&shared.inputs.size()==1&&prepareCalls==1,
       "one sparse Material edit generated duplicate variants for multiple Renderer uses");
+    std::vector<MatAsm::Use> equivalentUses{{{3,"PartBody"},"MaterialBody"},{{4,"PartBody"},"MaterialTwin"}};
+    auto equivalentBuilder=[](const auto&,const auto&){return DummyMaterialInput("CAB-equivalent",7,Bytes{4,5,6});};
+    auto equivalent=MatAsm::PrepareShared(nativeAuthor,equivalentUses,equivalentBuilder);
+    Require(equivalent.references.size()==2&&equivalent.inputs.size()==1&&equivalent.variants==1,
+      "equivalent Material inputs with distinct View objects were not deduplicated");
+    auto conflictingBytes=[](const auto& material,const auto&){
+      return DummyMaterialInput("CAB-equivalent",7,material.declaration.id=="MaterialBody"?Bytes{4,5,6}:Bytes{4,5,7});};
+    Require(Fails([&]{MatAsm::PrepareShared(nativeAuthor,equivalentUses,conflictingBytes);}),
+      "different Material bytes with the same CAB were accepted");
+    auto conflictingIdentity=[](const auto& material,const auto&){
+      return DummyMaterialInput("CAB-equivalent",material.declaration.id=="MaterialBody"?7:8,Bytes{4,5,6});};
+    Require(Fails([&]{MatAsm::PrepareShared(nativeAuthor,equivalentUses,conflictingIdentity);}),
+      "different Material assets with the same CAB were accepted");
+    auto left=MatAsm::PrepareShared(nativeAuthor,{equivalentUses[0]},equivalentBuilder);
+    auto right=MatAsm::PrepareShared(nativeAuthor,{equivalentUses[1]},equivalentBuilder);
+    MatAsm::Merge(left,std::move(right));
+    Require(left.references.size()==2&&left.inputs.size()==1,
+      "equivalent Material inputs failed to merge across dependency groups");
+    auto conflictLeft=MatAsm::PrepareShared(nativeAuthor,{equivalentUses[0]},equivalentBuilder);
+    auto conflictRight=MatAsm::PrepareShared(nativeAuthor,{equivalentUses[1]},conflictingBytes);
+    Require(Fails([&]{MatAsm::Merge(conflictLeft,std::move(conflictRight));}),
+      "different Material bytes with the same CAB were merged across dependency groups");
     std::filesystem::remove_all(root);
     std::cout<<"PASS format 3 Catalog defers missing unhit Mesh/Material/Texture/Physics files and reads mod.ini without assets.bin\n";
     return 0;

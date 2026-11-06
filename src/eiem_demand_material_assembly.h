@@ -1,6 +1,7 @@
 #pragma once
 #include "eiem_demand_native_assembly.h"
 #include "eiem_native_preload_closure.h"
+#include "eiem_input_span_view.h"
 
 // One current-source-derived Material variant is shared by every matched
 // Renderer/Part that uses the same authored Material.
@@ -9,6 +10,11 @@ using namespace EiemNativeInput;
 namespace N=EiemDemandNativeAssembly;
 namespace P=EiemNativeSerializedSplice;
 
+inline bool SameInput(const EiemNativeStandaloneInput::Input& left,const EiemNativeStandaloneInput::Input& right){
+  return left.cab==right.cab&&left.bundle==right.bundle&&left.path==right.path&&
+    left.asset==right.asset&&left.dependencies==right.dependencies&&left.view&&right.view&&
+    (left.view==right.view||EiemInputSpanView::SameBytes(*left.view,*right.view));
+}
 struct Use {RendererMaterialKey key;std::string material;};
 template<class Project> inline std::vector<Use> CollectUses(const SerializedLayout& layout,const std::string& cab,
     const N::Author& author,const AssetIndex& targets,const Project& project) {
@@ -53,7 +59,7 @@ inline Shared PrepareShared(const N::Author& author,const std::vector<Use>& uses
     Require(input.asset.second&&!input.cab.empty()&&input.asset.first==input.cab&&input.view,
       "native author Material input is incomplete: "+use.material);
     auto previous=result.inputs.emplace(input.cab,input);
-    Require(previous.second||(previous.first->second.asset==input.asset&&previous.first->second.view==input.view),
+    Require(previous.second||SameInput(previous.first->second,input),
       "native author Material CAB collision");
     std::set<NativeReference> closure=input.dependencies;closure.insert(input.asset);auto expectedClosure=closure;
     auto prior=result.closures.emplace(input.asset,std::move(closure));
@@ -74,7 +80,7 @@ inline Shared PrepareShared(const N::Author& author,const std::vector<Use>& uses
 inline void Merge(Shared& destination,Shared source) {
   for(auto& row:source.references){auto prior=destination.references.emplace(row.first,row.second);Require(prior.second||prior.first->second==row.second,"native Material Renderer/Part use resolves to multiple assets");}
   for(auto& row:source.inputs){auto prior=destination.inputs.find(row.first);if(prior==destination.inputs.end())destination.inputs.emplace(row.first,row.second);
-    else Require(prior->second.asset==row.second.asset&&prior->second.view==row.second.view,"native Material CAB collision across dependency groups");}
+    else Require(SameInput(prior->second,row.second),"native Material CAB collision across dependency groups");}
   for(auto& row:source.textures.references){auto prior=destination.textures.references.emplace(row.first,row.second);Require(prior.second||prior.first->second==row.second,"native Texture id resolves to multiple CAB/PathID pairs");}
   for(auto& row:source.textures.inputs){auto prior=destination.textures.inputs.emplace(row.first,row.second);Require(prior.second||prior.first->second==row.second,"native author Texture CAB collision across dependency groups");}
   for(auto& row:source.closures){auto prior=destination.closures.emplace(row.first,row.second);Require(prior.second||prior.first->second==row.second,"native Material closure differs across dependency groups");}
