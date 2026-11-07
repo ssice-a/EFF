@@ -9,7 +9,26 @@ This coordinated release adds author-controlled bone animation resources and kee
 
 Shared tools package: `EFF_Shared_Native_Tools_v2.0.11.zip`. Windows x64; runtime input remains Format 3.
 
-## EFF v2.0.10
+# EFF v2.0.10
+
+本次修复多个武器 Mod 共用游戏原生材质输入时的误冲突。Windows x64，运行时仍只接受 Format 3；兼容 EFF Blender 0.50.5、EFF Mod Manager v0.2.3 和 AnimeStudio v1.9.2。
+
+- 跨 Mod 材质输入现在按 CAB、资源身份、依赖和编译后字节判断是否相同；相同输入可以共享，不同内容或身份仍会明确拒绝，避免错误复用。
+- 增加独立 View、跨依赖组共享及不同输入冲突的回归覆盖。
+
+共享工具包：`EFF_Shared_Native_Tools_v2.0.10.zip`。本次仅更新 DLL 运行逻辑，无需重新导出现有 Mod。
+
+## EFF v2.0.9
+
+本次为多武器 Mod 材质修复版。配套 EFF Blender 0.50.5（continuous 通道）、EFF Mod Manager v0.2.3、AnimeStudio v1.9.2；Windows x64，运行时仍只接受 Format 3。
+
+- 修复武器原生材质只存在于游戏 manifest 的“容器路径＋资源名”索引时，DLL 仅按路径哈希查询导致整个武器资源组回退的问题；两个游戏查询入口现在互为按需回退。
+- 修复不同 Mod 编辑同一源材质时，共享节点因 `View` 指针不同而产生假冲突的问题。现在比较编译后字节；内容一致时共享，内容不同仍拒绝冲突。
+- 增加逻辑路径索引回退、FBX 查询顺序、相同输入跨 Mod 共享及不同输入冲突回归。
+
+共享工具包：`EFF_Shared_Native_Tools_v2.0.9.zip`。安装 DLL 更新后无需因上述逻辑路径修复重新导出 Mod。
+
+## EFF v2.0.8
 
 本次为剧情加载、武器替换及共享资源生命周期修复版。配套 EFF Blender 0.50.5（continuous 通道）、EFF Mod Manager v0.2.3、AnimeStudio v1.9.2；Windows x64，运行时仍只接受 Format 3。
 
@@ -83,7 +102,7 @@ Shared tools package: `EFF_Shared_Native_Tools_v2.0.11.zip`. Windows x64; runtim
 
 ## 安装与迁移
 
-退出游戏后，将 EFF_v2.0.8_dll.zip 解压到游戏根目录。保留个人 plugin/eff.ini、plugin/mods 与 state.ini。旧 Mod 先用 EFF Mod Manager v0.2.3 迁移为 Format 3，或用配套 Blender 重新导出。共享作者工具供离线作者与迁移工具使用，无需安装到游戏目录。
+退出游戏后，将 EFF_v2.0.10_dll.zip 解压到游戏根目录。保留个人 plugin/eff.ini、plugin/mods 与 state.ini。旧 Mod 先用 EFF Mod Manager v0.2.3 迁移为 Format 3，或用配套 Blender 重新导出。共享作者工具供离线作者与迁移工具使用，无需安装到游戏目录。
 
 ## 验证
 
