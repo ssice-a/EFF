@@ -1,6 +1,6 @@
 # EFF v2.0.11
 
-This coordinated release adds author-controlled bone animation resources and keeps effect preview/export data round-trippable across EFF, Blender, and AnimeStudio.
+This coordinated release pairs EFF Blender 0.50.6, EFF Mod Manager 0.2.3, and AnimeStudio 1.9.4. It adds author-controlled bone animation resources and keeps effect preview/export data round-trippable across EFF, Blender, and AnimeStudio.
 
 - Adds Format 3 Skeleton and sampled bone animation resources, with multiple author skeletons per Mod and explicit source-versus-author bone handling.
 - Keeps animation controls on one timeline so shape keys, material animation, and author bone tracks can be exported together without changing demand-driven loading.

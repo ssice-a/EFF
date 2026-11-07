@@ -165,7 +165,7 @@ inline Consumer StageConsumer(EiemNativeEditTransaction::Member& transaction,
     [&](int64_t id,const std::set<std::string>& fields){return transaction.Project(id,fields);},
     [&](int64_t id){return transaction.Object(id);});
   builder.SetAuthorMetadata(author.bindings);builder.SetAuthorMarkers(author.markers);
-  if(materials)builder.SetMaterialReferences(*materials);
+  if(materials)builder.SetMaterialReferences(*materials);else builder.UseSourceMaterials();
   if(materialClosures)builder.SetMaterialClosures(*materialClosures);
   result.result=builder.Build();transaction.Stage(builder.OutputLayout(),builder.TakeChanges(),builder.TakeAdded());
   result.result.changedObjects=transaction.ChangedObjects();result.result.addedObjects=transaction.AddedObjects();return result;
