@@ -45,7 +45,7 @@ inline Layout Parse(size_t fileBytes,
   result.kind = static_cast<unsigned>(Get(header.data() + 20, 4));
   auto metadataBytes = Get(header.data() + 24, 8);
   auto payloadBytes = Get(header.data() + 32, 8);
-  Require(result.kind >= 1 && result.kind <= 7, "unknown author resource kind");
+  Require(result.kind >= 1 && result.kind <= 8, "unknown author resource kind");
   Require((metadataBytes || result.kind == 3) && metadataBytes <= maximumMetadataBytes && metadataBytes <= SIZE_MAX,
           "author resource metadata extent invalid");
   Require(payloadBytes <= SIZE_MAX, "author resource payload extent overflow");
@@ -75,7 +75,7 @@ inline Bytes ReadMetadata(const Layout& layout,
 }
 
 inline Bytes Encode(unsigned kind, const Bytes& metadata, const Bytes& payload) {
-  Require(kind >= 1 && kind <= 7, "unknown author resource kind");
+  Require(kind >= 1 && kind <= 8, "unknown author resource kind");
   Require((!metadata.empty() || kind == 3) && metadata.size() <= maximumMetadataBytes,
           "author resource metadata extent invalid");
   Bytes result(headerBytes, 0);

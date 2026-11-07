@@ -76,6 +76,23 @@ void PerRendererMaterialDonorRegression(){
   }
  std::cout<<"PASS Mesh hit/material mapping: explicit full Material input ignores source Renderer slot count; unchanged Renderer arrays preserve 0/1/N slots\n";
 }
+void InheritedMaterialSlotRegression(){
+ Fixture f;f.Add(201,6);f.SetList(13,"m_Materials",{200,201});f.SetList(23,"m_Materials",{200,201});
+ Package p;p.id="inherit-source-material";Identity target{"assets/static.mesh","Static"};p.targetIndex[target]="R";p.rules["R"].parts={"P","Q"};
+ p.parts["P"].mesh=p.parts["Q"].mesh="M";p.parts["P"].materialSlot=1;p.parts["Q"].materialSlot=0;p.meshes["M"]={"mesh",3,3,{},{}};
+ auto meshSchema=std::make_shared<Resource>();meshSchema->type=f.types[5].hash;p.resources["mesh"]=meshSchema;
+ AssetIndex assets;assets[target].cab=f.cab;assets[target].pathId=100;assets[target].classId=43;assets[target].type=meshSchema->type;
+ std::vector<BuiltMeshPart> parts{{target,"R","P",f.cab,100,100,3,3},{target,"R","Q",f.cab,100,101,3,3}};
+ auto built=RendererMemberBuilder(f.BytesOf(),f.cab,p,assets,parts).Build();
+ Require(built.matches==2&&built.parts.size()==4,"Mesh-only Parts did not assemble for all source Renderers");
+ auto layout=ParseSerialized(built.bytes);
+ for(const auto& part:built.parts){const int64_t expected=part.part=="P"?201:200;auto value=ObjectValue(built.bytes,layout,part.renderer);const auto& type=layout.types.at(layout.objects.at(part.renderer).type);
+  const auto& materials=ConstArray(type,Child(type,value,"m_Materials"));
+  Require(materials.children.size()==1&&NullableReference(type,materials.children.front(),layout,f.cab)==NativeReference{f.cab,expected},
+    "Mesh-only Part did not inherit the exact source Renderer material slot");}
+ p.parts["P"].materialSlot=2;Rejected([&]{RendererMemberBuilder(f.BytesOf(),f.cab,p,assets,parts).Build();});
+ std::cout<<"PASS Mesh-only author Parts bind each current Renderer material slot and reject missing slots\n";
+}
 void CrossCabSkipCaseRegression(){
  Fixture f;const std::string external="cab-external";
  SetReference(f.T(12),Child(f.T(12),f.V(12),"m_Mesh"),{external,100},f.refs,f.cab);
@@ -161,6 +178,7 @@ void NativePaletteFallbackRegression(){
 }
 int main(){try{
  PerRendererMaterialDonorRegression();
+ InheritedMaterialSlotRegression();
  NativePaletteFallbackRegression();
  Fixture f;auto before=f.BytesOf();Package p;p.id="static";Identity target{"assets/static.mesh","Static"},mat{"assets/material.mat","Mat"};p.targetIndex[target]="R";p.rules["R"].parts={"P","Q"};
  // Shared member parsing must keep root ownership and component ordinals local.

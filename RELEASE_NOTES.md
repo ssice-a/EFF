@@ -1,4 +1,15 @@
-# EFF v2.0.8
+# EFF v2.0.11
+
+This coordinated release adds author-controlled bone animation resources and keeps effect preview/export data round-trippable across EFF, Blender, and AnimeStudio.
+
+- Adds Format 3 Skeleton and sampled bone animation resources, with multiple author skeletons per Mod and explicit source-versus-author bone handling.
+- Keeps animation controls on one timeline so shape keys, material animation, and author bone tracks can be exported together without changing demand-driven loading.
+- Preserves effect preview VAT UV channels, colors, tangent handedness, native submesh metadata, and texture stream metadata for faithful inspection.
+- Adds effect-block clipboard semantics for copying the complete visual block, including logical resource references, without bundling game-owned assets.
+
+Shared tools package: `EFF_Shared_Native_Tools_v2.0.11.zip`. Windows x64; runtime input remains Format 3.
+
+## EFF v2.0.10
 
 本次为剧情加载、武器替换及共享资源生命周期修复版。配套 EFF Blender 0.50.5（continuous 通道）、EFF Mod Manager v0.2.3、AnimeStudio v1.9.2；Windows x64，运行时仍只接受 Format 3。
 

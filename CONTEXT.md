@@ -1,5 +1,21 @@
 # EFF 领域模型
 
+2026-11-05 22:42 用户反馈普通版恢复后武器替换看起来成功；PID 30544 的 sw 四级路由、carrierParts=4、内嵌材质 containerPreload=1、四 Renderer 绑定及 170/170 请求完成相互印证，本次详情页检查基本通过。资源准备无 GAP/冲突，旧卸载缺包和女管理员 Renderer 错误本次未出现。仍有同一 lx UI 特效激活前后两条 EFFECT-UI-RENDER-SET-GAP，setter 后 renderInUI 仍为 0，粒子模拟却正常推进到 39 个，画面是否受影响未核实；未改代码。Player.log 另有 Vulkan symbol、Lua ifix、No NumId 与退出 JobTempAlloc 告警，前两条也在停用 EFF 对照快照出现，尚不把这些归因 EFF。剧情同步/完整转场、F10 新版原场景与长期回收本轮未覆盖，Tangtang 预览边界及发布同步仍待后续。快照 bin/runtime-log-audit-20261105-224250/；详见 [日志核对与剩余事项](docs/runtime-log-review-20261105.md)。
+
+2026-11-05 22:39 用户结束加载性能排查，要求恢复普通 DLL，转去实测武器详情页。已确认游戏退出，于 22:39:52 从已校验备份原子恢复 eff.dll：3,043,328 B，SHA256 8D0D490C13F91FFBED20FDB9DEB6E2FF7B5B07C6F810845790A0691A4AD43F46，包含 22:04 版武器内嵌材质及共享生命周期修复。无 EFF 对照采样 22:38:03 到期，临时禁用配置已自动移除，EFF 恢复启用；Mod 未改动。回执 bin/scene-load-attribution-20261105-221010/ordinary-restored.json。用户未提供可比较的原版加载秒数，因此不宣称已证明慢加载与插件无关；本轮按用户要求停止归因，武器画面待其验收。以下测量版安装状态均为历史。
+
+2026-11-05 22:28 慢加载测量已取得 PID 15524 实机数据，用户约 20 秒进入世界：主线程 demand-prepare 7 次共 1430.583 ms（最大 506.570 ms），136/136 请求完成且无 GAP；整段有效采样最低可用 5.623 GiB、提交最高 38.687/42.110 GiB。这些为会话累计、阶段嵌套，不能相加或直接当作 20 秒内全部成本；Mod 引擎侧成本仍未排除。已在游戏退出后创建临时代理配置 eff.dll=0 做无 EFF 对照，采样 no-eff-baseline/，结束或 600 秒后校验摘要并自动删去本次创建的配置；用户已被请同场景复测。普通 DLL 仍待对照后退出游戏时恢复。原始数据与回执 bin/scene-load-attribution-20261105-221010/，详见 [归因记录](docs/scene-load-attribution-20261105.md)。
+
+2026-11-05 22:20 大世界登录慢加载归因仍待实测：PID 38468 使用 22:04 普通版，8 个依赖组准备合计 2469.781 ms（含 UI）、137 请求完成且无 GAP/冲突，不能由局部计时排除插件/Mod。初次系统采样在游戏退出后，无效于本次加载；WPR 因权限不足未启动。已补齐按需查询/准备锁等待等测点，测量版构建/计时回归/隔离加载通过；游戏退出后仅部署 EIEM_LOAD_PERF DLL SHA256 4BDAA181A50949905B0410DA5A22F1686191AF51C7BA79FCCAA4A1982B2F11E5，43 个 INI 摘要保持，普通版已备份。22:20:19 开始 600 秒 PID/CPU/内存/磁盘采样，用户已被请按原流程复测；尚未取得成对加载起止或无 Mod 对照，未宣称根因已定。诊断结束须在游戏退出时恢复普通 DLL。见 [责任归因记录](docs/scene-load-attribution-20261105.md)，现场输出 bin/scene-load-attribution-20261105-221010/。
+
+2026-11-05 22:04 场景加载变慢排查：PID 36816 全会话有 47 条合成 Bundle 键卸载时找不到原生清单的错误。只读二进制检查确认 Manager.UnloadBundleProxyDeps 内联 TryGetBundleDirectDeps，绕过已有查询 hook，导致依赖 ReleaseBundleRef 被跳过；现补该生命周期入口，仅对已发布 EFF 输入保留原生 unloaded 门槛，以游戏 TryGetBundleProxy/ReleaseBundleRef 释放相同直接依赖、代际别名及共享引用，不增加加载或直接改计数。另修跨组缓存只复用视图、漏复用材质依赖声明的冲突；真正不同的视图/依赖仍拒绝，并细化碰撞字段日志。修前失败、修后跨消费者/旧代/原生列表池/材质直接所有权回归、真实武器 PFB/材质回放、完整 F10/世界/UI/剧情 Clone、生产校验与隔离加载通过。游戏退出后已部署 DLL SHA256 8D0D490C13F91FFBED20FDB9DEB6E2FF7B5B07C6F810845790A0691A4AD43F46（3,043,328 B），包含此前待部署的武器内嵌材质修复；回执 bin/local-deployments/20261105-220427-782/Dll.json，10 个用户配置/Mod INI 摘要未变。未测得整场景加载起止，不能将用户等待全部归因于上述缺陷；全会话另有 890 条女管理员 NPC PostModel Renderer 错误仍待单独查验。重启后的 API 绑定、同场景耗时、卸载内存回落及武器画面均待实机验收；未推送或发布。详见 [场景加载诊断](docs/scene-load-slow-20261105.md)。
+
+2026-11-05 21:16 武器详情页复测未通过：PID 36816 的四级 sw 目标已登记（192/192）、Mesh carrier 已准备，失败在内嵌 Material 的当前原生身份解析。真实生产入口稳定复现；精确 PFB 容器的 preload 指针范围补齐子资源寻址后，再沿材质构建/依赖图提交复现同包 Texture 回指源 PFB 的依赖环。当前修复将材质实际引用的本地资源闭包保留在新载体内，维持本地指针，重定位 Texture 流路径/偏移，以文件视图提供选中像素范围，不预读整张贴图或未命中 Mod。真实 sw 材质解析、构建、图提交、实际输出像素片段、错误身份拒绝和默认同名隔离/懒加载回归均通过；生产构建/隔离加载通过，候选 DLL SHA256 3D5CEB914DDB502FB820900C275B0D09252FC64E55828687B06DC0BA116981D3（3,038,208 B）。当前游戏仍运行，待退出部署及真实详情页画面复测；本轮无需更新 Blender 或重新导出。详见 [武器详情页内嵌材质诊断](docs/weapon-detail-embedded-material-20261105.md)。上一轮网格 4/4 并未覆盖材质链路，不能当作详情页替换验收。
+
+2026-11-05 21:04/21:06 剧情控制与武器路由修复已部署本机：武器四级 Mesh 无独立 RuntimeManifest 资源入口，旧登记阶段跳过了它们；导出现在从 EFFSOURCE 的完整 path+asset 取得可选 target.bundle/lod.N.bundle，运行时仅解析已驻留 manifest 的真实 Bundle key，实际请求命中后仍按完整逻辑身份装配，不预载载荷。正式 sw/mod.ini 已原子补齐四级路由，三个资源载荷摘要未变。剧情 Timeline 直接 Clone 绕过世界/UI 完成回调的实例现在继承共享 Mod 控制；同步/异步实例登记使用弱引用，保留原生隐藏，不扫描场景。修前失败与修后回归、真实武器 4/4 装配、生产构建和隔离加载通过；DLL SHA256 4F8793F2FF7179354851B72F030C8B692C57ABCE7C723B220C9020D3728E96C8，Blender 导出模块及 56 项安装文件校验通过，回执 bin/local-deployments/20261105-210407-585/。游戏内 API 绑定、武器详情页画面及剧情/世界按键同步仍待重启复测；未发布 Release。详见 [剧情控制与武器路由诊断](docs/story-controls-weapon-routing-20261105.md)。
+
+2026-11-05 新剧情黑屏：PID 2976 的 f_cutscene_e12m1_2 在 Renderer 消费者准备时耗尽累计读取预算。真实 671,058 B 剧情 Bundle + 本机九个 Mod 对照复现旧代码重复解压；按源偏移投影 Renderer/Transform 并预取实际需要的 GameObject 名称后，原 32 MiB 读取预算和 1 MiB 缓存不变，22 目标/126 部件/28 Renderer 装配以 5,048,554 B 读取完成。另修复准备异常跳过游戏 GetOrCreateBundleProxy、返回初始空指针的问题；保留已提交代际别名，原函数调用一次。原生随机读取、616 对象乱序压缩层级、完整 F10/世界/UI 和共享依赖回归通过。生产校验与隔离加载通过，20:26 已部署 DLL SHA256 FA95F4DA6B9FC9374E19E3A72498A119ED12BBE3BDDF43D0FD1FD7F3A111DF04，回执 bin/local-deployments/20261105-202610-255/Dll.json；用户 INI 和 Mods 保留。材质依赖提交及完整剧情仍待实机复测，详见 [剧情黑屏诊断](docs/story-black-screen-20261105.md)。
+
 ## 当前设计权威（2026-10-30）
 
 2026-11-05 07:42 lx 替换闪退：用户确认运行中替换 Mod 后未按 F10，打开 lx 人物页面时闪退。PID 8284 的 Player.log 在 `CAB-7756f57445e1b670571986226b9a02ea` 报 `Position out of bounds` 后由 Unity 主动终止；dump 为 `EXCEPTION_BREAKPOINT`，不是已证明的悬空指针访问。当前 lx 副本的 23 个 Mesh 原生载荷 SHA、作者快照、资源封装/声明及 DDS 校验通过。真实按需载体回归复现：保留文件句柄可以隔离重命名，却无法隔离同一文件的原地覆盖；已发布视图会用旧布局读到新字节。
@@ -190,6 +206,8 @@
 生产 DLL/代理/ImGui 使用静态 C/C++ 运行库，避免宿主预加载旧 MSVCP 的 mutex ABI 变化；发布必须核验 PE 导入表并在隔离宿主加载真实 DLL。见 [宿主运行库兼容](docs/production-runtime-compatibility.md)。
 
 ## 特效重做现行约束（2026-10-19）
+
+2026-11-05 tangtang 水特效研究已完成一轮真实来源回归。Blender 现在能按来源 AnimationClip 采样材质轨道，并从原生 RGBAHalf VAT + UV1 恢复已核对的 VFXWaterRefract/VFXBaseV2 Softbody 网格变形；保留静态 MeshRenderer 的全部材质槽。Trail/Ribbon 通过有限时间采样重建，倒退跳帧可重复。研究工程、贴图路径与限制见 [Tangtang 水特效研究](docs/tangtang-water-effect-research-20261105.md)。这不表示粒子自定义 VAT、SkinnedMeshRenderer 骨骼重绑定、Animator 状态机或游戏像素 Shader 已完整支持；水衣服仍需保留原衣服蒙皮权重并单独验证。
 
 2026-10-20 特效加载失败的后续证据：精确骨骼绑定通过后，游戏拒绝了此前导出的通用 UnityFS 封包。运行时输入已改由 AnimeStudio 离线生成 Endfield 原生 VFS，且以实际花瓣包交叉核验 C# / C++ 写出结果和全部成员数据；旧作者输入只为迁移读取，不交给游戏，也不在帧内转换。F9 相同内容失败重试先排空旧原生请求与容器。配套部署及实际画面验收边界见[特效原生封包修正](docs/effect-native-archive-20261020.md)。
 

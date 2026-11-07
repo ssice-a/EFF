@@ -9,6 +9,7 @@
 #include "eiem_native_object_graft.h"
 #include "eiem_native_standalone_input.h"
 #include "eiem_physics_input_builder.h"
+#include "eiem_author_bone_animation.h"
 
 // Immutable authored inputs. Opening a catalog reads its small declaration;
 // native assets are opened on the first actual demand and held by that
@@ -111,6 +112,7 @@ inline std::shared_ptr<const Mesh> OpenMesh(const std::filesystem::path& root,co
     AddSize(described.nativeBytes,described.authorBytes)==envelope.payloadBytes,
     "native/editable author Mesh payload extents differ");
   described.file=declaration.file;described.material=declaration.material;
+  described.materialSlot=declaration.materialSlot;described.skeleton=declaration.skeleton;
   auto read=[file,base=envelope.payloadOffset,extent=described.nativeBytes](size_t at,unsigned char* out,size_t n){
     Require(at<=extent&&n<=extent-at,"native Mesh read exceeds its payload range");file->ReadAt(base+at,out,n);};
   R::Reader reader(described.nativeBytes,read);
@@ -237,11 +239,13 @@ class Catalog {
   std::map<std::string,MeshSnapshot> meshSnapshots_;
   std::map<std::string,size_t> textureIds_;
   std::map<std::string,size_t> materialIds_;
+  std::map<std::string,size_t> skeletonIds_;
   std::map<std::string,std::string> effectPaths_;
   std::mutex mutex_;
   std::map<std::string,std::shared_ptr<const Mesh>> meshes_;
   std::map<std::string,std::shared_ptr<const Texture>> textures_;
   std::map<std::string,std::shared_ptr<const Material>> materials_;
+  std::map<std::string,std::shared_ptr<const EiemAuthorBoneAnimation::Skeleton>> skeletons_;
   std::map<std::string,std::shared_ptr<const Physics>> physics_;
 public:
   const std::vector<EiemMeshTargetDirectory::Target>& Targets() const{return manifest_.targets;}
@@ -252,7 +256,7 @@ public:
     std::set<std::string> declaredShapeAnimations,declaredMaterialAnimations,declaredEffectAttachments;
     for(const auto& row:manifest_.resources){const auto& declaration=row.second;
       if(declaration.kind==1){
-        D::MeshAsset mesh;mesh.file=declaration.path;mesh.part=row.first;
+        D::MeshAsset mesh;mesh.file=declaration.path;mesh.part=row.first;mesh.skeleton=declaration.skeleton;
         meshResources.emplace(row.first,std::move(mesh));
       }else if(declaration.kind==2){
         D::MaterialEntry material;material.id=row.first;material.file=declaration.path;
@@ -261,6 +265,9 @@ public:
       }else if(declaration.kind==3){
         D::TextureAsset texture;texture.id=row.first;texture.file=declaration.path;texture.ddsFile=declaration.dds;
         directory_.textures.push_back(std::move(texture));
+      }else if(declaration.type=="skeleton"){
+        Require(declaration.kind==8,"format 3 Skeleton kind differs");
+        directory_.skeletons.push_back({declaration.skeleton,declaration.path});
       }else if(declaration.type=="controls"){
         Require(declaration.kind==6,"format 3 Controls kind differs");
         auto file=std::make_shared<R::File>(AssetPath(root_,declaration.path),0);auto layout=AuthorLayout(file,6);
@@ -348,7 +355,7 @@ public:
     }
     for(const auto& row:manifest_.parts){auto mesh=meshResources.find(row.second.mesh);
       Require(mesh!=meshResources.end(),"format 3 Part Mesh metadata is absent");auto part=mesh->second;
-      part.part=row.first;part.material=row.second.material;directory_.meshes.push_back(std::move(part));}
+      part.part=row.first;part.material=row.second.material;part.materialSlot=row.second.materialSlot;directory_.meshes.push_back(std::move(part));}
     std::map<std::string,D::ReplaceRule> rules;
     for(const auto& target:manifest_.targets){auto& rule=rules[target.rule];rule.id=target.rule;rule.targets.emplace(target.lod,target.source);
       rule.parts=target.partIds;rule.skip=target.skip;}
@@ -356,6 +363,7 @@ public:
     for(size_t i=0;i<directory_.meshes.size();++i)parts_.emplace(directory_.meshes[i].part,i);
     for(size_t i=0;i<directory_.textures.size();++i)textureIds_.emplace(directory_.textures[i].id,i);
     for(size_t i=0;i<directory_.materials.size();++i)materialIds_.emplace(directory_.materials[i].id,i);
+    for(size_t i=0;i<directory_.skeletons.size();++i)skeletonIds_.emplace(directory_.skeletons[i].id,i);
   }
   const D::Directory& Directory()const{return directory_;}
   const std::filesystem::path& Root()const{return root_;}
@@ -388,6 +396,25 @@ public:
     meshes_.emplace(part,asset);return asset;
   }
   size_t OpenMeshes(){std::lock_guard<std::mutex> lock(mutex_);return meshes_.size();}
+  std::shared_ptr<const EiemAuthorBoneAnimation::Skeleton> GetSkeleton(const std::string& id) {
+    std::lock_guard<std::mutex> lock(mutex_);auto found=skeletons_.find(id);if(found!=skeletons_.end())return found->second;
+    auto index=skeletonIds_.find(id);Require(index!=skeletonIds_.end(),"author Skeleton declaration is absent: "+id);
+    const auto& declaration=directory_.skeletons.at(index->second);
+    auto file=std::make_shared<R::File>(AssetPath(root_,declaration.file),0);auto layout=AuthorLayout(file,8);
+    auto metadata=EiemAuthorResourceMetadata::DecodeSkeleton(AuthorMetadata(file,layout));
+    Require(metadata.id==id&&metadata.file==declaration.file&&metadata.bytes==layout.payloadBytes,
+      "author Skeleton metadata differs from mod.ini");
+    Bytes payload(metadata.bytes);file->ReadAt(layout.payloadOffset,payload.data(),payload.size());
+    auto digest=Sha(payload.data(),payload.size());Require(Hex(digest.data(),digest.size())==metadata.hash,
+      "author Skeleton payload checksum differs");
+    auto value=std::make_shared<const EiemAuthorBoneAnimation::Skeleton>(
+      EiemAuthorBoneAnimation::DecodeSkeleton(payload.data(),payload.size()));
+    for(const auto& animation:directory_.runtime.animations)for(const auto& track:animation.second.boneTracks)
+      if(track.skeleton==id)Require(value->paths.count(track.path),
+        "author Animation bone path is absent from Skeleton: "+animation.first+"/"+track.path);
+    file->VerifyStable();skeletons_.emplace(id,value);return value;
+  }
+  size_t OpenSkeletons(){std::lock_guard<std::mutex> lock(mutex_);return skeletons_.size();}
 private:
   std::shared_ptr<const Texture> GetTextureLocked(const std::string& id) {
     auto index=textureIds_.find(id);Require(index!=textureIds_.end(),"author Texture declaration is absent: "+id);

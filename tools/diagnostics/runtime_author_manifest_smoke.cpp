@@ -70,6 +70,21 @@ int main() {
                 !std::filesystem::exists(root / "editable/custom/body.dds"),
             "startup manifest validation opened or required resource payloads");
 
+    auto inheritedMaterial = ini;
+    const auto oldPart = std::string("[PartBody]\nmesh=MeshBody\nmaterial=MaterialBody\nvisible=1\n");
+    const auto partAt = inheritedMaterial.find(oldPart);
+    Require(partAt != inheritedMaterial.npos, "smoke Part fixture is absent");
+    inheritedMaterial.replace(partAt, oldPart.size(),
+        "[PartBody]\nmesh=MeshBody\nmaterial_slot=2\nvisible=1\n");
+    { std::ofstream output(root / "mod.ini", std::ios::binary | std::ios::trunc);
+      output << inheritedMaterial; }
+    auto inheritedManifest = EiemRuntimeAuthorManifest::Read(root);
+    Require(inheritedManifest.parts.at("PartBody").material.empty(),
+            "Format 3 Part without material did not request source material inheritance");
+    Require(inheritedManifest.parts.at("PartBody").materialSlot == 2 &&
+                inheritedManifest.targets.front().resources.size() == 1,
+            "Format 3 inherited material slot or target resource set differs");
+
     bool traversalRejected = false;
     { std::ofstream output(root / "mod.ini", std::ios::binary | std::ios::trunc);
       output << ini.substr(0, ini.find("author/characters/body.mesh"))

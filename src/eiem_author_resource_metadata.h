@@ -6,9 +6,10 @@
 namespace EiemAuthorResourceMetadata {
 namespace D = EiemRuntimeAuthorDirectory;
 inline constexpr const char* structure = "EFF_AUTHOR_RESOURCE_METADATA/3";
+inline constexpr const char* controlsStructure = "EFF_AUTHOR_RESOURCE_METADATA/4";
 
 inline D::Writer Start(unsigned kind) {
-  EiemDirectory::Require(kind >= 1 && kind <= 7, "unknown author metadata kind");
+  EiemDirectory::Require(kind >= 1 && kind <= 8, "unknown author metadata kind");
   D::Writer writer;
   writer.S(structure);
   writer.N(kind);
@@ -17,7 +18,9 @@ inline D::Writer Start(unsigned kind) {
 
 inline D::Reader Open(const EiemDirectory::Bytes& bytes, unsigned kind) {
   D::Reader reader{bytes};
-  EiemDirectory::Require(reader.S() == structure, "author resource metadata structure differs");
+  auto metadataStructure=reader.S();
+  EiemDirectory::Require(metadataStructure == structure || (kind==6&&metadataStructure==controlsStructure), "author resource metadata structure differs");
+  reader.mixedAnimationTracks=kind==6&&metadataStructure==controlsStructure;
   EiemDirectory::Require(reader.U() == kind, "author resource metadata kind differs");
   return reader;
 }
@@ -129,11 +132,20 @@ inline EffectAuthor DecodeEffectAuthor(const EiemDirectory::Bytes& bytes) {
 }
 
 inline EiemDirectory::Bytes EncodeControls(const EiemAuthorControlMetadata::State& state) {
-  auto w=Start(6); EiemAuthorControlMetadata::Write(w,state); return std::move(w.b);
+  D::Writer w;w.S(controlsStructure);w.N(6);EiemAuthorControlMetadata::Write(w,state); return std::move(w.b);
 }
 
 inline EiemAuthorControlMetadata::State DecodeControls(const EiemDirectory::Bytes& bytes) {
-  auto r=Open(bytes,6); auto state=EiemAuthorControlMetadata::Read(r);
+  auto r=Open(bytes,6); auto state=EiemAuthorControlMetadata::Read(r,r.mixedAnimationTracks);
   EiemDirectory::Require(r.p==bytes.size(), "author controls metadata trailing data");return state;
+}
+
+struct Skeleton {std::string id,file,hash;size_t bytes=0;};
+inline Skeleton DecodeSkeleton(const EiemDirectory::Bytes& bytes) {
+  auto r=Open(bytes,8);Skeleton value;value.id=r.S();value.file=r.S();auto extent=r.N();
+  EiemDirectory::Require(extent<=SIZE_MAX,"author Skeleton extent overflow");value.bytes=size_t(extent);value.hash=r.S();
+  EiemDirectory::Require(!value.id.empty()&&!value.file.empty()&&value.bytes&&value.hash.size()==64&&
+    value.hash.find_first_not_of("0123456789ABCDEFabcdef")==std::string::npos&&r.p==bytes.size(),
+    "author Skeleton declaration differs");return value;
 }
 } // namespace EiemAuthorResourceMetadata

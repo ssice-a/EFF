@@ -12,6 +12,15 @@ inline std::string Prefix(const std::string& id) {
   return "M"+Hex(hash.data(),hash.size())+"_";
 }
 inline std::string Name(const std::string& id,const std::string& section) {return Prefix(id)+section;}
+inline std::vector<std::string> InstanceIds(const std::vector<Package>& authors) {
+  std::map<std::string,size_t> counts;for(const auto& p:authors)++counts[p.id];
+  std::vector<std::string> result;result.reserve(authors.size());
+  for(const auto& p:authors){auto id=p.id;
+    if(counts.at(p.id)>1){auto root=InputPath(std::filesystem::weakly_canonical(p.root).u8string());
+      auto hash=Sha(reinterpret_cast<const unsigned char*>(root.data()),root.size());id+="_COPY_"+Hex(hash.data(),hash.size());}
+    result.push_back(std::move(id));}
+  return result;
+}
 inline bool IsEffectRoot(const std::filesystem::path& root) {
   for(const auto& section:ParseIni(Read(root/"mod.ini")))
     if(section.id=="Mod")return section.values.count("type")&&section.values.at("type")=="effect";
@@ -55,25 +64,26 @@ inline std::shared_ptr<EiemExpression> Expression(const std::shared_ptr<EiemExpr
 inline Package Compose(const std::vector<Package>& authors,bool forceSet=false,bool reuseCopies=true) {
   if(authors.size()==1 && !forceSet) return authors.front();
   Package result;result.id="EFF_COMPOSED_1";result.composed=true;
-  std::vector<const Package*> ordered;std::set<std::string> ids,folders;
-  for(const auto& p:authors) {
-    Require(!p.composed && ids.insert(p.id).second,"duplicate/composed Mod id: "+p.id);
+  struct Instance {const Package* package;std::string id;};
+  const auto instanceIds=InstanceIds(authors);std::vector<Instance> ordered;std::set<std::string> folders;
+  for(size_t i=0;i<authors.size();++i) {const auto& p=authors[i];
+    Require(!p.composed&&!p.id.empty(),"invalid/composed Mod author: "+p.id);
     auto folder=InputPath(std::filesystem::weakly_canonical(p.root).u8string());
     Require(folders.insert(folder).second,"duplicate Mod directory: "+folder);
-    ordered.push_back(&p);
+    ordered.push_back({&p,instanceIds[i]});
   }
-  std::sort(ordered.begin(),ordered.end(),[](auto a,auto b){return a->id<b->id;});
+  std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){return a.id<b.id;});
   std::vector<EiemTargetModPrecedence::Claim> targetClaims;
-  for(const auto* p:ordered)for(const auto& rule:p->rules)for(const auto& target:rule.second.targets)
-    targetClaims.push_back({{target.second.path,target.second.asset},p->id});
+  for(const auto& instance:ordered)for(const auto& rule:instance.package->rules)for(const auto& target:rule.second.targets)
+    targetClaims.push_back({{target.second.path,target.second.asset},instance.id});
   const auto targetSelection=EiemTargetModPrecedence::Resolve(targetClaims);
   std::map<EiemTargetModPrecedence::Identity,std::map<std::string,std::pair<std::string,Rule>>> targetRules;
   std::string identity="EFF_COMPOSED_AUTHOR_1\n";
   std::map<std::string,std::string> textureAliases;
   std::map<std::pair<Identity,std::string>,std::string> materialCopies;
-  for(const auto* source:ordered) {
-    const auto& p=*source;const auto prefix=Prefix(p.id);
-    identity+=p.id+":"+p.root.filename().u8string()+":"+PackageDigest(p)+"\n";
+  for(const auto& instance:ordered) {
+    const auto& p=*instance.package;const auto& modId=instance.id;const auto prefix=Prefix(modId);
+    identity+=modId+":"+p.root.filename().u8string()+":"+PackageDigest(p)+"\n";
     auto resourceName=[&](const std::string& path){auto split=path.find('/');Require(split!=path.npos,"composed resource folder absent");return path.substr(0,split+1)+prefix+path.substr(split+1);};
     for(const auto& r:p.resources) Require(result.resources.emplace(resourceName(r.first),r.second).second,"composed resource collision");
     for(const auto& m:p.meshes) {auto copy=m.second;copy.resource=resourceName(copy.resource);result.meshes.emplace(prefix+m.first,std::move(copy));}
@@ -94,16 +104,16 @@ inline Package Compose(const std::vector<Package>& authors,bool forceSet=false,b
       if(alias.second) result.materials.emplace(candidate,std::move(copy));
     }
     for(const auto& part:p.parts) {
-      auto copy=part.second;copy.mesh=prefix+copy.mesh;copy.material=materials.at(copy.material);
+      auto copy=part.second;copy.mesh=prefix+copy.mesh;if(!copy.material.empty())copy.material=materials.at(copy.material);
       copy.visible=Expression(copy.visible,prefix);
       for(auto& shape:copy.shapes) shape.second="$"+prefix+shape.second.substr(1);
-      result.parts.emplace(prefix+part.first,std::move(copy));result.partOwners.emplace(prefix+part.first,std::make_pair(p.id,part.first));
+      result.parts.emplace(prefix+part.first,std::move(copy));result.partOwners.emplace(prefix+part.first,std::make_pair(modId,part.first));
     }
     for(const auto& rule:p.rules) {
       auto copy=rule.second;for(auto& part:copy.parts) part=prefix+part;
       for(const auto& target:copy.targets) {
         const EiemTargetModPrecedence::Identity key{target.second.path,target.second.asset};
-        targetRules[key].emplace(p.id,std::make_pair(prefix+rule.first,copy));
+        targetRules[key].emplace(modId,std::make_pair(prefix+rule.first,copy));
       }
       result.rules.emplace(prefix+rule.first,std::move(copy));
     }

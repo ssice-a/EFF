@@ -52,6 +52,12 @@ inline std::vector<NativeReference> RendererMaterials(const Type& type,const Val
   for(const auto& entry:materials.children){auto material=NullableReference(type,entry,layout,cab);if(material.second)result.push_back(std::move(material));}
   return result;
 }
+inline std::vector<NativeReference> RendererMaterialSlots(const Type& type,const Value& renderer,
+    const SerializedLayout& layout,const std::string& cab) {
+  std::vector<NativeReference> result;const auto& materials=ConstArray(type,Child(type,renderer,"m_Materials"));
+  for(const auto& entry:materials.children)result.push_back(NullableReference(type,entry,layout,cab));
+  return result;
+}
 // Static Mesh references belong to MeshFilter. Pair only the components that
 // the owning GameObject actually references; names and scene state play no role.
 template<class Project> inline std::vector<MeshConsumer> ProjectedMeshConsumers(const SerializedLayout& layout,
@@ -672,6 +678,11 @@ public:
         NativeReference materialSource,materialReference;std::vector<NativeReference> retainedMaterials;
         if(retainSourceMaterials){
           retainedMaterials=RendererMaterials(type,original,layout,cab);if(!retainedMaterials.empty())materialReference=retainedMaterials.front();
+        }else if(part.material.empty()){
+          auto sourceSlots=RendererMaterialSlots(type,original,layout,cab);
+          Require(part.materialSlot<sourceSlots.size()&&sourceSlots[part.materialSlot].second,
+            "Renderer source Material slot is absent: "+pid+" slot="+std::to_string(part.materialSlot));
+          materialReference=sourceSlots[part.materialSlot];
         }else if(materialReferences){
           auto variant=materialReferences->find({rid,pid});
           Require(variant!=materialReferences->end(),"Renderer material variant missing for source Renderer/Part");
@@ -782,7 +793,7 @@ public:
         dependencies.insert({nativeMesh->cab, nativeMesh->id});
         if(retainSourceMaterials)dependencies.insert(retainedMaterials.begin(),retainedMaterials.end());
         else dependencies.insert(materialReference);
-        if(materialClosures) {
+        if(materialClosures&&!part.material.empty()) {
           auto closure=materialClosures->find(materialReference);
           Require(closure!=materialClosures->end(),"Renderer author Material preload closure absent");
           dependencies.insert(closure->second.begin(),closure->second.end());

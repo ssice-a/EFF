@@ -57,9 +57,9 @@ inline std::vector<Target> Read(const std::filesystem::path& root,
     else for (const auto& part : Split(s.values.at("parts"))) {
       Require(index.count(part), "unresolved target part " + part);
       const auto& values = index.at(part)->values;
-      Require(values.count("mesh") && values.count("material"), "target part lacks Mesh/Material");
+      Require(values.count("mesh"), "target Part lacks Mesh");
       target.resources.push_back(resource(values.at("mesh")));
-      target.resources.push_back(resource(values.at("material")));
+      if (values.count("material")) target.resources.push_back(resource(values.at("material")));
       target.partIds.push_back(part);
       ++target.parts;
     }

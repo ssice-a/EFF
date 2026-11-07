@@ -14,6 +14,7 @@ from .type_tree import require
 HEADER = struct.Struct("<16sIIQQ32s")
 MAGIC = b"EFF_AUTHOR_FILE3"
 METADATA_STRUCTURE = "EFF_AUTHOR_RESOURCE_METADATA/3"
+CONTROLS_METADATA_STRUCTURE = "EFF_AUTHOR_RESOURCE_METADATA/4"
 
 
 class _MetadataWriter:
@@ -38,7 +39,7 @@ class _MetadataWriter:
 
 def encode_resource_file(kind, metadata, payload):
     """Encode one final Format 3 resource file, without a package intermediate."""
-    require(isinstance(kind, int) and 1 <= kind <= 7,
+    require(isinstance(kind, int) and 1 <= kind <= 8,
             "format-3 resource kind is invalid")
     metadata, payload = bytes(metadata), bytes(payload)
     require(bool(metadata) or kind == 3,
@@ -108,6 +109,20 @@ def encode_effect_author_resource(resource_id, resource_file, author_data):
     writer.integer(len(author_data))
     writer.string(hashlib.sha256(author_data).hexdigest().upper())
     return encode_resource_file(7, writer.finish(), author_data)
+
+
+def encode_skeleton_resource(resource_id, resource_file, skeleton_data):
+    """Wrap a standalone author Skeleton payload for Format 3."""
+    skeleton_data = bytes(skeleton_data)
+    require(skeleton_data, "format-3 Skeleton data is empty")
+    writer = _MetadataWriter()
+    writer.string(METADATA_STRUCTURE)
+    writer.integer(8)
+    writer.string(resource_id)
+    writer.string(resource_file)
+    writer.integer(len(skeleton_data))
+    writer.string(hashlib.sha256(skeleton_data).hexdigest().upper())
+    return encode_resource_file(8, writer.finish(), skeleton_data)
 
 
 class _ControlWriter(_MetadataWriter):
@@ -203,14 +218,94 @@ def _effect_runtime_part(effect, parts):
     return runtime_part
 
 
+def _decode_bone_animation_payload(payload, label):
+    payload = bytes(payload)
+    require(len(payload) >= 12 and payload[:8] == b"EFFBAN1\0",
+            "invalid sampled Bone tracks: " + label)
+    offset = 8
+    version, = struct.unpack_from("<I", payload, offset); offset += 4
+    require(version == 1, "unsupported sampled Bone tracks: " + label)
+
+    def string16():
+        nonlocal offset
+        require(offset + 2 <= len(payload), "truncated sampled Bone track string: " + label)
+        size, = struct.unpack_from("<H", payload, offset); offset += 2
+        require(size and offset + size <= len(payload), "invalid sampled Bone track string: " + label)
+        value = payload[offset:offset + size].decode("utf-8", "strict"); offset += size
+        require("\0" not in value, "invalid sampled Bone track string: " + label)
+        return value
+
+    identity, skeleton = string16(), string16()
+    require(offset + 13 <= len(payload), "truncated sampled Bone animation header: " + label)
+    duration, sample_rate, loop, count = struct.unpack_from("<fIBI", payload, offset); offset += 13
+    require(math.isfinite(duration) and duration > 0 and sample_rate > 0 and loop <= 1 and
+            0 < count <= 16384, "invalid sampled Bone animation timing: " + label)
+    tracks = []
+    seen = set()
+    for _ in range(count):
+        path = string16()
+        samples, = struct.unpack_from("<I", payload, offset) if offset + 4 <= len(payload) else (0,)
+        require(offset + 4 <= len(payload), "truncated sampled Bone track: " + label)
+        offset += 4
+        require(_valid_bone_path(path) and path not in seen and 2 <= samples <= 1_000_000 and
+                samples <= (len(payload) - offset) // 40,
+                "invalid sampled Bone track extent or path: " + label + "/" + path)
+        values = [struct.unpack_from("<10f", payload, offset + index * 40) for index in range(samples)]
+        offset += samples * 40
+        for sample in values:
+            require(all(math.isfinite(value) for value in sample) and
+                    abs(sum(value * value for value in sample[3:7]) - 1.0) <= .001 and
+                    all(value > 0 for value in sample[7:]),
+                    "invalid sampled Bone TRS: " + label + "/" + path)
+        seen.add(path)
+        tracks.append(dict(skeleton=skeleton, path=path, samples=values))
+    require(offset == len(payload), "sampled Bone animation has trailing bytes: " + label)
+    return dict(id=identity, skeleton=skeleton, duration=duration, sample_rate=sample_rate,
+                loop=bool(loop), tracks=tracks)
+
+
 def _controls_resource(mod_id, parts, switches, material_clips, effects,
                        state_defaults=None, persistent_states=None,
-                       key_bindings=None):
+                       key_bindings=None, bone_animations=()):
     preserve_state = state_defaults is not None
     defaults = {key: float(value) for key, value in (state_defaults or {}).items()}
     persistent = set(persistent_states or ()) if preserve_state else set()
     controls, bindings = {}, []
     runtime_parts, animations, material_ids, material_tracks = {}, {}, set(), {}
+
+    def merge_animation(identity, label, key, duration, speed, loop, autoplay,
+                        sample_count=None, speed_variable=None, sample_rate=None):
+        """Return one typed-track clip, enforcing one shared playback clock."""
+        animation = animations.get(identity)
+        if animation is None:
+            variable = speed_variable or ("$anim_speed_" + _identifier(identity))
+            default(variable, speed)
+            animation = dict(id=identity, label=label, speedVariable=variable,
+                key=key or "", duration=duration, speed=speed, loop=loop,
+                autoplay=autoplay, tracks={}, boneTracks=[], sampleCount=sample_count,
+                sampleRate=sample_rate)
+            animations[identity] = animation
+            if key:
+                bindings.append(("KeyAnimation" + _identifier(identity), variable,
+                    "press", *_key_chord(key), 1.0, label, [1.0]))
+            return animation
+        require(abs(float(animation["duration"]) - float(duration)) <= 1e-5 and
+                animation["speed"] == speed and
+                animation["loop"] == loop and animation["autoplay"] == autoplay and
+                animation["key"] == (key or ""),
+                "mixed Animation tracks must share playback settings: " + identity)
+        if speed_variable:
+            require(animation["speedVariable"] == speed_variable,
+                    "mixed Animation tracks must share one playback speed control: " + identity)
+        if sample_count is not None:
+            require(animation["sampleCount"] in (None, sample_count),
+                    "mixed Animation tracks must share one sample timeline: " + identity)
+            animation["sampleCount"] = sample_count
+        if sample_rate is not None:
+            require(animation["sampleRate"] in (None, sample_rate),
+                    "mixed Animation tracks must share one sample rate: " + identity)
+            animation["sampleRate"] = sample_rate
+        return animation
 
     def default(variable, value):
         value = float(value)
@@ -279,27 +374,29 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
         for clip in part.get("shapeAnimations", ()):
             identity = clip["id"]
             variable = clip.get("speedVariable") or ("$anim_speed_" + _identifier(identity))
-            if identity not in animations:
-                default(variable, clip["speed"])
-                animations[identity] = dict(id=identity, label=clip["label"], speedVariable=variable,
-                    key=clip.get("key", ""), duration=clip["duration"], speed=clip["speed"],
-                    loop=clip["loop"], autoplay=clip["autoplay"], tracks={})
-                if clip.get("key"):
-                    bindings.append(("KeyAnimation" + _identifier(identity), variable,
-                                     "press", *_key_chord(clip["key"]), 1.0,
-                                     clip["label"], [1.0]))
+            sample_counts = {len(values) for values in clip["channels"].values()}
+            require(len(sample_counts) <= 1,
+                    "Animation tracks must share one sample timeline: " + identity)
+            animation = merge_animation(identity, clip["label"], clip.get("key", ""),
+                clip["duration"], clip["speed"], clip["loop"], clip["autoplay"],
+                next(iter(sample_counts), None), variable, clip.get("sample_rate"))
             for shape, samples in clip["channels"].items():
                 state = runtime_parts[part_id]["shapes"].get(shape)
                 require(state is not None, "animated shape lacks a Format 3 control: " + shape)
-                animations[identity]["tracks"][state] = samples
+                require(state not in animation["tracks"],
+                        "duplicate mixed Animation target: " + identity + "/" + state)
+                animation["tracks"][state] = samples
 
     for clip in material_clips:
         identity = clip["id"]
         speed = "$mat_speed_" + _identifier(identity)
-        default(speed, clip["speed"])
-        animation = dict(id=identity, label=clip["label"], speedVariable=speed,
-                         key=clip.get("key", ""), duration=clip["duration"],
-                         speed=clip["speed"], loop=clip["loop"], autoplay=clip["autoplay"], tracks={})
+        sample_counts = {len(target["samples"]) for target in clip["targets"]}
+        require(len(sample_counts) <= 1,
+                "Animation tracks must share one sample timeline: " + identity)
+        animation = merge_animation(identity, clip["label"], clip.get("key", ""),
+            clip["duration"], clip["speed"], clip["loop"], clip["autoplay"],
+            next(iter(sample_counts), None), speed if identity not in animations else None,
+            clip.get("sample_rate"))
         for target in clip["targets"]:
             variable = target["variable"]
             samples = target["samples"]
@@ -309,15 +406,40 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
                 high = low + max(1.0, abs(low) * 0.01)
             default(variable, samples[0])
             controls[variable] = (clip["label"] + " " + target["property"], low, high)
+            require(variable not in animation["tracks"],
+                    "duplicate mixed Animation target: " + identity + "/" + variable)
             animation["tracks"][variable] = samples
             material_tracks[variable] = dict(material=target["material"],
                 property=target["property"], kind=target["kind"], component=target["component"])
-        animations[identity] = animation
         material_ids.add(identity)
-        if clip.get("key"):
-            bindings.append(("KeyMaterialAnimation" + _identifier(identity), speed,
-                             "press", *_key_chord(clip["key"]), 1.0,
-                             clip["label"], [1.0]))
+
+    for source in bone_animations:
+        decoded = _decode_bone_animation_payload(source["data"], source["id"])
+        identity = _identifier(source["id"])
+        require(decoded["id"] == identity and decoded["skeleton"] == _identifier(source["skeleton"]),
+                "sampled Bone animation identity differs: " + identity)
+        speed = float(source.get("speed", 1.0))
+        key = source.get("key", "")
+        autoplay = bool(source.get("autoplay", False))
+        sample_count = len(decoded["tracks"][0]["samples"])
+        animation = merge_animation(identity, source.get("label", identity), key,
+            decoded["duration"], speed, decoded["loop"], autoplay,
+            sample_count, source.get("speedVariable") if identity not in animations else None,
+            decoded["sample_rate"])
+        require(all(len(values) == len(decoded["tracks"][0]["samples"])
+                    for values in animation["tracks"].values()) and
+                all(len(track["samples"]) == len(decoded["tracks"][0]["samples"])
+                    for track in animation["boneTracks"]),
+                "mixed Animation tracks must share one sample timeline: " + identity)
+        existing_bones = {(track["skeleton"], track["path"]) for track in animation["boneTracks"]}
+        for track in decoded["tracks"]:
+            key = (track["skeleton"], track["path"])
+            require(key not in existing_bones, "duplicate mixed Animation Bone target: " + identity)
+            existing_bones.add(key)
+            animation["boneTracks"].append(track)
+        sample_count = len(decoded["tracks"][0]["samples"])
+        require(all(len(values) == sample_count for values in animation["tracks"].values()),
+                "mixed Animation tracks must share one sample timeline: " + identity)
 
     effect_state = {}
     for effect in effects:
@@ -360,7 +482,7 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
         effect_state[identity] = row
 
     writer = _ControlWriter()
-    writer.string("EFF_AUTHOR_RESOURCE_METADATA/3")
+    writer.string(CONTROLS_METADATA_STRUCTURE)
     writer.integer(6)
     writer.integer(1)
     writer.integer(len(defaults))
@@ -398,6 +520,11 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
             writer.string(variable); values = animation["tracks"][variable]
             writer.integer(len(values))
             for value in values: writer.data.extend(struct.pack("<d", value))
+        writer.integer(len(animation.get("boneTracks", ())))
+        for track in animation.get("boneTracks", ()):
+            writer.string(track["skeleton"]); writer.string(track["path"])
+            writer.integer(len(track["samples"]))
+            for sample in track["samples"]: writer.data.extend(struct.pack("<10f", *sample))
     writer.integer(len(material_ids))
     for identity in sorted(material_ids): writer.string(identity)
     writer.integer(len(material_tracks))
@@ -473,7 +600,8 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
                             switches, material_clips, effects, physics=(),
                             author_files=None, state_defaults=None,
                             persistent_states=None, key_bindings=None,
-                            key_switch_enabled=True, target_bundles=None):
+                            key_switch_enabled=True, target_bundles=None,
+                            skeletons=(), bone_animations=()):
     """Write one final Format 3 author directory from typed Blender records."""
     import hashlib
     import os
@@ -546,7 +674,11 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         section = ids_by_part[part["partId"]]
         mesh_id = _identifier("Mesh_" + section)
         mesh_file = "meshes/" + section + ".effres"
-        ini[mesh_id] = {"path": mesh_file}
+        mesh_values = {"path": mesh_file}
+        skeleton_id = part.get("skeleton", "")
+        if skeleton_id:
+            mesh_values["skeleton"] = _identifier(skeleton_id)
+        ini[mesh_id] = mesh_values
         visible = _part_visibility(part)
         # Format 3 retains the same small expression grammar in mod.ini.
         def show(node):
@@ -562,13 +694,54 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
                 rendered = show(left) + " " + operators[op] + " " + show(right)
                 return "(" + rendered + ")" if op in ("or", "and") else rendered
             raise ValueError("unsupported visibility expression")
-        values = {"mesh": mesh_id, "material": _identifier(part["material"]), "visible": show(visible)}
+        material_id = part.get("material", "")
+        values = {"mesh": mesh_id, "visible": show(visible)}
+        material_slot = part.get("materialSlot", 0)
+        require(isinstance(material_slot, int) and not isinstance(material_slot, bool) and
+                0 <= material_slot <= 0xFFFFFFFF,
+                "Format 3 Part source Material slot is invalid: " + section)
+        values["material_slot"] = str(material_slot)
+        if material_id:
+            material_id = _identifier(material_id)
+            require(material_id in material_ids,
+                    "Format 3 Part Material is not declared: " + section)
+            values["material"] = material_id
         for shape, variable in shape_variables[section].items(): values["shape." + shape] = variable
         ini[section] = values
 
+    rule_base_ids = {}
+    base_counts = {}
+    target_identities = set()
     for rule in rules:
         base = min(rule["targets"], key=lambda row: row["level"])
         section = _identifier("Replace" + base["sourceAsset"])
+        rule_base_ids[id(rule)] = (section, base)
+        base_counts[section] = base_counts.get(section, 0) + 1
+        for target in rule["targets"]:
+            identity = (target["sourcePath"], target["sourceAsset"])
+            require(identity not in target_identities,
+                    "Format 3 Replace target is duplicated: " + repr(identity))
+            target_identities.add(identity)
+    rule_sections = {}
+    used_sections = set(ini)
+    for rule in rules:
+        preferred, base = rule_base_ids[id(rule)]
+        section = preferred
+        if base_counts[preferred] > 1 or section in used_sections:
+            seed = (base["sourcePath"] + "\n" + base["sourceAsset"]).encode("utf-8")
+            section = preferred + "_" + hashlib.sha256(seed).hexdigest()[:12].upper()
+        suffix = 2
+        candidate = section
+        while candidate in used_sections:
+            candidate = section + "_" + str(suffix)
+            suffix += 1
+        section = candidate
+        used_sections.add(section)
+        rule_sections[id(rule)] = section
+
+    for rule in rules:
+        base = min(rule["targets"], key=lambda row: row["level"])
+        section = rule_sections[id(rule)]
         values = {"target.path": base["sourcePath"], "target.asset": base["sourceAsset"]}
         bundle = target_bundles.get((base["sourcePath"], base["sourceAsset"]))
         if bundle: values["target.bundle"] = bundle
@@ -587,6 +760,40 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         require(0 in levels, "Format 3 Replace target lacks LOD0")
         ini[section] = values
 
+    skeleton_ids = set()
+    for skeleton in skeletons:
+        resource_id = _identifier(skeleton["id"])
+        require(resource_id not in skeleton_ids, "duplicate Format 3 Skeleton: " + resource_id)
+        section_id = "Skeleton" + resource_id
+        require(section_id not in ini, "Format 3 Skeleton section collides: " + section_id)
+        skeleton_ids.add(resource_id)
+        relative = "skeletons/" + resource_id + ".effres"
+        payload = bytes(skeleton["data"])
+        (root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (root / relative).write_bytes(encode_skeleton_resource(resource_id, relative, payload))
+        ini[section_id] = {"type": "skeleton", "path": relative}
+
+    referenced_skeletons = {
+        values["skeleton"] for section, values in ini.items()
+        if section.startswith("Mesh") and values.get("skeleton")
+    }
+    require(referenced_skeletons <= skeleton_ids,
+            "Format 3 Mesh references an undeclared Skeleton: " +
+            repr(sorted(referenced_skeletons - skeleton_ids)))
+    require({ _identifier(animation["skeleton"]) for animation in bone_animations } <= referenced_skeletons,
+            "Format 3 Animation Skeleton is not used by any Mesh")
+
+    animation_ids = set()
+    for animation in bone_animations:
+        resource_id = _identifier(animation["id"])
+        skeleton_id = _identifier(animation["skeleton"])
+        contribution = (resource_id, skeleton_id)
+        require(contribution not in animation_ids,
+                "duplicate Format 3 Animation Bone contribution: " + resource_id + "/" + skeleton_id)
+        require(skeleton_id in skeleton_ids,
+                "Format 3 Animation references an undeclared Skeleton: " + skeleton_id)
+        animation_ids.add(contribution)
+
     for resource in physics:
         resource_id = _identifier(resource["id"]); relative = "physics/" + resource_id + ".effres"
         author = bytes(resource["author"]); native = bytes(resource["native"])
@@ -598,8 +805,7 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         for rule in rules:
             if any((target["sourcePath"], target["sourceAsset"]) in wanted_targets
                    for target in rule["targets"]):
-                target_rules.add(_identifier("Replace" + min(
-                    rule["targets"], key=lambda row: row["level"])["sourceAsset"]))
+                target_rules.add(rule_sections[id(rule)])
         require(target_rules, "Format 3 Physics has no declared Mesh targets: " + resource_id)
         ini[resource_id] = {"type": "physics", "path": relative,
                             "targets": ",".join(sorted(target_rules))}
@@ -618,12 +824,12 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
             if effect.get("part"):
                 for rule in rules:
                     if effect["part"] in rule["parts"]:
-                        effect_rules.setdefault(relative, set()).add(_identifier("Replace" + rule["sourceAsset"]))
+                        effect_rules.setdefault(relative, set()).add(rule_sections[id(rule)])
             else:
                 for rule in rules:
                     if any((target["sourcePath"], target["sourceAsset"]) ==
                            (effect.get("targetPath"), effect.get("targetAsset")) for target in rule["targets"]):
-                        effect_rules.setdefault(relative, set()).add(_identifier("Replace" + rule["sourceAsset"]))
+                        effect_rules.setdefault(relative, set()).add(rule_sections[id(rule)])
         author_name = _identifier(effect["id"]) + ".effeffect"
         require(author_name in author_files, "Format 3 Effect author snapshot is absent: " + author_name)
 
@@ -631,7 +837,7 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
     control_data, _runtime_parts = _controls_resource(
         mod_id, parts, switches, material_clips, effects,
         state_defaults=state_defaults, persistent_states=persistent_states,
-        key_bindings=key_bindings)
+        key_bindings=key_bindings, bone_animations=bone_animations)
     (root / control_file).write_bytes(control_data)
     for relative, identity in effect_resources.items():
         values = {"type": "effect", "path": relative}
@@ -652,7 +858,8 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
             "path": control_file, "author": identity}
     for index, clip in enumerate(material_clips):
         ini["MaterialAnimation" + _identifier(clip["id"])] = {"path": control_file}
-    for identity, animation in _controls_animation_ids(parts, material_clips).items():
+    for identity, animation in _controls_animation_ids(parts, material_clips,
+                                                        bone_animations).items():
         if identity not in {clip["id"] for clip in material_clips}:
             ini["ShapeAnimation" + _identifier(identity)] = {"path": control_file}
     ini["ResourceControls"] = {"type": "controls", "path": control_file}
@@ -660,9 +867,10 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
     return dict(format=3, modId=mod_id, _ini=ini)
 
 
-def _controls_animation_ids(parts, material_clips):
+def _controls_animation_ids(parts, material_clips, bone_animations=()):
     result = {clip["id"]: clip for part in parts for clip in part.get("shapeAnimations", ())}
     result.update({clip["id"]: clip for clip in material_clips})
+    result.update({clip["id"]: clip for clip in bone_animations})
     return result
 def _digest(path):
     value = hashlib.sha256()
@@ -781,6 +989,142 @@ class _MetadataReader:
 
     def end(self):
         require(self.offset == len(self.data), "format-3 metadata has trailing bytes")
+
+
+class _AuthorPayloadReader:
+    def __init__(self, data, label):
+        self.data = bytes(data)
+        self.offset = 0
+        self.label = label
+
+    def take(self, size):
+        require(0 <= size <= len(self.data) - self.offset,
+                self.label + " payload is truncated")
+        value = self.data[self.offset:self.offset + size]
+        self.offset += size
+        return value
+
+    def u8(self):
+        return self.take(1)[0]
+
+    def u16(self):
+        return struct.unpack("<H", self.take(2))[0]
+
+    def u32(self):
+        return struct.unpack("<I", self.take(4))[0]
+
+    def i32(self):
+        return struct.unpack("<i", self.take(4))[0]
+
+    def f32(self):
+        value = struct.unpack("<f", self.take(4))[0]
+        require(math.isfinite(value), self.label + " contains a non-finite value")
+        return value
+
+    def string16(self):
+        size = self.u16()
+        value = self.take(size).decode("utf-8", "strict")
+        require(value and "\0" not in value, self.label + " contains an empty or invalid string")
+        return value
+
+    def end(self):
+        require(self.offset == len(self.data), self.label + " payload has trailing bytes")
+
+
+def _valid_bone_path(path):
+    return (bool(path) and not path.startswith("/") and not path.endswith("/") and
+            "\\" not in path and "//" not in path and
+            all(part not in ("", ".", "..") for part in path.split("/")))
+
+
+def _decode_author_skeleton(data, label):
+    reader = _AuthorPayloadReader(data, label)
+    require(reader.take(8) == b"EFFSKA1\0", label + " signature differs")
+    require(reader.u32() == 1, label + " version differs")
+    count = reader.u32()
+    require(0 < count <= 16384, label + " node count is invalid")
+    require(reader.string16() == "unity-y-up-left-handed",
+            label + " coordinate space differs")
+    nodes = []
+    paths = set()
+    for index in range(count):
+        path = reader.string16()
+        parent = reader.i32()
+        position = tuple(reader.f32() for _ in range(3))
+        rotation = tuple(reader.f32() for _ in range(4))
+        scale = tuple(reader.f32() for _ in range(3))
+        require(_valid_bone_path(path) and path not in paths,
+                label + " path is invalid or duplicated: " + path)
+        paths.add(path)
+        if index == 0:
+            require(parent == -1 and "/" not in path,
+                    label + " root node is invalid")
+        else:
+            require(0 <= parent < index and path.rpartition("/")[0] == nodes[parent][0],
+                    label + " node path/parent differs: " + path)
+        require(abs(sum(value * value for value in rotation) - 1.0) <= .001 and
+                all(value > 0 for value in scale),
+                label + " node transform is invalid: " + path)
+        nodes.append((path, parent, position, rotation, scale))
+    reader.end()
+    return {node[0] for node in nodes}
+
+
+def _decode_author_bone_animation(data, label, skeleton_paths):
+    reader = _AuthorPayloadReader(data, label)
+    require(reader.take(8) == b"EFFBAN1\0", label + " signature differs")
+    require(reader.u32() == 1, label + " version differs")
+    identity, skeleton = reader.string16(), reader.string16()
+    duration, sample_rate, loop, count = reader.f32(), reader.u32(), reader.u8(), reader.u32()
+    require(duration > 0 and sample_rate > 0 and loop <= 1 and 0 < count <= 16384,
+            label + " timing or track count is invalid")
+    tracks = set()
+    for _ in range(count):
+        path, sample_count = reader.string16(), reader.u32()
+        require(_valid_bone_path(path) and path in skeleton_paths and path not in tracks,
+                label + " track references an unknown or duplicate bone: " + path)
+        require(2 <= sample_count <= 1000000,
+                label + " sample count is invalid: " + path)
+        for _ in range(sample_count):
+            sample = tuple(reader.f32() for _ in range(10))
+            require(abs(sum(value * value for value in sample[3:7]) - 1.0) <= .001 and
+                    all(value > 0 for value in sample[7:]),
+                    label + " TRS sample is invalid: " + path)
+        tracks.add(path)
+    reader.end()
+    return identity, skeleton
+
+
+def _read_author_resource(root, relative, expected_kind, payload_bytes, label):
+    path = root / relative
+    with path.open("rb") as stream:
+        header = stream.read(HEADER.size)
+        require(len(header) == HEADER.size, label + " header is truncated")
+        magic, version, kind, metadata_bytes, declared_payload, digest = HEADER.unpack(header)
+        require(magic == MAGIC and version == 3 and kind == expected_kind and
+                declared_payload == payload_bytes,
+                label + " envelope differs")
+        metadata = stream.read(metadata_bytes)
+        payload = stream.read(payload_bytes)
+    require(len(metadata) == metadata_bytes and hashlib.sha256(metadata).digest() == digest and
+            len(payload) == payload_bytes,
+            label + " metadata or payload is truncated")
+    return _MetadataReader(metadata), payload
+
+
+def _validate_skeleton_resource(root, relative, section, payload_bytes):
+    metadata, payload = _read_author_resource(root, relative, 8, payload_bytes, section)
+    require((metadata.string(), metadata.integer()) == (METADATA_STRUCTURE, 8),
+            "format-3 Skeleton metadata structure differs: " + relative)
+    resource_id, resource_file = metadata.string(), metadata.string()
+    author_bytes, author_hash = metadata.integer(), metadata.string()
+    metadata.end()
+    require(section == "Skeleton" + resource_id and resource_file == relative and
+            author_bytes == payload_bytes and len(author_hash) == 64 and
+            author_hash.upper() == author_hash and
+            hashlib.sha256(payload).hexdigest().upper() == author_hash,
+            "format-3 Skeleton identity, extent, or checksum differs: " + section)
+    return _decode_author_skeleton(payload, section)
 
 
 def _effmat_values(data, label):
@@ -992,6 +1336,8 @@ def read_format3_directory(root):
             expected_kind = 1
         elif section.startswith(("ShapeAnimation", "MaterialAnimation", "EffectAttachment")):
             expected_kind = 6
+        elif section.startswith("Skeleton"):
+            expected_kind = 8
         elif section.startswith("Material"):
             expected_kind = 2
         elif section.startswith("Texture"):
@@ -999,7 +1345,7 @@ def read_format3_directory(root):
         elif section.startswith("Resource"):
             resource_type = ini[section].get("type", "")
             expected_kind = {"physics": 4, "effect": 5, "controls": 6,
-                             "effect-author": 7}.get(resource_type)
+                             "effect-author": 7, "skeleton": 8}.get(resource_type)
             require(expected_kind is not None, "format-3 Resource type is invalid: " + section)
         require(expected_kind is not None, "unknown format-3 resource section: " + section)
         path = ini[section].get("path")
@@ -1023,6 +1369,12 @@ def read_format3_directory(root):
         metadata, payload_bytes = _validate_effres(root / relative, kind)
         resource_metadata[relative] = (metadata, payload_bytes)
     for section in ini.sections():
+        if section.startswith("Mesh"):
+            skeleton_id = ini[section].get("skeleton", "")
+            if skeleton_id:
+                require("Skeleton" + skeleton_id in ini and
+                        ini["Skeleton" + skeleton_id].get("type") == "skeleton",
+                        "format-3 Mesh Skeleton is unresolved: " + section)
         if not section.startswith("Texture"):
             continue
         values = ini[section]
@@ -1046,6 +1398,7 @@ def read_format3_directory(root):
         require(not metadata and resource_metadata[relative][1] > 0,
                 "format-3 Texture must contain only a native Texture2D scaffold: " + relative)
         _parse_dds(root / dds_relative)
+    skeleton_paths = {}
     for section in ini.sections():
         if section.startswith("Material"):
             _validate_material_resource(root, ini[section]["path"], section, ini,
@@ -1056,10 +1409,18 @@ def read_format3_directory(root):
         elif section.startswith("Resource") and ini[section].get("type") == "effect-author":
             _validate_effect_author_resource(root, ini[section]["path"], section,
                                              resource_metadata[ini[section]["path"]][1])
+        elif section.startswith("Skeleton"):
+            skeleton_id = section[len("Skeleton"):]
+            require(skeleton_id and skeleton_id not in skeleton_paths,
+                    "format-3 Skeleton id is empty or duplicated: " + section)
+            skeleton_paths[skeleton_id] = _validate_skeleton_resource(
+                root, ini[section]["path"], section,
+                resource_metadata[ini[section]["path"]][1])
         elif section.startswith("EffectAttachment"):
             author_id = ini[section].get("author", "")
             require(author_id in ini and ini[author_id].get("type") == "effect-author",
                     "format-3 EffectAttachment author resource is unresolved: " + section)
+
     files = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
     return dict(format=3, modId=ini["Mod"]["id"], _files=files)
 

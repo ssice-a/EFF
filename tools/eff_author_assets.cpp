@@ -74,7 +74,8 @@ inline MeshInput ReadMesh(TypedReader& reader,const std::vector<TemplateRef>& te
  Bytes geometry(8);EndfieldInput::Put(geometry,0,row.mesh.vertices,4);EndfieldInput::Put(geometry,4,row.mesh.indices,4);AddBlock(row.fields,"@geometry",geometry);
  AddBlock(row.fields,"@bones",EncodeStrings(row.mesh.bones));AddBlock(row.fields,"@shapes",EncodeStrings(row.mesh.shapes));row.author=reader.Blob();
  row.target.path=EiemDirectory::LogicalResourcePath(std::move(row.target.path));
- Require(Identifier(row.part)&&Begins(row.meshId,"Mesh")&&Identifier(row.meshId)&&Identifier(row.material)&&!row.file.empty(),"typed Mesh identity differs");
+ Require(Identifier(row.part)&&Begins(row.meshId,"Mesh")&&Identifier(row.meshId)&&
+         (row.material.empty()||Identifier(row.material))&&!row.file.empty(),"typed Mesh identity differs");
  return row;
 }
 inline TextureInput ReadTexture(TypedReader& reader,const std::vector<TemplateRef>& templates){

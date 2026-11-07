@@ -40,6 +40,7 @@
 #include "eiem_demand_material_build.h"
 #include "eiem_demand_dependency_source.h"
 #include "eiem_demand_shared_graph.h"
+#include "eiem_demand_logical_asset_lookup.h"
 #endif
 #endif
 #if defined(EIEM_CATALOG_SURVEY)

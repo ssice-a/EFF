@@ -8,21 +8,8 @@ using namespace EiemNativeInput;
 namespace R=EiemNativeRandomAccess;
 namespace M=EiemDemandMaterialBuild;
 
-static void AddBundleStringField(Fixture& fixture,const char* name){
-  auto& type=fixture.types[4];auto node=type.nodes.size();type.nodes.push_back({"string",name,false,{}});
-  type.nodes[0].children.push_back(node);fixture.V(300).children.push_back(EmptyValue(type,node));
-}
-
 static Fixture MaterialFixture(){
   Fixture fixture;
-  AddBundleStringField(fixture,"m_Name");AddBundleStringField(fixture,"m_AssetBundleName");
-  auto& bundleType=fixture.types[4];auto dependency=bundleType.nodes.size();
-  bundleType.nodes.push_back({"vector","m_Dependencies",false,{dependency+1}});
-  bundleType.nodes.push_back({"Array","Array",false,{dependency+2,dependency+3}});
-  bundleType.nodes.push_back({"int","size",false,{}});
-  bundleType.nodes.push_back({"string","data",false,{}});
-  bundleType.nodes[0].children.push_back(dependency);
-  fixture.V(300).children.push_back(EmptyValue(bundleType,dependency));
   FieldSpec vector2{"Vector2f","m_Scale",{{"float","x",{}},{"float","y",{}}}};
   FieldSpec offset{"Vector2f","m_Offset",{{"float","x",{}},{"float","y",{}}}};
   FieldSpec texEnv{"UnityTexEnv","second",{Ref("m_Texture"),vector2,offset}};

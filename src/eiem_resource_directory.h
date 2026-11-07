@@ -369,6 +369,7 @@ struct Part {
   std::string mesh, material;
   std::shared_ptr<EiemExpression> visible;
   std::map<std::string, std::string> shapes;
+  unsigned materialSlot = 0;
 };
 struct Rule {
   std::vector<std::string> parts;
@@ -431,10 +432,16 @@ inline void RestoreShapeAnimations(Package& p){
 inline void ValidateShapeAnimations(const Package& p){
  std::set<std::string> speeds;
  for(const auto& row:p.shapeAnimations){const auto& clip=row.second;
+  size_t sampleCount=0;
   Require(!p.controls.count(clip.speedVariable)&&speeds.insert(clip.speedVariable).second,"animation speed variable aliases a shape or another group");
   Require(p.defaults.count(clip.speedVariable)&&p.defaults.at(clip.speedVariable)==clip.speed&&p.persistent.count(clip.speedVariable),"animation speed default/persistence absent");
   for(const auto& track:clip.tracks){auto c=p.controls.find(track.first);Require(c!=p.controls.end(),"animation track absent");
+   Require(track.second.size()>=2&&(!sampleCount||sampleCount==track.second.size()),"animation channels do not share one sample timeline");sampleCount=track.second.size();
    Require(std::all_of(track.second.begin(),track.second.end(),[&](float v){return v>=c->second.minimum-1e-6&&v<=c->second.maximum+1e-6;}),"animation weight exceeds shape range");}
+  std::set<std::pair<std::string,std::string>> bones;
+  for(const auto& track:clip.boneTracks){Require(!track.skeleton.empty()&&!track.path.empty()&&bones.emplace(track.skeleton,track.path).second&&track.samples.size()>=2&&(!sampleCount||sampleCount==track.samples.size()),"animation Bone channels do not share one sample timeline or have duplicate targets");sampleCount=track.samples.size();
+   for(const auto& sample:track.samples){double rotation=0;for(size_t i=0;i<sample.size();++i){Require(std::isfinite(sample[i]),"animation Bone sample is nonfinite");if(i>=3&&i<7)rotation+=double(sample[i])*sample[i];if(i>=7)Require(sample[i]>0,"animation Bone scale is not positive");}Require(std::abs(rotation-1.0)<=.001,"animation Bone rotation is not normalized");}}
+  Require(sampleCount>=2,"animation clip has no sampled channels");
  }
 }
 inline std::filesystem::path DiskPath(const std::filesystem::path& root,

@@ -45,6 +45,7 @@ struct Author {
     catalogs.push_back(catalog);const auto& directory=catalog->Directory();package.id=directory.mod;package.root=catalog->Root();
     for(const auto& asset:directory.meshes){
       package.parts[asset.part].mesh=asset.part;package.parts[asset.part].material=asset.material;
+      package.parts[asset.part].materialSlot=asset.materialSlot;
       package.meshes[asset.part]={asset.file,asset.vertices,asset.indices,asset.bones,asset.shapes};
       package.resources.emplace(asset.file,std::make_shared<const Resource>());
       meshSources.emplace(asset.part,std::make_pair(catalog,asset.part));
@@ -164,7 +165,7 @@ inline Consumer StageConsumer(EiemNativeEditTransaction::Member& transaction,
     [&](int64_t id,const std::set<std::string>& fields){return transaction.Project(id,fields);},
     [&](int64_t id){return transaction.Object(id);});
   builder.SetAuthorMetadata(author.bindings);builder.SetAuthorMarkers(author.markers);
-  if(materials)builder.SetMaterialReferences(*materials);else builder.UseSourceMaterials();
+  if(materials)builder.SetMaterialReferences(*materials);
   if(materialClosures)builder.SetMaterialClosures(*materialClosures);
   result.result=builder.Build();transaction.Stage(builder.OutputLayout(),builder.TakeChanges(),builder.TakeAdded());
   result.result.changedObjects=transaction.ChangedObjects();result.result.addedObjects=transaction.AddedObjects();return result;

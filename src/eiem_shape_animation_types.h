@@ -3,6 +3,8 @@
 struct ShapeAnimation {
  std::string id,label,speedVariable;EiemKeyChord key{};double duration=0,speed=1;bool loop=true,autoplay=false;
  std::map<std::string,std::vector<float>> tracks;
+ struct BoneTrack {std::string skeleton,path;std::vector<std::array<float,10>> samples;};
+ std::vector<BoneTrack> boneTracks;
 };
 inline std::pair<std::string,ShapeAnimation> DecodeShapeAnimation(const Resource& resource){
  Require(resource.kind==8&&resource.blocks.size()==1&&resource.blocks.count("@shape-animation"),"shape animation resource layout");

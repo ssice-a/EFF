@@ -44,8 +44,9 @@ void PhysicsBuilderOrigins(){
  for(const auto& object:layout.objects)if(layout.types.at(object.second.type).classId==114&&object.first!=14&&object.first!=24){
   const auto& type=layout.types.at(object.second.type);bool physics=false;for(const auto& node:type.nodes)physics|=node.name=="damping";if(!physics)continue;
   auto value=ObjectValue(output,layout,object.first,&outputOrigins);const auto& damping=Child(type,value,"damping");
-  Require(damping.rawOrigins.size()==1&&damping.rawOrigins.front().resource=="resources/physics.bin"&&damping.rawOrigins.front().bytes==&resource.bytes,
-          "Physics parameter did not bind to original author bytes");
+  Require(damping.rawOrigins.size()==1&&damping.rawOrigins.front().resource=="resources/physics.bin"&&
+          damping.rawOrigins.front().owned&&damping.rawOrigins.front().bytes==damping.rawOrigins.front().owned.get(),
+          "Physics parameter did not bind to its retained author payload");
   Require(Child(type,value,"m_GameObject").children.front().rawOrigins.empty()&&Child(type,value,"m_Script").children.front().rawOrigins.empty(),"remapped Physics reference retained template source");
   auto encoded=EncodeValue(type,value);auto raw=EiemAuthorBytes::Slice(outputOrigins,object.second.offset,object.second.size);for(const auto& span:raw)if(span.resource=="resources/physics.bin")dampingOffsets.insert(span.offset);
   Require(encoded.size()==object.second.size,"Physics component re-encode changed extent");++components;
@@ -56,8 +57,8 @@ void PhysicsBuilderOrigins(){
  // compile; no byte search or resource-specific runtime code is needed.
  auto changedResource=std::make_shared<Resource>(resource);auto changedPackage=package;changedPackage.resources["resources/physics.bin"]=changedResource;
  const auto& templateType=donor.layout.types.at(donor.layout.objects.at(900).type);auto templateValue=ObjectValue(donor.bytes,donor.layout,900,&donor.origins);
- auto parameter=Child(templateType,templateValue,"damping").rawOrigins.front();float damping=0.5f;memcpy(changedResource->bytes.data()+parameter.offset,&damping,4);
- auto rebound=output;for(const auto& span:outputOrigins)if(span.resource=="resources/physics.bin")std::copy_n(changedResource->bytes.begin()+span.offset,span.size,rebound.begin()+span.output);
+ auto parameter=Child(templateType,templateValue,"damping").rawOrigins.front();float damping=0.5f;auto physicsBlock=changedResource->blocks.at("@physics");memcpy(changedResource->bytes.data()+physicsBlock.offset+parameter.offset,&damping,4);
+ auto rebound=output;for(const auto& span:outputOrigins)if(span.resource=="resources/physics.bin")std::copy_n(changedResource->bytes.begin()+physicsBlock.offset+span.offset,span.size,rebound.begin()+span.output);
  auto changedDocuments=EiemPhysicsInput::Documents(changedPackage);auto rebuilt=EiemPhysicsInput::MemberBuilder(before,source.cab,changedPackage,assets,changedDocuments).Build();
  Require(rebound==rebuilt,"Physics explicit payload replay differs from full compile");
  std::cout<<"PASS Physics author provenance: template decoding, both actor roots, remapped references and parameter replay/full-compile equality\n";

@@ -156,6 +156,18 @@ int main(int argc,char** argv){try{
  clothing.parts.emplace("original",clothing.parts.at("body"));clothing.parts.at("original").material="original";clothing.rules.at("body").parts.push_back("original");
  auto sameMod=EiemComposedPackage::Compose({clothing},true);
  Require(sameMod.materials.size()==2&&sameMod.parts.at(EiemComposedPackage::Name(clothing.id,"body")).material!=sameMod.parts.at(EiemComposedPackage::Name(clothing.id,"original")).material,"original/edited clothing Material copies rejected or aliased in one Mod");
+ auto copy=authors[0];copy.root="mods/LZY-copy";auto copyTarget=Identity{"assets/copied-weapon/body.asset","body"};
+ copy.rules.at("body").targets={{0,copyTarget}};copy.targetIndex.clear();copy.targetIndex.emplace(copyTarget,"body");
+ std::vector<Package> copies{authors[0],copy};auto copyIds=EiemComposedPackage::InstanceIds(copies);
+ auto copiedSet=EiemComposedPackage::Compose(copies,true);
+ auto originalPart=EiemComposedPackage::Name(copyIds[0],"body"),copyPart=EiemComposedPackage::Name(copyIds[1],"body");
+ Require(copyIds[0]!=copyIds[1]&&copiedSet.targetIndex.count(authors[0].rules.at("body").targets.at(0))&&
+   copiedSet.targetIndex.count(copyTarget)&&copiedSet.parts.count(originalPart)&&copiedSet.parts.count(copyPart)&&
+   copiedSet.defaults.count("$"+copyIds[0]+"_switch")&&copiedSet.defaults.count("$"+copyIds[1]+"_switch")&&
+   copiedSet.partOwners.at(originalPart).first!=copiedSet.partOwners.at(copyPart).first,
+   "same-ID Mod copies targeting different logical Meshes were rejected or shared state namespaces");
+ std::reverse(copies.begin(),copies.end());auto reorderedCopies=EiemComposedPackage::Compose(copies,true);
+ Require(PackageDigest(reorderedCopies)==PackageDigest(copiedSet),"same-ID Mod copy composition depends on directory order");
  auto placeholders=clothing;for(auto& resource:placeholders.resources)resource.second=std::make_shared<const Resource>();
  auto forcedSingle=EiemComposedPackage::Compose({placeholders},true,false);auto forcedPrefix=EiemComposedPackage::Prefix(placeholders.id);
  Require(forcedSingle.meshes.count(forcedPrefix+"body")&&forcedSingle.parts.count(forcedPrefix+"body")&&

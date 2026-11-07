@@ -19,6 +19,8 @@ This index points to the current user and developer documentation in the EFF mai
 - [Demand-driven runtime design](demand-driven-native-resource-loading.md): implementation evidence and acceptance gaps for the new route.
 - [Format 3 transition status](format3-transition-status.md): what is wired into normal DLL, Blender, and Manager paths versus isolated acceptance tooling.
 - [Format 3 input architecture review](format3-input-architecture-review.md): current runtime/export path, telemetry limits, and performance-test preparation.
+- [Bone animation assembly design](animation-assembly-design.md): current Blender, Format 3, Renderer, playback and effect-mount paths; proposed animated weapon Mesh vertical slice and acceptance gaps.
+- [Effect round-trip architecture review](effect-roundtrip-architecture-review-20261107.md): source, `.effedit.json`, Format 3 author resources, and the remaining independent effect publication seam.
 - [Runtime resource discovery](runtime-resource-discovery.md): historical source-input discovery and runtime matching evidence.
 - [Release management](release-management.md): independent repositories, tool compatibility gates and local preflight.
 

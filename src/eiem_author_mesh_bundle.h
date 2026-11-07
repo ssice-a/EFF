@@ -113,7 +113,7 @@ inline Asset Build(const std::string& owner,const std::string& part,const std::s
  const Identity& target,const Bytes& source,const std::string& sourceCab,int64_t meshId,
  const Resource& authored,const Mesh& mesh,const std::string& resourceFile,
  const Bytes& editableSnapshot){
- Require(!owner.empty()&&!part.empty()&&!material.empty()&&!resourceFile.empty(),
+ Require(!owner.empty()&&!part.empty()&&(material.empty()||Identifier(material))&&!resourceFile.empty(),
          "typed author Mesh identity is incomplete");
  Require(editableSnapshot.size()>=12&&!memcmp(editableSnapshot.data(),"EFFMESH\0",8)&&
          Le(editableSnapshot.data(),editableSnapshot.size(),8,4)==6,

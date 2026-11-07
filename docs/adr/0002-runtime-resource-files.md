@@ -17,11 +17,24 @@
    Mesh targets and Material/Texture sources. The namespace does not depend on
    resource kind, and identity paths reject traversal segments, backslashes,
    and drive prefixes.
+   A `Part` may be listed by more than one `Replace` rule, so one author's
+   immutable Mesh and animation/control state can serve multiple logical
+   targets. Each target identity remains unique within a Mod.
 3. Each referenced resource file is self-describing and independently
    addressable. Its file identity is its resource ID and relative path in
    `mod.ini`; runtime-native data and the author metadata required by Blender
    live in that same resource file. No `assets.bin`, compiled catalog, side
    index, or cache is required for correctness.
+   Mesh target selection and Material replacement are independent. A Part
+   may omit `material`; in that case `material_slot` (zero-based, default
+   `0`) selects the material from the current matched Renderer in each
+   requested PFB. The runtime retains that PFB's own Material and does not
+   load an author Material resource. A declared `material` explicitly
+   replaces that slot with the author's sparse Material variant. Blender
+   omits the Material declaration when its values are unchanged, except for
+   material switches and material animation, which require an explicit
+   variant. Thus one Mesh Part can target multiple PFBs while each PFB keeps
+   its own Material variant unless the author explicitly exports a change.
 4. Mesh resource files contain the native serialized Mesh and an `EFFMESH`
    author snapshot so Blender can round-trip geometry, bindings, and target
    metadata. Runtime Mesh UV coordinates and tangent handedness remain in the

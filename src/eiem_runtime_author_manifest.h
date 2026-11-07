@@ -21,6 +21,7 @@ struct Resource {
   std::string path;
   std::string dds;
   std::string author;
+  std::string skeleton;
   Identity source;
   TextureSettings textureSettings;
   std::map<std::string, std::string> textureBindings;
@@ -29,6 +30,7 @@ struct Resource {
 struct Part {
   std::string mesh;
   std::string material;
+  unsigned materialSlot = 0;
 };
 struct Manifest {
   std::filesystem::path root;
@@ -68,6 +70,17 @@ inline double TextureNumber(const std::map<std::string, std::string>& values,
   return parsed;
 }
 
+inline unsigned PartMaterialSlot(const std::map<std::string, std::string>& values) {
+  auto found = values.find("material_slot");
+  if (found == values.end()) return 0;
+  const auto& text = found->second;
+  Require(!text.empty() && text.find_first_not_of("0123456789") == text.npos,
+          "invalid Part material_slot");
+  auto parsed = std::stoull(text);
+  Require(parsed <= UINT_MAX, "Part material_slot is out of range");
+  return unsigned(parsed);
+}
+
 inline Manifest Read(const std::filesystem::path& root,
                      const std::vector<Section>& sections) {
   Manifest result;
@@ -90,10 +103,19 @@ inline Manifest Read(const std::filesystem::path& root,
     resource.id = section.id;
     bool isResource = false;
     if (Begins(section.id, "Mesh")) {
-      Keys(section, {"path"});
+      Keys(section, {"path"}, {"skeleton"});
       resource.kind = 1;
       resource.path = values.at("path");
+      if(values.count("skeleton"))resource.skeleton=values.at("skeleton");
       isResource = true;
+    } else if (Begins(section.id, "Skeleton")) {
+      Keys(section, {"type", "path"});
+      Require(section.id.size()>strlen("Skeleton")&&values.at("type")=="skeleton",
+        "format 3 Skeleton declaration identity/type differs");
+      resource.kind=8;resource.type="skeleton";resource.path=values.at("path");
+      resource.skeleton=section.id.substr(strlen("Skeleton"));
+      Require(Identifier(resource.skeleton),"invalid format 3 Skeleton id");
+      isResource=true;
     } else if (Begins(section.id, "ShapeAnimation")) {
       Keys(section, {"path"});
       Require(section.id.size() > strlen("ShapeAnimation"), "empty ShapeAnimation id");
@@ -163,8 +185,11 @@ inline Manifest Read(const std::filesystem::path& root,
       if (values.count("targets")) resource.targetRules = Split(values.at("targets"));
       isResource = true;
     } else if (Begins(section.id, "Part")) {
-      Keys(section, {"mesh", "material", "visible"}, {}, {"shape."});
-      result.parts.emplace(section.id, Part{values.at("mesh"), values.at("material")});
+      Keys(section, {"mesh", "visible"}, {"material", "material_slot"}, {"shape."});
+      auto material = values.find("material");
+      result.parts.emplace(section.id, Part{values.at("mesh"),
+          material == values.end() ? std::string{} : material->second,
+          PartMaterialSlot(values)});
     }
     if (!isResource) continue;
     ResourcePath(resource.path);
@@ -188,6 +213,12 @@ inline Manifest Read(const std::filesystem::path& root,
               "shared Texture resource path has conflicting DDS or sampling semantics: " + resource.path);
     }
   }
+
+  std::set<std::string> skeletonIds;
+  for(const auto& row:result.resources)if(row.second.type=="skeleton")
+    Require(skeletonIds.insert(row.second.skeleton).second,"duplicate format 3 Skeleton id");
+  for(const auto& row:result.resources)if(row.second.kind==1&&!row.second.skeleton.empty())
+    Require(skeletonIds.count(row.second.skeleton),"Mesh Skeleton is unresolved: "+row.first);
   for (const auto& row : result.resources) {
     const auto& resource = row.second;
     if(resource.type=="effect-attachment"&&!resource.author.empty()){
@@ -203,15 +234,17 @@ inline Manifest Read(const std::filesystem::path& root,
 
   for (const auto& row : result.parts) {
     auto mesh = result.resources.find(row.second.mesh);
-    auto material = result.resources.find(row.second.material);
     Require(mesh != result.resources.end() && mesh->second.kind == 1,
             "Part Mesh resource is unresolved: " + row.first);
-    Require(material != result.resources.end() && material->second.kind == 2,
-            "Part Material resource is unresolved: " + row.first);
-    for (const auto& binding : material->second.textureBindings) {
-      auto texture = result.resources.find(binding.second);
-      Require(texture != result.resources.end() && texture->second.kind == 3,
-              "Material Texture resource is unresolved: " + row.first);
+    if (!row.second.material.empty()) {
+      auto material = result.resources.find(row.second.material);
+      Require(material != result.resources.end() && material->second.kind == 2,
+              "Part Material resource is unresolved: " + row.first);
+      for (const auto& binding : material->second.textureBindings) {
+        auto texture = result.resources.find(binding.second);
+        Require(texture != result.resources.end() && texture->second.kind == 3,
+                "Material Texture resource is unresolved: " + row.first);
+      }
     }
   }
 
@@ -225,7 +258,8 @@ inline Manifest Read(const std::filesystem::path& root,
     for (const auto& part : target.partIds)
       Require(result.parts.count(part), "Replace target Part is unresolved: " + target.rule);
   for (const auto& row : result.parts)
-    Require(result.resources.count(row.second.mesh) && result.resources.count(row.second.material),
+    Require(result.resources.count(row.second.mesh) &&
+                (row.second.material.empty() || result.resources.count(row.second.material)),
             "unreferenced Part has missing resources: " + row.first);
   return result;
 }

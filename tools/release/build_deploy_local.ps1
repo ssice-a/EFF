@@ -188,7 +188,7 @@ function Build-Blender {
     $oldPythonPath = $env:PYTHONPATH
     try {
         $env:PYTHONPATH = @($source, (Join-Path $repoRoot 'tools')) -join [IO.Path]::PathSeparator
-        Invoke-Checked 'python' @('-m', 'unittest', 'test_author_format3', 'test_eiem_native_export_core', 'test_eiem_native_publish', 'test_eiem_release', 'test_eiem_shape_animation_package', 'test_eiem_material_features', 'test_eiem_update') 'Blender author/update regression suite' $source
+        Invoke-Checked 'python' @('-m', 'unittest', 'test_author_format3', 'test_eiem_bone_animation', 'test_eiem_native_export_core', 'test_eiem_native_publish', 'test_eiem_release', 'test_eiem_shape_animation_package', 'test_eiem_material_features', 'test_eiem_effect_clipboard', 'test_eiem_update') 'Blender author/update regression suite' $source
     } finally {
         $env:PYTHONPATH = $oldPythonPath
     }

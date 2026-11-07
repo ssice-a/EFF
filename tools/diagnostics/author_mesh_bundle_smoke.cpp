@@ -18,11 +18,7 @@ int main(int argc,char** argv){try{
    <<" bones="<<asset.bones<<" shapes="<<asset.shapes<<" onlyMeshAndDirectory=1 consumerPrefabs=0 gameAcceptance=unverified\n";return 0;
  }
  Require(argc==1,"expected Mod template CAB path asset Part PathID output");
- Fixture f;auto& bt=f.types[4];auto addString=[&](const char* field){auto n=bt.nodes.size();bt.nodes.push_back({"string",field,false,{}});bt.nodes[0].children.push_back(n);f.V(300).children.push_back(EmptyValue(bt,n));};
- addString("m_Name");addString("m_AssetBundleName");
- auto depsNode=bt.nodes.size();bt.nodes.push_back({"vector","m_Dependencies",false,{depsNode+1}});
- bt.nodes.push_back({"Array","Array",false,{depsNode+2,depsNode+3}});bt.nodes.push_back({"int","size",false,{}});bt.nodes.push_back({"string","data",false,{}});
- bt.nodes[0].children.push_back(depsNode);f.V(300).children.push_back(EmptyValue(bt,depsNode));
+ Fixture f;auto& bt=f.types[4];
  auto& hashes=ArrayValue(bt,Child(bt,f.V(300),"m_HashContainer"));auto entry=ArrayElement(bt,hashes);
  SetInteger(bt,Child(bt,entry,"first"),42);SetReference(bt,Child(bt,Child(bt,entry,"second"),"asset"),{f.cab,100},f.refs,f.cab);
  hashes.children={entry};hashes.count=1;

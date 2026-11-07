@@ -1,8 +1,10 @@
+#define NOMINMAX
 #include "../../src/eiem_demand_author_resources.h"
 #include "../../src/eiem_demand_material_assembly.h"
 #include "../../src/eiem_runtime_shape_identity.h"
 #include <fstream>
 #include <iostream>
+#include <cstring>
 
 using namespace EiemDirectory;
 namespace D=EiemRuntimeAuthorDirectory;
@@ -23,6 +25,14 @@ static EiemNativeStandaloneInput::Input DummyMaterialInput(const EiemDemandAutho
     std::vector<size_t>{},EiemInputSpanView::ReadRange{});
   return input;
 }
+static EiemNativeStandaloneInput::Input DummyMaterialInput(const std::string& cab,int64_t pathId,const Bytes& bytes){
+  EiemNativeStandaloneInput::Input input;input.cab=cab;input.bundle="eff/shared.ab";input.path="assets/eff/shared";
+  input.asset={cab,pathId};auto literal=std::make_shared<const Bytes>(bytes);
+  input.view=std::make_shared<const EiemInputSpanView::View>(
+    std::vector<EiemInputSpanView::Span>{{EiemInputSpanView::literalSource,0,literal->size(),literal}},
+    std::vector<size_t>{},EiemInputSpanView::ReadRange{});
+  return input;
+}
 
 static void Save(const std::filesystem::path& path,const Bytes& bytes){
   std::filesystem::create_directories(path.parent_path());
@@ -37,6 +47,10 @@ static void SaveText(const std::filesystem::path& path,const std::string& value)
   output<<value;Require(bool(output),"smoke Mod INI output failed");
 }
 template<class F> static bool Fails(F&& action){try{action();return false;}catch(const std::exception&){return true;}}
+static void PutU32(Bytes& bytes,uint32_t value){for(unsigned i=0;i<4;++i)bytes.push_back(static_cast<unsigned char>(value>>(i*8)));}
+static void PutI32(Bytes& bytes,int32_t value){PutU32(bytes,static_cast<uint32_t>(value));}
+static void PutF32(Bytes& bytes,float value){uint32_t bits=0;std::memcpy(&bits,&value,sizeof(bits));PutU32(bytes,bits);}
+static void PutString16(Bytes& bytes,const std::string& value){Require(!value.empty()&&value.size()<=65535,"smoke animation string invalid");bytes.push_back(static_cast<unsigned char>(value.size()));bytes.push_back(static_cast<unsigned char>(value.size()>>8));bytes.insert(bytes.end(),value.begin(),value.end());}
 
 static int SmokeStagedMeshMetadata(const std::filesystem::path& root){
   auto catalog=std::make_shared<A::Catalog>(root);const auto& directory=catalog->Directory();
@@ -185,6 +199,8 @@ int main(int argc,char** argv){
     nativeMesh.insert(nativeMesh.end(),authorMesh.begin(),authorMesh.end());
     Save(root/mesh.file,F::Encode(1,M::EncodeMesh(mesh),nativeMesh));
     Save(root/material.file,F::Encode(2,M::EncodeMaterial(material),authorMaterial));
+    D::MaterialEntry twin=material;twin.id="MaterialTwin";twin.file="custom/materials/twin.author";
+    Save(root/twin.file,F::Encode(2,M::EncodeMaterial(twin),authorMaterial));
     Save(root/texture.file,F::Encode(3,{},Bytes{7,8,9}));
     auto dds=EiemDdsTexture::Header(1,1,1,4,false);dds.insert(dds.end(),{1,2,3,4});
     Save(root/"artist/albedo-final.dds",dds);
@@ -193,19 +209,39 @@ int main(int argc,char** argv){
     controls.controls.emplace("$smile",Control{"Smile",0,1});
     state.visible=EiemExpression::Make();state.visible->number=1;state.shapes.emplace("Smile","$smile");
     controls.parts.emplace("PartBody",state);
+    controls.defaults.emplace("$anim_speed_shared",1);controls.persistent.insert("$anim_speed_shared");
+    ShapeAnimation mixed;mixed.id="shared";mixed.label="Mixed";mixed.speedVariable="$anim_speed_shared";
+    mixed.duration=1;mixed.speed=1;mixed.loop=true;mixed.autoplay=false;
+    mixed.tracks.emplace("$smile",std::vector<float>{0,.5f,1});
+    ShapeAnimation::BoneTrack bone;bone.skeleton="WeaponRig";bone.path="WeaponRoot/FxAnchor";
+    bone.samples={{{0,0,0,0,0,0,1,1,1,1}},{{0,.25f,0,0,0,0,1,1,1,1}},{{0,.5f,0,0,0,0,1,1,1,1}}};
+    mixed.boneTracks.push_back(std::move(bone));controls.animations.emplace(mixed.id,std::move(mixed));
     Save(root/"resources/controls.effres",F::Encode(6,M::EncodeControls(controls),{}));
+    Bytes skeletonPayload{'E','F','F','S','K','A','1',0};PutU32(skeletonPayload,1);PutU32(skeletonPayload,2);
+    PutString16(skeletonPayload,"unity-y-up-left-handed");PutString16(skeletonPayload,"WeaponRoot");PutI32(skeletonPayload,-1);
+    for(float value:{0.f,0.f,0.f,0.f,0.f,0.f,1.f,1.f,1.f,1.f})PutF32(skeletonPayload,value);
+    PutString16(skeletonPayload,"WeaponRoot/FxAnchor");PutI32(skeletonPayload,0);
+    for(float value:{0.f,0.f,1.f,0.f,0.f,0.f,1.f,1.f,1.f,1.f})PutF32(skeletonPayload,value);
+    D::Writer skeletonMetadata;skeletonMetadata.S(M::structure);skeletonMetadata.N(8);
+    skeletonMetadata.S("WeaponRig");skeletonMetadata.S("skeletons/rig.effres");
+    skeletonMetadata.N(skeletonPayload.size());auto skeletonHash=Sha(skeletonPayload.data(),skeletonPayload.size());
+    skeletonMetadata.S(Hex(skeletonHash.data(),skeletonHash.size()));
+    Save(root/"skeletons/rig.effres",F::Encode(8,skeletonMetadata.b,skeletonPayload));
     SaveText(root/"mod.ini",
       "[Mod]\nformat=3\nid=CatalogSmoke\nkey_switch_enabled=1\n\n"
       "[Constants]\n\n"
-      "[MeshBody]\npath=custom/geometry/body.author\n\n"
+      "[MeshBody]\npath=custom/geometry/body.author\nskeleton=WeaponRig\n\n"
       "[MaterialBody]\npath=custom/materials/body.author\nsource.path=assets/edited/body.mat\nsource.asset=EditedMaterial\n\n"
+      "[MaterialTwin]\npath=custom/materials/twin.author\nsource.path=assets/edited/body.mat\nsource.asset=EditedMaterial\n\n"
       "[TextureBody]\npath=custom/texture/albedo.author\ndds=artist/albedo-final.dds\n\n"
       "[MeshUnhit]\npath=missing/geometry/unhit.author\n\n"
       "[MaterialUnhit]\npath=missing/materials/unhit.author\nsource.path=assets/unhit/material.mat\nsource.asset=UnhitMaterial\ntexture._BaseMap=TextureUnhit\n\n"
       "[TextureUnhit]\npath=missing/textures/unhit.author\ndds=missing/textures/unhit.dds\n\n"
       "[ResourceControls]\ntype=controls\npath=resources/controls.effres\n\n"
+      "[SkeletonWeaponRig]\ntype=skeleton\npath=skeletons/rig.effres\n\n"
+      "[ShapeAnimationshared]\npath=resources/controls.effres\n\n"
       "[PartBody]\nmesh=MeshBody\nmaterial=MaterialBody\nvisible=1\n\n"
-      "[PartUnhit]\nmesh=MeshUnhit\nmaterial=MaterialUnhit\nvisible=1\n\n"
+      "[PartUnhit]\nmesh=MeshUnhit\nmaterial_slot=2\nvisible=1\n\n"
       "[ReplaceBody]\ntarget.path=assets/base/body.mesh\ntarget.asset=Body\nparts=PartBody\n\n"
       "[ReplaceUnhit]\ntarget.path=assets/unhit/mesh.mesh\ntarget.asset=Unhit\nparts=PartUnhit\n\n"
       "[ResourceUnhitPhysics]\ntype=physics\npath=missing/physics/unhit.author\ntargets=ReplaceUnhit\n");
@@ -220,10 +256,18 @@ int main(int argc,char** argv){
 
     A::Catalog catalog(root);const auto& directory=catalog.Directory();
     Require(directory.mod=="CatalogSmoke"&&directory.meshes.size()==2&&
-      directory.materials.size()==2&&directory.textures.size()==2&&directory.rules.size()==2,
+      directory.materials.size()==3&&directory.textures.size()==2&&directory.rules.size()==2,
       "format 3 Catalog relationships differ");
     Require(directory.meshes[0].shapes==std::vector<std::string>{"Smile"},
       "format 3 Catalog did not read the controlled Mesh channel descriptor");
+    Require(directory.skeletons.size()==1&&directory.runtime.animations.count("shared")&&
+      directory.runtime.animations.at("shared").tracks.count("$smile")&&
+      directory.runtime.animations.at("shared").boneTracks.size()==1&&
+      directory.runtime.animations.at("shared").boneTracks.front().samples.size()==3,
+      "format 3 Catalog did not keep Shape and Bone tracks in one sampled clip");
+    auto skeleton=catalog.GetSkeleton("WeaponRig");
+    Require(skeleton->paths.count("WeaponRoot/FxAnchor")&&catalog.OpenSkeletons()==1,
+      "format 3 Catalog did not resolve the mixed clip Bone path through its Skeleton");
     Require(directory.meshes[0].part=="PartBody"&&directory.meshes[0].material=="MaterialBody"&&
       directory.meshes[0].file=="custom/geometry/body.author"&&
       directory.meshes[0].vertices==3&&directory.meshes[0].shapes==std::vector<std::string>{"Smile"}&&
@@ -239,11 +283,13 @@ int main(int argc,char** argv){
     const auto& shapePackage=shapeAuthor.package;
     const auto& shapeMesh=shapePackage.meshes.at("PartBody");
     const auto& shapePart=shapePackage.parts.at("PartBody");
+    const auto& inheritedPart=shapePackage.parts.at("PartUnhit");
     auto shapeMarker=RuntimePartName(shapePackage,"PartBody",Identity{"assets/base/body.mesh","Body"});
     Require(shapeMesh.shapes==std::vector<std::string>{"Smile"}&&shapeMesh.vertices==3&&
       shapePart.shapes.at("Smile")=="$smile"&&shapeMarker.find("__EFF_SHAPE_")!=std::string::npos&&
+      inheritedPart.material.empty()&&inheritedPart.materialSlot==2&&
       shapeAuthor.catalog->OpenMeshes()==0,
-      "startup Mesh metadata did not build a shape-aware runtime identity without opening native payload");
+      "startup author metadata lost source Material slot or opened native Mesh payload");
     Require(Fails([&]{catalog.GetMesh("PartUnhit");})&&
       Fails([&]{catalog.GetMaterial("MaterialUnhit");})&&
       Fails([&]{catalog.GetTexture("TextureUnhit");})&&
@@ -259,6 +305,28 @@ int main(int argc,char** argv){
     auto shared=MatAsm::PrepareShared(nativeAuthor,uses,[&](const auto& material,const auto&){++prepareCalls;return DummyMaterialInput(material);});
     Require(shared.references.size()==2&&shared.inputs.size()==1&&prepareCalls==1,
       "one sparse Material edit generated duplicate variants for multiple Renderer uses");
+    std::vector<MatAsm::Use> equivalentUses{{{3,"PartBody"},"MaterialBody"},{{4,"PartBody"},"MaterialTwin"}};
+    auto equivalentBuilder=[](const auto&,const auto&){return DummyMaterialInput("CAB-equivalent",7,Bytes{4,5,6});};
+    auto equivalent=MatAsm::PrepareShared(nativeAuthor,equivalentUses,equivalentBuilder);
+    Require(equivalent.references.size()==2&&equivalent.inputs.size()==1&&equivalent.variants==1,
+      "equivalent Material inputs with distinct View objects were not deduplicated");
+    auto conflictingBytes=[](const auto& material,const auto&){
+      return DummyMaterialInput("CAB-equivalent",7,material.declaration.id=="MaterialBody"?Bytes{4,5,6}:Bytes{4,5,7});};
+    Require(Fails([&]{MatAsm::PrepareShared(nativeAuthor,equivalentUses,conflictingBytes);}),
+      "different Material bytes with the same CAB were accepted");
+    auto conflictingIdentity=[](const auto& material,const auto&){
+      return DummyMaterialInput("CAB-equivalent",material.declaration.id=="MaterialBody"?7:8,Bytes{4,5,6});};
+    Require(Fails([&]{MatAsm::PrepareShared(nativeAuthor,equivalentUses,conflictingIdentity);}),
+      "different Material assets with the same CAB were accepted");
+    auto left=MatAsm::PrepareShared(nativeAuthor,{equivalentUses[0]},equivalentBuilder);
+    auto right=MatAsm::PrepareShared(nativeAuthor,{equivalentUses[1]},equivalentBuilder);
+    MatAsm::Merge(left,std::move(right));
+    Require(left.references.size()==2&&left.inputs.size()==1,
+      "equivalent Material inputs failed to merge across dependency groups");
+    auto conflictLeft=MatAsm::PrepareShared(nativeAuthor,{equivalentUses[0]},equivalentBuilder);
+    auto conflictRight=MatAsm::PrepareShared(nativeAuthor,{equivalentUses[1]},conflictingBytes);
+    Require(Fails([&]{MatAsm::Merge(conflictLeft,std::move(conflictRight));}),
+      "different Material bytes with the same CAB were merged across dependency groups");
     std::filesystem::remove_all(root);
     std::cout<<"PASS format 3 Catalog defers missing unhit Mesh/Material/Texture/Physics files and reads mod.ini without assets.bin\n";
     return 0;
