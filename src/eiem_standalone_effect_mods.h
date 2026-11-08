@@ -34,7 +34,7 @@ inline std::vector<Package> ReadAll(const std::filesystem::path& game){
   auto declarations=EiemDirectory::ParseIni(EiemDirectory::Read(root/"mod.ini"));for(const auto& s:declarations)if(s.id=="Mod")Require(ids.insert(s.values.at("id")).second,"duplicate Mod id across character/effect Mods");
   if(!IsStandalone(root))continue;
   auto p=Load(root);Require(p.parts.empty()&&p.rules.empty()&&!p.effects.empty(),"standalone effect Mod contains character edits");
-  for(const auto& e:p.effects)Require(!e.second.targetPrefab.empty()&&!e.second.targetPath.empty()&&!e.second.targetAsset.empty()&&(e.second.bone.empty()||!e.second.targetBones.empty()),"standalone effect lacks exact source target/bone proof");result.push_back(std::move(p));
+  for(const auto& e:p.effects){const auto& effect=e.second;Require(IsGamePrefabReplacement(effect)||( !effect.targetPrefab.empty()&&!effect.targetPath.empty()&&!effect.targetAsset.empty()&&(effect.bone.empty()||!effect.targetBones.empty())),"standalone effect lacks an exact Prefab replacement target or source attachment proof");}result.push_back(std::move(p));
  }return result;
 }
 }

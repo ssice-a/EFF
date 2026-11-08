@@ -1,3 +1,14 @@
+# EFF v2.0.12
+
+Coordinated with EFF Blender 0.50.7, AnimeStudio 1.9.5, and EFF Mod Manager 0.2.3. This release adds explicit game-Prefab replacement by logical path and completes the standalone effect authoring route.
+
+- Adds distinct mesh-attachment and game-Prefab replacement modes for effect Mods. Replacement routes the chosen logical Prefab path through the game's normal instantiate lifecycle and matches the original root activation state.
+- Supports standalone effect-only Format 3 Mods, reusable emitter data, and native effect assets without copying game-owned resources into the Mod.
+- Adds AnimeStudio author-owned particle Prefab creation from the game's TypeTrees, with Blender authoring/export and round-trip validation.
+- Keeps source effect paths exact and path-based so game hash changes do not invalidate replacement targets.
+
+Shared tools package: `EFF_Shared_Native_Tools_v2.0.12.zip`. Windows x64; runtime input remains Format 3.
+
 # EFF v2.0.11
 
 This coordinated release pairs EFF Blender 0.50.6, EFF Mod Manager 0.2.3, and AnimeStudio 1.9.4. It adds author-controlled bone animation resources and keeps effect preview/export data round-trippable across EFF, Blender, and AnimeStudio.

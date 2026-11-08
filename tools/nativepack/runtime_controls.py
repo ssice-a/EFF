@@ -95,12 +95,19 @@ def effect_encode(owner, effect):
         target_path=effect.get('targetPath','')
         target_asset=effect.get('targetAsset','')
         target_bones=list(effect.get('bones',[]))
-        require(effect['targetPrefab'].startswith('assets/') and effect['targetPrefab'].endswith('.prefab') and '..' not in effect['targetPrefab'] and
-                not renderer_path.startswith('/') and '\\' not in renderer_path and '..' not in renderer_path and '//' not in renderer_path and
-                target_path.startswith('assets/') and '..' not in target_path and target_asset and
-                len(target_bones)==len(set(target_bones)) and all(target_bones) and
-                (not effect.get('bone') or target_bones),
-                'effect source attachment proof missing or invalid')
+        valid_prefab=(effect['targetPrefab'].startswith('assets/') and effect['targetPrefab'].endswith('.prefab') and
+                      '\\' not in effect['targetPrefab'] and all(part not in ('','.','..') for part in effect['targetPrefab'].split('/')))
+        replacement=effect.get('mode')=='replace_game_prefab'
+        if replacement:
+            require(valid_prefab and not renderer_path and not target_path and not target_asset and
+                    not effect.get('part') and not effect.get('bone') and not target_bones,
+                    'effect replacement logical Prefab path invalid')
+        else:
+            require(valid_prefab and not renderer_path.startswith('/') and '\\' not in renderer_path and '..' not in renderer_path and '//' not in renderer_path and
+                    target_path.startswith('assets/') and '..' not in target_path and target_asset and
+                    len(target_bones)==len(set(target_bones)) and all(target_bones) and
+                    (not effect.get('bone') or target_bones),
+                    'effect source attachment proof missing or invalid')
         blocks['@effect-target']=encode_strings([effect['targetPrefab'],renderer_path,target_path,target_asset]+target_bones)
     return encode_resource(EFFECT,'00'*16,blocks)
 
@@ -127,12 +134,17 @@ def effect_decode(resource):
     if '@effect-target' in resource['blocks']:
         from .resource_file import decode_strings
         target=decode_strings(resource['blocks']['@effect-target'])
-        require(len(target)>=4 and target[0].startswith('assets/') and target[0].endswith('.prefab') and '..' not in target[0] and
+        valid_prefab=(len(target)>=4 and target[0].startswith('assets/') and target[0].endswith('.prefab') and
+                      '\\' not in target[0] and all(part not in ('','.','..') for part in target[0].split('/')))
+        replacement=valid_prefab and not target[1] and not target[2] and not target[3] and not target[4:]
+        require(valid_prefab and (replacement or (
                 (not target[1] or not target[1].startswith('/')) and '\\' not in target[1] and '..' not in target[1] and '//' not in target[1] and
                 target[2].startswith('assets/') and '..' not in target[2] and target[3] and
                 len(target[4:])==len(set(target[4:])) and all(target[4:]) and
-                (not bone or target[4:]), 'invalid effect target proof')
+                (not bone or target[4:]))), 'invalid effect target proof')
         result.update(targetPrefab=target[0],rendererPath=target[1],targetPath=target[2],targetAsset=target[3],bones=target[4:])
+        if replacement:
+            result.update(mode='replace_game_prefab', replacementPrefab=target[0])
     return result
 
 def publish_effect_mod(destination,label,effects):

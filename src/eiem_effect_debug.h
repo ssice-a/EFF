@@ -50,6 +50,76 @@ std::vector<std::shared_ptr<Generation>> generations;
 std::vector<std::shared_ptr<Instance>> retiredInstances;
 bool firstFramePending=false;uint64_t firstFrameClock=0;
 bool nativeWork=false;
+struct ReplacementDefinition {std::string package,effect,target;std::shared_ptr<const Manifest> manifest;};
+struct LoadedReplacement {std::shared_ptr<const Manifest> manifest;std::vector<Ref> bundles;Ref prefab;};
+std::map<std::string,ReplacementDefinition> replacementDefinitions;
+std::set<std::string> replacementConflicts;
+std::map<std::string,LoadedReplacement> loadedReplacements;
+std::vector<Ref> Particles(void* root);
+void ReleaseReplacement(LoadedReplacement& loaded) noexcept{
+ try{for(const auto& bundle:loaded.bundles)if(RuntimeShapes::Alive(bundle.Get())){unsigned char destroy=0;void* args[]={&destroy};Call(NativeBundle::api.unload,bundle.Get(),args);}}
+ catch(const std::exception& e){Log("[EFFECT-PREFAB-RELEASE-GAP] reason=%s loadedObjectRetained=0",e.what());}
+ loaded.prefab={};loaded.bundles.clear();loaded.manifest.reset();
+}
+void PublishReplacements(const std::vector<const Package*>& packages){
+ std::map<std::string,ReplacementDefinition> next;std::set<std::string> conflicts;
+ for(const auto* package:packages)if(package)for(const auto& row:package->effects){const auto& effect=row.second;if(!IsGamePrefabReplacement(effect))continue;
+  auto path=FullResourceReload::NormalizeAssetPath(effect.targetPrefab);auto found=next.find(path);
+  if(found==next.end())next.emplace(path,ReplacementDefinition{package->id,effect.id,effect.targetPrefab,effect.native});
+  else if(!found->second.manifest||!effect.native||found->second.manifest->key!=effect.native->key||found->second.manifest->prefab!=effect.native->prefab||found->second.manifest->rootName!=effect.native->rootName)conflicts.insert(path);
+ }
+ for(auto it=loadedReplacements.begin();it!=loadedReplacements.end();){auto desired=next.find(it->first);
+  if(conflicts.count(it->first)||desired==next.end()||!desired->second.manifest||!it->second.manifest||desired->second.manifest->key!=it->second.manifest->key){ReleaseReplacement(it->second);it=loadedReplacements.erase(it);}else ++it;
+ }
+ replacementDefinitions=std::move(next);replacementConflicts=std::move(conflicts);
+ for(const auto& path:replacementConflicts)Log("[EFFECT-PREFAB-CONFLICT] path=%s mode=replace_game_prefab mods=multiple gameResourcePreserved=1",path.c_str());
+ Log("[EFFECT-PREFAB-ROUTES] targets=%zu conflicts=%zu matching=logical-path-only resourcesLoaded=0",replacementDefinitions.size(),replacementConflicts.size());
+}
+void* LoadReplacement(const ReplacementDefinition& definition){
+ Require(RuntimeShapes::Main()&&NativeBundle::enabled&&enabled,"game Prefab replacement requires Unity main thread/native loader");
+ const auto& manifest=definition.manifest;Require(manifest&&manifest->root<manifest->bundles.size()&&!manifest->bundles.empty(),"replacement native manifest incomplete");
+ LoadedReplacement loaded;loaded.manifest=manifest;auto clock=NativeBundle::Clock();
+ try{
+  std::set<int> prior;
+  void* bundleArgs[]={api.bundleType.Get()};auto all=Ref::Make(Call(api.allBundles,nullptr,bundleArgs),false);
+  for(auto object:FullResourceReload::ReferenceArray(all.Get()))if(RuntimeShapes::Alive(object))prior.insert(FullResourceReload::Id(object));
+  std::set<int> created;
+  for(size_t i=0;i<manifest->bundles.size();++i){const auto& source=manifest->bundles[i];Ref bundle;
+   if(source.open){auto view=source.open();Require(view&&view->Size()==source.Size(),"replacement effect native view extent differs");bundle=Ref::Make(NativeBundle::LoadView(view,0,false),false);}
+   else{Require(source.Data()&&source.Size()&&source.Owner(),"replacement effect native bytes absent");bundle=Ref::Make(NativeBundle::LoadBytes(source.Data(),source.Size(),source.Owner(),0,false),false);}
+   Require(RuntimeShapes::Alive(bundle.Get()),"replacement effect Bundle load returned null");auto id=FullResourceReload::Id(bundle.Get());
+   Require(!prior.count(id)&&created.insert(id).second,"replacement effect Bundle aliases a live container");loaded.bundles.push_back(std::move(bundle));
+  }
+  auto label=Ref::Make(il2cpp_string_new(manifest->prefab.c_str()),false);void* assetArgs[]={label.Get(),FullResourceReload::prefabType.Get()};
+  loaded.prefab=Ref::Make(Call(FullResourceReload::api.assetSync,loaded.bundles.at(manifest->root).Get(),assetArgs),false);
+  Require(RuntimeShapes::Alive(loaded.prefab.Get())&&FullResourceReload::Inherits(loaded.prefab.Get(),"UnityEngine","GameObject"),"replacement effect Prefab asset missing");
+  Require(String(Call(RuntimeShapes::api.name,loaded.prefab.Get()))==manifest->rootName,"replacement effect Prefab root identity differs");
+  Require(Particles(loaded.prefab.Get()).size()==manifest->particles,"replacement effect ParticleSystem hierarchy differs");
+  auto prefab=loaded.prefab.Get();loadedReplacements[FullResourceReload::NormalizeAssetPath(definition.target)]=std::move(loaded);
+  Log("[EFFECT-PREFAB-READY] package=%s effect=%s path=%s matching=logical-path-only bundles=%zu loadMs=%.3f firstHitSync=1",definition.package.c_str(),definition.effect.c_str(),definition.target.c_str(),manifest->bundles.size(),NativeBundle::Ms(clock));return prefab;
+ }catch(...){ReleaseReplacement(loaded);throw;}
+}
+void* RouteReplacement(const std::string& logicalPath,void* source) noexcept{
+ if(!enabled||!RuntimeShapes::Main()||!RuntimeShapes::Alive(source)||!FullResourceReload::Inherits(source,"UnityEngine","GameObject"))return source;
+ try{auto path=FullResourceReload::NormalizeAssetPath(logicalPath);if(path.empty()||path.rfind("assets/",0)!=0)return source;
+  auto definition=replacementDefinitions.find(path);
+  if(replacementConflicts.count(path)||definition==replacementDefinitions.end())return source;
+  auto loaded=loadedReplacements.find(path);void* replacement=loaded!=loadedReplacements.end()&&RuntimeShapes::Alive(loaded->second.prefab.Get())?loaded->second.prefab.Get():LoadReplacement(definition->second);
+  // Game prefab replacement follows the source prefab's activation contract.
+  // EFF-authored attachment prefabs stay inactive until EFF registers them.
+  Require(api.active&&api.activeSelf,"game prefab activation API unavailable");
+  auto sourceActive=RuntimeShapes::Scalar<unsigned char>(api.activeSelf,source);
+  auto replacementBefore=RuntimeShapes::Scalar<unsigned char>(api.activeSelf,replacement);
+  if(sourceActive!=replacementBefore){unsigned char active=sourceActive;void* args[]={&active};Call(api.active,replacement,args);}
+  auto replacementAfter=RuntimeShapes::Scalar<unsigned char>(api.activeSelf,replacement);
+  Require(replacementAfter==sourceActive,"replacement Prefab root activation differs from game source");
+  Log("[EFFECT-PREFAB-ACTIVATION] path=%s sourceActiveSelf=%d replacementBefore=%d replacementAfter=%d",logicalPath.c_str(),int(sourceActive),int(replacementBefore),int(replacementAfter));
+  return replacement;
+ }catch(const std::exception& e){Log("[EFFECT-PREFAB-ROUTE-GAP] path=%s matching=logical-path-only gameResourcePreserved=1 reason=%s",logicalPath.c_str(),e.what());return source;}catch(...){return source;}
+}
+bool IsReplacementPrefab(void* object) noexcept{
+ try{for(const auto& row:loadedReplacements)if(row.second.prefab.Get()==object&&RuntimeShapes::Alive(object))return true;}catch(...){}return false;
+}
 
 void Status(){
  std::ostringstream out;out<<"OK\tphase="<<(candidate?"preparing":playing?"playing":ready?"ready":"idle")

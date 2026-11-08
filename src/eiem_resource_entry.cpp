@@ -540,7 +540,7 @@ void ApplyEntryHookBatch(){
     entryHookLookupMs,entryHookPatchMs,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count(),names.c_str());
 }
 std::vector<std::filesystem::path> DiscoverModRoots() {
-  return EiemComposedPackage::Roots(gameDirectory/"plugin/mods");
+  return EiemComposedPackage::Roots(gameDirectory/"plugin/mods",true);
 }
 bool InstalledAuthorsMatch(const std::vector<Package>& graph) {
  return EiemComposedPackage::Matches(gameDirectory/"plugin/mods",graph);

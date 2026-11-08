@@ -448,12 +448,20 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
         target_path = effect.get("targetPath", "")
         target_asset = effect.get("targetAsset", "")
         target_bones = effect.get("bones", [])
-        require(prefab.startswith("assets/") and prefab.endswith(".prefab") and ".." not in prefab and
-                not renderer_path.startswith("/") and "\\" not in renderer_path and ".." not in renderer_path and "//" not in renderer_path and
-                target_path.startswith("assets/") and ".." not in target_path and target_asset,
-                "Format 3 Effect requires exact Prefab/Renderer/Mesh source proof")
-        require(not effect.get("bone") or target_bones,
-                "Format 3 bone-mounted Effect requires a source bone palette")
+        replacement = effect.get("mode") == "replace_game_prefab"
+        valid_prefab = (prefab.startswith("assets/") and prefab.endswith(".prefab") and
+                        "\\" not in prefab and all(part not in ("", ".", "..")
+                                                    for part in prefab.split("/")))
+        if replacement:
+            require(valid_prefab and not renderer_path and not target_path and not target_asset and
+                    not effect.get("part") and not effect.get("bone") and not target_bones,
+                    "Format 3 Effect replacement requires one exact game Prefab logical path")
+        else:
+            require(valid_prefab and not renderer_path.startswith("/") and "\\" not in renderer_path and ".." not in renderer_path and "//" not in renderer_path and
+                    target_path.startswith("assets/") and ".." not in target_path and target_asset,
+                    "Format 3 Effect requires exact Prefab/Renderer/Mesh source proof")
+            require(not effect.get("bone") or target_bones,
+                    "Format 3 bone-mounted Effect requires a source bone palette")
         identity = effect["id"]
         variable = "$fx_" + _identifier(identity)
         default(variable, int(effect.get("autoplay", True)))
@@ -601,7 +609,7 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
                             author_files=None, state_defaults=None,
                             persistent_states=None, key_bindings=None,
                             key_switch_enabled=True, target_bundles=None,
-                            skeletons=(), bone_animations=()):
+                            skeletons=(), bone_animations=(), mod_type=""):
     """Write one final Format 3 author directory from typed Blender records."""
     import hashlib
     import os
@@ -615,6 +623,9 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
     ini.optionxform = str
     ini["Mod"] = {"format": "3", "id": mod_id,
                    "key_switch_enabled": "1" if key_switch_enabled else "0"}
+    require(mod_type in ("", "effect"), "Format 3 Mod type is invalid")
+    if mod_type:
+        ini["Mod"]["type"] = mod_type
     ini["Constants"] = {}
     texture_ids = {}
     for texture in textures:
@@ -821,7 +832,9 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
                 (root / relative).parent.mkdir(parents=True, exist_ok=True)
                 (root / relative).write_bytes(encode_effect_resource(file_id, relative, data))
                 effect_resources[relative] = file_id
-            if effect.get("part"):
+            if effect.get("mode") == "replace_game_prefab":
+                pass
+            elif effect.get("part"):
                 for rule in rules:
                     if effect["part"] in rule["parts"]:
                         effect_rules.setdefault(relative, set()).add(rule_sections[id(rule)])
@@ -1325,6 +1338,8 @@ def read_format3_directory(root):
         ini.read_file(stream)
     require(ini.get("Mod", "format", fallback="") == "3", "format-3 manifest is absent")
     require(ini.has_option("Mod", "id") and ini.get("Mod", "id").strip(), "format-3 Mod id is absent")
+    mod_type = ini.get("Mod", "type", fallback="")
+    require(mod_type in ("", "effect"), "format-3 Mod type is invalid")
     referenced = {"mod.ini"}
     resources = {}
     dds_rows = {}
@@ -1422,7 +1437,20 @@ def read_format3_directory(root):
                     "format-3 EffectAttachment author resource is unresolved: " + section)
 
     files = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
-    return dict(format=3, modId=ini["Mod"]["id"], _files=files)
+    if mod_type == "effect":
+        effect_sections = [section for section in ini.sections()
+                           if section.startswith("EffectAttachment")]
+        forbidden = [section for section in ini.sections()
+                     if section.startswith(("Part", "Replace", "Mesh", "Material",
+                                            "Texture", "ShapeAnimation", "MaterialAnimation",
+                                            "Skeleton"))]
+        forbidden.extend(section for section in ini.sections()
+                         if section.startswith("Resource") and
+                         ini[section].get("type", "") not in
+                         {"controls", "effect", "effect-author"})
+        require(effect_sections and not forbidden,
+                "standalone Format 3 Effect Mod contains character resources or no effects")
+    return dict(format=3, modId=ini["Mod"]["id"], modType=mod_type, _files=files)
 
 
 def _validate_effect_author_resource(root, relative, section, payload_bytes):

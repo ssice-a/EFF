@@ -1,7 +1,7 @@
 [submodule "tools/AnimeStudio"]
 	path = tools/AnimeStudio
 	url = https://github.com/ssice-a/AnimeStudio.git
-	branch = master
+	branch = main
 [submodule "tools/Blender"]
 	path = tools/Blender
 	url = https://github.com/ssice-a/EFF-blender.git

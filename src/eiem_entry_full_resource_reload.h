@@ -4,7 +4,7 @@
 // Resource reload transaction: offline manifest -> prepared isolated inputs ->
 // root-scoped native Bundle graph -> prefab/owner preflight -> game-owned rebuild.
 // No Renderer Mesh setters or private native/job memory writes are used.
-namespace EffectDebug { void OwnerReleasing(void*) noexcept; }
+namespace EffectDebug { void OwnerReleasing(void*) noexcept; void* RouteReplacement(const std::string&,void*) noexcept; bool IsReplacementPrefab(void*) noexcept; }
 namespace FullResourceReload {
 using RuntimeShapes::Ref;
 using Plan=EiemResourceReloadPlan::Plan;
@@ -95,7 +95,7 @@ struct Api {
  void *uiLuaInstance=nullptr,*uiLuaDo=nullptr,*uiLuaCall=nullptr,*uiArraySet=nullptr,*uiObjectClass=nullptr;
  void *uiLuaKey=nullptr,*uiLuaEncode=nullptr,*uiLuaDecode=nullptr,*uiLuaCodeEquals=nullptr;
  void *uiLuaExceptionMessage=nullptr;
- void *proxyAsset=nullptr,*proxyHash=nullptr,*proxyGet=nullptr,*proxyTryUnloadImmediately=nullptr,*pathHashField=nullptr;
+ void *proxyAsset=nullptr,*proxyHash=nullptr,*proxyGet=nullptr,*proxyPath=nullptr,*proxyInfoClass=nullptr,*proxyInfo=nullptr,*proxyAssetPath=nullptr,*proxyTryUnloadImmediately=nullptr,*pathHashField=nullptr;
  void *handleUntrackedField=nullptr,*handleUntrackedClass=nullptr,*untrackedAssetGet=nullptr;
 } api;
 std::map<uint64_t,std::vector<Ref>> prefabProxiesByPath;
@@ -146,11 +146,33 @@ thread_local bool readingSource=false;
 void* ResourceGet(void* self,void* info);
 thread_local bool proxyContext=false;thread_local uint64_t proxyPathHash=0;
 thread_local void* proxySource=nullptr;
+thread_local void* proxyOriginalSource=nullptr;
+thread_local std::string proxyLogicalPath;
 thread_local Ref proxyUIOverride;
 Ref CandidateUIProxy(void* proxy,uint64_t hash);
+void* Call(void*,void*,void**);
+void* ProxyPathGetter(void* proxy){
+ if(api.proxyPath)return api.proxyPath;
+ for(auto klass=proxy?il2cpp_object_get_class(proxy):nullptr;klass;klass=il2cpp_class_get_parent(klass))
+  if(auto getter=Exact(klass,"get_pathOrName",{},"System.String",false))return getter;
+ return nullptr;
+}
+std::string ProxyLogicalPath(void* proxy){
+ if(auto getter=ProxyPathGetter(proxy))return String(Call(getter,proxy,nullptr));
+ if(!api.proxyInfo||!api.proxyAssetPath||!api.proxyInfoClass)return {};
+ auto boxed=Ref::Make(Call(api.proxyInfo,proxy,nullptr),false);
+ if(!boxed.Get()||il2cpp_object_get_class(boxed.Get())!=api.proxyInfoClass)return {};
+ return String(Call(api.proxyAssetPath,il2cpp_object_unbox(boxed.Get()),nullptr));
+}
 using ProxyPreloadFn=void(*)(void*,bool,void*);ProxyPreloadFn originalProxyPreload=nullptr;
 void ProxyPreload(void* self,bool asynchronous,void* info);
 void* RouteProxySource(void* source);
+using ProxyGetFn=void*(*)(void*);ProxyGetFn originalProxyGet=nullptr;
+void* ProxyGet(void* self){auto source=originalProxyGet(self);if(readingSource||!enabled||!RuntimeShapes::Main()||!source)return source;
+ if(!api.proxyPath&&(!api.proxyInfo||!api.proxyAssetPath||!api.proxyInfoClass))return source;
+ try{auto path=ProxyLogicalPath(self);
+  return EffectDebug::RouteReplacement(path,source);}
+ catch(const std::exception& e){Log("[EFFECT-PREFAB-ROUTE-GAP] phase=asset-proxy-get reason=%s gameResourcePreserved=1",e.what());return source;}catch(...){return source;}}
 std::shared_ptr<const Routes> routes=std::make_shared<Routes>();
 using CloneFn=void*(*)(void*);using CloneParentFn=void*(*)(void*,void*,bool);
 CloneFn originalClone=nullptr;CloneParentFn originalCloneParent=nullptr;
@@ -168,6 +190,10 @@ void* Routed(void* source,const char* entry="clone") noexcept {
 #endif
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::InstantiationRoute);
  try{
+  if(source==proxyOriginalSource&&EffectDebug::IsReplacementPrefab(proxySource)&&RuntimeShapes::Alive(proxySource)){
+   performance.hit=true;
+   return proxySource;
+  }
   if(proxyContext&&source==proxySource&&RuntimeShapes::Alive(proxyUIOverride.Get())){
    performance.hit=true;
    if(rebuilding)++rebuilding->cloneCount;
@@ -180,7 +206,7 @@ void* Routed(void* source,const char* entry="clone") noexcept {
       !RuntimeShapes::Alive(r.candidate.Get())||RuntimeShapes::Scalar<int>(api.instanceId,r.candidate.Get())!=r.candidateId)return source;
    if(rebuilding){++rebuilding->cloneCount;Log("[FULL-RELOAD-ROUTE] entry=%s sourceId=%d candidateId=%d",entry,r.sourceId,r.candidateId);}return r.candidate.Get();
   }
-  if(proxyContext)return RouteProxySource(source);
+  if(proxyContext){auto routed=RouteProxySource(source);if(routed!=source)performance.hit=true;return routed;}
  }catch(const std::exception& e){if(proxyContext)Log("[FULL-RELOAD-PROXY-GAP] reason=%s gameSourcePreserved=1",e.what());}catch(...){}return source;
 }
 // Asset callbacks expose only inputs actually requested by the game. Discover
@@ -808,7 +834,9 @@ void* CandidateForObserved(Attempt& a,size_t index,void* source){
  RouteObserved(a,index,source);return asset.prefab.Get();
 }
 void* RouteProxySource(void* source){
+ if(source==proxyOriginalSource&&EffectDebug::IsReplacementPrefab(proxySource)&&RuntimeShapes::Alive(proxySource))return proxySource;
  if(source!=proxySource)return source;
+ if(EffectDebug::IsReplacementPrefab(source))return source;
  auto current=std::atomic_load(&activeNative);if(!current||current->phase!=Phase::Passed)return source;
  auto root=current->prepared->rootHashes.find(proxyPathHash);if(root==current->prepared->rootHashes.end())return source;
  return CandidateForObserved(*current,root->second,source);
@@ -816,10 +844,17 @@ void* RouteProxySource(void* source){
 void ProxyPreload(void* self,bool asynchronous,void* info){
  // The game's prefab proxy reads its AssetProxy directly; IL2CPP may inline
  // FAssetProxyHandle.Get. Scope the actual sync/async instantiate entry too.
- struct Scope {bool prior=proxyContext;uint64_t hash=proxyPathHash;void* source=proxySource;Ref held,uiCandidate=proxyUIOverride;~Scope(){proxyContext=prior;proxyPathHash=hash;proxySource=source;proxyUIOverride=uiCandidate;}}scope;
- proxyContext=false;proxyUIOverride={};
- try{auto asset=Call(api.proxyAsset,self);if(Inherits(asset,"","AssetProxy")){auto source=Call(api.proxyGet,asset);
-   if(Inherits(source,"UnityEngine","GameObject")&&RuntimeShapes::Alive(source)){scope.held=Ref::Make(source,false);proxySource=source;proxyPathHash=RuntimeShapes::Scalar<uint64_t>(api.proxyHash,asset);
+ struct Scope {bool prior=proxyContext;uint64_t hash=proxyPathHash;void* source=proxySource,*original=proxyOriginalSource;std::string path=proxyLogicalPath;Ref held,originalHeld,uiCandidate=proxyUIOverride;~Scope(){proxyContext=prior;proxyPathHash=hash;proxySource=source;proxyOriginalSource=original;proxyLogicalPath=std::move(path);proxyUIOverride=uiCandidate;}}scope;
+ proxyContext=false;proxyUIOverride={};proxyLogicalPath.clear();proxyOriginalSource=nullptr;
+ try{auto asset=Call(api.proxyAsset,self);if(Inherits(asset,"","AssetProxy")){// Read the game's unmodified source here. Calling the hooked method returns
+   // the replacement and loses the original identity needed by this proxy's
+   // create-before-initialize route.
+   auto source=originalProxyGet?originalProxyGet(asset):Call(api.proxyGet,asset);
+   if(Inherits(source,"UnityEngine","GameObject")&&RuntimeShapes::Alive(source)){auto path=ProxyLogicalPath(asset);
+     if(!path.empty()){
+     auto before=source;source=EffectDebug::RouteReplacement(path,source);proxyOriginalSource=before;if(before!=source)scope.originalHeld=Ref::Make(before,false);
+     }
+     scope.held=Ref::Make(source,false);proxySource=source;proxyLogicalPath=path;proxyPathHash=RuntimeShapes::Scalar<uint64_t>(api.proxyHash,asset);
      RememberPrefabProxy(proxyPathHash,self,source);
 #if defined(EIEM_PREFAB_ADAPTATION_PROBE)
     PrefabAdaptationProbe::ObserveProxy(source,proxyPathHash,asset);
@@ -843,8 +878,10 @@ void* ResourceGet(void* self,void* info){
  try{
   // Exact resource path comes from the game's existing handle. Offline roots
   // define every eligible target; no name guessing or scene traversal.
+  auto path=NormalizeAssetPath(String(Call(api.handlePath,self)));
   if(!Inherits(source,"UnityEngine","GameObject"))return source;
-  auto path=NormalizeAssetPath(String(Call(api.handlePath,self)));auto current=std::atomic_load(&activeNative);
+  auto current=std::atomic_load(&activeNative);
+  source=EffectDebug::RouteReplacement(path,source);
   auto rules=std::atomic_load(&resourceRules);const Plan* plan=current?current->prepared->plan.get():rules?rules->plan.get():nullptr;
   if(!plan||!FindRoot(*plan,path))return source;
   performance.hit=true;
@@ -994,6 +1031,22 @@ void Install(void** assemblies,size_t count){
   bool hash64=hashType&&(!strcmp(hashType,"System.Int64")||!strcmp(hashType,"System.UInt64"));if(hashType)il2cpp_free((void*)hashType);Require(hash64,"game prefab path hash is not a 64-bit scalar");
   auto proxy=FindClass("Beyond.Resource.Runtime","PrefabInstantiateProxy",assemblies,count),assetProxy=FindClass("","AssetProxy",assemblies,count);
   api.proxyAsset=Method(proxy,"get_assetHandles",{},"Beyond.Resource.IAssetProxy",false);api.proxyGet=Method(assetProxy,"Get",{},"UnityEngine.Object",false);
+  api.proxyPath=StartupDependencies::Inherited(assetProxy,"get_pathOrName",{},"System.String");
+  auto manifest=FindClass("Beyond.ManifestBinary","RuntimeManifestBinary",assemblies,count);void* infoIterator=nullptr;
+  while(manifest)if(auto method=il2cpp_class_get_methods(manifest,&infoIterator)){
+   if(strcmp(il2cpp_method_get_name(method),"TryGetAssetInfoFromPath")||il2cpp_method_get_param_count(method)!=2)continue;
+   auto hashTypeName=il2cpp_type_get_name(il2cpp_method_get_param(method,0));bool hashArgument=hashTypeName&&(!strcmp(hashTypeName,"System.UInt64")||!strcmp(hashTypeName,"System.Int64"));if(hashTypeName)il2cpp_free((void*)hashTypeName);
+   auto returnTypeName=il2cpp_type_get_name(il2cpp_method_get_return_type(method));bool boolResult=returnTypeName&&!strcmp(returnTypeName,"System.Boolean");if(returnTypeName)il2cpp_free((void*)returnTypeName);
+   if(!hashArgument||!boolResult||!il2cpp_type_is_byref(il2cpp_method_get_param(method,1)))continue;
+   auto foundClass=il2cpp_class_from_type(il2cpp_method_get_param(method,1));if(!foundClass)continue;
+   if(api.proxyInfoClass&&api.proxyInfoClass!=foundClass){api.proxyInfoClass=nullptr;break;}api.proxyInfoClass=foundClass;
+  }else break;
+  if(api.proxyInfoClass){auto infoTypeName=il2cpp_type_get_name(il2cpp_class_get_type(api.proxyInfoClass));
+   if(infoTypeName){api.proxyInfo=StartupDependencies::Inherited(assetProxy,"GetAssetInfo",{},infoTypeName);il2cpp_free((void*)infoTypeName);}
+   api.proxyAssetPath=StartupDependencies::Inherited(api.proxyInfoClass,"get_assetPath",{},"System.String");
+  }
+  bool proxyGetHook=Entry::Install(assetProxy,"Get",{},"UnityEngine.Object",false,(void*)ProxyGet,(void**)&originalProxyGet);
+  Log("[EFFECT-PREFAB-ROUTE-API] identity=AssetInfoPack.get_assetPath exactLogicalPath=1 assetProxyPathGetter=%d assetInfoType=%d assetInfoGetter=%d assetInfoPath=%d assetInfoPathFallback=%d globalGetHook=%d preloadFallback=1",int(api.proxyPath!=nullptr),int(api.proxyInfoClass!=nullptr),int(api.proxyInfo!=nullptr),int(api.proxyAssetPath!=nullptr),int(api.proxyInfo&&api.proxyAssetPath&&api.proxyInfoClass),int(proxyGetHook));
   api.proxyHash=Exact(assetProxy,"get_pathOrNameHash",{},"System.Int64",false);if(!api.proxyHash)api.proxyHash=Method(assetProxy,"get_pathOrNameHash",{},"System.UInt64",false);
   auto proxyManager=FindClass("Beyond.Resource.Runtime","PrefabInstantiateProxyManager",assemblies,count);
   void* unloadIterator=nullptr;while(auto method=il2cpp_class_get_methods(proxyManager,&unloadIterator)){

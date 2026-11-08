@@ -710,8 +710,10 @@ std::shared_ptr<const InstalledGeneration> BuildInstalledGeneration(
   auto standalone=std::make_shared<std::vector<Package>>();
   for(const auto& row:result->authors)if(EiemCompiledModSet::StandaloneEffectRoot(row.second->catalog->Root()))standalone->push_back(row.second->package);
   result->standalone=standalone;
-  if(expectedPackages){auto runtime=std::make_shared<std::vector<Package>>(*result->packages);runtime->insert(runtime->end(),standalone->begin(),standalone->end());result->packages=runtime;}
-  else {auto runtime=std::make_shared<std::vector<Package>>();for(const auto& row:result->authors)runtime->push_back(row.second->package);result->packages=runtime;}
+  if(expectedPackages)result->packages=std::make_shared<std::vector<Package>>(*result->packages);
+  else {auto runtime=std::make_shared<std::vector<Package>>();for(const auto& row:result->authors)
+    if(!EiemCompiledModSet::StandaloneEffectRoot(row.second->catalog->Root()))runtime->push_back(row.second->package);
+    result->packages=runtime;}
   result->delta=EiemDemandGenerationDiff::Compare(previous?previous->snapshot:EiemDemandGenerationDiff::Snapshot{},result->snapshot);
   Log("[DEMAND-AUTHOR-DECLARATIONS] generation=%llu mods=%zu targets=%zu ms=%.3f meshTextureEffectPayloadBytes=0 compiledInputsRead=0 consumerPfbEnumeration=0",
     (unsigned long long)result->serial,graph->size(),result->targets.size(),std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count());

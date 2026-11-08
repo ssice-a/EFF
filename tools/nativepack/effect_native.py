@@ -80,9 +80,9 @@ def read_native_build(path):
         relative = PurePosixPath(file)
         require(not relative.is_absolute() and all(part not in ('', '.', '..') for part in file.split('/')),
                 'native effect bundle path escapes its build directory')
-        root = path.parent.resolve()
-        bundle_path = (root / Path(*relative.parts)).resolve()
-        require(bundle_path.is_relative_to(root), 'native effect bundle path escapes its build directory')
+        build_root = path.parent.resolve()
+        bundle_path = (build_root / Path(*relative.parts)).resolve()
+        require(bundle_path.is_relative_to(build_root), 'native effect bundle path escapes its build directory')
         data = bundle_path.read_bytes()
         require(sha256_bytes(data).hex().upper() == digest,
                 'native effect build digest differs')

@@ -30,14 +30,19 @@ std::map<void*,Ref> pendingOwners;
 std::map<void*,Ref> retryOwners;
 void QueueOwnerReady(void* root){if(root&&!pendingOwners.count(root))pendingOwners.emplace(root,Ref::Make(root,true));}
 std::string OwnerPath(void* root){for(const auto& row:FullResourceReload::liveParts)if(row.second.root.Get()==root)return row.second.path;auto ui=FullResourceReload::liveUIModels.find(root);if(ui!=FullResourceReload::liveUIModels.end())return ui->second.path;for(const auto& row:FullResourceReload::liveHelperModels)if(row.second.root.Get()==root)return "render-helper";return {};}
-void AddStamps(AttachmentStamps& result,unsigned source,const std::string& package,const std::map<std::string,EffectAttachment>& effects,bool applyOverrides){for(const auto& row:effects){const EffectAttachment* effect=&row.second;if(applyOverrides){auto replacement=overrides.find({package,row.first});if(replacement!=overrides.end())effect=&replacement->second;}AttachmentStamp stamp;stamp.part=effect->part;stamp.bone=effect->bone;stamp.variable=effect->variable;stamp.nativeKey=effect->native?effect->native->key:std::string();stamp.targetPrefab=effect->targetPrefab;stamp.rendererPath=effect->rendererPath;stamp.targetPath=effect->targetPath;stamp.targetAsset=effect->targetAsset;stamp.targetBones=effect->targetBones;stamp.autoplay=effect->autoplay;stamp.position=effect->position;stamp.rotation=effect->rotation;stamp.scale=effect->scale;result.emplace(std::make_tuple(source,package,row.first),std::move(stamp));}}
+void AddStamps(AttachmentStamps& result,unsigned source,const std::string& package,const std::map<std::string,EffectAttachment>& effects,bool applyOverrides){for(const auto& row:effects){const EffectAttachment* effect=&row.second;if(applyOverrides){auto replacement=overrides.find({package,row.first});if(replacement!=overrides.end())effect=&replacement->second;}if(IsGamePrefabReplacement(*effect))continue;AttachmentStamp stamp;stamp.part=effect->part;stamp.bone=effect->bone;stamp.variable=effect->variable;stamp.nativeKey=effect->native?effect->native->key:std::string();stamp.targetPrefab=effect->targetPrefab;stamp.rendererPath=effect->rendererPath;stamp.targetPath=effect->targetPath;stamp.targetAsset=effect->targetAsset;stamp.targetBones=effect->targetBones;stamp.autoplay=effect->autoplay;stamp.position=effect->position;stamp.rotation=effect->rotation;stamp.scale=effect->scale;result.emplace(std::make_tuple(source,package,row.first),std::move(stamp));}}
 AttachmentStamps CaptureStamps(){AttachmentStamps result;auto graph=RuntimeControls::controlGraph;if(graph)for(const auto& p:*graph)if(!IsStandalonePackage(p)){AddStamps(result,0,p.id,p.effects,false);AddStamps(result,1,p.id,Effects(p),true);}if(standalone)for(const auto& p:*standalone)AddStamps(result,2,p.id,Effects(p),true);return result;}
+bool HasMountEffects(const std::map<std::string,EffectAttachment>& effects){return std::any_of(effects.begin(),effects.end(),[](const auto& row){return !IsGamePrefabReplacement(row.second);});}
+void PublishPrefabReplacements(){auto packages=RuntimePackages();EffectDebug::PublishReplacements(packages);}
 void PrepareDiskReload(bool force=true){try{
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::EffectDisk);
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
  // New-format declarations already own lazy native inputs. Do not read old
  // effect containers or search the enabled Mods for alternate resource graphs.
- auto own=std::make_shared<const std::vector<Package>>();std::map<std::string,std::map<std::string,EffectAttachment>> attached;
+ auto generation=DemandLoadingProbe::CurrentInstalledGeneration();
+ auto own=DemandLoadingProbe::StandalonePackages(generation);
+ if(!own)own=std::make_shared<const std::vector<Package>>();
+ std::map<std::string,std::map<std::string,EffectAttachment>> attached;
  auto graph=std::atomic_load(&published);if(graph)for(const auto& p:*graph)attached[p.id]=p.effects;
 #else
  StandaloneEffects::PublishReadLock publication(gameDirectory/"plugin/mods");
@@ -52,8 +57,10 @@ void PrepareDiskReload(bool force=true){try{
 void CommitResourceGeneration(const std::shared_ptr<const DemandLoadingProbe::InstalledGeneration>& next) noexcept {
  if(!next)return;DemandLoadingProbe::PublishInstalledGeneration(next);
  standalone=next->standalone;
- diskEffects.clear();overrides.clear();needed=bool(standalone&&!standalone->empty());
- for(const auto& package:*standalone)needed|=!package.effects.empty();
+ diskEffects.clear();overrides.clear();needed=false;
+ for(const auto& package:*standalone)needed|=HasMountEffects(package.effects);
+ auto graph=RuntimeControls::controlGraph;if(graph)for(const auto& package:*graph)if(!IsStandalonePackage(package))needed|=HasMountEffects(package.effects);
+ PublishPrefabReplacements();
  {std::lock_guard<std::mutex> lock(reloadMutex);pendingStandalone.reset();pendingEffects.clear();pendingForceReload=false;reloadPending=false;}
 }
 #endif
@@ -90,7 +97,7 @@ void ModelReadyDetails(void* root,bool audit){
  bool any=false;for(auto p:packages)any|=!Effects(*p).empty();if(!any){retryOwners.erase(root);return;}performance.hit=true;bool retry=false;
  auto renderers=FullResourceReload::Components(root);
  for(auto package:packages){const auto& p=*package;std::map<std::string,EffectAttachment> effects=Effects(p);for(const auto& replacement:overrides)if(replacement.first.first==p.id)effects[replacement.first.second]=replacement.second;
- for(const auto& row:effects){const auto& e=row.second;std::vector<Ref> matched;
+ for(const auto& row:effects){const auto& e=row.second;if(IsGamePrefabReplacement(e))continue;std::vector<Ref> matched;
   // A postmodel and a gameplay/display prefab can share the same source Mesh.
   // Verify renderer path + mesh identity/name + ordered skeleton palette below;
   // the author prefab is provenance, not a live instance address.
@@ -138,10 +145,10 @@ void OwnerReleasing(void* root) noexcept {
 void Frame(){
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::EffectFrame);
  bool diskReload=false,forceDiskReload=false;
- if(reloadPending.load()){std::lock_guard<std::mutex> lock(reloadMutex);if(reloadPending.exchange(false)){standalone=std::move(pendingStandalone);overrides.clear();diskEffects=std::move(pendingEffects);pendingEffects.clear();diskReload=true;forceDiskReload=pendingForceReload;pendingForceReload=false;needed=!standalone->empty();for(const auto& p:diskEffects)needed|=!p.second.empty();if(forceDiskReload)for(auto& b:bindings){b.second.failed=false;if(b.second.generation&&b.second.generation->phase==Native::Phase::Rejected)b.second.generation->retryRequested=true;}}}
+ if(reloadPending.load()){std::lock_guard<std::mutex> lock(reloadMutex);if(reloadPending.exchange(false)){standalone=std::move(pendingStandalone);overrides.clear();diskEffects=std::move(pendingEffects);pendingEffects.clear();diskReload=true;forceDiskReload=pendingForceReload;pendingForceReload=false;needed=false;for(const auto& p:*standalone)needed|=HasMountEffects(Effects(p));for(const auto& p:diskEffects)needed|=HasMountEffects(p.second);if(forceDiskReload)for(auto& b:bindings){b.second.failed=false;if(b.second.generation&&b.second.generation->phase==Native::Phase::Rejected)b.second.generation->retryRequested=true;}PublishPrefabReplacements();}}
   bool controlsChanged=revision!=RuntimeControls::revision;
- if(controlsChanged){revision=RuntimeControls::revision;if(!diskReload)overrides.clear();needed=false;if(RuntimeControls::controlGraph)for(const auto& p:*RuntimeControls::controlGraph)if(!IsStandalonePackage(p))needed|=!Effects(p).empty();}
- needed=needed||!standalone->empty();bool sourceChanged=controlsChanged||diskReload;bool definitionsChanged=false;
+ if(controlsChanged){revision=RuntimeControls::revision;if(!diskReload)overrides.clear();needed=false;if(RuntimeControls::controlGraph)for(const auto& p:*RuntimeControls::controlGraph)if(!IsStandalonePackage(p))needed|=HasMountEffects(Effects(p));PublishPrefabReplacements();}
+ if(standalone)for(const auto& p:*standalone)needed|=HasMountEffects(Effects(p));bool sourceChanged=controlsChanged||diskReload;bool definitionsChanged=false;
  if(sourceChanged||!stampsInitialized){auto next=CaptureStamps();definitionsChanged=!stampsInitialized||next!=activeStamps;activeStamps=std::move(next);stampsInitialized=true;}
  bool reconcileAll=definitionsChanged||(diskReload&&forceDiskReload);
  if(!needed&&bindings.empty()&&!sourceChanged){pendingOwners.clear();return;}if(!Native::enabled||!RuntimeShapes::Main())return;

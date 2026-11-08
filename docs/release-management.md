@@ -4,6 +4,26 @@
 
 ## 本地部署
 
+以下表格列出这台开发机的固定验收目标。构建输出目录、临时安装目录和其他 Blender/游戏副本都不能代替这些目标；每次完成组件部署后，必须确认目标目录中的程序/插件/DLL 已更新并与本次构建回执中的 SHA256 一致。
+
+本机部署完成是发布的硬性前置条件。不得只构建到 `bin/`、只更新远程仓库或只发布 Release 而不安装到上表位置。游戏、Blender、AnimeStudio 或 Mod Manager 未退出导致部署脚本中止时，先正常退出对应程序，再重跑部署并检查回执；不能把“构建成功”当成“本机已更新”。
+
+所有代码始终在 EFF 主仓库及三个子仓库的 `main` 分支上开发、提交和推送。不得为功能、修复、测试或发布新建临时分支，也不得将工作切换到其他分支或 worktree；版本标签直接指向已验证的 `main` 提交。若仓库当前不在 `main`，先保留工作区内容并停止部署/发布，确认如何安全回到 `main` 后再继续，不得用强制切换或丢弃改动的方式处理。
+
+每次本机部署和发布前，须分别检查 EFF 主仓库及三个子仓库（`tools/AnimeStudio`、`EFF-Mod-Manager`、`tools/Blender`）的远程状态。本地 `HEAD` 必须包含远程 `origin/main`，也就是本地可以领先或与远程相等，不能落后。可逐仓库执行：
+
+```powershell
+$repositories = @('.', 'tools/AnimeStudio', 'EFF-Mod-Manager', 'tools/Blender')
+foreach ($repository in $repositories) {
+    git -C $repository fetch origin
+    if ($LASTEXITCODE -ne 0) { throw "Could not fetch $repository" }
+    git -C $repository merge-base --is-ancestor origin/main HEAD
+    if ($LASTEXITCODE -ne 0) { throw "$repository is behind origin/main; update, validate, and deploy before publishing" }
+}
+```
+
+若任一仓库远程领先，先同步并整合远程提交，重新运行受影响组件的回归和本机部署，再发布。EFF 发布时还必须确保三个子仓库的本地提交与 EFF 主仓库记录的 gitlink 一致。上传后再 fetch 一次并确认远程已到达本次发布提交；若远程在发布期间又前进，本机须继续同步、验证和部署，直到四个本机安装目标对应当前本地源码。
+
 从 EFF 仓库运行组件构建与部署脚本：
 
 ```powershell
@@ -20,7 +40,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File tools/release/build_deploy_local.p
 | 组件 | 本机安装目标 | 部署前要求 |
 | --- | --- | --- |
 | Format 3 DLL 与协议声明 | `D:\Hypergryph Launcher\games\Endfield Game\plugin` | 游戏正常退出；只替换 `eff.dll` 和 `package-protocol.json`，保留用户的 `eff.ini` 与 Mods |
-| Blender 插件 | `%APPDATA%\Blender Foundation\Blender\5.2\scripts\addons\EFF_Blender` | Blender 5.2 正常退出；使用插件现有事务更新器，保留完整回滚副本和用户文件；不安装 Blender 5.0 |
+| Blender 插件 | `C:\Users\25487\AppData\Roaming\Blender Foundation\Blender\5.2\scripts\addons\EFF_Blender`（`%APPDATA%\Blender Foundation\Blender\5.2\scripts\addons\EFF_Blender`） | Blender 5.2 正常退出；使用插件现有事务更新器，保留完整回滚副本和用户文件；不安装 Blender 5.0 |
 | AnimeStudio | `E:\AnimeStudio-net10-1ccfbc16bf7fe625e8295bac8074ac3b1b9a065b` | 使用 net9.0-windows 构建；GUI/CLI 正常退出；保留 `CNKeys.json` 和日志 |
 | Mod Manager | `E:\EFF-Mod-Manager` | Manager 正常退出；旧目录保存在 E 盘回滚目录 |
 
@@ -44,7 +64,7 @@ git tag -a vX.Y.Z -m "EFF vX.Y.Z"
 pwsh -NoProfile -ExecutionPolicy Bypass -File tools/release/prepare_local_release.ps1 -Tag vX.Y.Z
 ```
 
-只发布、不更新本机游戏安装时，给准备命令添加 `-SkipDeployment`。该模式仍完成全部构建、回归和资产核验，不要求关闭正在运行的游戏；回执记录跳过部署。
+`-SkipDeployment` 仅为受控打包场景保留；按本机发布要求，常规发布禁止使用它。EFF Release 准备必须部署 DLL 与协议到上表的游戏插件目录。若游戏仍在运行，先正常退出后再准备 Release。
 
 准备脚本按固定顺序构建生产 DLL、迁移工具、来源导出器、Format 3 作者工具和双 Python ABI Pillow；运行 Release 回归一次；生成全新的三文件 assets 目录；验证 ZIP 成员、协议、版本、工具清单、SHA256 和源码排除规则。全部通过后，DLL 与协议声明会部署到游戏插件目录。
 
