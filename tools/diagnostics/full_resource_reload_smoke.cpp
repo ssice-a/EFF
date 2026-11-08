@@ -220,6 +220,7 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==93)return &fixtureProxyHash;
  if(m==94)return resourceSource;
  if(m==95)return creatingUI||instanceHandle?instance:assetProxyObject;
+ if(m==99)return StringValue(modelPath);
  if(m==61)return &no;
  if(m==62){Require(discardCalls>=removeCalls,"display loaded before old root pool discard");++loadCalls;currentRoot=NativeCreate(source);FullResourceReload::PartFinished(mainPart,nullptr);return &yes;}
  if(m==63){Require(args&&args[0]==configBox,"display SetupData did not use preserved value config");FullResourceReload::PartConfigured(self,args[0],nullptr);return nullptr;}
@@ -290,7 +291,7 @@ void Setup(){
  a.load=(void*)51;a.toPath=(void*)52;a.modelCom=(void*)54;a.getPath=(void*)55;a.isChild=(void*)57;
  a.delegateTarget=(void*)84;a.modelEntity=(void*)85;
  a.handlePath=(void*)89;a.assetSync=(void*)90;FullResourceReload::originalResourceGet=[](void*,void*){return resourceSource;};
- a.pathHashField=(void*)10;a.proxyAsset=(void*)92;a.proxyHash=(void*)93;a.proxyGet=(void*)94;
+ a.pathHashField=(void*)10;a.proxyAsset=(void*)92;a.proxyHash=(void*)93;a.proxyGet=(void*)94;a.proxyPath=(void*)99;
  a.proxyTryUnloadImmediately=(void*)98;
  a.handleUntrackedField=(void*)11;a.handleUntrackedClass=configClass;a.untrackedAssetGet=(void*)95;
  FullResourceReload::originalProxyPreload=[](void*,bool asynchronous,void*){proxyCloneResult=asynchronous?FullResourceReload::InstantiateAsync(resourceSource,1,factoryParent,factoryPosition,factoryRotation):FullResourceReload::Clone(resourceSource);};
