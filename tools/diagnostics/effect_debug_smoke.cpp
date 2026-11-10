@@ -147,6 +147,9 @@ void Teardown(){
 }
 #include "material_animation_runtime_checks.h"
 #include "effect_attachment_runtime_checks.h"
+// The release archive's legacy disk fixture references removed EntryReload
+// APIs. Cache regressions can compile independently of that obsolete fixture.
+#ifndef EIEM_SKIP_LEGACY_DISK_CHECK
 void EffectDiskChecks(const std::filesystem::path& character,const std::filesystem::path& independent){
  using namespace EiemDirectory;auto p=Load(character);auto directory=std::filesystem::temp_directory_path()/("EFF-effect-disk-test-"+std::to_string(GetCurrentProcessId()));Require(!std::filesystem::exists(directory),"disk test temporary exists");std::filesystem::create_directories(directory);
  struct Cleanup{std::filesystem::path root;~Cleanup(){std::error_code ignored;std::filesystem::remove_all(root,ignored);}}cleanup{directory};
@@ -162,8 +165,11 @@ void EffectDiskChecks(const std::filesystem::path& character,const std::filesyst
  Entry::RuntimeAttachments::pendingStandalone.reset();Entry::RuntimeAttachments::pendingEffects.clear();Entry::RuntimeAttachments::reloadPending=false;
  std::cout<<"PASS effect disk snapshots: no Mesh/texture reads, nested independent discovery, failed candidate cancellation and nested standalone-only startup\n";
 }
+#endif
+#include "effect_replacement_cache_checks.h"
 int main(int argc,char** argv){
  try{
+  if(argc==2&&std::string(argv[1])=="--replacement-check"){EffectReplacementCacheTest::Checks();return 0;}
   if(argc>2&&std::string(argv[1])=="--native-archives"){
    for(int i=2;i<argc;++i){auto bytes=EiemNativeInput::Read(std::filesystem::u8path(argv[i]));Require(EiemEffectNative::Archive(bytes),"effect game envelope rejected");auto archive=EiemNativeInput::EndfieldInput::Decode(bytes);
     Require(EiemNativeInput::EndfieldInput::Encode(EiemAuthorMeshBundle::EnvelopeHeader(),archive.members)==bytes,"C# archive writer differs from production C++ native writer");
@@ -176,7 +182,9 @@ int main(int argc,char** argv){
    std::cout<<"SERVER "<<GetCurrentProcessId()<<'\n'<<std::flush;
    for(unsigned frame=0;frame<60000;++frame){EffectTest::Complete();Sleep(1);}RuntimeShapes::managedAlive=false;return 0;
   }
+#ifndef EIEM_SKIP_LEGACY_DISK_CHECK
   if(argc==4&&std::string(argv[1])=="--disk-check"){EffectDiskChecks(std::filesystem::u8path(argv[2]),std::filesystem::u8path(argv[3]));return 0;}
+#endif
   EffectTest::TestCases();EffectTest::ObservationChecks();MaterialAnimationTest::Checks();EffectAttachmentTest::Checks();if(argc==2){auto m=EiemEffectDebugPacket::ReadManifest(std::filesystem::absolute(argv[1]));std::cout<<"PASS real offline runtime manifest: bundles="<<m->bundles.size()<<" particles="<<m->particles<<"\n"<<std::flush;}EffectTest::Teardown();return 0;
  }
  catch(const std::exception& e){std::cerr<<"FAIL effect debug: "<<e.what()<<'\n'<<std::flush;RuntimeShapes::managedAlive=false;return 1;}
