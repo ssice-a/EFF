@@ -7,9 +7,14 @@ int main(){try{
  namespace D=EiemDdsTexture;
  for(auto format:{4u,25u,27u})for(bool linear:{false,true}){
   auto header=D::Header(5,7,3,format,linear);auto extent=D::MipBytes(5,7,3,format);auto layout=D::Parse(header,header.size()+extent);
-  D::Matches(layout,5,7,3,format,linear);Require(layout.offset==148&&layout.bytes==extent,"DDS encoded mip range differs");
-  Rejected([&]{D::Parse(header,header.size()+extent-1);});Rejected([&]{D::Matches(layout,4,7,3,format,linear);});
-  D::Matches(layout,5,7,3,format,!linear);
+  Require(layout.width==5&&layout.height==7&&layout.mips==3&&layout.format==format&&layout.linear==(format==27||linear),"DDS authoritative layout differs");
+  Require(layout.offset==148&&layout.bytes==extent,"DDS encoded mip range differs");
+  Rejected([&]{D::Parse(header,header.size()+extent-1);});
+  auto photoshop=header;photoshop[24]=1;auto ps=D::Parse(photoshop,photoshop.size()+extent);
+  Require(ps.width==layout.width&&ps.bytes==extent,"Photoshop 2D depth=1 rejected");
+  auto volume=photoshop;volume[24]=2;Rejected([&]{D::Parse(volume,volume.size()+extent);});
+  volume=photoshop;volume[10]|=0x80;Rejected([&]{D::Parse(volume,volume.size()+extent);});
+  volume=photoshop;volume[113]=2;Rejected([&]{D::Parse(volume,volume.size()+extent);});
   auto invalid=header;invalid[140]=2;Rejected([&]{D::Parse(invalid,invalid.size()+extent);});
   invalid=header;invalid[144]=5;Rejected([&]{D::Parse(invalid,invalid.size()+extent);});
  }

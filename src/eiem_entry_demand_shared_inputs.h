@@ -1,11 +1,12 @@
 #pragma once
 #include "eiem_demand_dependency_scope.h"
 #include "eiem_demand_material_build.h"
+#include "eiem_demand_texture_build.h"
 // Included inside DemandLoadingProbe after the current-manifest resolver.
 // Only real load-tree entry points permit preparation; proxy/catalog creation
 // and unrelated dependency queries cannot open author or game payloads.
 thread_local unsigned sharedRequestDepth=0;
-void PrepareDependencyGroup(const std::shared_ptr<Manifest>& manifest,uint64_t hash,void* prototype);
+bool PrepareDependencyGroup(const std::shared_ptr<Manifest>& manifest,uint64_t hash,void* prototype);
 struct SharedRequestScope {
   bool active;
   explicit SharedRequestScope(EiemDemandDependencyScope::Boundary boundary):active(EiemDemandDependencyScope::OpensRequestScope(boundary)){if(active)++sharedRequestDepth;}
@@ -30,6 +31,9 @@ struct SharedScope {
   std::map<uint64_t,RootUsage> rootUsage;
   std::set<uint64_t> activeAuthorProxies,pendingRetires;
   std::map<std::string,uint64_t> cabKeys;
+  std::set<uint64_t> targetDiscoveryChecked;
+  std::set<uint64_t> targetDiscoveryMisses;
+  std::vector<Binding> discoveredTargets;
   std::map<uint64_t,uint64_t> vfsRoutes;
   std::map<Identity,LogicalDependencyBinding> logicalDependencies;
   std::map<std::string,EiemNativeStandaloneInput::Input> materialVariants;
@@ -430,10 +434,11 @@ void* SharedGetOrCreate(void* manager,uint64_t hash,bool cancelRecycle,void* inf
   void* manifest=nullptr;
   try{manifest=Call(StartupDependencies::api.managerManifest,manager);
     // Some game paths select a cached BundleProxy before querying dependencies.
-    // Prepare only a positive, real load-tree request before that selection.
+    // A real request may also discover dependency-only targets whose logical
+    // identity is absent from the public manifest. Negative groups are cached.
     if(sharedRequestDepth&&manifest){auto state=Current(manifest);
       auto verdict=CachedCandidate(state,hash);
-      if(state->bundles.count(hash)||verdict==Q::Candidate::Yes||verdict==Q::Candidate::Target){
+      if(state->bundles.count(hash)||verdict==Q::Candidate::Yes||verdict==Q::Candidate::Target||!state->unresolved.empty()){
         auto prototype=StartupDependencies::NewListForManifest(manifest);
         PrepareDependencyGroup(state,hash,prototype.Get());
       }
@@ -868,6 +873,15 @@ struct DependencyGroup {
       identity.path.c_str(),identity.asset.c_str(),bundle,declaration.classId,int(resolved!=NativeReference{declaration.cab,declaration.pathId}),int(embedded));
     return shared->logicalDependencies.at(identity);
   }
+  std::shared_ptr<const EiemDemandAuthorResources::Texture> TextureInput(const EiemDemandAuthorResources::Texture& texture){
+    EiemRuntimeAuthorDirectory::NativeDependency logical;logical.logical=texture.source;logical.classId=28;
+    auto binding=ResolveLogicalDependency(logical);auto source=cabs.find(binding.reference.first);
+    Require(source!=cabs.end(),"current logical Texture CAB was not opened");
+    auto& reader=*source->second.first->reader;auto layout=reader.Layout(reader.directory.members.at(source->second.second));
+    auto file=source->second.first->file;auto extent=size_t(source->second.first->length);
+    auto lease=[file,extent](size_t at,unsigned char* output,size_t size){Require(at<=extent&&size<=extent-at,"current Texture source range exceeds Bundle");file->ReadAt(at,output,size);};
+    return EiemDemandTextureBuild::Build(texture,reader,source->second.second,layout,binding.reference.second,std::move(lease));
+  }
   EiemNativeStandaloneInput::Input MaterialInput(const EiemDemandAuthorResources::Material& material,const M::Use& use){
     // Resolve the declared source Material in the current game's manifest,
     // then edit that serialized object before the game's normal creation.
@@ -911,7 +925,9 @@ struct DependencyGroup {
     return input;
   }
   M::Shared PrepareMaterials(const N::Author& author,const std::vector<M::Use>& uses){
-    Stage("open-authored-material-edits");auto result=M::PrepareShared(author,uses,[&](const auto& material,const auto& use){return MaterialInput(material,use);});
+    Stage("open-authored-material-edits");auto result=M::PrepareShared(author,uses,
+      [&](const auto& material,const auto& use){return MaterialInput(material,use);},
+      [&](const auto& texture){return TextureInput(texture);});
     Stage("build-authored-material-inputs");
     std::map<std::string,EiemDemandSharedGraph::Input> authored;
     for(const auto& row:result.textures.inputs)authored.emplace(row.first,Input(row.first,row.second->input));
@@ -945,20 +961,47 @@ struct DependencyGroup {
     source->reader->DiscardDecodedCache();return record;
   }
 };
-void PrepareDependencyGroup(const std::shared_ptr<Manifest>& manifest,uint64_t hash,void* prototype){
+bool PrepareDependencyGroup(const std::shared_ptr<Manifest>& manifest,uint64_t hash,void* prototype){
   // Includes lock acquisition and already-prepared lookups, which prepareMs
   // deliberately excludes. Native proxy/tree bodies are measured separately.
   EiemLoadPerformance::Scope performance(EiemLoadPerformance::DemandPrepare);
-  if(!sharedInputsEnabled)return;auto shared=SharedFor(manifest);++shared->waitingPreparations;std::unique_lock<std::mutex> serial(shared->preparation);--shared->waitingPreparations;
+  if(!sharedInputsEnabled)return false;auto shared=SharedFor(manifest);++shared->waitingPreparations;std::unique_lock<std::mutex> serial(shared->preparation);--shared->waitingPreparations;
   shared->activeRoot=hash;shared->activeKey=hash;shared->activePhase="read-native-dependencies";shared->preparationStarted=GetTickCount64();shared->watchdogReported=0;shared->activePreparations=1;
   struct Activity {std::shared_ptr<SharedScope> scope;~Activity(){scope->activePreparations=0;scope->activePhase=nullptr;scope->activeRoot=0;scope->activeKey=0;scope->preparationStarted=0;}} activity{shared};
-  auto prior=shared->preparedGroups.find(hash);if(prior!=shared->preparedGroups.end()&&registry.Get(prior->second).token)return;
+  auto prior=shared->preparedGroups.find(hash);if(prior!=shared->preparedGroups.end()&&registry.Get(prior->second).token)return true;
+  if(shared->targetDiscoveryMisses.count(hash))return false;
   auto begin=std::chrono::steady_clock::now();DependencyGroup group;group.manifest=manifest;group.shared=shared;group.prototype=prototype;group.root=hash;
   std::vector<uint64_t> native;
   try{group.Stage("read-native-dependencies",hash);native=group.Native(hash);}
   catch(const std::exception& e){Log("[DEMAND-SHARED-GAP] phase=group bundle=%016llX stage=%s reason=%s",hash,group.phase,e.what());throw;}
-  group.keys=native;group.keys.push_back(hash);bool relevant=manifest->bundles.count(hash)!=0;
-  for(auto key:native)relevant|=manifest->bundles.count(key)!=0;if(!relevant)return;
+  group.keys=native;group.keys.push_back(hash);
+  auto routing=manifest;
+  if(!manifest->unresolved.empty()){
+    // Request-local routing snapshots keep the published manifest immutable.
+    // Negative directory checks are cached once per native input/generation.
+    EiemDemandTargetLookup::Inspection targetInspection;
+    for(auto key:group.keys)if(!shared->targetDiscoveryChecked.count(key)){
+      try{auto source=group.Open(key);for(auto index:manifest->unresolved){const auto& target=manifest->catalog->targets.at(index);
+        auto resolve=[&](const NativeReference& reference,const Identity& identity,Asset& asset){auto location=group.DependencySource(reference.first);
+          return targetInspection.ReferencedMesh(*location.first->reader,reference,identity,asset);};
+        for(const auto& asset:targetInspection.Find(*source->reader,target.source,resolve)){
+          const auto carrier=group.cabs.at(asset.cab).first->key;
+          auto duplicate=std::find_if(shared->discoveredTargets.begin(),shared->discoveredTargets.end(),[&](const auto& row){return row.target==index&&row.bundle==carrier&&row.cab==asset.cab&&row.object==asset.pathId;});
+          if(duplicate==shared->discoveredTargets.end()){shared->discoveredTargets.push_back({index,carrier,0,asset.cab,asset.pathId});Log("[DEMAND-TARGET-DISCOVERED] mod=%s path=%s asset=%s bundle=%016llX requestLocal=1",target.mod.c_str(),target.source.path.c_str(),target.source.asset.c_str(),carrier);}
+        }}source->reader->DiscardDecodedCache();shared->targetDiscoveryChecked.insert(key);
+      }catch(const std::exception& error){Log("[DEMAND-TARGET-DISCOVERY-GAP] bundle=%016llX reason=%s originalInputPreserved=1",key,error.what());}
+    }
+    if(!shared->discoveredTargets.empty()){routing=std::make_shared<Manifest>();routing->object=manifest->object;routing->serial=manifest->serial;routing->catalog=manifest->catalog;routing->bindings=manifest->bindings;routing->bundles=manifest->bundles;
+      std::set<size_t> discovered;for(const auto& binding:shared->discoveredTargets)discovered.insert(binding.target);
+      routing->bindings.erase(std::remove_if(routing->bindings.begin(),routing->bindings.end(),[&](const auto& binding){return discovered.count(binding.target)!=0;}),routing->bindings.end());
+      for(const auto& binding:shared->discoveredTargets){routing->bindings.push_back(binding);routing->bundles.insert(binding.bundle);}group.manifest=routing;
+    }
+  }
+  bool relevant=routing->bundles.count(hash)!=0;
+  for(auto key:native)relevant|=routing->bundles.count(key)!=0;if(!relevant){
+    if(std::all_of(group.keys.begin(),group.keys.end(),[&](auto key){return shared->targetDiscoveryChecked.count(key)!=0;}))shared->targetDiscoveryMisses.insert(hash);
+    return false;
+  }
   performance.hit=true;auto scopeMutex=ScopePreparationLock(manifest->serial);std::unique_lock<std::mutex> scopeTransaction(*scopeMutex);group.scopeTransaction=&scopeTransaction;
   struct DrainRetiresOnExit {std::shared_ptr<SharedScope> scope;~DrainRetiresOnExit(){DrainPendingSharedRetiresLocked(scope);}} drainRetires{shared};
   struct ScopeSnapshot {bool hadAuthors=false,hadParts=false;ScopeAuthors authors;std::vector<BuiltMeshPart> parts;} snapshot;
@@ -969,11 +1012,11 @@ void PrepareDependencyGroup(const std::shared_ptr<Manifest>& manifest,uint64_t h
   bool hadRootUsage=false;SharedScope::RootUsage previousRootUsage;
   try{
     group.Stage("prepare-carrier-inputs");
-    for(auto key:group.keys)if(manifest->bundles.count(key))group.Prepare(key,Q::Candidate::Target);
+    for(auto key:group.keys)if(routing->bundles.count(key))group.Prepare(key,Q::Candidate::Target);
     Q::Record root;std::map<uint64_t,Q::Record> versionedRoots;
     group.Stage("prepare-target-consumers");
-    for(auto key:group.keys){auto deps=group.Native(key);auto verdict=manifest->bundles.count(key)?Q::Candidate::Target:
-        EiemMeshTargetDirectory::Candidate(key,deps,manifest->bundles)?Q::Candidate::Yes:Q::Candidate::No;
+    for(auto key:group.keys){auto deps=group.Native(key);auto verdict=routing->bundles.count(key)?Q::Candidate::Target:
+        EiemMeshTargetDirectory::Candidate(key,deps,routing->bundles)?Q::Candidate::Yes:Q::Candidate::No;
       if(verdict==Q::Candidate::No)continue;auto record=group.Prepare(key,verdict);
       if(verdict==Q::Candidate::Target||verdict==Q::Candidate::Yes)versionedRoots.insert_or_assign(key,record);
       if(key==hash)root=record;}
@@ -1024,6 +1067,7 @@ void PrepareDependencyGroup(const std::shared_ptr<Manifest>& manifest,uint64_t h
     for(auto& row:group.prepared)PublishPrepared(row.first,std::move(row.second));
     Log("[DEMAND-SHARED-GROUP] scope=%llu bundle=%016llX nativeDependencies=%zu openedHeaders=%zu preparedInputs=%zu sharedInputs=%zu completeMaterials=%zu prepareMs=%.3f wholeGameScan=0 nativeObjectsCreatedByEff=0",
       manifest->serial,hash,native.size(),group.headerReads,group.prepared.size(),shared->graph.Size(),group.materials,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count());
+    return true;
   }catch(...){
     try{throw;}catch(const std::exception& e){Log("[DEMAND-SHARED-GAP] phase=group bundle=%016llX stage=%s openKey=%016llX openName=%s reason=%s",hash,group.phase,group.openingKey,group.openingName.c_str(),e.what());}
       catch(...){Log("[DEMAND-SHARED-GAP] phase=group bundle=%016llX stage=%s reason=non-standard-exception",hash,group.phase);}

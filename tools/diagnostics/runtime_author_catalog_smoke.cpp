@@ -173,6 +173,20 @@ static int SmokeRealMod(const std::filesystem::path& root){
   return 0;
 }
 
+static void PhysicsRetargetChecks(){
+ const Identity oldA{"assets/old.mesh","OldA"},oldB{"assets/old.mesh","OldB"};
+ const Identity newA{"assets/new.mesh","NewA"},newB{"assets/new.mesh","NewB"};
+ EiemPhysicsInput::Document document;document.groups.resize(2);document.groups[0].targets={oldA};document.groups[1].targets={oldB};
+ EiemRuntimeAuthorManifest::Resource declaration;declaration.targetRules={"ReplaceA","ReplaceB"};declaration.targetBindings[oldA]={"ReplaceA",0};declaration.targetBindings[oldB]={"ReplaceB",0};
+ std::vector<EiemMeshTargetDirectory::Target> targets(2);targets[0].rule="ReplaceA";targets[0].source=newA;targets[1].rule="ReplaceB";targets[1].source=newB;
+ auto mapped=document;A::RebindPhysics(mapped,{oldA,oldB},declaration,targets);
+ Require(mapped.groups.size()==2&&mapped.groups[0].targets.count(newA)&&!mapped.groups[0].targets.count(newB)&&mapped.groups[1].targets.count(newB),"Physics retarget crossed independent group/Replace bindings");
+ declaration.targetBindings.erase(oldB);Require(Fails([&]{auto copy=document;A::RebindPhysics(copy,{oldA,oldB},declaration,targets);}),"incomplete Physics source proof was accepted");
+ declaration.targetBindings.clear();Require(Fails([&]{auto copy=document;A::RebindPhysics(copy,{oldA,oldB},declaration,targets);}),"ambiguous legacy multi-rule Physics was guessed");
+ declaration.targetRules={"ReplaceA"};mapped=document;A::RebindPhysics(mapped,{oldA,oldB},declaration,targets);
+ Require(mapped.groups.size()==2&&mapped.groups[0].targets.count(newA)&&mapped.groups[1].targets.count(newA),"legacy single-rule Physics did not follow INI target");
+ std::cout<<"PASS Physics source integrity separated from current INI targets: per-group rule/LOD bindings, legacy single-rule retarget and ambiguous binding rejection\n";
+}
 int main(int argc,char** argv){
   if(argc==3&&std::string(argv[1])=="--staged-metadata"){
     try{return SmokeStagedMeshMetadata(std::filesystem::u8path(argv[2]));}
@@ -180,7 +194,7 @@ int main(int argc,char** argv){
   if(argc==2){try{return SmokeRealMod(std::filesystem::u8path(argv[1]));}
     catch(const std::exception& error){std::cerr<<"FAIL real format 3 Mod: "<<error.what()<<'\n';return 1;}}
   if(argc!=1){std::cerr<<"usage: runtime_author_catalog_smoke [format-3-Mod]\n";return 2;}
-  auto root=std::filesystem::temp_directory_path()/
+  PhysicsRetargetChecks();auto root=std::filesystem::temp_directory_path()/
     ("eff-format3-catalog-"+std::to_string(GetTickCount64()));
   try{
     D::MeshAsset mesh;mesh.part="PartBody";mesh.file="meshes/body.mesh";mesh.path="assets/body.mesh";
@@ -194,29 +208,21 @@ int main(int argc,char** argv){
       "name=EditedMaterial\n";
     Bytes authorMaterial(authorText.begin(),authorText.end());material.authorBytes=authorMaterial.size();
     auto authorMaterialHash=Sha(authorMaterial.data(),authorMaterial.size());material.hash=Hex(authorMaterialHash.data(),authorMaterialHash.size());
-    D::TextureAsset texture;texture.id="TextureBody";texture.file="textures/body.tex";
+    D::TextureAsset texture;texture.id="TextureBody";texture.source={"assets/edited/body.tex","EditedTexture"};
     texture.ddsFile="editable/body.dds";
     nativeMesh.insert(nativeMesh.end(),authorMesh.begin(),authorMesh.end());
     Save(root/mesh.file,F::Encode(1,M::EncodeMesh(mesh),nativeMesh));
     Save(root/material.file,F::Encode(2,M::EncodeMaterial(material),authorMaterial));
     D::MaterialEntry twin=material;twin.id="MaterialTwin";twin.file="custom/materials/twin.author";
     Save(root/twin.file,F::Encode(2,M::EncodeMaterial(twin),authorMaterial));
-    Save(root/texture.file,F::Encode(3,{},Bytes{7,8,9}));
     auto dds=EiemDdsTexture::Header(1,1,1,4,false);dds.insert(dds.end(),{1,2,3,4});
     Save(root/"artist/albedo-final.dds",dds);
-    EiemAuthorControlMetadata::State controls;EiemAuthorControlMetadata::PartState state;
-    controls.defaults.emplace("$smile",0);controls.persistent.insert("$smile");
-    controls.controls.emplace("$smile",Control{"Smile",0,1});
-    state.visible=EiemExpression::Make();state.visible->number=1;state.shapes.emplace("Smile","$smile");
-    controls.parts.emplace("PartBody",state);
-    controls.defaults.emplace("$anim_speed_shared",1);controls.persistent.insert("$anim_speed_shared");
-    ShapeAnimation mixed;mixed.id="shared";mixed.label="Mixed";mixed.speedVariable="$anim_speed_shared";
-    mixed.duration=1;mixed.speed=1;mixed.loop=true;mixed.autoplay=false;
-    mixed.tracks.emplace("$smile",std::vector<float>{0,.5f,1});
-    ShapeAnimation::BoneTrack bone;bone.skeleton="WeaponRig";bone.path="WeaponRoot/FxAnchor";
-    bone.samples={{{0,0,0,0,0,0,1,1,1,1}},{{0,.25f,0,0,0,0,1,1,1,1}},{{0,.5f,0,0,0,0,1,1,1,1}}};
-    mixed.boneTracks.push_back(std::move(bone));controls.animations.emplace(mixed.id,std::move(mixed));
-    Save(root/"resources/controls.effres",F::Encode(6,M::EncodeControls(controls),{}));
+    D::Writer samples;samples.S("EFF_ANIMATION_SAMPLES/1");samples.N(2);
+    samples.N(3);for(double value:{0.0,0.5,1.0})samples.D(value);
+    samples.N(3);for(double value:{0.0,0.5,1.0})samples.D(value);
+    samples.N(1);samples.N(3);
+    for(double offset:{0.0,0.25,0.5})for(double value:{offset,0.0,0.0,0.0,0.0,0.0,1.0,1.0,1.0,1.0})samples.D(value);
+    Save(root/"animations/shared.effanim",samples.b);
     Bytes skeletonPayload{'E','F','F','S','K','A','1',0};PutU32(skeletonPayload,1);PutU32(skeletonPayload,2);
     PutString16(skeletonPayload,"unity-y-up-left-handed");PutString16(skeletonPayload,"WeaponRoot");PutI32(skeletonPayload,-1);
     for(float value:{0.f,0.f,0.f,0.f,0.f,0.f,1.f,1.f,1.f,1.f})PutF32(skeletonPayload,value);
@@ -228,19 +234,24 @@ int main(int argc,char** argv){
     skeletonMetadata.S(Hex(skeletonHash.data(),skeletonHash.size()));
     Save(root/"skeletons/rig.effres",F::Encode(8,skeletonMetadata.b,skeletonPayload));
     SaveText(root/"mod.ini",
-      "[Mod]\nformat=3\nid=CatalogSmoke\nkey_switch_enabled=1\n\n"
-      "[Constants]\n\n"
+      "[Mod]\nformat=3\nid=CatalogSmoke\ncontrols=ini\nkey_switch_enabled=1\n\n"
+      "[Constants]\npersist $anim_speed_shared=1\n$smile=0\n$mat=0\n\n"
       "[MeshBody]\npath=custom/geometry/body.author\nskeleton=WeaponRig\n\n"
-      "[MaterialBody]\npath=custom/materials/body.author\nsource.path=assets/edited/body.mat\nsource.asset=EditedMaterial\n\n"
+      "[MaterialBody]\npath=custom/materials/body.author\nsource.path=assets/edited/body.mat\nsource.asset=EditedMaterial\ntexture._BaseMap=TextureBody\n\n"
       "[MaterialTwin]\npath=custom/materials/twin.author\nsource.path=assets/edited/body.mat\nsource.asset=EditedMaterial\n\n"
-      "[TextureBody]\npath=custom/texture/albedo.author\ndds=artist/albedo-final.dds\n\n"
+      "[TextureBody]\ndds=artist/albedo-final.dds\nsource.path=assets/edited/body.tex\nsource.asset=EditedTexture\n\n"
+      "[TextureAlt]\ndds=artist/albedo-final.dds\nsource.path=assets/edited/body.tex\nsource.asset=EditedTexture\n\n"
       "[MeshUnhit]\npath=missing/geometry/unhit.author\n\n"
       "[MaterialUnhit]\npath=missing/materials/unhit.author\nsource.path=assets/unhit/material.mat\nsource.asset=UnhitMaterial\ntexture._BaseMap=TextureUnhit\n\n"
-      "[TextureUnhit]\npath=missing/textures/unhit.author\ndds=missing/textures/unhit.dds\n\n"
-      "[ResourceControls]\ntype=controls\npath=resources/controls.effres\n\n"
+      "[TextureUnhit]\ndds=missing/textures/unhit.dds\nsource.path=assets/unhit/texture.tex\nsource.asset=UnhitTexture\n\n"
       "[SkeletonWeaponRig]\ntype=skeleton\npath=skeletons/rig.effres\n\n"
-      "[ShapeAnimationshared]\npath=resources/controls.effres\n\n"
-      "[PartBody]\nmesh=MeshBody\nmaterial=MaterialBody\nvisible=1\n\n"
+      "[ResourceSamples_shared]\ntype=animation-samples\npath=animations/shared.effanim\n\n"
+      "[ControlSmile]\nvariable=$smile\nlabel=Smile\nmin=0\nmax=1\n\n"
+      "[ControlMaterial]\nvariable=$mat\nlabel=Material\nmin=0\nmax=1\n\n"
+      "[KeyAnimationShared]\nkey=F6\ntype=press\n$anim_speed_shared=1\nlabel=Shared\n\n"
+      "[MaterialTrack1]\nvariable=$mat\nmaterial=MaterialBody\nproperty=_Color\nkind=COLOR\ncomponent=3\n\n"
+      "[Animationshared]\nlabel=Shared\nduration=1\nspeed_variable=$anim_speed_shared\nspeed=1\nloop=1\nautoplay=0\nkey=F6\ntrack.0=$mat\ntrack.1=$smile\nbone.0.skeleton=WeaponRig\nbone.0.path=WeaponRoot/FxAnchor\nsamples=ResourceSamples_shared\n\n"
+      "[PartBody]\nmesh=MeshBody\nmaterial=MaterialBody\nvisible=1\nshape.Smile=$smile\n\n"
       "[PartUnhit]\nmesh=MeshUnhit\nmaterial_slot=2\nvisible=1\n\n"
       "[ReplaceBody]\ntarget.path=assets/base/body.mesh\ntarget.asset=Body\nparts=PartBody\n\n"
       "[ReplaceUnhit]\ntarget.path=assets/unhit/mesh.mesh\ntarget.asset=Unhit\nparts=PartUnhit\n\n"
@@ -249,19 +260,20 @@ int main(int argc,char** argv){
 
     std::filesystem::create_directories(root/"custom/geometry");
     std::filesystem::create_directories(root/"custom/materials");
-    std::filesystem::create_directories(root/"custom/texture");
     std::filesystem::rename(root/mesh.file,root/"custom/geometry/body.author");
     std::filesystem::rename(root/material.file,root/"custom/materials/body.author");
-    std::filesystem::rename(root/texture.file,root/"custom/texture/albedo.author");
 
     A::Catalog catalog(root);const auto& directory=catalog.Directory();
     Require(directory.mod=="CatalogSmoke"&&directory.meshes.size()==2&&
-      directory.materials.size()==3&&directory.textures.size()==2&&directory.rules.size()==2,
+      directory.materials.size()==3&&directory.textures.size()==3&&directory.rules.size()==2,
       "format 3 Catalog relationships differ");
     Require(directory.meshes[0].shapes==std::vector<std::string>{"Smile"},
       "format 3 Catalog did not read the controlled Mesh channel descriptor");
     Require(directory.skeletons.size()==1&&directory.runtime.animations.count("shared")&&
       directory.runtime.animations.at("shared").tracks.count("$smile")&&
+      directory.runtime.animations.at("shared").tracks.count("$mat")&&
+      directory.runtime.materialAnimations.count("shared")&&
+      directory.runtime.materialTracks.count("$mat")&&
       directory.runtime.animations.at("shared").boneTracks.size()==1&&
       directory.runtime.animations.at("shared").boneTracks.front().samples.size()==3,
       "format 3 Catalog did not keep Shape and Bone tracks in one sampled clip");
@@ -273,8 +285,8 @@ int main(int argc,char** argv){
       directory.meshes[0].vertices==3&&directory.meshes[0].shapes==std::vector<std::string>{"Smile"}&&
       directory.materials[0].file=="custom/materials/body.author"&&
       directory.materials[0].source.path=="assets/edited/body.mat"&&
-      directory.materials[0].textures.empty()&&
-      directory.textures[0].file=="custom/texture/albedo.author"&&
+      directory.materials[0].textures==std::map<std::string,std::string>{{"_BaseMap","TextureBody"}}&&
+      directory.textures[0].file.empty()&&
       directory.textures[0].ddsFile=="artist/albedo-final.dds"&&directory.runtime.parts.count("PartBody"),
       "format 3 Catalog resource metadata differs");
     Require(catalog.OpenMeshes()==0&&catalog.OpenMaterials()==0&&catalog.OpenTextures()==0&&catalog.OpenPhysics()==0,
@@ -298,8 +310,20 @@ int main(int argc,char** argv){
     Require(catalog.OpenMeshes()==0&&catalog.OpenMaterials()==0&&catalog.OpenTextures()==0&&catalog.OpenPhysics()==0,
       "failed unhit resource requests polluted the asset caches");
     auto opened=catalog.GetMaterial("MaterialBody");
-    Require(opened->authored.source=="assets/edited/body.mat"&&opened->authored.textures.empty(),
-      "format 3 Catalog did not read sparse Material edits independently of a native snapshot");
+    Require(opened->authored.source=="assets/edited/body.mat"&&
+      opened->authored.textures==std::map<std::string,std::string>{{"_BaseMap","TextureBody"}}&&
+      opened->textureAssets.count("_BaseMap")&&opened->textureAssets.at("_BaseMap")->declaration.ddsFile=="artist/albedo-final.dds",
+      "format 3 Catalog did not assemble Material Texture bindings from INI and DDS without a scaffold");
+    auto materialBefore=Read(root/material.file);auto iniBefore=Read(root/"mod.ini");
+    std::string editedIni(iniBefore.begin(),iniBefore.end());
+    auto binding=editedIni.find("texture._BaseMap=TextureBody");Require(binding!=editedIni.npos,"smoke Material binding absent");
+    editedIni.replace(binding,strlen("texture._BaseMap=TextureBody"),"texture._BaseMap=TextureAlt");
+    SaveText(root/"mod.ini",editedIni);
+    A::Catalog rebound(root);auto reboundMaterial=rebound.GetMaterial("MaterialBody");
+    Require(reboundMaterial->authored.textures==std::map<std::string,std::string>{{"_BaseMap","TextureAlt"}}&&
+      reboundMaterial->textureAssets.at("_BaseMap")->declaration.id=="TextureAlt"&&
+      Read(root/material.file)==materialBefore,
+      "changing only the INI Material binding required rewriting its author resource");
     Native::Author nativeAuthor(std::make_shared<A::Catalog>(root));
     size_t prepareCalls=0;std::vector<MatAsm::Use> uses{{{1,"PartBody"},"MaterialBody"},{{2,"PartBody"},"MaterialBody"}};
     auto shared=MatAsm::PrepareShared(nativeAuthor,uses,[&](const auto& material,const auto&){++prepareCalls;return DummyMaterialInput(material);});

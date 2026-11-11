@@ -256,8 +256,8 @@ void Checks(){
  Require(b.instance&&b.instance!=retained&&b.generation==rejectedGeneration&&b.generation->phase==D::Phase::Ready&&retained->destroyAttempted,"F9 could not retry identical effect content after an async native failure drained");
  auto recovered=effect;recovered.native=EffectTest::Manifest('4');A::Reload(p.id,recovered);tick();Require(b.instance!=retained&&retained->destroyAttempted,"valid export failed to recover rejected effect reload");
  auto current=b.instance;auto rejected=effect;rejected.part="PartOther";bool failed=false;try{A::Reload(p.id,rejected);}catch(...){failed=true;}Require(failed&&b.instance==current,"changing owner bypassed export/F10 target validation");
- RuntimeControls::variables[p.id][effect.variable]=0;A::Frame();Require(!b.instance&&current->destroyAttempted,"effect control failed to stop its instance");
- RuntimeControls::variables[p.id][effect.variable]=1;tick();Require(bool(b.instance),"effect control did not resume resident native generation");
+ RuntimeControls::variables[p.id][effect.variable]=0;++RuntimeControls::valueRevision;A::Frame();Require(!b.instance&&current->destroyAttempted,"effect control failed to stop its instance");
+ RuntimeControls::variables[p.id][effect.variable]=1;++RuntimeControls::valueRevision;tick();Require(bool(b.instance),"effect control did not resume resident native generation");
  rendererActive=false;A::Frame();Require(!b.instance,"inactive owner Mesh GameObject retained effect");rendererActive=true;tick();Require(bool(b.instance),"visible owner Mesh did not resume effect");
  rendererEnabled=false;A::Frame();Require(!b.instance,"disabled owner Mesh renderer retained effect");rendererEnabled=true;tick();Require(bool(b.instance),"re-enabled owner Mesh did not resume effect");
  // F9 publishes complete declaration maps: an empty one must remain empty on later model events.

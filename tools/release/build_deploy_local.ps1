@@ -183,6 +183,7 @@ function Build-Blender {
 
     $revision = Get-Revision $source
     $output = Join-Path $runRoot 'blender-build'
+    Invoke-Checked 'cmd.exe' @('/d', '/c', 'tools\diagnostics\build_author_assets.cmd', 'format3') 'Shared Format 3 author DLL build'
     Invoke-Checked 'python' @('-m', 'compileall', '-q', '.') 'Blender Python syntax check' $source
     Invoke-Checked 'python' @('ci/package_update.py', '--output', $output, '--revision', $revision, '--framework-root', $repoRoot) 'Blender continuous package build' $source
     $oldPythonPath = $env:PYTHONPATH
@@ -194,6 +195,7 @@ function Build-Blender {
     }
 
     Assert-ProcessClosed @('blender') 'Blender add-on deployment'
+    Invoke-Checked 'python' @('tools/release/deploy_shared_author_assets.py', '--author', 'bin/author-assets/eff_author_assets_format3.dll', '--output', (Join-Path $runRoot 'shared-author')) 'Shared author DLL local deployment'
     $package = Join-Path $output 'package\EFF_Blender'
     $installer = Join-Path $PSScriptRoot 'install_blender_package.py'
     $result = (& python $installer --package $package --target $target | Out-String)

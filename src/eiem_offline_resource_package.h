@@ -47,7 +47,7 @@ struct Reader {
  std::shared_ptr<EiemExpression> Expr(){
   std::shared_ptr<EiemExpression> root;std::vector<std::shared_ptr<EiemExpression>*> pending{&root};std::vector<EiemExpression*> nodes;
   while(!pending.empty()){auto slot=pending.back();pending.pop_back();if(!B())continue;
-   auto v=EiemExpression::Make();auto op=U();Require(op<=EiemExpression::Or,"offline expression opcode");v->op=EiemExpression::Op(op);v->number=D();v->variable=S();*slot=v;nodes.push_back(v.get());
+   auto v=EiemExpression::Make();auto op=U();Require(op<=EiemExpression::Modulo,"offline expression opcode");v->op=EiemExpression::Op(op);v->number=D();v->variable=S();*slot=v;nodes.push_back(v.get());
    pending.push_back(&v->right);pending.push_back(&v->left);
   }
   for(auto v:nodes){auto op=v->op;bool leaf=op==EiemExpression::Number||op==EiemExpression::Variable,unary=op==EiemExpression::Not||op==EiemExpression::Negative;

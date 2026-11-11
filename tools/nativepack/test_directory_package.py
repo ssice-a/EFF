@@ -76,7 +76,11 @@ class StateTests(unittest.TestCase):
         self.assertAlmostEqual(state["$shape"], 0.4)
         apply_key(state, dict(variable="$shape", type="hold", values=[0.0], speed=2), 2)
         self.assertEqual(state["$shape"], 0)
-        for text in ("__import__('os')", "$mode = 1", "$mode ==", "($mode == 1", "$mode + 1", "true garbage"):
+        self.assertTrue(Condition('-2 * -3 + 8 / 2 - 5 % 2 == 9').evaluate({}))
+        self.assertTrue(Condition('true || 1 / 0').evaluate({}))
+        with self.assertRaises(ValueError):
+            Condition('1 / 0').evaluate({})
+        for text in ("__import__('os')", "$mode = 1", "$mode ==", "($mode == 1", "true garbage"):
             with self.assertRaises(ValueError): Condition(text)
 
 
@@ -134,7 +138,7 @@ class DirectoryTests(unittest.TestCase):
             offset += size
             return value
 
-        self.assertEqual(string(), "EFF_AUTHOR_RESOURCE_METADATA/3")
+        self.assertEqual(string(), "EFF_AUTHOR_RESOURCE_METADATA/4")
         self.assertEqual(integer(), 6)
         integer()  # key switch enabled
         for _ in range(integer()):

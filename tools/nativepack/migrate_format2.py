@@ -508,14 +508,17 @@ def migrate_package(source_dir, destination, *, workspace, source_root=None,
             state_defaults=package["states"],
             persistent_states=package["persistentStates"],
             key_bindings=package["keyBindings"],
-            key_switch_enabled=package["keySwitchEnabled"])
+            key_switch_enabled=package["keySwitchEnabled"],
+            texture_template=next((t for t in templates if t['kind'] == 'Texture2D'), None))
         eiem_native_export.write_format3_native_assets(
             author_assets, package["modId"], templates, native_meshes,
             native_textures, candidate)
         result = read_format3_directory(candidate)
         for effect in effects:
             for index, bundle in enumerate(effect["native"]["bundles"]):
-                relative = "effects/" + effect["native"]["key"] + "/" + str(index) + ".effres"
+                attachment = authored['_ini']['EffectAttachment' + author_format3.identifier(effect['id'])]
+                bundle_id = attachment['bundles'].split(',')[index]
+                relative = authored['_ini'][bundle_id]['path']
                 _verify_effect_resource_payload(candidate / relative, relative, bundle["data"])
         expected_sections = {
             *(author_format3.part_resource_id(part["partId"]) for part in parts),
@@ -524,7 +527,7 @@ def migrate_package(source_dir, destination, *, workspace, source_root=None,
             *(author_format3.identifier("Replace" + min(
                 rule["targets"], key=lambda target: target["level"])["sourceAsset"])
               for rule in package["rules"]),
-            *("ShapeAnimation" + author_format3.identifier(clip["id"])
+            *("Animation" + author_format3.identifier(clip["id"])
               for clip in package["shapeAnimations"]),
             *("EffectAttachment" + author_format3.identifier(effect["id"])
               for effect in effects),
@@ -532,13 +535,19 @@ def migrate_package(source_dir, destination, *, workspace, source_root=None,
         expected_files = {
             *(row["path"] for row in native_meshes),
             *(row["path"] for row in native_textures),
-            *("materials/" + author_format3.identifier(identity) + ".effres"
-              for identity in materials),
-            *("textures/" + author_format3.identifier(texture["id"]) + ".dds"
-              for texture in textures),
-            "controls.effres",
-            *("effects/" + effect["native"]["key"] + "/" + str(index) + ".effres"
-              for effect in effects for index, _ in enumerate(effect["native"]["bundles"])),
+            *author_format3.named_resource_paths(
+                [(material["id"], material.get("label", material.get("sourceAsset", material["id"])))
+                 for material in materials.values()], "materials", ".effres").values(),
+            *(path[:-len(".effres")] + ".dds" for path in
+              author_format3.named_resource_paths(
+                  [(texture["id"], texture.get("pixelLabel", texture["id"]))
+                   for texture in textures], "textures", ".effres").values()),
+            *(row['path'] for row in authored['_ini'].values() if row.get('type') == 'animation-samples'),
+            *author_format3.named_resource_paths(
+                [(effect["native"]["key"] + "_" + str(index),
+                  (effect.get("label") or effect["id"]) + "_" + str(index))
+                 for effect in effects for index, _ in enumerate(effect["native"]["bundles"])],
+                "effects", ".effres").values(),
         }
         require(result["format"] == 3 and result["modId"] == package["modId"] and
                 expected_sections <= set(authored["_ini"].sections()) and

@@ -32,10 +32,10 @@ public:
   }
   bool Preview(const EiemDirectory::Package& p){
     std::lock_guard<std::mutex> lock(mutex);auto found=pending.find(p.root/"mod.ini");
-    return found!=pending.end()&&found->second.owner==p.id?found->second.enabled:p.keySwitchEnabled;
+    return found!=pending.end()&&found->second.owner==EiemDirectory::DeclaredId(p)?found->second.enabled:p.keySwitchEnabled;
   }
   void Capture(const EiemDirectory::Package& p,bool enabled){
-    std::lock_guard<std::mutex> lock(mutex);pending[p.root/"mod.ini"]={p.id,enabled,++serial,0,{}};
+    std::lock_guard<std::mutex> lock(mutex);pending[p.root/"mod.ini"]={EiemDirectory::DeclaredId(p),enabled,++serial,0,{}};
   }
   template<class Log> void Flush(Log log,bool force=false){
     std::vector<std::pair<std::filesystem::path,Pending>> batch;

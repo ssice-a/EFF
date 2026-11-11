@@ -654,7 +654,7 @@ void SetEnabled(void* renderer,bool nativeRequest) {
         const auto& spec=specs.at(it->second.marker);
         if (spec.visible) {
           it->second.nativeEnabled=nativeRequest;
-          output=nativeRequest && (!it->second.modelReady || spec.visible->Evaluate(variables.at(spec.package))!=0);
+          output=nativeRequest && (!it->second.modelReady || spec.visible->Evaluate(EffectiveValues(spec.package))!=0);
         }
       } else {
         auto retired=retiredNativeIntents.find(renderer);
@@ -673,7 +673,7 @@ void SetEnabled(void* renderer,bool nativeRequest) {
 void ApplyVisibility(void* renderer,Bound& binding,const Spec& spec,bool onlyIfChanged=false) {
   if (!spec.visible || !binding.modelReady) return;
   if(onlyIfChanged&&binding.visibilityRevision==RuntimeControls::valueRevision)return;
-  bool authorVisible=spec.visible->Evaluate(variables.at(spec.package))!=0;
+  bool authorVisible=spec.visible->Evaluate(EffectiveValues(spec.package))!=0;
   bool target=binding.nativeEnabled && authorVisible;
   struct Guard {bool old=visibilityWriting;Guard(){visibilityWriting=true;}~Guard(){visibilityWriting=old;}} guard;
   if (ActualEnabled(renderer)==target) {binding.visibilityRevision=RuntimeControls::valueRevision;return;}

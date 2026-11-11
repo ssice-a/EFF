@@ -7,7 +7,7 @@ import re
 from .type_tree import require
 
 VARIABLE = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*\Z")
-TOKEN = re.compile(r"\s*(\$[A-Za-z_][A-Za-z0-9_]*|true\b|false\b|-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|==|!=|<=|>=|&&|\|\||[()!<>])")
+TOKEN = re.compile(r"\s*(\$[A-Za-z_][A-Za-z0-9_]*|true\b|false\b|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|==|!=|<=|>=|&&|\|\||[()!<>+*/%\-])")
 
 
 def number(text):
@@ -48,13 +48,29 @@ class Condition:
         return tree
 
     def parse_compare(self):
-        left = self.parse_primary()
+        left = self.parse_add()
         operator = self.take("==", "!=", "<", "<=", ">", ">=")
-        return (operator, left, self.parse_primary()) if operator else left
+        return (operator, left, self.parse_add()) if operator else left
+
+    def parse_add(self):
+        tree = self.parse_multiply()
+        while (op := self.take('+', '-')):
+            tree = (op, tree, self.parse_multiply())
+        return tree
+
+    def parse_multiply(self):
+        tree = self.parse_primary()
+        while (op := self.take('*', '/', '%')):
+            tree = (op, tree, self.parse_primary())
+        return tree
 
     def parse_primary(self):
         if self.take("!"):
             return ("!", self.parse_primary())
+        if self.take('-'):
+            return ('negative', self.parse_primary())
+        if self.take('+'):
+            return self.parse_primary()
         if self.take("("):
             tree = self.parse_or()
             require(self.take(")"), "visibility expression has unmatched parentheses")
@@ -80,9 +96,16 @@ class Condition:
                 require(node[1] in states, "undefined state: " + node[1])
                 return states[node[1]]
             if operator == "!": return not visit(node[1])
+            if operator == 'negative': return -visit(node[1])
             if operator == "&&": return bool(visit(node[1])) and bool(visit(node[2]))
             if operator == "||": return bool(visit(node[1])) or bool(visit(node[2]))
             a, b = visit(node[1]), visit(node[2])
+            if operator in ('+', '-', '*', '/', '%'):
+                require(operator not in ('/', '%') or b != 0, 'expression division by zero')
+                result = {'+': lambda: a+b, '-': lambda: a-b, '*': lambda: a*b,
+                          '/': lambda: a/b, '%': lambda: math.fmod(a, b)}[operator]()
+                require(math.isfinite(result), 'expression result is nonfinite')
+                return result
             return {"==": lambda: a == b, "!=": lambda: a != b, "<": lambda: a < b,
                     "<=": lambda: a <= b, ">": lambda: a > b, ">=": lambda: a >= b}[operator]()
         return bool(visit(self.tree))

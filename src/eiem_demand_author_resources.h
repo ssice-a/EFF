@@ -1,4 +1,5 @@
 #pragma once
+#include "eiem_author_controls_ini.h"
 #include "eiem_demand_generation_diff.h"
 #include "eiem_runtime_author_directory.h"
 #include "eiem_runtime_author_manifest.h"
@@ -37,7 +38,12 @@ struct Texture {
   std::string cab,name;
   int64_t id=0;
   size_t metadataReadBytes=0;
+  std::filesystem::path ownerRoot;
+  Identity source;
+  EiemRuntimeAuthorManifest::TextureSettings settings;
+  std::shared_ptr<R::File> dds;
 };
+using TextureResolver=std::function<std::shared_ptr<const Texture>(const Texture&)>;
 struct Material {
   std::filesystem::path ownerRoot;
   D::MaterialEntry declaration;
@@ -49,6 +55,23 @@ struct Material {
 struct Physics {
   EiemPhysicsInput::Document document;
 };
+inline void RebindPhysics(EiemPhysicsInput::Document& document,const std::set<Identity>& original,
+ const EiemRuntimeAuthorManifest::Resource& declaration,const std::vector<EiemMeshTargetDirectory::Target>& targets){
+ std::map<Identity,std::set<Identity>> mapping;std::set<Identity> current;
+ for(const auto& target:targets)if(std::find(declaration.targetRules.begin(),declaration.targetRules.end(),target.rule)!=declaration.targetRules.end())current.insert(target.source);
+ if(!declaration.targetBindings.empty()){
+  Require(declaration.targetBindings.size()==original.size(),"Physics source binding coverage differs");
+  for(const auto& binding:declaration.targetBindings){Require(original.count(binding.first),"Physics binding source is absent from immutable resource");
+   for(const auto& target:targets)if(target.rule==binding.second.first&&target.lod==binding.second.second)mapping[binding.first].insert(target.source);
+  }
+ }else if(current.size()==original.size()&&std::equal(current.begin(),current.end(),original.begin(),[](const auto& a,const auto& b){return !(a<b)&&!(b<a);})){for(const auto& source:original)mapping[source].insert(source);}
+ else if(declaration.targetRules.size()==1){for(const auto& source:original)mapping[source]=current;}
+ else throw std::runtime_error("legacy Physics with multiple retargeted rules requires explicit bind.N rule/LOD/source declarations; re-export this Mod");
+ for(auto it=document.groups.begin();it!=document.groups.end();){std::set<Identity> rebound;
+  for(const auto& source:it->targets){Require(original.count(source),"Physics group target is absent from original metadata");auto found=mapping.find(source);if(found!=mapping.end())rebound.insert(found->second.begin(),found->second.end());}
+  it->targets=std::move(rebound);if(it->targets.empty())it=document.groups.erase(it);else ++it;
+ }
+}
 inline std::filesystem::path AssetPath(const std::filesystem::path& root,const std::string& file) {
   D::Relative(file);auto base=std::filesystem::canonical(root),path=std::filesystem::canonical(base/std::filesystem::u8path(file));
   auto relative=path.lexically_relative(base);Require(!relative.empty()&&!relative.is_absolute(),"native author asset outside Mod");
@@ -128,6 +151,12 @@ inline std::shared_ptr<const Mesh> OpenMesh(const std::filesystem::path& root,co
 inline std::shared_ptr<const Texture> OpenTexture(const std::filesystem::path& root,
     const D::TextureAsset& declaration,
     const EiemRuntimeAuthorManifest::TextureSettings& settings = {}) {
+  if(declaration.file.empty()){
+    auto result=std::make_shared<Texture>();result->declaration=declaration;result->ownerRoot=root;result->settings=settings;
+    result->dds=std::make_shared<R::File>(AssetPath(root,declaration.ddsFile),0,true);
+    Bytes header(std::min(result->dds->Size(),size_t(148)));result->dds->ReadAt(0,header.data(),header.size());
+    result->replacement=EiemDdsTexture::Parse(header,result->dds->Size());result->metadataReadBytes=header.size();result->dds->VerifyStable();return result;
+  }
   auto textureFile=std::make_shared<R::File>(AssetPath(root,declaration.file),0,true);
   auto envelope=AuthorLayout(textureFile,3);
   Require(!envelope.metadataBytes&&envelope.payloadBytes,
@@ -213,7 +242,8 @@ inline std::set<NativeReference> MaterialReferences(const Type& type,const Value
     if(id){NativeReference ref{file?layout.externals[size_t(file)-1]:cab,id};Require(!ref.first.empty(),"native author Material dependency CAB absent");result.insert(std::move(ref));}return result;}
   for(const auto& child:value.children){auto nested=MaterialReferences(type,child,layout,cab,depth+1);result.insert(nested.begin(),nested.end());}return result;
 }
-inline std::shared_ptr<Material> OpenMaterial(const std::filesystem::path& root,const D::MaterialEntry& declaration) {
+inline std::shared_ptr<Material> OpenMaterial(const std::filesystem::path& root,const D::MaterialEntry& declaration,
+    bool allowIniTextureRebind=false) {
   auto file=std::make_shared<R::File>(AssetPath(root,declaration.file),0);auto envelope=AuthorLayout(file,2);
   auto metadata=EiemAuthorResourceFile::ReadMetadata(envelope,[file](size_t at,unsigned char* out,size_t n){file->ReadAt(at,out,n);});
   auto described=EiemAuthorResourceMetadata::DecodeMaterial(metadata);
@@ -227,8 +257,15 @@ inline std::shared_ptr<Material> OpenMaterial(const std::filesystem::path& root,
   auto result=std::make_shared<Material>();result->ownerRoot=root;result->declaration=std::move(described);
   result->authored=EiemAuthorMaterialEdits::Parse(bytes);
   Require(result->authored.source==declaration.source.path,"author Material source path differs from mod.ini");
-  std::map<std::string,std::string> bindings;for(const auto& row:result->authored.textures)bindings.emplace(row.first,row.second);
-  Require(bindings==declaration.textures,"author Material texture bindings differ from mod.ini");
+  if(allowIniTextureRebind)Require(result->authored.textures.empty(),
+    "INI-owned Material texture bindings are duplicated in the author snapshot");
+  else Require(result->authored.textures==declaration.textures,
+    "author Material texture bindings differ from mod.ini");
+  // The new writer leaves cross-resource bindings in INI so they can be
+  // rebound without rewriting this snapshot. Old packages still validate the
+  // former duplicated representation above.
+  result->authored.textures.clear();
+  for(const auto& binding:declaration.textures)result->authored.textures.emplace(binding.first,binding.second);
   file->VerifyStable();result->metadataReadBytes=bytes.size();return result;
 }
 class Catalog {
@@ -263,13 +300,14 @@ public:
         material.source=declaration.source;material.textures=declaration.textureBindings;
         directory_.materials.push_back(std::move(material));
       }else if(declaration.kind==3){
-        D::TextureAsset texture;texture.id=row.first;texture.file=declaration.path;texture.ddsFile=declaration.dds;
+        D::TextureAsset texture;texture.id=row.first;texture.file=declaration.path;texture.ddsFile=declaration.dds;texture.source=declaration.source;
         directory_.textures.push_back(std::move(texture));
       }else if(declaration.type=="skeleton"){
         Require(declaration.kind==8,"format 3 Skeleton kind differs");
         directory_.skeletons.push_back({declaration.skeleton,declaration.path});
       }else if(declaration.type=="controls"){
         Require(declaration.kind==6,"format 3 Controls kind differs");
+        if(manifest_.inlineControls)continue;
         auto file=std::make_shared<R::File>(AssetPath(root_,declaration.path),0);auto layout=AuthorLayout(file,6);
         auto metadata=EiemAuthorResourceFile::ReadMetadata(layout,[file](size_t at,unsigned char* out,size_t n){file->ReadAt(at,out,n);});
         directory_.runtime=EiemAuthorResourceMetadata::DecodeControls(metadata);
@@ -282,6 +320,8 @@ public:
         Require(effectPaths_.emplace(effect.file,declaration.path).second,"format 3 Effect source file is declared more than once");
       }else if(declaration.type=="effect-author"){
         Require(declaration.kind==7,"format 3 Effect author kind differs");
+      }else if(declaration.type=="animation-samples"){
+        Require(declaration.kind==9,"format 3 Animation sample kind differs");
       }else if(declaration.type=="shape-animation"){
         Require(declaration.kind==6,"format 3 ShapeAnimation kind differs");
         declaredShapeAnimations.insert(row.first.substr(strlen("ShapeAnimation")));
@@ -301,6 +341,23 @@ public:
         throw std::runtime_error("unsupported format 3 runtime resource type: "+declaration.id);
       }
     }
+    if(manifest_.inlineControls){
+      directory_.runtime=EiemAuthorControlsIni::Read(manifest_.sections,
+        [&](const std::string& id){
+          auto declaration=manifest_.resources.find(id);Require(declaration!=manifest_.resources.end()&&declaration->second.type=="animation-samples",
+            "INI Animation sample resource is unresolved: "+id);
+          auto file=std::make_shared<R::File>(AssetPath(root_,declaration->second.path),0,true);
+          Require(file->Size()<=64*1024*1024,"Animation sample file exceeds 64 MiB");
+          Bytes bytes(file->Size());file->ReadAt(0,bytes.data(),bytes.size());file->VerifyStable();return EiemAuthorControlsIni::DecodeSamples(bytes);
+        },
+        [&](const std::string& id){
+          auto declaration=manifest_.resources.find(id);Require(declaration!=manifest_.resources.end()&&declaration->second.type=="effect",
+            "INI Effect bundle resource is unresolved: "+id);
+          auto file=std::make_shared<R::File>(AssetPath(root_,declaration->second.path),0);auto layout=AuthorLayout(file,5);
+          auto effect=EiemAuthorResourceMetadata::DecodeEffect(AuthorMetadata(file,layout));
+          Require(layout.payloadBytes==effect.bytes,"native Effect resource extent differs");return effect;
+        });
+    }
     for(auto& attachment:directory_.runtime.effects){
       auto native=std::make_shared<EiemEffectNative::Manifest>(*attachment.second.native);
       for(auto& bundle:native->bundles){auto moved=effectPaths_.find(bundle.file);if(moved!=effectPaths_.end())bundle.file=moved->second;}
@@ -309,14 +366,16 @@ public:
     std::set<std::string> expectedShapeAnimations,expectedEffectFiles;
     for(const auto& animation:directory_.runtime.animations)
       if(!directory_.runtime.materialAnimations.count(animation.first))expectedShapeAnimations.insert(animation.first);
-    Require(declaredShapeAnimations==expectedShapeAnimations,"format 3 ShapeAnimation declarations differ from Controls resource");
-    Require(declaredMaterialAnimations==directory_.runtime.materialAnimations,"format 3 MaterialAnimation declarations differ from Controls resource");
+    if(!manifest_.inlineControls){
+      Require(declaredShapeAnimations==expectedShapeAnimations,"format 3 ShapeAnimation declarations differ from Controls resource");
+      Require(declaredMaterialAnimations==directory_.runtime.materialAnimations,"format 3 MaterialAnimation declarations differ from Controls resource");
+    }
     std::set<std::string> expectedEffectAttachments;
     for(const auto& effect:directory_.runtime.effects){
       expectedEffectAttachments.insert(effect.first);
       for(const auto& input:effect.second.native->bundles)expectedEffectFiles.insert(input.file);
     }
-    Require(declaredEffectAttachments==expectedEffectAttachments,"format 3 EffectAttachment declarations differ from Controls resource");
+    if(!manifest_.inlineControls)Require(declaredEffectAttachments==expectedEffectAttachments,"format 3 EffectAttachment declarations differ from Controls resource");
     Require(effectFiles==expectedEffectFiles,"format 3 Effect resources differ from Controls resource bundle inputs");
     // Immutable controls need channel descriptors and bone-mounted effects
     // need the ordered owner palette before publication. Request-local native
@@ -381,6 +440,15 @@ public:
     }
     return result;
   }
+  std::string ResourceDeclarations()const{
+    std::string result="EFF_RESOURCE_DECLARATIONS/1\n";
+    for(const auto& section:manifest_.sections){const auto& id=section.id;
+      if(id=="Constants"||Begins(id,"Parameter")||Begins(id,"Action")||Begins(id,"Event")||Begins(id,"Binding")||Begins(id,"UI")||Begins(id,"Control")||Begins(id,"ShapeControl")||Begins(id,"Key")||Begins(id,"Animation")||Begins(id,"MaterialTrack"))continue;
+      result+="["+id+"]\n";for(const auto& field:section.values){if(id=="Mod"&&(field.first=="key_switch_enabled"||field.first=="controls"))continue;
+        if(Begins(id,"Part")&&(field.first=="visible"||Begins(field.first,"shape.")))continue;
+        result+=field.first+"="+field.second+"\n";}
+    }return result;
+  }
   void BindEffects(Package& package)const {
     for(auto& row:package.effects){auto manifest=std::make_shared<EiemEffectNative::Manifest>(*row.second.native);
       for(auto& input:manifest->bundles){auto root=root_;auto declaration=input;
@@ -416,25 +484,30 @@ public:
   }
   size_t OpenSkeletons(){std::lock_guard<std::mutex> lock(mutex_);return skeletons_.size();}
 private:
-  std::shared_ptr<const Texture> GetTextureLocked(const std::string& id) {
+  std::shared_ptr<const Texture> GetTextureLocked(const std::string& id,const TextureResolver& resolve={}) {
     auto index=textureIds_.find(id);Require(index!=textureIds_.end(),"author Texture declaration is absent: "+id);
-    const auto& entry=directory_.textures.at(index->second);auto found=textures_.find(entry.file);if(found!=textures_.end())return found->second;
-    auto asset=OpenTexture(root_,entry,manifest_.resources.at(id).textureSettings);
-    textures_.emplace(entry.file,asset);return asset;
+    const auto& entry=directory_.textures.at(index->second);const auto key=entry.file.empty()?id:entry.file;
+    auto found=textures_.find(key);std::shared_ptr<const Texture> asset;
+    if(found!=textures_.end())asset=found->second;
+    else{auto opened=OpenTexture(root_,entry,manifest_.resources.at(id).textureSettings);
+      auto described=std::make_shared<Texture>(*opened);described->source=manifest_.resources.at(id).source;asset=described;}
+    if(!asset->input&&resolve)asset=resolve(*asset);
+    textures_[key]=asset;return asset;
   }
 public:
   std::shared_ptr<const Texture> GetTexture(const std::string& id) {
     std::lock_guard<std::mutex> lock(mutex_);return GetTextureLocked(id);
   }
   size_t OpenTextures(){std::lock_guard<std::mutex> lock(mutex_);return textures_.size();}
-  std::shared_ptr<const Material> GetMaterial(const std::string& id) {
-    std::lock_guard<std::mutex> lock(mutex_);auto found=materials_.find(id);if(found!=materials_.end())return found->second;
-    auto asset=OpenMaterial(root_,directory_.materials.at(materialIds_.at(id)));
+  std::shared_ptr<const Material> GetMaterial(const std::string& id,const TextureResolver& resolve={}) {
+    std::lock_guard<std::mutex> lock(mutex_);auto found=materials_.find(id);
+    if(found!=materials_.end()&&(!resolve||found->second->textures.size()==found->second->textureAssets.size()))return found->second;
+    auto asset=OpenMaterial(root_,directory_.materials.at(materialIds_.at(id)),manifest_.inlineControls);
     for(const auto& binding:asset->declaration.textures){
-      auto textureAsset=GetTextureLocked(binding.second);
-      asset->textures.emplace(binding.first,NativeReference{textureAsset->cab,textureAsset->id});
+      auto textureAsset=GetTextureLocked(binding.second,resolve);
+      if(textureAsset->input)asset->textures.emplace(binding.first,NativeReference{textureAsset->cab,textureAsset->id});
       asset->textureAssets.emplace(binding.first,std::move(textureAsset));}
-    materials_.emplace(id,asset);return asset;
+    materials_[id]=asset;return asset;
   }
   size_t OpenMaterials(){std::lock_guard<std::mutex> lock(mutex_);return materials_.size();}
   std::shared_ptr<const Texture> FindTexture(const NativeReference& reference) {
@@ -451,8 +524,7 @@ public:
       if(!relevant)continue;
       auto file=std::make_shared<R::File>(AssetPath(root_,declaration.path),0);auto layout=AuthorLayout(file,4);
       auto metadata=AuthorMetadata(file,layout);auto entry=EiemAuthorResourceMetadata::DecodeAuxiliary(metadata,4);
-      D::Relative(entry.file);Require(entry.id==row.first&&!entry.file.empty()&&entry.targets.size()==declaredTargets.size()&&
-        std::equal(entry.targets.begin(),entry.targets.end(),declaredTargets.begin(),[](const auto& a,const auto& b){return !(a<b)&&!(b<a);})&&
+      D::Relative(entry.file);Require(entry.id==row.first&&!entry.file.empty()&&!entry.targets.empty()&&
         entry.bytes<=16*1024*1024&&entry.authorBytes>0&&AddSize(entry.bytes,entry.authorBytes)==layout.payloadBytes,
         "native/editable Physics resource declaration differs from mod.ini");
       auto found=physics_.find(entry.id);if(found==physics_.end()){
@@ -460,6 +532,7 @@ public:
         auto asset=std::make_shared<Physics>();asset->document=EiemPhysicsInput::DecodePayload(bytes,entry.file);
         std::set<Identity> actual;for(const auto& group:asset->document.groups)actual.insert(group.targets.begin(),group.targets.end());
         Require(actual.size()==entry.targets.size()&&std::equal(actual.begin(),actual.end(),entry.targets.begin(),[](const auto& a,const auto& b){return !(a<b)&&!(b<a);}),"native Physics target declaration differs");
+        RebindPhysics(asset->document,actual,declaration,manifest_.targets);
         found=physics_.emplace(entry.id,std::move(asset)).first;
       }result.push_back(found->second);
     }return result;

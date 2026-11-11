@@ -7,12 +7,13 @@
 #include <cerrno>
 #include <cmath>
 #include <vector>
+#include <stdexcept>
 
 using EiemVariables = std::unordered_map<std::string, double>;
 
 struct EiemExpression {
   enum Op { Number, Variable, Not, Negative, Equal, NotEqual, Less, LessEqual,
-            Greater, GreaterEqual, And, Or } op = Number;
+            Greater, GreaterEqual, And, Or, Add, Subtract, Multiply, Divide, Modulo } op = Number;
   double number = 0;
   std::string variable;
   std::shared_ptr<EiemExpression> left, right;
@@ -70,8 +71,12 @@ struct EiemExpression {
         case Equal:value=lhs==value;break;case NotEqual:value=lhs!=value;break;
         case Less:value=lhs<value;break;case LessEqual:value=lhs<=value;break;
         case Greater:value=lhs>value;break;case GreaterEqual:value=lhs>=value;break;
+        case Add:value=lhs+value;break;case Subtract:value=lhs-value;break;
+        case Multiply:value=lhs*value;break;
+        case Divide:if(value==0)throw std::runtime_error("expression division by zero");value=lhs/value;break;
+        case Modulo:if(value==0)throw std::runtime_error("expression modulo by zero");value=std::fmod(lhs,value);break;
         default:value=0;break;
-      }stack.pop_back();
+      }if(!std::isfinite(value))throw std::runtime_error("expression result is nonfinite");stack.pop_back();
     }
     return value;
   }
@@ -128,12 +133,14 @@ class EiemExpressionParser {
   Node Parse(){
     static const Operator binary[]={{"||",1,EiemExpression::Or},{"&&",2,EiemExpression::And},
       {"==",3,EiemExpression::Equal},{"!=",3,EiemExpression::NotEqual},{"<=",4,EiemExpression::LessEqual},
-      {">=",4,EiemExpression::GreaterEqual},{"<",4,EiemExpression::Less},{">",4,EiemExpression::Greater}};
+      {">=",4,EiemExpression::GreaterEqual},{"<",4,EiemExpression::Less},{">",4,EiemExpression::Greater},
+      {"+",5,EiemExpression::Add},{"-",5,EiemExpression::Subtract},{"*",6,EiemExpression::Multiply},
+      {"/",6,EiemExpression::Divide},{"%",6,EiemExpression::Modulo}};
     bool primary=true;
     for(;;){Space();if(pos_==text_.size())break;char c=text_[pos_];
       if(primary){
         if(c=='('){operators_.push_back({"(",0,EiemExpression::Number});++pos_;continue;}
-        if(c=='!'||c=='-'||c=='+'){operators_.push_back({c=='!'?"!":c=='-'?"-":"+",5,c=='!'?EiemExpression::Not:EiemExpression::Negative,true});++pos_;continue;}
+        if(c=='!'||c=='-'||c=='+'){operators_.push_back({c=='!'?"!":c=='-'?"-":"+",7,c=='!'?EiemExpression::Not:EiemExpression::Negative,true});++pos_;continue;}
         auto value=Operand();if(!value)return {};values_.push_back(value);primary=false;continue;
       }
       if(c==')'){

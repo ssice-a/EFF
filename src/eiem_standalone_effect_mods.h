@@ -19,7 +19,7 @@ inline std::map<std::string,EffectAttachment> ReadAttached(const Package& publis
  PublishReadLock publication(published.root/"compiled.bin",true);
  auto ini=EiemDirectory::Read(published.root/"mod.ini");auto sections=ParseIni(ini);Package next;next.root=published.root;next.parts=published.parts;bool identity=false;
  for(const auto& s:sections){
-  if(s.id=="Mod"){Keys(s,{"format","id"},{"key_switch_enabled","type"});Require(s.values.at("id")==published.id&&!s.values.count("type"),"effect reload Mod identity/type changed");next.id=published.id;identity=true;}
+  if(s.id=="Mod"){Keys(s,{"format","id"},{"key_switch_enabled","type"});Require(s.values.at("id")==DeclaredId(published)&&!s.values.count("type"),"effect reload Mod identity/type changed");next.id=DeclaredId(published);identity=true;}
   else if(s.id=="Constants")for(const auto& row:s.values){auto variable=Begins(row.first,"persist ")?row.first.substr(8):row.first;Require(EiemVariableName(variable)&&next.defaults.emplace(variable,Number(row.second)).second,"effect reload invalid/duplicate state");}
  }
  Require(identity,"effect reload Mod identity absent");
@@ -31,10 +31,10 @@ inline std::map<std::string,EffectAttachment> ReadAttached(const Package& publis
 }
 inline std::vector<Package> ReadAll(const std::filesystem::path& game){
  std::vector<Package> result;std::set<std::string> ids;for(const auto& root:EiemComposedPackage::Roots(game/"plugin/mods",true)){
-  auto declarations=EiemDirectory::ParseIni(EiemDirectory::Read(root/"mod.ini"));for(const auto& s:declarations)if(s.id=="Mod")Require(ids.insert(s.values.at("id")).second,"duplicate Mod id across character/effect Mods");
   if(!IsStandalone(root))continue;
   auto p=Load(root);Require(p.parts.empty()&&p.rules.empty()&&!p.effects.empty(),"standalone effect Mod contains character edits");
-  for(const auto& e:p.effects){const auto& effect=e.second;Require(IsGamePrefabReplacement(effect)||( !effect.targetPrefab.empty()&&!effect.targetPath.empty()&&!effect.targetAsset.empty()&&(effect.bone.empty()||!effect.targetBones.empty())),"standalone effect lacks an exact Prefab replacement target or source attachment proof");}result.push_back(std::move(p));
+  for(const auto& e:p.effects){const auto& effect=e.second;Require(IsGamePrefabReplacement(effect)||( !effect.targetPrefab.empty()&&!effect.targetPath.empty()&&!effect.targetAsset.empty()&&(effect.bone.empty()||!effect.targetBones.empty())),"standalone effect lacks an exact Prefab replacement target or source attachment proof");}
+  EiemComposedPackage::AssignInstalledIdentity(p);Require(ids.insert(p.id).second,"duplicate installed effect Mod instance");result.push_back(std::move(p));
  }return result;
 }
 }

@@ -47,11 +47,12 @@ struct Shared {
   size_t variants=0,cacheHits=0;
 };
 using PrepareInput=std::function<EiemNativeStandaloneInput::Input(const EiemDemandAuthorResources::Material&,const Use&)>;
-inline Shared PrepareShared(const N::Author& author,const std::vector<Use>& uses,const PrepareInput& prepare={}) {
+inline Shared PrepareShared(const N::Author& author,const std::vector<Use>& uses,const PrepareInput& prepare={},
+    const EiemDemandAuthorResources::TextureResolver& resolveTexture={}) {
   Shared result;std::set<RendererMaterialKey> keys;std::map<std::string,EiemNativeStandaloneInput::Input> built;
   for(const auto& use:uses){
     Require(use.key.first&&!use.key.second.empty()&&keys.insert(use.key).second,"native Material Renderer/Part use is invalid or duplicated");
-    auto material=author.GetMaterial(use.material);auto found=built.find(use.material);
+    auto material=author.GetMaterial(use.material,resolveTexture);auto found=built.find(use.material);
     EiemNativeStandaloneInput::Input input;
     if(found==built.end()){Require(bool(prepare),"current game Material source builder is absent");input=prepare(*material,use);}
     else input=found->second;

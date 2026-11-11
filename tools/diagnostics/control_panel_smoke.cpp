@@ -104,11 +104,122 @@ void AnimationSchedulingChecks(){
  Install({},true);Require(animationKeys.empty()&&animationPackages.empty(),"removed Mod retained animation indexes");panel.open=false;physical=0;
  std::cout<<"PASS animation scheduling: 2000 groups/64 plain packages, prepared key/package indexes, MergeLive, held-key edges, active sampling, copy and removal\n";
 }
+void ProgramChecks(){
+ const std::string source=R"ini([Constants]
+persist $speed=1
+[ParameterMode]
+variable=$mode
+type=bool
+default=true
+public=true
+[ParameterValue]
+variable=$value
+default=0.2
+min=0
+max=1
+public=true
+[ParameterActual]
+variable=$actual
+value=$value * 2
+min=0
+max=2
+public=true
+[ParameterPrivate]
+variable=$private
+default=0
+[ParameterReset]
+variable=$reset
+type=int
+default=2
+persist=true
+reload=reset
+min=0
+max=5
+[ActionToggle]
+public=true
+code=
+    $mode = !$mode
+[ActionSample]
+public=true
+code=
+    $value = $value + 0.1
+[ActionFail]
+public=true
+code=
+    $mode = false
+    $value = 2
+[ActionHold]
+code=
+    $private = $private + $dt
+[EventToggle]
+key=F7
+action=ActionToggle
+[EventRelease]
+key=F8
+trigger=release
+action=ActionToggle
+[EventHold]
+key=F9
+trigger=hold
+action=ActionHold
+[AnimationPulse]
+samples=ResourceSamples
+duration=1
+speed_variable=$speed
+speed=1
+loop=true
+autoplay=false
+track.0=$value
+[MaterialExample]
+path=example.effres
+[BindingValue]
+target=material.float
+material=MaterialExample
+property=_Probe
+value=$actual
+[UISettings]
+type=group
+label=Settings
+expanded=true
+[UIMode]
+type=checkbox
+parent=UISettings
+variable=$mode
+)ini";
+ auto ini=EiemDirectory::ParseIni(Bytes(source.begin(),source.end()));
+ auto state=EiemAuthorControlsIni::Read(ini,[](const auto&){EiemAuthorControlsIni::Samples s;s.scalar={{0,1}};return s;},[](const auto&){return EiemAuthorResourceMetadata::Effect{};});
+ Package p;p.id="Unified";p.root=std::filesystem::temp_directory_path()/"eff-panel-fixture"/p.id;EiemAuthorControlMetadata::Apply(state,p);
+ ValidateShapeAnimations(p);physical=0;panel.open=false;LoadControls(Graph({p}));
+ double property=0;Require(RuntimeMaterials::Channel(p.id,"$binding_BindingValue",property)&&std::abs(property-.4)<1e-6,"manual/derived material property not driven");
+ physical=VK_F7;Frame(true,0);Require(variables.at(p.id).at("$mode")==0,"program key action");Frame(true,0);Require(variables.at(p.id).at("$mode")==0,"program press repeated");
+ physical=0;Frame(true,0);panel.open=true;Queue(Action::InvokeAction,p.id,"ActionToggle");Frame(true,0);Require(variables.at(p.id).at("$mode")==1,"program UI action differs from key");
+ Queue(Action::Value,p.id,"$actual",1);Queue(Action::Value,p.id,"$private",10);Frame(true,0);Require(variables.at(p.id).at("$actual")==0&&variables.at(p.id).at("$private")==0,"private/computed writes accepted");
+ Queue(Action::InvokeAction,p.id,"ActionFail");Frame(true,0);Require(variables.at(p.id).at("$mode")==1&&variables.at(p.id).at("$value")==.2&&panel.Read()->errors.count(p.id),"failed action partially committed");
+ Queue(Action::AnimationPlay,p.id,"Pulse");Frame(true,0);AdvanceAnimations(.5);
+ Require(variables.at(p.id).at("$value")==.2&&ShapeValue(p.id,"$value")==.5&&panel.Read()->effective.at(p.id).at("$actual")==1,"set/effective values not distinct");
+ auto oldView=panel.Read();Install({p},true);Require(animations.at(p.id).clips.at("Pulse").time==.5&&ShapeValue(p.id,"$value")==.5,"control-only reload restarted compatible timeline");
+ Queue(Action::InvokeAction,p.id,"ActionToggle",0,oldView);Frame(true,0);Require(variables.at(p.id).at("$mode")==1,"stale program UI action crossed F10");
+ Queue(Action::InvokeAction,p.id,"ActionSample");Frame(true,0);Require(std::abs(variables.at(p.id).at("$value")-.6)<1e-6&&!animations.at(p.id).clips.at("Pulse").playing,"action did not read animation sample or hand off ownership");
+ Require(RuntimeMaterials::Channel(p.id,"$binding_BindingValue",property)&&std::abs(property-1.2)<1e-6,"property binding did not follow action");
+ variables.at(p.id).at("$reset")=4;Install({p},true);Require(variables.at(p.id).at("$reset")==2&&std::abs(variables.at(p.id).at("$value")-.6)<1e-6,"parameter reset/preserve migration");
+ auto changed=p;auto program=std::make_shared<EiemControlProgram::Program>(*p.program);program->parameters.at("$value").type=EiemControlProgram::Type::Integer;program->parameters.at("$value").initial=0;changed.program=program;changed.defaults["$value"]=0;
+ Install({changed},true);Require(variables.at(p.id).at("$value")==0,"type changed parameter retained incompatible value");
+ Install({p},true);panel.open=false;physical=VK_F8;Frame(true,0);physical=0;Frame(true,0);Require(variables.at(p.id).at("$mode")==0,"release action");
+ physical=VK_F9;Frame(true,.25);Require(variables.at(p.id).at("$private")==.25,"hold action dt");
+ physical=0;Frame(false,0);physical=VK_F7;Frame(false,0);Frame(true,0);Require(variables.at(p.id).at("$mode")==0,"focus synthesized program key edge");
+ auto reserved=p;auto bad=std::make_shared<EiemControlProgram::Program>(*p.program);bad->events.front().key={VK_F10,0};reserved.program=bad;bool rejected=false;try{Prepare(Graph({reserved}),EiemGlobalConfig{});}catch(const std::exception&){rejected=true;}Require(rejected,"program event overlaps F10");
+ auto recovering=p;auto formula=std::make_shared<EiemControlProgram::Program>(*p.program);formula->parameters.at("$actual").computed=EiemControlProgram::Expression("(1 - $value) / (1 - $value)",p.defaults,"recovering");recovering.program=formula;
+ Install({recovering});panel.open=true;Queue(Action::Value,p.id,"$value",1);Frame(true,0);Require(panel.Read()->errors.count(p.id)&&ShapeValue(p.id,"$actual")==1,"failed expression did not retain last effective state");
+ Queue(Action::Value,p.id,"$value",.4);Frame(true,0);Require(!panel.Read()->errors.count(p.id)&&ShapeValue(p.id,"$actual")==1,"corrected expression retained stale error");
+ Install({},true);panel.open=false;physical=0;
+ std::cout<<"PASS unified INI program: shared key/UI actions, atomic failure, timeline effective values, material adapter, F10 migration/phase/stale commands, domains and focus\n";
+}
 void Checks() {
   AnimationChecks();
   CompiledAnimationChecks();
   SharedChannelAnimationChecks();
   AnimationSchedulingChecks();
+  ProgramChecks();
   EiemControlPanel::Shortcut shortcut;
   EiemKeyChord insert{VK_INSERT,0};
   Require(!shortcut.Press(insert,true,true),"startup held Insert synthesized toggle");
@@ -343,6 +454,82 @@ void WindowChecks(bool demo) {
   Require(variables.at("other").at("$switch")==2,"resized cycle button lost its input mapping");
   std::cout<<"PASS native corner resize hit, minimum size, small/large/restored client and D3D buffers, responsive buttons and control state\n";
   std::cout<<"Panel backdrop acrylic="<<window.TestAcrylic()<<"\n";
+  const std::string uiSource=R"ini([ParameterMode]
+variable=$mode
+type=bool
+default=true
+public=true
+[ParameterValue]
+variable=$value
+default=0.2
+min=0
+max=1
+public=true
+[ParameterActual]
+variable=$actual
+value=$value * 2
+public=true
+max=2
+[ActionToggle]
+public=true
+code=$mode = !$mode
+[ActionReset]
+public=true
+code=$value = 0
+[UIRoot]
+type=group
+expanded=true
+label=Settings
+[UITabs]
+type=tabs
+parent=UIRoot
+[UITab]
+type=tab
+parent=UITabs
+label=Main
+[UIMode]
+type=checkbox
+parent=UITab
+variable=$mode
+order=1
+[UIValue]
+type=slider
+parent=UITab
+variable=$value
+order=2
+[UIActual]
+type=number
+parent=UITab
+variable=$actual
+order=3
+[UIInvalid]
+type=text
+parent=UITab
+visible=1 / ($value - $value)
+order=4
+[UIRow]
+type=row
+parent=UITab
+order=5
+[UIButton]
+type=button
+parent=UIRow
+action=ActionToggle
+[UIReset]
+type=button
+parent=UIRow
+action=ActionReset
+)ini";
+  auto declarations=EiemDirectory::ParseIni(Bytes(uiSource.begin(),uiSource.end()));
+  auto programState=EiemAuthorControlsIni::Read(declarations,[](const auto&){return EiemAuthorControlsIni::Samples{};},[](const auto&){return EiemAuthorResourceMetadata::Effect{};});
+  Package uiPackage;uiPackage.id="ProgramWindow";uiPackage.root=first.root.parent_path()/uiPackage.id;EiemAuthorControlMetadata::Apply(programState,uiPackage);Install({uiPackage});for(int i=0;i<3;++i)Pump();
+  Click(window.TestRect(Action::Value,uiPackage.id,"$mode"));Require(variables.at(uiPackage.id).at("$mode")==0,"declarative checkbox did not edit variable");
+  Click(window.TestRect(Action::Value,uiPackage.id,"$value"));Require(variables.at(uiPackage.id).at("$value")!=.2,"declarative slider did not edit variable");
+  Click(window.TestRect(Action::Value,uiPackage.id,"$actual"));Require(variables.at(uiPackage.id).at("$actual")==0,"computed field was writable");
+  Click(window.TestRect(Action::InvokeAction,uiPackage.id,"ActionToggle"));Require(variables.at(uiPackage.id).at("$mode")==1,"declarative button or UI expression recovery failed");
+  auto toggle=window.TestRect(Action::InvokeAction,uiPackage.id,"ActionToggle"),reset=window.TestRect(Action::InvokeAction,uiPackage.id,"ActionReset");Require(toggle.right<reset.left&&toggle.top==reset.top&&reset.right<=client.right,"declarative row did not align controls within client");
+  Click(reset);Require(variables.at(uiPackage.id).at("$value")==0,"row action did not edit variable");
+  std::cout<<"PASS real declarative group/tabs, checkbox/slider, computed read-only field, action button and failing visible expression with balanced ImGui state\n";
   if(demo) {auto until=GetTickCount64()+60000;while(GetTickCount64()<until && panel.open){Pump();Sleep(16);}}
   SendMessageW(window.Handle(),WM_CLOSE,0,0);Pump();
   Require(!panel.open && !IsWindowVisible(window.Handle()),"close did not hide control panel");

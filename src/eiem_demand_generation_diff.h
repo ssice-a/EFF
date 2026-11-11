@@ -31,9 +31,10 @@ struct Mod {
   std::string root;
   std::map<std::string, std::string> files;
   std::set<Target> targets;
+  std::string resourceDeclarations;
 
   bool operator==(const Mod& other) const {
-    return root == other.root && files == other.files &&
+    return root == other.root && files == other.files && resourceDeclarations==other.resourceDeclarations &&
            targets == other.targets;
   }
 };
@@ -67,6 +68,7 @@ struct Delta {
   std::set<std::string> addedPackages;
   std::set<std::string> removedPackages;
   std::set<std::string> modifiedPackages;
+  std::set<std::string> controlOnlyPackages;
   std::set<std::pair<std::string, std::string>> targets;
 };
 
@@ -105,6 +107,10 @@ inline Delta Compare(const Snapshot& previous, const Snapshot& next) {
       delta.changed = true;
       delta.packages.insert(oldMod->first);
       delta.modifiedPackages.insert(oldMod->first);
+      auto oldFiles=oldMod->second.files,newFiles=newMod->second.files;oldFiles.erase("mod.ini");newFiles.erase("mod.ini");
+      if(!oldMod->second.resourceDeclarations.empty()&&oldMod->second.root==newMod->second.root&&oldFiles==newFiles&&
+         oldMod->second.targets==newMod->second.targets&&oldMod->second.resourceDeclarations==newMod->second.resourceDeclarations)
+        delta.controlOnlyPackages.insert(oldMod->first);
       if (oldMod->second.targets != newMod->second.targets) {
         delta.targetDeclarationsChanged = true;
         AddTargets(delta, oldMod->second);

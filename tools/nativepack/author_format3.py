@@ -141,7 +141,8 @@ class _ControlWriter(_MetadataWriter):
 
 _OPS = {"number": 0, "variable": 1, "not": 2, "negative": 3,
         "equal": 4, "not_equal": 5, "less": 6, "less_equal": 7,
-        "greater": 8, "greater_equal": 9, "and": 10, "or": 11}
+        "greater": 8, "greater_equal": 9, "and": 10, "or": 11,
+        "add": 12, "subtract": 13, "multiply": 14, "divide": 15, "modulo": 16}
 
 
 def _write_expr(writer, node):
@@ -173,8 +174,12 @@ def _expression_for_bindings(bindings):
 
 
 def _part_visibility(part):
-    return part.get("visibilityExpression") or _expression_for_bindings(
-        part["visibilityBindings"])
+    expression = part.get("visibilityExpression")
+    bindings = part.get("visibilityBindings", ())
+    authored = _expression_for_bindings(bindings)
+    if expression and bindings:
+        return ("and", 0.0, "", expression, authored)
+    return expression or authored
 
 
 def _key_chord(value):
@@ -266,12 +271,17 @@ def _decode_bone_animation_payload(payload, label):
 
 def _controls_resource(mod_id, parts, switches, material_clips, effects,
                        state_defaults=None, persistent_states=None,
-                       key_bindings=None, bone_animations=()):
+                       key_bindings=None, bone_animations=(), return_state=False,
+                       preserved_controls=None, preserved_bindings=None):
     preserve_state = state_defaults is not None
     defaults = {key: float(value) for key, value in (state_defaults or {}).items()}
     persistent = set(persistent_states or ()) if preserve_state else set()
     controls, bindings = {}, []
+    controls.update({key: (value['label'], value['minimum'], value['maximum'])
+                     for key, value in (preserved_controls or {}).items()})
     runtime_parts, animations, material_ids, material_tracks = {}, {}, set(), {}
+    authored_defaults = set()
+    authored_controls = set()
 
     def merge_animation(identity, label, key, duration, speed, loop, autoplay,
                         sample_count=None, speed_variable=None, sample_rate=None):
@@ -310,12 +320,15 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
     def default(variable, value):
         value = float(value)
         require(math.isfinite(value), "invalid runtime default: " + variable)
-        if variable in defaults:
-            require(defaults[variable] == value,
+        if variable in authored_defaults:
+            require(math.isclose(defaults[variable], value, rel_tol=1e-6, abs_tol=1e-6),
                     "runtime default differs from preserved state: " + variable)
             return
+        existed = variable in defaults
         defaults[variable] = value
-        persistent.add(variable)
+        authored_defaults.add(variable)
+        if not existed:
+            persistent.add(variable)
 
     if key_bindings is None:
         for index, switch in enumerate(switches, 1):
@@ -351,6 +364,7 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
                 default(variable, control["default"])
                 controls[variable] = (control["label"], float(control["minimum"]),
                                       float(control["maximum"]))
+                authored_controls.add(variable)
                 shape_rows.append((variable, control))
                 for direction, chord, target, suffix in (
                     ("Increase", control["hotkey_increase"], control["maximum"], "Increase"),
@@ -383,19 +397,22 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
             for shape, samples in clip["channels"].items():
                 state = runtime_parts[part_id]["shapes"].get(shape)
                 require(state is not None, "animated shape lacks a Format 3 control: " + shape)
-                require(state not in animation["tracks"],
-                        "duplicate mixed Animation target: " + identity + "/" + state)
+                require(state not in animation["tracks"] or
+                        (len(animation["tracks"][state]) == len(samples) and
+                         all(math.isclose(a, b, rel_tol=1e-6, abs_tol=1e-6)
+                             for a, b in zip(animation["tracks"][state], samples))),
+                        "conflicting shared Animation target: " + identity + "/" + state)
                 animation["tracks"][state] = samples
 
     for clip in material_clips:
         identity = clip["id"]
-        speed = "$mat_speed_" + _identifier(identity)
+        speed = clip.get("speedVariable") or ("$mat_speed_" + _identifier(identity))
         sample_counts = {len(target["samples"]) for target in clip["targets"]}
         require(len(sample_counts) <= 1,
                 "Animation tracks must share one sample timeline: " + identity)
         animation = merge_animation(identity, clip["label"], clip.get("key", ""),
             clip["duration"], clip["speed"], clip["loop"], clip["autoplay"],
-            next(iter(sample_counts), None), speed if identity not in animations else None,
+            next(iter(sample_counts), None), speed if identity not in animations else clip.get("speedVariable"),
             clip.get("sample_rate"))
         for target in clip["targets"]:
             variable = target["variable"]
@@ -442,6 +459,16 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
                 "mixed Animation tracks must share one sample timeline: " + identity)
 
     effect_state = {}
+    effect_bundle_labels = {}
+    for effect in effects:
+        native = effect["native"]
+        label = effect.get("label") or effect.get("id") or native["key"]
+        for index, _bundle in enumerate(native["bundles"]):
+            effect_bundle_labels.setdefault((native["key"], index), []).append(label)
+    effect_bundle_paths = named_resource_paths(
+        [(key + "_" + str(index), sorted(labels, key=str.casefold)[0] + "_" + str(index))
+         for (key, index), labels in effect_bundle_labels.items()], "effects", ".effres")
+
     for effect in effects:
         prefab = effect.get("targetPrefab", "")
         renderer_path = effect.get("rendererPath", "")
@@ -483,11 +510,41 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
                    native=dict(key=native["key"], prefab=native["prefab"], rootName=native["rootName"],
                        root=native["root"], particles=native["particles"], bundles=[]))
         for index, bundle in enumerate(native["bundles"]):
-            file = "effects/" + native["key"] + "/" + str(index) + ".effres"
+            file = effect_bundle_paths[native["key"] + "_" + str(index)]
             row["native"]["bundles"].append(dict(file=file, hash=bundle["hash"],
                                                   size=len(bundle["data"]),
                                                   dependencies=bundle["dependencies"]))
         effect_state[identity] = row
+
+    unique_bindings = {}
+    for row in bindings:
+        # Shared variables may be used by several imported Meshes. One key
+        # updates that variable once, irrespective of the number of users.
+        semantic = (row[1], row[2], row[3], row[4], row[5], tuple(row[7]))
+        unique_bindings.setdefault(semantic, row)
+    bindings = list(unique_bindings.values())
+    existing_bindings = {row[0] for row in bindings}
+    for binding in preserved_bindings or ():
+        if binding['id'] in existing_bindings:
+            continue
+        variable = binding['variable']
+        require(variable in defaults, 'preserved INI binding state is undeclared: ' + variable)
+        semantic = (variable, binding['type'], _key_chord(binding['key']), float(binding['speed']),
+                    tuple(float(value) for value in binding['values']))
+        if any((row[1], row[2], (row[3], row[4]), row[5],
+                tuple(float(value) for value in row[7])) == semantic for row in bindings):
+            continue
+        bindings.append((binding['id'], variable, binding['type'],
+                         *_key_chord(binding['key']), float(binding['speed']),
+                         binding.get('label', ''), list(map(float, binding['values']))))
+        existing_bindings.add(binding['id'])
+
+    if return_state:
+        return dict(defaults=defaults, persistent=persistent, controls=controls,
+                    bindings=bindings, parts=runtime_parts, animations=animations,
+                    material_ids=material_ids, material_tracks=material_tracks,
+                    effects=effect_state, authored_defaults=authored_defaults,
+                    authored_controls=authored_controls)
 
     writer = _ControlWriter()
     writer.string(CONTROLS_METADATA_STRUCTURE)
@@ -532,7 +589,7 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
         for track in animation.get("boneTracks", ()):
             writer.string(track["skeleton"]); writer.string(track["path"])
             writer.integer(len(track["samples"]))
-            for sample in track["samples"]: writer.data.extend(struct.pack("<10f", *sample))
+            for sample in track["samples"]: writer.data.extend(struct.pack("<10d", *sample))
     writer.integer(len(material_ids))
     for identity in sorted(material_ids): writer.string(identity)
     writer.integer(len(material_tracks))
@@ -580,6 +637,38 @@ def identifier(value):
     return _identifier(value)
 
 
+def _resource_stem(label, identity):
+    label = str(label or "").strip()
+    if not label:
+        label = re.sub(r"_[0-9a-fA-F]{12,}$", "", str(identity))
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip(" ._-")
+    if not stem:
+        stem = "Resource"
+    reserved = {"CON", "PRN", "AUX", "NUL"}
+    reserved.update("COM" + str(i) for i in range(1, 10))
+    reserved.update("LPT" + str(i) for i in range(1, 10))
+    if stem.split(".", 1)[0].upper() in reserved:
+        stem = "_" + stem
+    return stem[:96].rstrip(" .") or "Resource"
+
+
+def named_resource_paths(rows, directory, extension):
+    """Allocate readable, deterministic filenames independently of resource IDs."""
+    allocated = {}
+    used = set()
+    normalized = [(str(identity), _resource_stem(label, identity))
+                  for identity, label in rows]
+    for identity, stem in sorted(normalized, key=lambda row: (row[1].casefold(), row[0])):
+        candidate, suffix = stem, 2
+        while candidate.casefold() in used:
+            tail = "_" + str(suffix)
+            candidate = stem[:96-len(tail)].rstrip(" .") + tail
+            suffix += 1
+        used.add(candidate.casefold())
+        allocated[identity] = directory + "/" + candidate + extension
+    return allocated
+
+
 def _dds_header(width, height, mips, format_id, linear):
     require(format_id in (4, 25, 27), "DDS Texture format is unsupported")
     header = bytearray(148)
@@ -604,39 +693,407 @@ def _write_ini(root, ini):
     (Path(root) / "mod.ini").write_text(output.getvalue(), encoding="utf-8", newline="\n")
 
 
+def _number(value):
+    value = float(value)
+    require(math.isfinite(value), "INI number is nonfinite")
+    return format(value, '.17g')
+
+
+def _widget_control_program_source(text, declarations, state):
+    """Update widget-owned fields without rewriting imported actions or UI."""
+    updates = {}
+    for section in declarations.sections():
+        if not section.startswith('Parameter'):
+            continue
+        row = declarations[section]
+        variable = row.get('variable')
+        if variable not in state['authored_defaults']:
+            continue
+        require('value' not in row,
+                'Blender control cannot edit a computed Parameter: ' + section)
+        fields = {'default': _number(state['defaults'][variable])}
+        if variable in state['authored_controls']:
+            label, low, high = state['controls'][variable]
+            fields.update(label=label, min=_number(low), max=_number(high))
+            # Blender exposes one editable range, not a separate soft range.
+            for key, value in (('ui.min', low), ('ui.max', high)):
+                if key in row:
+                    fields[key] = _number(value)
+        updates[section] = fields
+    if not updates:
+        return text
+
+    headers = list(re.finditer(r'(?m)^[ \t]*\[([^\]\r\n]+)\][^\r\n]*(?:\r?\n|$)', text))
+    chunks = [text[:headers[0].start()]]
+    for index, header in enumerate(headers):
+        block = text[header.start():headers[index + 1].start() if index + 1 < len(headers) else len(text)]
+        for key, value in updates.get(header.group(1), {}).items():
+            pattern = r'(?m)^([ \t]*' + re.escape(key) + r'[ \t]*=[ \t]*)[^\r\n]*'
+            block, count = re.subn(pattern, lambda match: match[1] + value, block, count=1)
+            if not count:
+                block = block.rstrip('\r\n') + '\n' + key + '=' + value + '\n'
+        chunks.append(block)
+    return ''.join(chunks)
+
+
+def _logical_source_path(value):
+    return (isinstance(value, str) and value.startswith(('assets/', 'packages/')) and
+            not any(c in value for c in '\\:\0') and
+            all(part not in ('', '.', '..') for part in value.split('/')))
+
+
+def decode_animation_samples(data):
+    reader = _MetadataReader(data)
+    require(reader.string() == 'EFF_ANIMATION_SAMPLES/1', 'animation samples structure differs')
+    result = []
+    for width in (1, 10):
+        channels = []
+        count = reader.integer()
+        require(count <= (len(data) - reader.offset) // 8, 'animation channel extent differs')
+        for _ in range(count):
+            size = reader.integer()
+            require(2 <= size <= (len(data) - reader.offset) // (8 * width),
+                    'animation sample extent differs')
+            values = struct.unpack_from('<' + str(size * width) + 'd', data, reader.offset)
+            reader.offset += 8 * size * width
+            require(all(math.isfinite(v) and abs(v) <= 3.402823466e38 for v in values),
+                    'animation sample is nonfinite or exceeds float')
+            channels.append(list(values) if width == 1 else
+                            [list(values[i:i+10]) for i in range(0, len(values), 10)])
+        result.append(channels)
+    reader.end()
+    return result
+
+
+def read_controls_ini(root, ini, native_library=None):
+    """Read editable assembly independently of immutable resource payloads."""
+    root = Path(root).resolve()
+    def file(relative):
+        require(relative and not any(c in relative for c in '\\:\0') and
+                all(p not in ('', '.', '..') for p in relative.split('/')), 'unsafe INI resource path')
+        path = (root / relative).resolve()
+        require(root in path.parents and path.is_file(), 'INI resource is missing: ' + relative)
+        return path
+    def number(value):
+        result = float(value)
+        require(math.isfinite(result), 'INI number is nonfinite')
+        return result
+    def boolean(value):
+        require(str(value).lower() in ('0', '1', 'false', 'true'), 'INI boolean differs')
+        return str(value).lower() in ('1', 'true')
+    defaults, persistent, controls, bindings = {}, set(), {}, []
+    animations, material_tracks, effects, parts = {}, {}, {}, {}
+    program = None
+    for name, value in ini['Constants'].items() if 'Constants' in ini else ():
+        persist = name.startswith('persist ')
+        variable = name[8:] if persist else name
+        require(re.fullmatch(r'\$[A-Za-z_][A-Za-z0-9_]*', variable) and variable not in defaults,
+                'invalid/duplicate INI variable: ' + variable)
+        defaults[variable] = number(value)
+        if persist:
+            persistent.add(variable)
+    if any(s.startswith(('Parameter', 'Action', 'Event', 'Binding', 'UI')) for s in ini.sections()):
+        from .control_program import describe
+        source = (root / 'mod.ini').read_text(encoding='utf-8-sig')
+        program = describe(source, native_library)
+        defaults.update(program['defaults'])
+        speeds = {ini[s]['speed_variable'] for s in ini.sections() if s.startswith('Animation')}
+        for item in program['parameters']:
+            if item['persist']:
+                persistent.add(item['variable'])
+            if item['variable'] not in speeds:
+                controls[item['variable']] = dict(label=item['label'], minimum=item['min'], maximum=item['max'])
+        for binding in program['bindings']:
+            controls[binding['variable']] = dict(label=binding['id'], minimum=-1.7976931348623157e308, maximum=1.7976931348623157e308)
+    for section in ini.sections():
+        row = ini[section]
+        if section.startswith(('Control', 'ShapeControl')):
+            variable = row['variable']; low, high = number(row['min']), number(row['max'])
+            require(variable in defaults and
+                    low <= defaults[variable] <= high, 'INI control/default differs: ' + section)
+            controls[variable] = dict(label=row['label'], minimum=low, maximum=high)
+        elif section.startswith('Key'):
+            _key_chord(row['key'])
+            variables = [key for key in row if key.startswith('$')]
+            require(len(variables) == 1 and variables[0] in defaults,
+                    'INI key requires one declared state assignment: ' + section)
+            variable = variables[0]; values = [number(v.strip()) for v in row[variable].split(',')]
+            kind = row['type']; speed = number(row.get('speed', '1'))
+            require(kind in ('cycle', 'press', 'hold') and speed > 0 and
+                    (len(set(values)) == len(values) >= 2 and defaults[variable] in values
+                     if kind == 'cycle' else len(values) == 1), 'INI key domain differs: ' + section)
+            bindings.append(dict(id=section, variable=variable, type=kind, key=row['key'],
+                                 speed=speed, label=row.get('label', ''), values=values))
+    for section in ini.sections():
+        row = ini[section]
+        if section.startswith('MaterialTrack'):
+            variable = row['variable']; material = row['material']; kind = row['kind']; component = int(row['component'])
+            require(variable in controls and variable not in material_tracks and material in ini and
+                    kind in ('FLOAT', 'COLOR', 'VECTOR') and 0 <= component < (1 if kind == 'FLOAT' else 4),
+                    'INI material track differs: ' + section)
+            material_tracks[variable] = dict(material=material, property=row['property'], kind=kind, component=component)
+    for section in ini.sections():
+        row = ini[section]
+        if section.startswith('Part'):
+            visible_variables = set(re.findall(r'\$[A-Za-z_][A-Za-z0-9_]*', row['visible']))
+            require(visible_variables <= defaults.keys(), 'INI visibility variable is unresolved: ' + section)
+            parts[section] = dict(mesh=row.get('mesh', ''), material=row.get('material', ''),
+                                  slot=int(row.get('material_slot', '0')),
+                                  visible=row['visible'], shapes={})
+            for key, variable in row.items():
+                if key.startswith('shape.'):
+                    require(key[6:] and variable in controls, 'INI shape control is unresolved: ' + section)
+                    parts[section]['shapes'][key[6:]] = variable
+        elif section.startswith('Animation'):
+            source = row['samples']
+            require(source in ini and ini[source].get('type') == 'animation-samples', 'animation sample resource is unresolved')
+            scalar, bone = decode_animation_samples(file(ini[source]['path']).read_bytes())
+            duration, speed = number(row['duration']), number(row['speed'])
+            variable = row['speed_variable']
+            require(duration > 0 and speed > 0 and variable not in controls and variable in persistent and
+                    defaults[variable] == speed, 'INI animation timing/control differs')
+            if row.get('key'):
+                _key_chord(row['key'])
+            tracks = {row['track.' + str(i)]: values for i, values in enumerate(scalar)}
+            require({k for k in row if k.startswith('track.')} ==
+                    {'track.' + str(i) for i in range(len(scalar))}, 'INI animation scalar index is absent')
+            require(len(tracks) == len(scalar) and set(tracks) <= controls.keys(), 'INI animation track binding differs')
+            for name, values in tracks.items():
+                control = controls[name]
+                require(all(control['minimum'] - 1e-6 <= v <= control['maximum'] + 1e-6 for v in values),
+                        'INI animation exceeds channel range')
+            bones = []
+            bone_targets = set()
+            for i, values in enumerate(bone):
+                prefix = 'bone.' + str(i) + '.'
+                skeleton, path = row[prefix + 'skeleton'], row[prefix + 'path']
+                require('Skeleton' + skeleton in ini and _valid_bone_path(path) and
+                        (skeleton, path) not in bone_targets, 'INI bone track Skeleton/path is unresolved or duplicated')
+                bone_targets.add((skeleton, path))
+                require(all(abs(sum(v*v for v in sample[3:7])-1) <= .001 and
+                            all(v > 0 for v in sample[7:]) for sample in values), 'INI bone sample transform differs')
+                bones.append(dict(skeleton=skeleton, path=path, samples=values))
+            require({k for k in row if k.startswith('bone.')} ==
+                    {'bone.' + str(i) + '.' + field for i in range(len(bone)) for field in ('skeleton', 'path')},
+                    'INI animation bone index is absent')
+            counts = {len(v) for v in scalar + bone}
+            require(len(counts) == 1 and bool(scalar or bone), 'animation channels do not share a timeline')
+            sample_count = next(iter(counts))
+            sample_rate = int(row.get('sample_rate', max(1, round((sample_count - 1) / duration))))
+            require(sample_rate > 0, 'INI animation sample rate differs')
+            animations[section[len('Animation'):]] = dict(id=section[len('Animation'):], label=row.get('label', section),
+                duration=duration, speed=speed, speedVariable=variable, loop=boolean(row['loop']),
+                autoplay=boolean(row['autoplay']), key=row.get('key', ''), sampleRate=sample_rate,
+                tracks=tracks, boneTracks=bones)
+        elif section.startswith('EffectAttachment') and not row.get('path'):
+            variable = row['variable']
+            require(variable in controls and controls[variable]['minimum'] == 0 and
+                    controls[variable]['maximum'] == 1 and defaults[variable] in (0, 1), 'INI effect control differs')
+            mode = row['mode']
+            require(mode in ('attach_mesh', 'replace_game_prefab') and
+                    _logical_source_path(row['target.prefab']) and row['target.prefab'].endswith('.prefab'),
+                    'INI effect mode/Prefab differs')
+            if mode == 'attach_mesh':
+                require(_logical_source_path(row['target.path']) and row['target.asset'] and
+                        (not row.get('part') or row['part'] in ini), 'INI effect mesh target differs')
+            else:
+                require(not any(row.get(k) for k in ('part', 'bone', 'target_bones', 'target.path', 'target.asset', 'renderer')),
+                        'INI game effect replacement cannot declare a Mesh mount')
+            bundles = [s.strip() for s in row['bundles'].split(',')]
+            require(len(set(bundles)) == len(bundles) and 0 <= int(row['root']) < len(bundles) and
+                    int(row['particles']) >= 0 and row['root_name'] and _logical_source_path(row['prefab']),
+                    'INI effect native declaration differs')
+            visit = set(); active = set()
+            def walk(resource):
+                require(resource in ini and ini[resource].get('type') == 'effect' and resource not in active,
+                        'INI effect Bundle resource/dependency differs')
+                if resource in visit:
+                    return
+                active.add(resource)
+                for dep in ini[resource].get('dependencies', '').split(','):
+                    if dep:
+                        require(dep.strip() in bundles and dep.strip() != resource, 'INI effect dependency is unresolved')
+                        walk(dep.strip())
+                active.remove(resource); visit.add(resource)
+            for resource in bundles:
+                walk(resource)
+            transform = {}
+            for key, default, size in (('position', '0,0,0', 3), ('rotation', '0,0,0,1', 4), ('scale', '1,1,1', 3)):
+                values = [number(v.strip()) for v in row.get(key, default).split(',')]
+                require(len(values) == size, 'INI effect transform dimension differs')
+                transform[key] = values
+            require(abs(sum(v*v for v in transform['rotation'])-1) < 1e-3, 'INI effect quaternion differs')
+            effects[section[len('EffectAttachment'):]] = dict(row, **transform)
+    if program:
+        for binding in program['bindings']:
+            if binding['target'] == 'material.float':
+                require(binding['material'] in ini and binding['property'], 'INI material binding unresolved')
+                require(not any(t['material'] == binding['material'] and t['property'] == binding['property'] for t in material_tracks.values()), 'duplicate material property driver')
+                material_tracks[binding['variable']] = dict(material=binding['material'], property=binding['property'], kind='FLOAT', component=0)
+            else:
+                require(binding['part'] in parts, 'INI binding Part unresolved')
+                if binding['target'] == 'shape.weight':
+                    require(binding['channel'] and binding['channel'] not in parts[binding['part']]['shapes'], 'duplicate/empty shape binding')
+                    parts[binding['part']]['shapes'][binding['channel']] = binding['variable']
+    speeds = [clip['speedVariable'] for clip in animations.values()]
+    require(len(set(speeds)) == len(speeds), 'INI animation speed variables alias another group')
+    return dict(defaults=defaults, persistent=persistent, controls=controls, bindings=bindings,
+                parts=parts, animations=animations, material_tracks=material_tracks, effects=effects,
+                program_source=program['source'] if program else {},
+                program_parameters=[p['variable'] for p in program['parameters']] if program else [],
+                program_bindings=[b['variable'] for b in program['bindings']] if program else [])
+
+
+def _chord_text(vk, modifiers):
+    names = {8: 'BACKSPACE', 9: 'TAB', 13: 'ENTER', 16: 'SHIFT', 17: 'CTRL',
+             18: 'ALT', 27: 'ESC', 32: 'SPACE', 33: 'PAGEUP', 34: 'PAGEDOWN',
+             35: 'END', 36: 'HOME', 37: 'LEFT', 38: 'UP', 39: 'RIGHT',
+             40: 'DOWN', 45: 'INSERT', 46: 'DELETE', 20: 'CAPSLOCK', 192: 'TILDE',
+             107: 'NUMPADPLUS', 109: 'NUMPADMINUS', 106: 'NUMPADMULTIPLY',
+             111: 'NUMPADDIVIDE', 110: 'NUMPADDECIMAL'}
+    if 48 <= vk <= 57 or 65 <= vk <= 90:
+        key = chr(vk)
+    elif 112 <= vk <= 135:
+        key = 'F' + str(vk - 111)
+    elif 96 <= vk <= 105:
+        key = 'NUMPAD' + str(vk - 96)
+    else:
+        key = names.get(vk, '')
+    require(key, 'INI key chord cannot represent virtual key: ' + str(vk))
+    return '+'.join([name for bit, name in ((2, 'CTRL'), (1, 'ALT'), (4, 'SHIFT'))
+                     if modifiers & bit] + [key])
+
+
+def _write_controls_ini(root, ini, state, effect_resources):
+    ini['Constants'] = {('persist ' if key in state['persistent'] else '') + key: _number(value)
+                        for key, value in sorted(state['defaults'].items())}
+    for index, (variable, (label, low, high)) in enumerate(sorted(state['controls'].items()), 1):
+        ini['Control' + str(index)] = dict(variable=variable, label=label or variable,
+                                               min=_number(low), max=_number(high))
+    for identity, variable, kind, vk, modifiers, speed, label, values in state['bindings']:
+        require(identity.startswith('Key') and identity not in ini,
+                'INI key binding ID collides: ' + identity)
+        ini[identity] = {'key': _chord_text(vk, modifiers), 'type': kind,
+                         variable: ','.join(_number(v) for v in values)}
+        if label:
+            ini[identity]['label'] = label
+        if speed != 1:
+            ini[identity]['speed'] = _number(speed)
+    for variable, track in sorted(state['material_tracks'].items()):
+        ini['MaterialTrack' + str(len([s for s in ini if s.startswith('MaterialTrack')]) + 1)] = {
+            'variable': variable, 'material': track['material'], 'property': track['property'],
+            'kind': track['kind'], 'component': str(track['component'])}
+    paths = named_resource_paths([(identity, clip['label'] or identity)
+                                 for identity, clip in state['animations'].items()],
+                                'animations', '.effanim')
+    for identity, clip in sorted(state['animations'].items()):
+        writer = _ControlWriter()
+        writer.string('EFF_ANIMATION_SAMPLES/1')
+        writer.integer(len(clip['tracks']))
+        values = dict(label=clip['label'] or identity, duration=_number(clip['duration']),
+                      speed_variable=clip['speedVariable'], speed=_number(clip['speed']),
+                      loop=str(int(clip['loop'])), autoplay=str(int(clip['autoplay'])),
+                      sample_rate=str(int(clip.get('sampleRate') or max(
+                          1, round((clip['sampleCount'] - 1) / clip['duration'])))))
+        if clip['key']:
+            values['key'] = clip['key']
+        for index, (variable, samples) in enumerate(sorted(clip['tracks'].items())):
+            values['track.' + str(index)] = variable
+            writer.integer(len(samples))
+            for sample in samples:
+                writer.data.extend(struct.pack('<d', sample))
+        writer.integer(len(clip['boneTracks']))
+        for index, track in enumerate(clip['boneTracks']):
+            values['bone.' + str(index) + '.skeleton'] = track['skeleton']
+            values['bone.' + str(index) + '.path'] = track['path']
+            writer.integer(len(track['samples']))
+            for sample in track['samples']:
+                writer.data.extend(struct.pack('<10d', *sample))
+        relative = paths[identity]
+        sample_id = 'ResourceSamples_' + _identifier(identity)
+        path = Path(root) / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(writer.finish())
+        ini[sample_id] = {'type': 'animation-samples', 'path': relative}
+        values['samples'] = sample_id
+        ini['Animation' + _identifier(identity)] = values
+    for identity, effect in sorted(state['effects'].items()):
+        values = ini['EffectAttachment' + _identifier(identity)]
+        values.update(mode='replace_game_prefab' if not effect['targetPath'] else 'attach_mesh',
+                      label=effect['label'] or identity, variable=effect['variable'],
+                      autoplay=str(int(effect['autoplay'])))
+        for key, value in (('target.prefab', effect['targetPrefab']), ('renderer', effect['rendererPath']),
+                           ('target.path', effect['targetPath']), ('target.asset', effect['targetAsset']),
+                           ('part', effect['part']), ('bone', effect['bone'])):
+            if value:
+                values[key] = value
+        for key in ('position', 'rotation', 'scale'):
+            values[key] = ','.join(_number(v) for v in effect[key])
+        if effect['targetBones']:
+            values['target_bones'] = ','.join(effect['targetBones'])
+        native = effect['native']
+        values.update(prefab=native['prefab'], root_name=native['rootName'],
+                      root=str(native['root']), particles=str(native['particles']),
+                      bundles=','.join(effect_resources[b['file']] for b in native['bundles']))
+        for bundle in native['bundles']:
+            resource_id = effect_resources[bundle['file']]
+            dependencies = ','.join(effect_resources[native['bundles'][i]['file']]
+                                    for i in bundle['dependencies'])
+            require(not ini[resource_id].get('dependencies') or
+                    ini[resource_id]['dependencies'] == dependencies,
+                    'shared Effect bundle dependencies differ')
+            if dependencies:
+                ini[resource_id]['dependencies'] = dependencies
+
+
 def write_format3_directory(root, mod_id, parts, materials, textures, rules,
                             switches, material_clips, effects, physics=(),
                             author_files=None, state_defaults=None,
                             persistent_states=None, key_bindings=None,
                             key_switch_enabled=True, target_bundles=None,
-                            skeletons=(), bone_animations=(), mod_type=""):
+                            preserved_controls=None, preserved_bindings=None,
+                            skeletons=(), bone_animations=(), mod_type="", texture_template=None,
+                            control_program_source=None):
     """Write one final Format 3 author directory from typed Blender records."""
     import hashlib
     import os
     import re
     root = Path(root).resolve()
     require(root.is_dir(), "Format 3 output directory must exist")
+    part_ids = [_part_id(part['partId']) for part in parts]
+    require(len(set(part_ids)) == len(part_ids),
+            'Duplicate Part identity; duplicated imported objects need distinct Part IDs')
     mod_id = _identifier(mod_id)
     author_files = dict(author_files or {})
     target_bundles = dict(target_bundles or {})
     ini = configparser.ConfigParser(interpolation=None, delimiters=("=",), strict=True)
     ini.optionxform = str
-    ini["Mod"] = {"format": "3", "id": mod_id,
+    ini["Mod"] = {"format": "3", "id": mod_id, "controls": "ini",
                    "key_switch_enabled": "1" if key_switch_enabled else "0"}
     require(mod_type in ("", "effect"), "Format 3 Mod type is invalid")
     if mod_type:
         ini["Mod"]["type"] = mod_type
     ini["Constants"] = {}
     texture_ids = {}
+    texture_paths = named_resource_paths(
+        [(texture["id"], texture.get("pixelLabel", texture["id"]))
+         for texture in textures], "textures", ".effres")
     for texture in textures:
         identity = _identifier(texture["id"])
-        path, dds = "textures/" + identity + ".effres", "textures/" + identity + ".dds"
+        path = texture_paths[texture["id"]]
+        dds = path[:-len(".effres")] + ".dds"
         texture_ids[identity] = identity
-        values = {"path": path, "dds": dds}
+        template = dict(path=texture.get("sourcePath", ""), asset=texture.get("sourceAsset", ""))
+        if not template["path"] or not template["asset"]:
+            template = texture_template or template
+        require(template.get("path") and template.get("asset"),
+                "DDS Texture requires a logical source template: " + identity)
+        values = {"dds": dds, "source.path": template["path"],
+                  "source.asset": template["asset"]}
         for key, value, default in (("linear", texture["colorSpace"] == 0, False),
                                     ("filter", texture["filter"], 1), ("wrap", texture["wrap"], 0),
                                     ("aniso", texture["aniso"], 1), ("mip_bias", texture["mipBias"], 0.0)):
-            if value != default: values[key] = str(value).lower() if isinstance(value, bool) else str(value)
+            values[key] = str(value).lower() if isinstance(value, bool) else str(value)
         ini[identity] = values
         relative = (root / dds).resolve()
         require(root in relative.parents, "Format 3 DDS path escapes Mod")
@@ -653,8 +1110,11 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         relative.write_bytes(data)
 
     material_ids = {}
+    material_paths = named_resource_paths(
+        [(material["id"], material.get("label", material.get("sourceAsset", material["id"])))
+         for material in materials.values()], "materials", ".effres")
     for material in materials.values():
-        identity = _identifier(material["id"]); file = "materials/" + identity + ".effres"
+        identity = _identifier(material["id"]); file = material_paths[material["id"]]
         material_ids[identity] = identity
         bindings = {row["property"]: row["texture"] for row in material["textureEdits"]}
         ini[identity] = {"path": file, "source.path": material["sourcePath"],
@@ -663,12 +1123,18 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
             require(texture in texture_ids, "Format 3 Material references missing Texture: " + texture)
             ini[identity]["texture." + prop] = texture
         data = bytes(material["authorData"])
+        text = data.decode("utf-8-sig", "strict")
+        data = ("\n".join(line for line in text.splitlines()
+                           if not line.strip().lower().startswith("texture.")) + "\n").encode("utf-8")
         (root / file).parent.mkdir(parents=True, exist_ok=True)
         (root / file).write_bytes(encode_material_resource(identity, file,
             material["sourcePath"], material["sourceAsset"], data))
 
     ids_by_part = {}
     shape_variables = {}
+    mesh_paths = named_resource_paths(
+        [(part["partId"], part.get("object", part["partId"])) for part in parts],
+        "meshes", ".effres")
     for part in parts:
         section = _part_id(part["partId"])
         ids_by_part[part["partId"]] = section
@@ -684,7 +1150,7 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
     for part in parts:
         section = ids_by_part[part["partId"]]
         mesh_id = _identifier("Mesh_" + section)
-        mesh_file = "meshes/" + section + ".effres"
+        mesh_file = mesh_paths[part["partId"]]
         mesh_values = {"path": mesh_file}
         skeleton_id = part.get("skeleton", "")
         if skeleton_id:
@@ -694,16 +1160,17 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         # Format 3 retains the same small expression grammar in mod.ini.
         def show(node):
             op, number, variable, left, right = node
-            if op == "number": return "true" if number else "false"
+            if op == "number": return _number(number)
             if op == "variable": return variable
             if op == "not": return "!(" + show(left) + ")"
-            if op == "negative": return "-" + show(left)
+            if op == "negative": return "-(" + show(left) + ")"
             operators = {"equal": "==", "not_equal": "!=", "less": "<",
                          "less_equal": "<=", "greater": ">",
-                         "greater_equal": ">=", "or": "||", "and": "&&"}
+                         "greater_equal": ">=", "or": "||", "and": "&&",
+                         "add": "+", "subtract": "-", "multiply": "*", "divide": "/", "modulo": "%"}
             if op in operators:
                 rendered = show(left) + " " + operators[op] + " " + show(right)
-                return "(" + rendered + ")" if op in ("or", "and") else rendered
+                return "(" + rendered + ")"
             raise ValueError("unsupported visibility expression")
         material_id = part.get("material", "")
         values = {"mesh": mesh_id, "visible": show(visible)}
@@ -772,13 +1239,16 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         ini[section] = values
 
     skeleton_ids = set()
+    skeleton_paths = named_resource_paths(
+        [(skeleton["id"], skeleton.get("label", skeleton["id"])) for skeleton in skeletons],
+        "skeletons", ".effres")
     for skeleton in skeletons:
         resource_id = _identifier(skeleton["id"])
         require(resource_id not in skeleton_ids, "duplicate Format 3 Skeleton: " + resource_id)
         section_id = "Skeleton" + resource_id
         require(section_id not in ini, "Format 3 Skeleton section collides: " + section_id)
         skeleton_ids.add(resource_id)
-        relative = "skeletons/" + resource_id + ".effres"
+        relative = skeleton_paths[skeleton["id"]]
         payload = bytes(skeleton["data"])
         (root / relative).parent.mkdir(parents=True, exist_ok=True)
         (root / relative).write_bytes(encode_skeleton_resource(resource_id, relative, payload))
@@ -805,8 +1275,11 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
                 "Format 3 Animation references an undeclared Skeleton: " + skeleton_id)
         animation_ids.add(contribution)
 
+    physics_paths = named_resource_paths(
+        [(resource["id"], resource.get("label", resource["id"])) for resource in physics],
+        "physics", ".effres")
     for resource in physics:
-        resource_id = _identifier(resource["id"]); relative = "physics/" + resource_id + ".effres"
+        resource_id = _identifier(resource["id"]); relative = physics_paths[resource["id"]]
         author = bytes(resource["author"]); native = bytes(resource["native"])
         (root / relative).parent.mkdir(parents=True, exist_ok=True)
         (root / relative).write_bytes(encode_physics_resource(resource_id, relative, native,
@@ -820,12 +1293,34 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         require(target_rules, "Format 3 Physics has no declared Mesh targets: " + resource_id)
         ini[resource_id] = {"type": "physics", "path": relative,
                             "targets": ",".join(sorted(target_rules))}
+        bindings = []
+        for rule in rules:
+            for target in rule["targets"]:
+                identity = target["sourcePath"], target["sourceAsset"]
+                if identity in wanted_targets:
+                    bindings.append((identity, rule_sections[id(rule)], target["level"]))
+        require({row[0] for row in bindings} == wanted_targets,
+                "Physics source target has no Replace rule binding")
+        for index, (identity, rule_id, level) in enumerate(sorted(bindings)):
+            prefix = "bind." + str(index) + "."
+            ini[resource_id].update({prefix + "rule": rule_id,
+                prefix + "lod": str(level), prefix + "source.path": identity[0],
+                prefix + "source.asset": identity[1]})
 
+    effect_bundle_labels = {}
+    for effect in effects:
+        source = effect["native"]
+        label = effect.get("label") or effect.get("id") or source["key"]
+        for index, _bundle in enumerate(source["bundles"]):
+            effect_bundle_labels.setdefault((source["key"], index), []).append(label)
+    effect_bundle_paths = named_resource_paths(
+        [(key + "_" + str(index), sorted(labels, key=str.casefold)[0] + "_" + str(index))
+         for (key, index), labels in effect_bundle_labels.items()], "effects", ".effres")
     effect_resources, effect_authors, effect_rules = {}, {}, {}
     for effect in effects:
         source = effect["native"]
         for index, bundle in enumerate(source["bundles"]):
-            relative = "effects/" + source["key"] + "/" + str(index) + ".effres"
+            relative = effect_bundle_paths[source["key"] + "_" + str(index)]
             file_id = "ResourceEffect_" + hashlib.sha256(relative.encode("utf-8")).digest()[:8].hex().upper()
             if relative not in effect_resources:
                 data = bytes(bundle["data"]); digest = hashlib.sha256(data).hexdigest().upper()
@@ -846,37 +1341,60 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         author_name = _identifier(effect["id"]) + ".effeffect"
         require(author_name in author_files, "Format 3 Effect author snapshot is absent: " + author_name)
 
-    control_file = "controls.effres"
-    control_data, _runtime_parts = _controls_resource(
+    state = _controls_resource(
         mod_id, parts, switches, material_clips, effects,
         state_defaults=state_defaults, persistent_states=persistent_states,
-        key_bindings=key_bindings, bone_animations=bone_animations)
-    (root / control_file).write_bytes(control_data)
+        key_bindings=key_bindings, bone_animations=bone_animations, return_state=True,
+        preserved_controls=preserved_controls, preserved_bindings=preserved_bindings)
     for relative, identity in effect_resources.items():
         values = {"type": "effect", "path": relative}
         targets = sorted(effect_rules.get(relative, ()))
         if targets: values["targets"] = ",".join(targets)
         ini[identity] = values
+    effect_author_paths = named_resource_paths(
+        [(effect["id"], effect.get("label") or effect["id"]) for effect in effects],
+        "effects/author", ".effres")
     for effect in effects:
         payload = bytes(author_files[_identifier(effect["id"]) + ".effeffect"])
-        digest = hashlib.sha256(payload).hexdigest().upper()
-        identity = "ResourceEffectAuthor_" + digest[:16]
-        relative = "effects/author/" + digest + ".effres"
+        relative = effect_author_paths[effect["id"]]
+        identity = "ResourceEffectAuthor_" + hashlib.sha256(relative.encode("utf-8")).hexdigest()[:16].upper()
         if identity not in effect_authors:
             (root / relative).parent.mkdir(parents=True, exist_ok=True)
             (root / relative).write_bytes(encode_effect_author_resource(identity, relative, payload))
             effect_authors[identity] = relative
             ini[identity] = {"type": "effect-author", "path": relative}
-        ini["EffectAttachment" + _identifier(effect["id"])] = {
-            "path": control_file, "author": identity}
-    for index, clip in enumerate(material_clips):
-        ini["MaterialAnimation" + _identifier(clip["id"])] = {"path": control_file}
-    for identity, animation in _controls_animation_ids(parts, material_clips,
-                                                        bone_animations).items():
-        if identity not in {clip["id"] for clip in material_clips}:
-            ini["ShapeAnimation" + _identifier(identity)] = {"path": control_file}
-    ini["ResourceControls"] = {"type": "controls", "path": control_file}
+        ini["EffectAttachment" + _identifier(effect["id"])] = {"author": identity}
+    text = ''
+    if control_program_source:
+        text = ''.join(v if v.endswith('\n') else v + '\n' for v in control_program_source.values()) if isinstance(control_program_source, dict) else str(control_program_source)
+        extra = configparser.ConfigParser(interpolation=None, delimiters=('=',), strict=True)
+        extra.optionxform = str
+        extra.read_string(text)
+        require(all(s.startswith(('Parameter', 'Action', 'Event', 'Binding', 'UI')) for s in extra.sections()),
+                'Control program text may only declare Parameter/Action/Event/Binding/UI sections')
+        require(not set(extra.sections()) & set(ini.sections()), 'Control program section ID collision')
+        text = _widget_control_program_source(text, extra, state)
+        owned = {extra[s]['variable'] for s in extra.sections() if s.startswith('Parameter')}
+        generated = {'$binding_' + s for s in extra.sections() if s.startswith('Binding')}
+        for variable in generated:
+            state['defaults'].pop(variable, None)
+            state['controls'].pop(variable, None)
+            state['persistent'].discard(variable)
+        # These channels are recreated by the shared compiler, never serialized
+        # as a second source of author declarations.
+    _write_controls_ini(root, ini, state, effect_resources)
+    if text:
+        for key in list(ini['Constants']):
+            if (key[8:] if key.startswith('persist ') else key) in owned:
+                del ini['Constants'][key]
+        for section in list(ini.sections()):
+            if section.startswith(('Control', 'ShapeControl')) and ini[section].get('variable') in owned:
+                del ini[section]
     _write_ini(root, ini)
+    if text:
+        with (root / 'mod.ini').open('a', encoding='utf-8', newline='\n') as stream:
+            stream.write('\n' + text.rstrip('\r\n') + '\n')
+        ini.read_string(text)
     return dict(format=3, modId=mod_id, _ini=ini)
 
 
@@ -929,6 +1447,62 @@ def resolve_target_bundles(sources, rules):
     return result
 
 
+def _texture_template_identity_is_valid(source, resource):
+    """Check that a Texture2D manifest row points at a real bundle texture.
+
+    Some extracted source packages expose a prefab logical path for the first
+    texture binding.  Its native PathID is a Texture2D, but the AssetBundle
+    container entry points at the prefab object instead.  The native typed
+    writer rejects that template, so do the same check while choosing the
+    shared texture scaffold.
+
+    Lightweight test doubles do not expose serialized files; retain their
+    previous behavior and let the writer validate the real source later.
+    """
+    if not hasattr(source, "file"):
+        return True
+    try:
+        native = resource.get("native", {})
+        if int(native.get("classId", 0)) != 28:
+            return False
+        expected_path = str(resource.get("logicalPath", "")).replace("\\", "/").casefold()
+        expected_asset = str(resource.get("name", ""))
+        expected_id = int(native["pathId"])
+        serialized = source.file(resource)
+        target = serialized.objects.get(expected_id)
+        if target is None or int(target.get("classId", 0)) != 28:
+            return False
+        target_tree = serialized.tree(expected_id)
+        actual_asset = str(target_tree.data["m_Name"].data)
+        if actual_asset != expected_asset:
+            return False
+        for path_id, row in serialized.objects.items():
+            if int(row.get("classId", 0)) != 142:
+                continue
+            bundle = serialized.tree(path_id)
+            container = bundle.data["m_Container"].data["Array"].data
+            for pair in container:
+                fields = pair.data
+                path = str(fields["first"].data).replace("\\", "/").casefold()
+                pointer = fields["second"].data["asset"].data
+                if (int(pointer["m_FileID"].data) == 0 and
+                        int(pointer["m_PathID"].data) == expected_id and
+                        path == expected_path):
+                    return True
+        return False
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def _texture_template_candidates(source):
+    """Return all indexed Texture2D rows without scanning unrelated resources."""
+    indexed = getattr(source, "_resources_by_type", None)
+    if isinstance(indexed, dict):
+        return tuple(indexed.get("Texture2D", ()))
+    first = source.first_of_type("Texture2D")
+    return (first,) if first is not None else ()
+
+
 def resolve_templates(sources, rules, *, include_texture=False, additional=()):
     """Resolve templates for the explicitly selected Format 3 Mesh targets."""
     packages = {Path(source.package).resolve(): source for source in sources}
@@ -952,11 +1526,13 @@ def resolve_templates(sources, rules, *, include_texture=False, additional=()):
             if matches:
                 wanted_rows[identity] = matches[0]
         if include_texture and texture_template is None:
-            resource = source.first_of_type("Texture2D")
-            if resource is not None:
+            for resource in _texture_template_candidates(source):
+                if not _texture_template_identity_is_valid(source, resource):
+                    continue
                 texture_template, _ = _template(
                     source, "Texture2D", resource["logicalPath"], resource["name"],
                     resource, verified_snapshots)
+                break
         for identity, resource in wanted_rows.items():
             kind, path, asset = identity
             if resource is None:
@@ -1192,13 +1768,20 @@ def _validate_material_resource(root, relative, section, ini, payload_bytes):
             "format-3 Material edit checksum differs: " + section)
     values = _effmat_values(author_data, section)
     require(values["source"] == source_path, "format-3 Material author source differs: " + section)
-    snapshot_textures = {key: value for key, value in values.items() if key.startswith("texture.")}
     manifest_textures = {key: value for key, value in ini[section].items() if key.startswith("texture.")}
-    require(snapshot_textures == manifest_textures,
-            "format-3 Material author texture bindings differ from mod.ini: " + section)
     declared_textures = {name for name in ini.sections() if name.startswith("Texture")}
-    require(all(value in declared_textures for value in snapshot_textures.values()),
+    require(all(value in declared_textures for value in manifest_textures.values()),
             "format-3 Material author references an undeclared Texture: " + section)
+    inline_controls = ini.get("Mod", "controls", fallback=(
+        "resource" if "ResourceControls" in ini else "ini")) == "ini"
+    snapshot_textures = {key: value for key, value in values.items()
+                         if key.startswith("texture.")}
+    if inline_controls:
+        require(not snapshot_textures,
+                "INI-owned Material Texture bindings are duplicated in author snapshot: " + section)
+    else:
+        require(snapshot_textures == manifest_textures,
+                "author Material texture bindings differ from mod.ini: " + section)
 
 
 def _validate_physics_resource(root, relative, section, ini, payload_bytes):
@@ -1262,8 +1845,26 @@ def _validate_physics_resource(root, relative, section, ini, payload_bytes):
             require(path_key in values and asset_key in values,
                     "format-3 Physics rule has an incomplete LOD target: " + rule)
             declared_targets.add((values[path_key], values[asset_key]))
-    require(targets == declared_targets,
-            "format-3 Physics Mesh targets differ from mod.ini: " + section)
+    bindings = {key[:key.index('.', 5) + 1] for key in ini[section]
+                if re.fullmatch(r"bind\.[^.]+\.(rule|lod|source\.path|source\.asset)", key)}
+    if bindings:
+        sources = set()
+        for prefix in bindings:
+            require(all(prefix + key in ini[section]
+                        for key in ("rule", "lod", "source.path", "source.asset")),
+                    "format-3 Physics source binding is incomplete: " + section)
+            binding = ini[section]
+            source = binding[prefix + 'source.path'], binding[prefix + 'source.asset']
+            require(source in targets and source not in sources and
+                    binding[prefix + 'rule'] in rule_ids and
+                    binding[prefix + 'rule'] in ini and
+                    binding[prefix + 'lod'].isdigit(),
+                    "format-3 Physics source binding differs: " + section)
+            sources.add(source)
+        require(sources == targets, "format-3 Physics source binding coverage differs: " + section)
+    else:
+        require(targets == declared_targets or len(rule_ids) == 1,
+                "format-3 Physics Mesh targets require explicit source bindings after multi-rule retarget: " + section)
 
 
 def _parse_dds(path):
@@ -1275,9 +1876,10 @@ def _parse_dds(path):
             struct.unpack_from("<I", header, 76)[0] == 32,
             "DDS header is invalid: " + str(path))
     flags = struct.unpack_from("<I", header, 8)[0]
-    require(flags & 0x1007 == 0x1007 and
+    # Photoshop writes depth=1 for ordinary 2D DDS without DDSD_DEPTH.
+    require(flags & 0x1007 == 0x1007 and not flags & 0x800000 and
             struct.unpack_from("<I", header, 112)[0] == 0 and
-            struct.unpack_from("<I", header, 24)[0] == 0,
+            struct.unpack_from("<I", header, 24)[0] <= 1,
             "DDS must be one ordinary 2D texture: " + str(path))
     height, width = struct.unpack_from("<II", header, 12)
     mips = struct.unpack_from("<I", header, 28)[0] or 1
@@ -1344,12 +1946,14 @@ def read_format3_directory(root):
     resources = {}
     dds_rows = {}
     for section in ini.sections():
-        if section in ("Mod", "Constants") or section.startswith(("Part", "Replace", "Key", "ShapeControl")):
+        if section in ("Mod", "Constants") or section.startswith(("Part", "Replace", "Key", "Control", "ShapeControl", "Animation", "MaterialTrack", "Parameter", "Action", "Event", "Binding", "UI")):
             continue
         expected_kind = None
         if section.startswith("Mesh"):
             expected_kind = 1
         elif section.startswith(("ShapeAnimation", "MaterialAnimation", "EffectAttachment")):
+            if section.startswith("EffectAttachment") and not ini[section].get("path"):
+                continue
             expected_kind = 6
         elif section.startswith("Skeleton"):
             expected_kind = 8
@@ -1360,10 +1964,21 @@ def read_format3_directory(root):
         elif section.startswith("Resource"):
             resource_type = ini[section].get("type", "")
             expected_kind = {"physics": 4, "effect": 5, "controls": 6,
-                             "effect-author": 7, "skeleton": 8}.get(resource_type)
+                             "effect-author": 7, "skeleton": 8, "animation-samples": 9}.get(resource_type)
             require(expected_kind is not None, "format-3 Resource type is invalid: " + section)
         require(expected_kind is not None, "unknown format-3 resource section: " + section)
         path = ini[section].get("path")
+        if expected_kind == 3 and not path:
+            values = ini[section]
+            require(_logical_source_path(values.get("source.path", "")) and values.get("source.asset"),
+                    "DDS Texture requires a logical source template: " + section)
+            dds = values.get("dds", "")
+            candidate = (root / dds).resolve()
+            require(dds and root in candidate.parents and candidate.is_file(),
+                    "format-3 DDS is missing or escapes Mod: " + dds)
+            referenced.add(candidate.relative_to(root).as_posix())
+            _parse_dds(candidate)
+            continue
         require(path, "format-3 resource path is absent: " + section)
         candidate = (root / path).resolve()
         require(root in candidate.parents and candidate.is_file(), "format-3 resource is missing or escapes Mod: " + path)
@@ -1381,6 +1996,9 @@ def read_format3_directory(root):
     resource_metadata = {}
     texture_semantics = {}
     for relative, kind in resources.items():
+        if kind == 9:
+            decode_animation_samples((root / relative).read_bytes())
+            continue
         metadata, payload_bytes = _validate_effres(root / relative, kind)
         resource_metadata[relative] = (metadata, payload_bytes)
     for section in ini.sections():
@@ -1393,7 +2011,7 @@ def read_format3_directory(root):
         if not section.startswith("Texture"):
             continue
         values = ini[section]
-        relative = values["path"]
+        relative = values.get("path", section)
         linear = values.get("linear", "false").lower()
         require(linear in ("true", "false", "1", "0"),
                 "format-3 Texture linear setting is invalid: " + section)
@@ -1415,7 +2033,7 @@ def read_format3_directory(root):
         _parse_dds(root / dds_relative)
     skeleton_paths = {}
     for section in ini.sections():
-        if section.startswith("Material"):
+        if section.startswith("Material") and not section.startswith(("MaterialTrack", "MaterialAnimation")):
             _validate_material_resource(root, ini[section]["path"], section, ini,
                                         resource_metadata[ini[section]["path"]][1])
         elif section.startswith("Resource") and ini[section].get("type") == "physics":
@@ -1436,6 +2054,11 @@ def read_format3_directory(root):
             require(author_id in ini and ini[author_id].get("type") == "effect-author",
                     "format-3 EffectAttachment author resource is unresolved: " + section)
 
+    control_mode = ini.get('Mod', 'controls', fallback='resource' if 'ResourceControls' in ini else 'ini')
+    require(control_mode in ('ini', 'resource') and (control_mode == 'ini' or 'ResourceControls' in ini),
+            'format-3 controls mode or ResourceControls is invalid')
+    if control_mode == 'ini':
+        read_controls_ini(root, ini)
     files = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
     if mod_type == "effect":
         effect_sections = [section for section in ini.sections()

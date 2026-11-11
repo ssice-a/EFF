@@ -6,7 +6,8 @@
 // TypeTree, consumer list, source file range, old CAB ID or compiler here.
 namespace EiemRuntimeAuthorDirectory {
 using namespace EiemDirectory;
-inline constexpr const char* structure="EFF_AUTHOR_ASSETS/native-mesh+editable-mesh-author-data+optional-material+source-material-slot+skeleton+material-edits+logical-material-source+standard-dds+replace-rules+binding-bounds+field-selection+auxiliary+controls+mixed-sampled-animation+lazy-effects/utf8+le64+sha256/7";
+inline constexpr const char* structure="EFF_AUTHOR_ASSETS/native-mesh+editable-mesh-author-data+optional-material+source-material-slot+skeleton+material-edits+logical-material-source+standard-dds+texture-source+replace-rules+binding-bounds+field-selection+auxiliary+controls+mixed-sampled-animation+lazy-effects/utf8+le64+sha256/8";
+inline constexpr const char* legacyStructure="EFF_AUTHOR_ASSETS/native-mesh+editable-mesh-author-data+optional-material+source-material-slot+skeleton+material-edits+logical-material-source+standard-dds+replace-rules+binding-bounds+field-selection+auxiliary+controls+mixed-sampled-animation+lazy-effects/utf8+le64+sha256/7";
 struct MeshAsset {
  std::string part,file,path,marker,hash,material;
  std::string skeleton;
@@ -18,7 +19,7 @@ struct MeshAsset {
  EiemMeshBindingMetadata::Mesh binding;
  std::vector<std::string> fields;
 };
-struct TextureAsset {std::string id,file,ddsFile;};
+struct TextureAsset {std::string id,file,ddsFile;Identity source;};
 struct SkeletonAsset {std::string id,file;};
 struct NativeDependency {std::string cab;int64_t pathId=0;Identity logical;unsigned classId=0;
  bool operator<(const NativeDependency& other)const{return std::tie(cab,pathId)<std::tie(other.cab,other.pathId);}
@@ -50,7 +51,7 @@ struct Reader {
  std::vector<std::string> Strings(){std::vector<std::string> v;auto count=Count();v.reserve(count);for(size_t i=0;i<count;++i)v.push_back(S());return v;}
  std::shared_ptr<EiemExpression> Expr(){
   std::shared_ptr<EiemExpression> root;std::vector<std::shared_ptr<EiemExpression>*> pending{&root};std::vector<EiemExpression*> nodes;
-  while(!pending.empty()){auto slot=pending.back();pending.pop_back();if(!B())continue;auto node=EiemExpression::Make();auto op=U();Require(op<=EiemExpression::Or,"author expression opcode differs");node->op=EiemExpression::Op(op);node->number=D();node->variable=S();*slot=node;nodes.push_back(node.get());pending.push_back(&node->right);pending.push_back(&node->left);}
+  while(!pending.empty()){auto slot=pending.back();pending.pop_back();if(!B())continue;auto node=EiemExpression::Make();auto op=U();Require(op<=EiemExpression::Modulo,"author expression opcode differs");node->op=EiemExpression::Op(op);node->number=D();node->variable=S();*slot=node;nodes.push_back(node.get());pending.push_back(&node->right);pending.push_back(&node->left);}
   for(auto node:nodes){auto op=node->op;bool leaf=op==EiemExpression::Number||op==EiemExpression::Variable,unary=op==EiemExpression::Not||op==EiemExpression::Negative;Require(leaf?(!node->left&&!node->right):(unary?(bool(node->left)&&!node->right):(bool(node->left)&&bool(node->right))),"author expression arity differs");}return root;
  }
 };
@@ -74,12 +75,17 @@ inline void Validate(const Directory& d){
   std::set<std::string> fields;for(const auto& field:m.fields)Require(!field.empty()&&fields.insert(field).second,"author Mesh field selection empty/duplicated");
   Require(fields.count("m_Name")&&fields.count("m_VertexData")&&fields.count("m_IndexBuffer"),"author Mesh required field selection absent");}
  std::set<std::string> textures,texturePaths;std::map<std::string,std::string> textureFiles,ddsFiles;
- for(const auto& t:d.textures){Relative(t.file);Relative(t.ddsFile);auto prior=textureFiles.emplace(t.file,t.ddsFile),ddsPrior=ddsFiles.emplace(t.ddsFile,t.file);
-  Require(t.file!=t.ddsFile&&!t.id.empty()&&textures.insert(t.id).second&&
-   (prior.second||prior.first->second==t.ddsFile)&&
+ for(const auto& t:d.textures){if(!t.file.empty())Relative(t.file);Relative(t.ddsFile);
+  bool newTextureFile=false;
+  if(!t.file.empty()){auto prior=textureFiles.emplace(t.file,t.ddsFile);newTextureFile=prior.second;
+   Require(prior.second||prior.first->second==t.ddsFile,"author Texture scaffold path has conflicting DDS");}
+  auto ddsPrior=ddsFiles.emplace(t.ddsFile,t.file);
+  Require(!t.id.empty()&&((t.source.path.empty()&&t.source.asset.empty())||
+   (!t.source.path.empty()&&!t.source.asset.empty()))&&textures.insert(t.id).second&&
+   (t.file.empty()||t.file!=t.ddsFile)&&
    (ddsPrior.second||ddsPrior.first->second==t.file),
    "author Texture ID/file paths are absent or ambiguous");
-  if(prior.second)Require(!files.count(t.file)&&texturePaths.insert(t.file).second,
+  if(newTextureFile)Require(!files.count(t.file)&&texturePaths.insert(t.file).second,
                           "author Texture scaffold path overlaps another resource");
   if(ddsPrior.second)Require(!files.count(t.ddsFile)&&texturePaths.insert(t.ddsFile).second,
                              "author DDS path overlaps another resource");
@@ -119,7 +125,7 @@ inline Bytes Encode(const Directory& d){
  for(const auto& m:d.meshes){w.S(m.part);w.S(m.file);w.S(m.path);w.S(m.marker);w.S(m.hash);w.S(m.material);w.N(m.materialSlot);w.S(m.skeleton);w.N(m.vertices);w.N(m.indices);w.Strings(m.bones);w.Strings(m.shapes);
   w.N(m.binding.hashes.size());for(auto hash:m.binding.hashes)w.N(hash);
   w.N(m.binding.boneBounds.size());for(const auto& bounds:m.binding.boneBounds){for(auto x:bounds.first)w.D(x);for(auto x:bounds.second)w.D(x);}w.Strings(m.fields);w.N(m.nativeBytes);w.N(m.authorBytes);w.S(m.authorHash);}
- w.N(d.textures.size());for(const auto& t:d.textures){w.S(t.id);w.S(t.file);w.S(t.ddsFile);}
+ w.N(d.textures.size());for(const auto& t:d.textures){w.S(t.id);w.S(t.file);w.S(t.ddsFile);w.S(t.source.path);w.S(t.source.asset);}
  w.N(d.skeletons.size());for(const auto& s:d.skeletons){w.S(s.id);w.S(s.file);}
  w.N(d.materials.size());for(const auto& m:d.materials){w.S(m.id);w.S(m.file);w.S(m.source.path);w.S(m.source.asset);w.N(m.authorBytes);w.S(m.hash);w.N(m.textures.size());for(const auto& binding:m.textures){w.S(binding.first);w.S(binding.second);}}
  w.N(d.rules.size());for(const auto& rule:d.rules){w.S(rule.id);w.N(rule.skip);w.N(rule.targets.size());for(const auto& target:rule.targets){w.N(target.first);w.S(target.second.path);w.S(target.second.asset);}w.Strings(rule.parts);}
@@ -130,14 +136,14 @@ inline Bytes Encode(const Directory& d){
 inline Directory Decode(const Bytes& bytes){
  Require(bytes.size()>=32,"author asset directory truncated");auto hash=Sha(bytes.data(),bytes.size()-32);
  Require(std::equal(hash.begin(),hash.end(),bytes.end()-32),"author asset directory checksum differs");Bytes payload(bytes.begin(),bytes.end()-32);Reader r{payload};
- auto version=r.S();const bool hasSkeletons=version==structure;const bool hasMaterialSlot=hasSkeletons||version=="EFF_AUTHOR_ASSETS/native-mesh+editable-mesh-author-data+optional-material+source-material-slot+material-edits+logical-material-source+standard-dds+replace-rules+binding-bounds+field-selection+auxiliary+controls+sampled-animation+lazy-effects/utf8+le64+sha256/6";
+ auto version=r.S();const bool hasSkeletons=version==structure||version==legacyStructure;const bool hasTextureSource=version==structure;const bool hasMaterialSlot=hasSkeletons||version=="EFF_AUTHOR_ASSETS/native-mesh+editable-mesh-author-data+optional-material+source-material-slot+material-edits+logical-material-source+standard-dds+replace-rules+binding-bounds+field-selection+auxiliary+controls+sampled-animation+lazy-effects/utf8+le64+sha256/6";
  const bool hasBoneTracks=hasSkeletons;
- Require(hasMaterialSlot||version=="EFF_AUTHOR_ASSETS/native-mesh+editable-mesh-author-data+material-edits+logical-material-source+standard-dds+replace-rules+binding-bounds+field-selection+auxiliary+controls+sampled-animation+lazy-effects/utf8+le64+sha256/5","author asset directory structure differs");
+ Require(hasMaterialSlot||version==legacyStructure||version=="EFF_AUTHOR_ASSETS/native-mesh+editable-mesh-author-data+material-edits+logical-material-source+standard-dds+replace-rules+binding-bounds+field-selection+auxiliary+controls+sampled-animation+lazy-effects/utf8+le64+sha256/5","author asset directory structure differs");
  Directory d;d.mod=r.S();auto n=r.Count();d.meshes.reserve(n);
  for(size_t i=0;i<n;++i){MeshAsset m;m.part=r.S();m.file=r.S();m.path=r.S();m.marker=r.S();m.hash=r.S();m.material=r.S();if(hasMaterialSlot)m.materialSlot=r.U();if(hasSkeletons)m.skeleton=r.S();m.vertices=r.U();m.indices=r.U();m.bones=r.Strings();m.shapes=r.Strings();
   auto count=r.Count();for(size_t j=0;j<count;++j)m.binding.hashes.push_back(r.U());
   count=r.Count();for(size_t j=0;j<count;++j){EiemMeshBindingMetadata::Bounds bounds;for(auto& x:bounds.first)x=r.D();for(auto& x:bounds.second)x=r.D();m.binding.boneBounds.push_back(bounds);}m.fields=r.Strings();auto native=r.N(),author=r.N();Require(native<=SIZE_MAX&&author<=SIZE_MAX,"author Mesh payload extent overflow");m.nativeBytes=size_t(native);m.authorBytes=size_t(author);m.authorHash=r.S();d.meshes.push_back(std::move(m));}
- n=r.Count();d.textures.reserve(n);for(size_t i=0;i<n;++i){TextureAsset t;t.id=r.S();t.file=r.S();t.ddsFile=r.S();d.textures.push_back(std::move(t));}
+ n=r.Count();d.textures.reserve(n);for(size_t i=0;i<n;++i){TextureAsset t;t.id=r.S();t.file=r.S();t.ddsFile=r.S();if(hasTextureSource)t.source={r.S(),r.S()};d.textures.push_back(std::move(t));}
  if(hasSkeletons){n=r.Count();d.skeletons.reserve(n);for(size_t i=0;i<n;++i){SkeletonAsset s;s.id=r.S();s.file=r.S();d.skeletons.push_back(std::move(s));}}
  n=r.Count();d.materials.reserve(n);for(size_t i=0;i<n;++i){MaterialEntry m;m.id=r.S();m.file=r.S();m.source={r.S(),r.S()};auto author=r.N();Require(author<=SIZE_MAX,"author Material extent overflow");m.authorBytes=size_t(author);m.hash=r.S();auto count=r.Count();for(size_t j=0;j<count;++j){auto slot=r.S(),texture=r.S();Require(m.textures.emplace(std::move(slot),std::move(texture)).second,"duplicate author Material texture slot");}d.materials.push_back(std::move(m));}
  n=r.Count();d.rules.reserve(n);for(size_t i=0;i<n;++i){ReplaceRule rule;rule.id=r.S();rule.skip=r.B();auto count=r.Count();for(size_t j=0;j<count;++j){auto level=r.U();Identity identity{r.S(),r.S()};Require(rule.targets.emplace(level,std::move(identity)).second,"duplicate author LOD target");}rule.parts=r.Strings();d.rules.push_back(std::move(rule));}

@@ -33,6 +33,13 @@ int main() {
                 !texturePathDelta.targetDeclarationsChanged &&
                 texturePathDelta.targets.empty(),
             "an INI-only DDS path change did not mark its Mod resource generation modified");
+    auto controlBase=old;controlBase["chen"].resourceDeclarations="MeshBody=meshes/body.effres";
+    auto controlEdit=controlBase;controlEdit["chen"].files["mod.ini"]="new-ui";
+    Require(Compare(controlBase,controlEdit).controlOnlyPackages.count("chen"),"UI/logic edit rebuilds resource owners");
+    auto resourceEdit=controlEdit;resourceEdit["chen"].resourceDeclarations+=";dds=other.dds";
+    Require(Compare(controlBase,resourceEdit).controlOnlyPackages.empty(),"resource reference edit classified as control-only");
+    resourceEdit=controlEdit;resourceEdit["chen"].files["meshes/body.effmesh"]="edited-payload";
+    Require(Compare(controlBase,resourceEdit).controlOnlyPackages.empty(),"payload edit classified as control-only");
 
     auto added = old;
     added["lino"].root = "mods/lino";

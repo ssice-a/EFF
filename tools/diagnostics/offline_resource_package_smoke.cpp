@@ -163,7 +163,8 @@ int main(int argc,char** argv){try{
  auto originalPart=EiemComposedPackage::Name(copyIds[0],"body"),copyPart=EiemComposedPackage::Name(copyIds[1],"body");
  Require(copyIds[0]!=copyIds[1]&&copiedSet.targetIndex.count(authors[0].rules.at("body").targets.at(0))&&
    copiedSet.targetIndex.count(copyTarget)&&copiedSet.parts.count(originalPart)&&copiedSet.parts.count(copyPart)&&
-   copiedSet.defaults.count("$"+copyIds[0]+"_switch")&&copiedSet.defaults.count("$"+copyIds[1]+"_switch")&&
+   copiedSet.defaults.count("$"+EiemComposedPackage::Prefix(copyIds[0])+"switch")&&
+   copiedSet.defaults.count("$"+EiemComposedPackage::Prefix(copyIds[1])+"switch")&&
    copiedSet.partOwners.at(originalPart).first!=copiedSet.partOwners.at(copyPart).first,
    "same-ID Mod copies targeting different logical Meshes were rejected or shared state namespaces");
  std::reverse(copies.begin(),copies.end());auto reorderedCopies=EiemComposedPackage::Compose(copies,true);

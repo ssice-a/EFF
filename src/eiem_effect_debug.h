@@ -78,26 +78,41 @@ void PublishReplacements(const std::vector<const Package*>& packages){
 void* LoadReplacement(const ReplacementDefinition& definition){
  Require(RuntimeShapes::Main()&&NativeBundle::enabled&&enabled,"game Prefab replacement requires Unity main thread/native loader");
  const auto& manifest=definition.manifest;Require(manifest&&manifest->root<manifest->bundles.size()&&!manifest->bundles.empty(),"replacement native manifest incomplete");
- LoadedReplacement loaded;loaded.manifest=manifest;auto clock=NativeBundle::Clock();
- try{
+ // A managed reference does not keep the native prefab alive. The game may
+ // retire it while its Bundle containers remain loaded. Keep ownership in the
+ // path cache so recovery never submits the same live container a second time.
+ auto path=FullResourceReload::NormalizeAssetPath(definition.target);
+ auto& loaded=loadedReplacements[path];
+ Require(!loaded.manifest||loaded.manifest->key==manifest->key,"replacement generation changed without retirement");
+ if(!loaded.manifest){loaded.manifest=manifest;loaded.bundles.resize(manifest->bundles.size());}
+ Require(loaded.bundles.size()==manifest->bundles.size(),"replacement cached Bundle count differs");
+ loaded.prefab={}; // Only a newly validated asset may enter the fast-path cache.
+ auto clock=NativeBundle::Clock();size_t reused=0,submitted=0;
+ {
   std::set<int> prior;
   void* bundleArgs[]={api.bundleType.Get()};auto all=Ref::Make(Call(api.allBundles,nullptr,bundleArgs),false);
   for(auto object:FullResourceReload::ReferenceArray(all.Get()))if(RuntimeShapes::Alive(object))prior.insert(FullResourceReload::Id(object));
   std::set<int> created;
-  for(size_t i=0;i<manifest->bundles.size();++i){const auto& source=manifest->bundles[i];Ref bundle;
+  for(size_t i=0;i<manifest->bundles.size();++i){
+   if(RuntimeShapes::Alive(loaded.bundles[i].Get())){++reused;continue;}
+   const auto& source=manifest->bundles[i];Ref bundle;
    if(source.open){auto view=source.open();Require(view&&view->Size()==source.Size(),"replacement effect native view extent differs");bundle=Ref::Make(NativeBundle::LoadView(view,0,false),false);}
    else{Require(source.Data()&&source.Size()&&source.Owner(),"replacement effect native bytes absent");bundle=Ref::Make(NativeBundle::LoadBytes(source.Data(),source.Size(),source.Owner(),0,false),false);}
-   Require(RuntimeShapes::Alive(bundle.Get()),"replacement effect Bundle load returned null");auto id=FullResourceReload::Id(bundle.Get());
-   Require(!prior.count(id)&&created.insert(id).second,"replacement effect Bundle aliases a live container");loaded.bundles.push_back(std::move(bundle));
+   Require(RuntimeShapes::Alive(bundle.Get()),"replacement effect Bundle load returned null: bundle="+std::to_string(i));auto id=FullResourceReload::Id(bundle.Get());
+   Require(!prior.count(id)&&created.insert(id).second,"replacement effect Bundle aliases a live container");loaded.bundles[i]=std::move(bundle);++submitted;
   }
   auto label=Ref::Make(il2cpp_string_new(manifest->prefab.c_str()),false);void* assetArgs[]={label.Get(),FullResourceReload::prefabType.Get()};
-  loaded.prefab=Ref::Make(Call(FullResourceReload::api.assetSync,loaded.bundles.at(manifest->root).Get(),assetArgs),false);
-  Require(RuntimeShapes::Alive(loaded.prefab.Get())&&FullResourceReload::Inherits(loaded.prefab.Get(),"UnityEngine","GameObject"),"replacement effect Prefab asset missing");
-  Require(String(Call(RuntimeShapes::api.name,loaded.prefab.Get()))==manifest->rootName,"replacement effect Prefab root identity differs");
-  Require(Particles(loaded.prefab.Get()).size()==manifest->particles,"replacement effect ParticleSystem hierarchy differs");
-  auto prefab=loaded.prefab.Get();loadedReplacements[FullResourceReload::NormalizeAssetPath(definition.target)]=std::move(loaded);
+  auto candidatePrefab=Ref::Make(Call(FullResourceReload::api.assetSync,loaded.bundles.at(manifest->root).Get(),assetArgs),false);
+  Require(RuntimeShapes::Alive(candidatePrefab.Get())&&FullResourceReload::Inherits(candidatePrefab.Get(),"UnityEngine","GameObject"),"replacement effect Prefab asset missing");
+  Require(String(Call(RuntimeShapes::api.name,candidatePrefab.Get()))==manifest->rootName,"replacement effect Prefab root identity differs");
+  Require(Particles(candidatePrefab.Get()).size()==manifest->particles,"replacement effect ParticleSystem hierarchy differs");
+  loaded.prefab=std::move(candidatePrefab);auto prefab=loaded.prefab.Get();
+  Log("[EFFECT-PREFAB-CACHE-RECOVER] path=%s reusedBundles=%zu submittedBundles=%zu",definition.target.c_str(),reused,submitted);
   Log("[EFFECT-PREFAB-READY] package=%s effect=%s path=%s matching=logical-path-only bundles=%zu loadMs=%.3f firstHitSync=1",definition.package.c_str(),definition.effect.c_str(),definition.target.c_str(),manifest->bundles.size(),NativeBundle::Ms(clock));return prefab;
- }catch(...){ReleaseReplacement(loaded);throw;}
+ }
+ // On failure retain every acquired container for the next request. Only
+ // publication retirement owns unloading; local cleanup could lose surviving
+ // containers after an exception and recreate the same collision on retry.
 }
 void* RouteReplacement(const std::string& logicalPath,void* source) noexcept{
  if(!enabled||!RuntimeShapes::Main()||!RuntimeShapes::Alive(source)||!FullResourceReload::Inherits(source,"UnityEngine","GameObject"))return source;

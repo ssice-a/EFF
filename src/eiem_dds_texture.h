@@ -14,7 +14,8 @@ inline size_t MipBytes(unsigned width,unsigned height,unsigned mips,unsigned for
 }
 inline Layout Parse(const Bytes& header,size_t fileBytes){
  Require(header.size()>=128&&fileBytes>=128&&!memcmp(header.data(),"DDS ",4)&&Le(header,4,4)==124&&Le(header,76,4)==32,"DDS header invalid");
- auto flags=Le(header,8,4);Require((flags&0x1007)==0x1007&&!Le(header,112,4)&&!Le(header,24,4),"DDS must be one ordinary 2D texture");
+ // Photoshop writes depth=1 for ordinary 2D DDS without DDSD_DEPTH.
+ auto flags=Le(header,8,4);Require((flags&0x1007)==0x1007&&!(flags&0x800000)&&!Le(header,112,4)&&Le(header,24,4)<=1,"DDS must be one ordinary 2D texture");
  Layout result;result.height=unsigned(Le(header,12,4));result.width=unsigned(Le(header,16,4));result.mips=unsigned(Le(header,28,4));if(!result.mips)result.mips=1;
  auto pixelFlags=Le(header,80,4),fourcc=Le(header,84,4);result.offset=128;
  if((pixelFlags&4)&&fourcc==0x30315844){

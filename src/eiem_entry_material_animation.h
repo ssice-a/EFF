@@ -10,12 +10,17 @@ struct Property {std::string kind,name;int id=0;std::map<unsigned,std::string> c
 struct Bound {Ref renderer,mesh,baseline,work;std::string package,marker;std::vector<Property> properties;std::map<std::string,double> lastValues;bool installed=false,baseEmpty=true;};
 std::map<void*,Bound> bound;bool enabled=false;uint64_t revision=0;
 std::atomic<DWORD> unityThread{0};std::atomic<bool> hasBindings{false};
+bool Channel(const std::string& package,const std::string& variable,double& value){
+ auto channels=RuntimeControls::continuousChannels.find(package);bool continuous=channels!=RuntimeControls::continuousChannels.end()&&channels->second.count(variable);
+ auto player=RuntimeControls::animations.find(package);if(player==RuntimeControls::animations.end())return false;
+ if(!continuous&&!player->second.output.count(variable))return false;value=RuntimeControls::EffectiveValues(package).at(variable);return true;
+}
 Ref Block(){auto b=Ref::Make(il2cpp_object_new(api.blockClass),false);Require(b.Get(),"material property block allocation failed");Call(api.ctor,b.Get());return b;}
 void Read(void* method,void* renderer,void* block){struct Scope{Scope(){++internalRead;}~Scope(){--internalRead;}}scope;int slot=0;void* args[]={block,&slot};Call(method,renderer,args);}
 void Restore(Bound& b){if(b.installed&&RuntimeShapes::Alive(b.renderer.Get()))originalSlot(b.renderer.Get(),b.baseEmpty?nullptr:b.baseline.Get(),0);b.installed=false;}
 bool Values(Bound& b){auto player=RuntimeControls::animations.find(b.package);if(player==RuntimeControls::animations.end())return false;bool any=false;
  for(const auto& property:b.properties){bool present=false,complete=true;std::array<float,4> values{};
-  for(const auto& c:property.channels){auto value=player->second.output.find(c.second);present|=value!=player->second.output.end();complete&=value!=player->second.output.end();if(value!=player->second.output.end())values[c.first]=float(value->second);}
+   for(const auto& c:property.channels){double value=0;bool found=Channel(b.package,c.second,value);present|=found;complete&=found;if(found){Require(std::isfinite(value)&&std::abs(value)<=FLT_MAX,"material property exceeds float range");values[c.first]=float(value);}}
   if(!present)continue;Require(complete,"material animation property has partial component ownership");void* args[]={const_cast<int*>(&property.id),values.data()};Call(property.kind=="FLOAT"?api.setFloat:property.kind=="COLOR"?api.setColor:api.setVector,b.work.Get(),args);EiemLoadPerformance::Add(EiemLoadPerformance::Operation::MaterialValueWrite);any=true;
  }return any;
 }
@@ -43,7 +48,7 @@ void Register(void* renderer,void* mesh,const RuntimeControls::Spec& spec){
 void Frame(){EiemLoadPerformance::Scope performance(EiemLoadPerformance::MaterialFrame);if(!enabled)return;performance.hit=!bound.empty();if(revision!=RuntimeControls::revision){for(auto& row:bound)Restore(row.second);bound.clear();revision=RuntimeControls::revision;
   for(const auto& row:RuntimeShapes::bound){auto spec=RuntimeControls::specs.find(row.second.marker);if(spec!=RuntimeControls::specs.end()&&row.second.modelReady)Register(row.second.renderer.Get(),row.second.mesh.Get(),spec->second);}}
  for(auto it=bound.begin();it!=bound.end();){auto& b=it->second;
-  try{auto player=RuntimeControls::animations.find(b.package);bool playing=false;std::map<std::string,double> current;if(active&&player!=RuntimeControls::animations.end())for(const auto& prop:b.properties)for(const auto& channel:prop.channels){auto value=player->second.output.find(channel.second);if(value!=player->second.output.end()){playing=true;current.emplace(value->first,value->second);}}
+   try{auto player=RuntimeControls::animations.find(b.package);bool playing=false;std::map<std::string,double> current;if(active&&player!=RuntimeControls::animations.end())for(const auto& prop:b.properties)for(const auto& channel:prop.channels){double value=0;if(Channel(b.package,channel.second,value)){playing=true;current.emplace(channel.second,value);}}
    if(!playing&&!b.installed){++it;continue;}auto r=b.renderer.Get();if(!RuntimeShapes::Alive(r)||RuntimeShapes::SourceMesh(r)!=b.mesh.Get()){Restore(b);it=bound.erase(it);continue;}
    if(!playing){Restore(b);++it;continue;}if(!b.installed)Capture(b);
    else if(current==b.lastValues){++it;continue;}

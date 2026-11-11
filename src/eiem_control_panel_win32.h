@@ -120,6 +120,40 @@ class Window {
   static bool EffectToggle(const EiemDirectory::Package& p,const std::string& variable){
     return std::any_of(p.effects.begin(),p.effects.end(),[&](const auto& row){return row.second.variable==variable;});
   }
+  void Parameter(const EiemDirectory::Package& p,const EiemControlProgram::Parameter& d,const std::string& type,const std::string& label){
+    double actual=view->effective.at(p.id).at(d.variable);
+    double value=d.computed?actual:view->values.at(p.id).at(d.variable);
+    ImGui::BeginDisabled(bool(d.computed));bool changed=false;
+    if(type=="checkbox"||(type.empty()&&d.type==EiemControlProgram::Type::Boolean)){bool b=value!=0;changed=ImGui::Checkbox(label.c_str(),&b);value=b?1:0;}
+    else if(type=="number"){ImGui::TextUnformatted(label.c_str());ImGui::SetNextItemWidth(-1);changed=ImGui::InputDouble("##value",&value,0,0,"%.6g");}
+    else{ImGui::TextUnformatted(label.c_str());ImGui::SetNextItemWidth(-1);changed=ImGui::SliderScalar("##value",ImGuiDataType_Double,&value,&d.softMin,&d.softMax,"%.4g");}
+    if(d.type==EiemControlProgram::Type::Integer)value=std::round(value);
+    if(changed)Send(Action::Value,p.id,d.variable,value);Item(Action::Value,p.id,d.variable);ImGui::EndDisabled();
+    if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)){ImGui::BeginTooltip();ImGui::Text("%s",d.variable.c_str());ImGui::Text(u8"设定值: %.6g",view->values.at(p.id).at(d.variable));ImGui::Text(u8"生效值: %.6g",view->effective.at(p.id).at(d.variable));if(d.computed)ImGui::TextUnformatted(u8"由表达式计算（只读）");else{auto animation=view->animations.find(p.id);if(animation!=view->animations.end())for(const auto& clip:p.shapeAnimations)if(clip.second.tracks.count(d.variable)&&animation->second.at(clip.first).playing)ImGui::Text(u8"动画驱动: %s",clip.first.c_str());}if(!d.description.empty())ImGui::TextWrapped("%s",d.description.c_str());ImGui::EndTooltip();}
+    if(d.computed||actual!=view->values.at(p.id).at(d.variable))ImGui::TextDisabled(u8"生效值: %.6g%s",actual,d.computed?u8"（表达式）":u8"（动画）");
+  }
+  bool ProgramNode(const EiemDirectory::Package& p,const std::string& id){
+    const auto& program=*p.program;const auto& u=program.ui.at(id);const auto& values=view->effective.at(p.id);
+    bool disabled=false;try{if(u.visible&&!u.visible->Evaluate(values))return false;disabled=u.enabled&&!u.enabled->Evaluate(values);}catch(const std::exception& e){ImGui::TextWrapped("%s: %s",id.c_str(),e.what());return false;}
+    ImGui::PushID(id.c_str());ImGui::BeginDisabled(disabled);
+    auto children=[&](){auto f=program.children.find(id);if(f==program.children.end()||f->second.empty())return;
+      if(u.type=="row"){if(ImGui::BeginTable("##row",int(f->second.size()),ImGuiTableFlags_SizingStretchSame)){for(const auto& child:f->second){ImGui::TableNextColumn();ProgramNode(p,child);}ImGui::EndTable();}}
+      else for(const auto& child:f->second)ProgramNode(p,child);};
+    if(u.type=="group"){if(ImGui::CollapsingHeader(u.label.c_str(),u.expanded?ImGuiTreeNodeFlags_DefaultOpen:0))children();}
+    else if(u.type=="row")children();
+    else if(u.type=="tabs"){if(ImGui::BeginTabBar("##tabs")){children();ImGui::EndTabBar();}}
+    else if(u.type=="tab"){if(ImGui::BeginTabItem(u.label.c_str())){children();ImGui::EndTabItem();}}
+    else if(u.type=="button"){if(ImGui::Button(u.label.c_str()))Send(Action::InvokeAction,p.id,u.action);Item(Action::InvokeAction,p.id,u.action);}
+    else if(u.type=="text"){if(u.variable.empty())ImGui::TextWrapped("%s",u.label.c_str());else ImGui::Text("%s: %.6g",u.label.c_str(),values.at(u.variable));}
+    else Parameter(p,program.parameters.at(u.variable),u.type,u.label);
+    ImGui::EndDisabled();ImGui::PopID();return true;
+  }
+  void Program(const EiemDirectory::Package& p){
+    auto error=view->errors.find(p.id);if(error!=view->errors.end())ImGui::TextWrapped("%s",error->second.c_str());
+    try{const auto& program=*p.program;if(!program.ui.empty()){auto root=program.children.find("");if(root!=program.children.end())for(const auto& id:root->second)ProgramNode(p,id);}
+      else{for(const auto& row:program.parameters)if(row.second.exposed){ImGui::PushID(row.first.c_str());Parameter(p,row.second,"",row.second.label);ImGui::PopID();}for(const auto& row:program.actions)if(row.second.exposed){ImGui::PushID(row.first.c_str());if(ImGui::Button(row.second.label.c_str()))Send(Action::InvokeAction,p.id,row.first);Item(Action::InvokeAction,p.id,row.first);ImGui::PopID();}}
+    }catch(const std::exception& e){ImGui::TextWrapped(u8"UI 表达式错误: %s",e.what());}
+  }
   void Draw() {
 #ifdef EIEM_PANEL_TEST
     testItems.clear();
@@ -130,7 +164,7 @@ class Window {
     ImGui::TextUnformatted(u8"MOD 按键控制");ImGui::Spacing();
     ImGui::PushTextWrapPos(0);ImGui::TextDisabled("%s",u8"勾选响应按键的 Mod，同一个键可以同时控制多个 Mod。");ImGui::PopTextWrapPos();
     ImGui::Separator();ImGui::Spacing();
-    if(view&&view->graph)for(const auto& p:*view->graph)if(!p.bindings.empty()||std::any_of(p.shapeAnimations.begin(),p.shapeAnimations.end(),[](const auto& c){return c.second.key.vk!=0;})){
+    if(view&&view->graph)for(const auto& p:*view->graph)if((p.program&&!p.program->events.empty())||!p.bindings.empty()||std::any_of(p.shapeAnimations.begin(),p.shapeAnimations.end(),[](const auto& c){return c.second.key.vk!=0;})){
       ImGui::PushID(p.id.c_str());bool active=view->keySwitchEnabled.at(p.id);
       if(ImGui::Checkbox(Label(p).c_str(),&active))Send(Action::Keyboard,p.id,{},active?1:0);
       Item(Action::Keyboard,p.id);ImGui::PopID();
@@ -141,7 +175,7 @@ class Window {
     ImGui::TextUnformatted("Mod");ImGui::SetNextItemWidth(-1);
     bool opened=ImGui::BeginCombo("##Mod",selected?Label(*selected).c_str():u8"无可控制的 Mod");
     Item(Action::Select,"");
-    if(opened){if(view&&view->graph)for(const auto& p:*view->graph)if(!p.bindings.empty()||!p.controls.empty()||!p.shapeAnimations.empty()){
+    if(opened){if(view&&view->graph)for(const auto& p:*view->graph)if(p.program||!p.bindings.empty()||!p.controls.empty()||!p.shapeAnimations.empty()){
       if(ImGui::Selectable(Label(p).c_str(),p.id==view->selected)){StopHold();Send(Action::Select,p.id);}
       Item(Action::Select,p.id);
     }ImGui::EndCombo();}
@@ -149,6 +183,9 @@ class Window {
     std::string nextHold;
     if(selected){
       const auto& p=*selected;
+      if(!p.loadError.empty())ImGui::TextWrapped(u8"保留上次有效配置: %s",p.loadError.c_str());
+      if(p.program)Program(p);
+      if(!p.program||p.program->ui.empty()){
       for(const auto& b:p.bindings){
         ImGui::PushID(b.id.c_str());auto control=p.controls.find(b.variable);
         const auto& name=!b.label.empty()?b.label:(control==p.controls.end()?b.id:control->second.label);
@@ -161,6 +198,7 @@ class Window {
         ImGui::PopID();
       }
       for(const auto& row:p.controls){
+        if(p.program&&p.program->parameters.count(row.first))continue;
         if(p.materialTracks.count(row.first))continue;
         ImGui::PushID(row.first.c_str());double value=view->values.at(p.id).at(row.first);const auto& c=row.second;
         if(EffectToggle(p,row.first)){bool enabled=value>=.5;if(ImGui::Checkbox(c.label.c_str(),&enabled))Send(Action::Value,p.id,row.first,enabled?1:0);Item(Action::Value,p.id,row.first);}
@@ -181,6 +219,7 @@ class Window {
         if(ImGui::SliderScalar(u8"速度倍率",ImGuiDataType_Double,&speed,&low,&high,"%.2fx"))Send(Action::AnimationSpeed,p.id,clip.id,speed);Item(Action::AnimationSpeed,p.id,clip.id);
         if(ImGui::InputDouble(u8"输入倍率",&speed,.1,1,"%.3f")&&std::isfinite(speed)&&speed>0)Send(Action::AnimationSpeed,p.id,clip.id,speed);
         if(ImGui::Button(u8"恢复作者默认"))Send(Action::AnimationReset,p.id,clip.id);Item(Action::AnimationReset,p.id,clip.id);ImGui::PopID();
+      }
       }
       }
       if(ImGui::CollapsingHeader(u8"资源来源"))for(const auto& row:p.targetIndex)ImGui::TextWrapped("%s",row.first.path.c_str());

@@ -12,6 +12,17 @@ inline std::string Prefix(const std::string& id) {
   return "M"+Hex(hash.data(),hash.size())+"_";
 }
 inline std::string Name(const std::string& id,const std::string& section) {return Prefix(id)+section;}
+// Installed instances remain stable when another copy is added or removed.
+// Author Mod IDs identify reusable content; the canonical directory identifies
+// one live installation and its controls, animations and native ownership.
+inline std::string InstalledInstanceId(const std::string& id,const std::filesystem::path& root){
+ auto path=InputPath(std::filesystem::weakly_canonical(root).u8string());
+ std::transform(path.begin(),path.end(),path.begin(),[](unsigned char c){return char(std::tolower(c));});
+ auto hash=Sha(reinterpret_cast<const unsigned char*>(path.data()),path.size());return id+"_INSTANCE_"+Hex(hash.data(),hash.size());
+}
+inline void AssignInstalledIdentity(Package& package){
+  package.authorId=DeclaredId(package);package.id=InstalledInstanceId(package.authorId,package.root);
+}
 inline std::vector<std::string> InstanceIds(const std::vector<Package>& authors) {
   std::map<std::string,size_t> counts;for(const auto& p:authors)++counts[p.id];
   std::vector<std::string> result;result.reserve(authors.size());

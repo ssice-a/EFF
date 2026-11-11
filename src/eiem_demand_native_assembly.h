@@ -4,6 +4,7 @@
 #include "eiem_renderer_input_builder.h"
 #include "eiem_native_edit_transaction.h"
 #include "eiem_native_preload_closure.h"
+#include "eiem_author_controls_ini.h"
 
 // Byte plans for one actual native input. Geometry stays in author file
 // ranges; only current metadata, preload tables and instance bindings change.
@@ -36,6 +37,7 @@ inline std::vector<EiemPhysicsInput::Document> ComposePhysicsDocuments(
 struct Author {
   std::shared_ptr<A::Catalog> catalog;
   std::vector<std::shared_ptr<A::Catalog>> catalogs;
+  std::map<std::filesystem::path,std::string> catalogInstances;
   Package package;
   std::map<std::string,EiemMeshBindingMetadata::Mesh> bindings;
   std::map<std::string,std::string> markers;
@@ -55,16 +57,19 @@ struct Author {
     for(const auto& rule:directory.rules){package.rules[rule.id]={rule.parts,rule.targets,rule.skip};
       for(const auto& target:rule.targets)Require(package.targetIndex.emplace(target.second,rule.id).second,"native target belongs to multiple rules");}
     EiemAuthorControlMetadata::Apply(directory.runtime,package);catalog->BindEffects(package);
+    catalogInstances[catalog->Root()]=package.id;
   }
+  void InstallInstance(){EiemComposedPackage::AssignInstalledIdentity(package);catalogInstances[catalog->Root()]=package.id;}
   static std::shared_ptr<Author> Compose(const std::vector<std::shared_ptr<Author>>& authors) {
     Require(!authors.empty(),"native author composition is empty");auto result=std::make_shared<Author>(*authors.front());
     std::vector<Package> packages;packages.reserve(authors.size());for(const auto& author:authors)packages.push_back(author->package);
     // Material payloads are immutable native assets. Their content-addressed
     // CABs can be shared while each Renderer/Part keeps its explicit mapping.
     result->package=EiemComposedPackage::Compose(packages,true,false);result->catalog=authors.front()->catalog;result->catalogs.clear();
-    result->bindings.clear();result->markers.clear();result->meshSources.clear();result->materialSources.clear();
-    for(const auto& author:authors){const auto& mod=author->catalog->Directory().mod;const auto prefix=EiemComposedPackage::Prefix(mod);
+    result->bindings.clear();result->markers.clear();result->meshSources.clear();result->materialSources.clear();result->catalogInstances.clear();
+    for(const auto& author:authors){const auto& mod=author->package.id;const auto prefix=EiemComposedPackage::Prefix(mod);
       result->catalogs.push_back(author->catalog);
+      result->catalogInstances.insert(author->catalogInstances.begin(),author->catalogInstances.end());
       for(const auto& source:author->materialSources)result->materialSources.emplace(prefix+source.first,source.second);
       for(const auto& source:author->meshSources){auto part=prefix+source.first;
         Require(result->package.meshes.count(part),"composed native Mesh part is absent");
@@ -79,15 +84,15 @@ struct Author {
     declaration.shapes=asset->declaration.shapes;bindings[declaration.resource]=asset->declaration.binding;
     markers[part]=asset->declaration.marker;return asset;
   }
-  std::shared_ptr<const A::Material> GetMaterial(const std::string& material)const {
-    const auto& source=materialSources.at(material);return source.first->GetMaterial(source.second);
+  std::shared_ptr<const A::Material> GetMaterial(const std::string& material,const A::TextureResolver& resolve={})const {
+    const auto& source=materialSources.at(material);return source.first->GetMaterial(source.second,resolve);
   }
   std::shared_ptr<const A::Texture> FindTexture(const NativeReference& reference)const {
     for(const auto& source:catalogs)if(auto texture=source->FindTexture(reference))return texture;return {};
   }
   std::vector<EiemPhysicsInput::Document> PhysicsDocuments(const std::set<Identity>& relevant)const {
     std::vector<std::pair<std::string,EiemPhysicsInput::Document>> loaded;
-    for(const auto& source:catalogs){const auto& mod=source->Directory().mod;for(const auto& input:source->GetPhysics(relevant)){
+    for(const auto& source:catalogs){const auto& mod=catalogInstances.at(source->Root());for(const auto& input:source->GetPhysics(relevant)){
       loaded.emplace_back(mod,input->document);
     }}
     return ComposePhysicsDocuments(loaded,relevant);
@@ -112,7 +117,7 @@ inline Carrier StageCarrier(EiemNativeEditTransaction::Member& transaction,R::Re
   const auto& member=reader.directory.members.at(memberIndex);const auto& layout=transaction.SourceLayout();Carrier result;
   Require(member.name==transaction.Cab(),"native carrier transaction belongs to another member");
   std::map<int64_t,P::RangePayload> changed;std::vector<P::AddedRanges> added;
-  std::map<std::string,int64_t> shared;NativePreloadExpansion expansion;
+  NativePreloadExpansion expansion;
   for(const auto& target:targets){auto selected=author.package.targetIndex.find(target.first);if(selected==author.package.targetIndex.end())continue;
     const auto& asset=target.second;if(asset.cab!=member.name||!layout.objects.count(asset.pathId))continue;
     const auto& object=layout.objects.at(asset.pathId);const auto& type=layout.types.at(object.type);Require(type.classId==43,"native carrier target class differs");
@@ -121,13 +126,13 @@ inline Carrier StageCarrier(EiemNativeEditTransaction::Member& transaction,R::Re
     if(std::any_of(type.nodes[0].children.begin(),type.nodes[0].children.end(),[&](size_t n){return type.nodes[n].name=="m_BoneNameHashes";})){
       auto fields=reader.Fields(member,layout,asset.pathId,{"m_BoneNameHashes"});sourceHashes=BoneHashes(type,fields.at("m_BoneNameHashes"));}
     bool first=true;
-    for(const auto& part:rule.parts){auto mesh=author.GetMesh(part);auto previous=shared.find(part);int64_t id=0;
-      if(previous!=shared.end())id=previous->second;
-      else{auto payload=G::Compose(reader,memberIndex,layout,asset.pathId,mesh->object,{mesh->declaration.fields.begin(),mesh->declaration.fields.end()});
+    for(const auto& part:rule.parts){auto mesh=author.GetMesh(part);int64_t id=0;
+      {auto node=std::find_if(type.nodes[0].children.begin(),type.nodes[0].children.end(),[&](size_t n){return type.nodes[n].name=="m_Name";});Require(node!=type.nodes[0].children.end(),"current Mesh name field absent");
+        auto marker=EmptyValue(type,*node);SetString(type,marker,RuntimePartName(author.package,part,target.first));
+        auto payload=G::Compose(reader,memberIndex,layout,asset.pathId,mesh->object,{mesh->declaration.fields.begin(),mesh->declaration.fields.end()},{{"m_Name",std::move(marker)}});
         id=first?asset.pathId:AllocateMeshId(member.name,author.package,target.first,part);
         if(first)Require(changed.emplace(id,std::move(payload)).second,"native Mesh replacement aliases another target");
         else{Require(!transaction.Layout().objects.count(id),"native Mesh added identity collides");added.push_back({id,object.type,std::move(payload)});}
-        shared.emplace(part,id);
       }
       if(id!=asset.pathId)expansion[{member.name,asset.pathId}].push_back({member.name,id});
       result.parts.push_back({target.first,selected->second,part,member.name,asset.pathId,id,mesh->declaration.vertices,mesh->declaration.indices,sourceHashes});first=false;
@@ -164,7 +169,7 @@ inline Consumer StageConsumer(EiemNativeEditTransaction::Member& transaction,
   RendererMemberBuilder builder(transaction.Layout(),cab,author.package,targets,parts,
     [&](int64_t id,const std::set<std::string>& fields){return transaction.Project(id,fields);},
     [&](int64_t id){return transaction.Object(id);});
-  builder.SetAuthorMetadata(author.bindings);builder.SetAuthorMarkers(author.markers);
+  builder.SetAuthorMetadata(author.bindings);
   if(materials)builder.SetMaterialReferences(*materials);else builder.UseSourceMaterials();
   if(materialClosures)builder.SetMaterialClosures(*materialClosures);
   result.result=builder.Build();transaction.Stage(builder.OutputLayout(),builder.TakeChanges(),builder.TakeAdded());

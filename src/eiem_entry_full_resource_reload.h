@@ -21,7 +21,9 @@ using Routes=std::vector<Route>;
 struct UIModelRequest {Ref loader,callback,closure,proxy,root,instantiateProxy,candidatePrefab;std::string path,error;uint64_t pathHash=0;void* completionInfo=nullptr;int id=0;bool submitted=false,completed=false,cancelled=false,delivered=false;};
 struct Owner {Ref entity,component,root,pathHash;std::string path;int oldRootId=0;std::map<std::string,std::pair<unsigned,int>> originalMeshes;bool viewPart=false;Ref config;
  Ref animation,animationData,weapons,audio,performManager;
+ bool directAsset=false;Ref rawAsset;
  bool uiModel=false;Ref uiParent,uiCallback,uiPage;mutable Ref uiLoadedRoot;std::shared_ptr<UIModelRequest> uiRequest;};
+struct PrefabProxyRetainedError:std::runtime_error {using std::runtime_error::runtime_error;};
 // Unity serializes asset paths with a different case than the offline
 // manifest (for example `Assets/Beyond/...` versus `assets/beyond/...`).
 // Paths are identity keys here, so compare their normalized form while still
@@ -37,6 +39,8 @@ inline bool SameAssetPath(const std::string& a,const std::string& b) {
 }
 void RememberPrefabProxy(uint64_t hash,void* proxy,void* source=nullptr);
 size_t InvalidatePrefabProxyCache(uint64_t hash,const std::string& path);
+size_t InvalidatePrefabProxyCache(uint64_t hash,const std::string& path,bool requireObserved);
+size_t InvalidatePrefabProxyCache(uint64_t hash,const std::string& path,bool requireObserved,bool logAttempt);
 size_t InvalidatePrefabProxyCache(const Owner& owner);
 inline const EiemResourceReloadPlan::Root* FindRoot(const Plan& plan,const std::string& path) {
  for(const auto& root:plan.roots)if(SameAssetPath(root.path,path))return &root;
@@ -97,9 +101,14 @@ struct Api {
  void *uiLuaExceptionMessage=nullptr;
  void *proxyAsset=nullptr,*proxyHash=nullptr,*proxyGet=nullptr,*proxyPath=nullptr,*proxyInfoClass=nullptr,*proxyInfo=nullptr,*proxyAssetPath=nullptr,*proxyTryUnloadImmediately=nullptr,*pathHashField=nullptr;
  void *handleUntrackedField=nullptr,*handleUntrackedClass=nullptr,*untrackedAssetGet=nullptr;
+ void *rawAssetUnloaded=nullptr,*rawAssetRefCount=nullptr;
 } api;
 std::map<uint64_t,std::vector<Ref>> prefabProxiesByPath;
 std::map<uint64_t,std::vector<Ref>> prefabProxySourcesByPath;
+struct RawPrefab {Ref proxy,source;};
+// These are observations, not resource leases. A direct view part owns its
+// FAssetProxyHandle; keeping a weak managed reference must not retain that handle.
+std::map<std::string,std::vector<RawPrefab>> rawPrefabsByPath;
 std::atomic<bool> configured{false},enabled{false},busy{false};std::mutex mutex;
 std::atomic<bool> testAuthorCommitted{false};
 std::shared_ptr<Prepared> pending;std::shared_ptr<Attempt> attempt,activeNative;
@@ -274,21 +283,23 @@ void RememberPrefabProxy(uint64_t hash,void* proxy,void* source){
   for(auto it=sources.begin();it!=sources.end();){auto value=it->Get();if(!value){it=sources.erase(it);continue;}known=known||value==source;++it;}
   if(!known)sources.push_back(Ref::Make(source,true));}
 }
-size_t InvalidatePrefabProxyCache(uint64_t hash,const std::string& path,bool requireObserved){
+size_t InvalidatePrefabProxyCache(uint64_t hash,const std::string& path,bool requireObserved,bool logAttempt){
  Require(api.proxyTryUnloadImmediately,"game prefab proxy unload API unavailable");auto found=prefabProxiesByPath.find(hash);
  if(found==prefabProxiesByPath.end()){
   Require(!requireObserved,"affected prefab proxy was not observed before reload: "+path);
-  Log("[FULL-RELOAD-PREFAB-CACHE] path=%s hash=%016llX proxies=0 unloaded=0 noCachedProxyObserved=1",
+  if(logAttempt)Log("[FULL-RELOAD-PREFAB-CACHE] path=%s hash=%016llX proxies=0 unloaded=0 remaining=0 noCachedProxyObserved=1",
     path.c_str(),(unsigned long long)hash);prefabProxySourcesByPath.erase(hash);return 0;
  }
- size_t live=0,unloaded=0;for(const auto& proxyRef:found->second){auto proxy=proxyRef.Get();if(!proxy)continue;++live;void* args[]={proxy};
-  if(RuntimeShapes::Scalar<unsigned char>(api.proxyTryUnloadImmediately,nullptr,args))++unloaded;}
- Log("[FULL-RELOAD-PREFAB-CACHE] path=%s hash=%016llX proxies=%zu unloaded=%zu",path.c_str(),(unsigned long long)hash,live,unloaded);
- if(!requireObserved&&!live){prefabProxiesByPath.erase(found);prefabProxySourcesByPath.erase(hash);return 0;}
- Require(live&&unloaded==live,"game retained an affected prefab proxy; refusing stale-resource reload: "+path);
- prefabProxiesByPath.erase(found);prefabProxySourcesByPath.erase(hash);return unloaded;
+ size_t live=0,unloaded=0;auto& proxies=found->second;
+ for(auto it=proxies.begin();it!=proxies.end();){auto proxy=it->Get();if(!proxy){it=proxies.erase(it);continue;}++live;void* args[]={proxy};
+  if(RuntimeShapes::Scalar<unsigned char>(api.proxyTryUnloadImmediately,nullptr,args)){++unloaded;it=proxies.erase(it);}else ++it;}
+ if(logAttempt)Log("[FULL-RELOAD-PREFAB-CACHE] path=%s hash=%016llX proxies=%zu unloaded=%zu remaining=%zu",
+   path.c_str(),(unsigned long long)hash,live,unloaded,proxies.size());
+ if(proxies.empty()){prefabProxiesByPath.erase(found);prefabProxySourcesByPath.erase(hash);return unloaded;}
+ throw PrefabProxyRetainedError("game retained an affected prefab proxy; refusing stale-resource reload: "+path);
 }
-size_t InvalidatePrefabProxyCache(uint64_t hash,const std::string& path){return InvalidatePrefabProxyCache(hash,path,true);}
+size_t InvalidatePrefabProxyCache(uint64_t hash,const std::string& path,bool requireObserved){return InvalidatePrefabProxyCache(hash,path,requireObserved,true);}
+size_t InvalidatePrefabProxyCache(uint64_t hash,const std::string& path){return InvalidatePrefabProxyCache(hash,path,true,true);}
 size_t InvalidatePrefabProxyCache(const Owner& owner){
  Require(owner.pathHash.Get()&&api.pathHashField,"affected prefab path hash unavailable: "+owner.path);
  uint64_t hash=0;il2cpp_field_get_value(owner.pathHash.Get(),api.pathHashField,&hash);
@@ -299,6 +310,27 @@ void* Method(void* klass,const char* name,std::initializer_list<const char*> par
  std::string identity="<missing class>";if(klass){auto text=il2cpp_type_get_name(il2cpp_class_get_type(klass));if(text){identity=text;il2cpp_free((void*)text);}}
  std::string signature=identity+"::"+name+"(";for(auto parameter:parameters){if(signature.back()!='(')signature+=",";signature+=parameter;}
  throw std::runtime_error("reload exact managed signature absent: "+signature+")->"+result+" static="+std::to_string(int(isStatic)));
+}
+void BindRawAssetApi(void* contract,void* assetProxy){
+ // This is an interface dispatch contract, not a native hook target. IL2CPP
+ // abstract slots have no methodPointer, so Exact/Method deliberately reject
+ // them. Retain the exact virtual slot here; ReleasePath resolves the concrete
+ // implementation on the observed AssetProxy before invoking it.
+ Require(contract,"reload raw AssetProxy interface absent");
+ void* unloaded=nullptr;void* iterator=nullptr;
+ while(auto method=il2cpp_class_get_methods(contract,&iterator)){
+  auto name=il2cpp_method_get_name(method);
+  if(!name||strcmp(name,"get_isUnloaded")||il2cpp_method_get_param_count(method))continue;
+  uint32_t impl=0,flags=il2cpp_method_get_flags(method,&impl);
+  if((flags&0x10)||!(flags&0x40))continue;
+  auto type=il2cpp_method_get_return_type(method);auto text=type?il2cpp_type_get_name(type):nullptr;
+  bool matches=text&&!strcmp(text,"System.Boolean");if(text)il2cpp_free((void*)text);
+  if(!matches)continue;
+  Require(!unloaded,"reload raw AssetProxy unload-state interface signature ambiguous");unloaded=method;
+ }
+ Require(unloaded,"reload raw AssetProxy unload-state virtual interface signature absent");
+ auto refCount=Method(assetProxy,"RefCount",{},"System.Int32",false);
+ api.rawAssetUnloaded=unloaded;api.rawAssetRefCount=refCount;
 }
 void BindMaterialTextureProperties(void* material){
  // IL2CPP can strip the allocating names overload while retaining the public
@@ -409,6 +441,26 @@ bool InheritsClass(void* klass,const char* ns,const char* name){
  }return false;
 }
 bool Inherits(void* object,const char* ns,const char* name){return InheritsClass(object?il2cpp_object_get_class(object):nullptr,ns,name);}
+Ref RawAssetFromHandle(void* handle){
+ auto boxed=Ref::Make(il2cpp_value_box(api.handleClass,handle),false);uint32_t alignment=0;
+ auto size=il2cpp_class_value_size(api.handleUntrackedClass,&alignment);Require(size>0,"untracked resource handle size differs");
+ Bytes untracked(size);il2cpp_field_get_value(boxed.Get(),api.handleUntrackedField,untracked.data());
+ auto proxy=Call(api.untrackedAssetGet,untracked.data());
+ return Inherits(proxy,"","AssetProxy")?Ref::Make(proxy,false):Ref{};
+}
+Ref PartRawAsset(void* part){
+ auto field=Field(il2cpp_object_get_class(part),"m_assetHandle","Beyond.Resource.FAssetProxyHandle");uint32_t alignment=0;
+ auto size=il2cpp_class_value_size(api.handleClass,&alignment);Require(size>0,"model part asset handle size differs");
+ Bytes handle(size);il2cpp_field_get_value(part,field,handle.data());return RawAssetFromHandle(handle.data());
+}
+void RememberRawPrefab(const std::string& path,void* proxy,void* source){
+ if(!proxy)return;auto& entries=rawPrefabsByPath[NormalizeAssetPath(path)];
+ for(auto it=entries.begin();it!=entries.end();){
+  auto value=it->proxy.Get();if(!value){it=entries.erase(it);continue;}
+  if(value==proxy){if(source)it->source=Ref::Make(source,true);return;}++it;
+ }
+ entries.push_back({Ref::Make(proxy,true),Ref::Make(source,true)});
+}
 struct MainModelLoadScope {
  void* model;MainModelLoadScope* previous;
  static thread_local MainModelLoadScope* current;
@@ -881,16 +933,17 @@ void* ResourceGet(void* self,void* info){
   auto path=NormalizeAssetPath(String(Call(api.handlePath,self)));
   if(!Inherits(source,"UnityEngine","GameObject"))return source;
   auto current=std::atomic_load(&activeNative);
-  source=EffectDebug::RouteReplacement(path,source);
   auto rules=std::atomic_load(&resourceRules);const Plan* plan=current?current->prepared->plan.get():rules?rules->plan.get():nullptr;
-  if(!plan||!FindRoot(*plan,path))return source;
+  const bool planned=plan&&FindRoot(*plan,path);
+  Ref raw;if(planned||ControlledCloneSource(source)){
+    raw=RawAssetFromHandle(self);if(raw.Get())RememberRawPrefab(path,raw.Get(),source);
+  }
+  source=EffectDebug::RouteReplacement(path,source);
+  if(!planned)return source;
   performance.hit=true;
   // The same handle also returns already-instantiated GameObjects. Route
   // raw AssetProxy prefabs only; an instance handle must keep its instance.
-  auto boxed=Ref::Make(il2cpp_value_box(api.handleClass,self),false);uint32_t alignment=0;
-  auto size=il2cpp_class_value_size(api.handleUntrackedClass,&alignment);Require(size>0,"untracked resource handle size differs");
-  Bytes untracked(size);il2cpp_field_get_value(boxed.Get(),api.handleUntrackedField,untracked.data());
-  if(!Inherits(Call(api.untrackedAssetGet,untracked.data()),"","AssetProxy"))return source;
+  if(!raw.Get())return source;
   auto observed=observedPrefabs.find(path);if(observed==observedPrefabs.end()||observed->second.Get()!=source){observedPrefabs[path]=Ref::Make(source,true);++ownerRevision;}
   if(rebuilding)return Routed(source,"resource-handle");
   if(!current||current->phase!=Phase::Passed)return source;
@@ -923,7 +976,7 @@ RuntimeControls::State CompiledControls(const std::shared_ptr<const std::vector<
  Require(bool(graph),"offline control graph unavailable");RuntimeControls::State state;state.graph=graph;
  std::map<std::string,std::pair<const Package*,std::string>> owners;
  for(const auto& package:*graph){
-  auto validateKey=[&](const EiemKeyChord& key){Require(!key.vk||(key.vk!=config.reload.vk&&key.vk!=config.gui.vk),"Mod shortcut overlaps a global shortcut: "+package.id);};for(const auto& key:package.bindings)validateKey(key.key);for(const auto& clip:package.shapeAnimations)validateKey(clip.second.key);
+  auto validateKey=[&](const EiemKeyChord& key){Require(!key.vk||(key.vk!=config.reload.vk&&key.vk!=config.gui.vk),"Mod shortcut overlaps a global shortcut: "+package.id);};for(const auto& key:package.bindings)validateKey(key.key);for(const auto& clip:package.shapeAnimations)validateKey(clip.second.key);if(package.program)for(const auto& event:package.program->events){validateKey(event.key);state.held[package.id+"/"+event.id]=RuntimeControls::Down(event.key);}
   state.variables[package.id]=package.defaults;state.keys[package.id]=package.bindings;
   state.keySwitchEnabled[package.id]=RuntimeControls::keySettings.Preview(package);
   RuntimeControls::PrepareAnimations(state,package);
@@ -1031,6 +1084,10 @@ void Install(void** assemblies,size_t count){
   bool hash64=hashType&&(!strcmp(hashType,"System.Int64")||!strcmp(hashType,"System.UInt64"));if(hashType)il2cpp_free((void*)hashType);Require(hash64,"game prefab path hash is not a 64-bit scalar");
   auto proxy=FindClass("Beyond.Resource.Runtime","PrefabInstantiateProxy",assemblies,count),assetProxy=FindClass("","AssetProxy",assemblies,count);
   api.proxyAsset=Method(proxy,"get_assetHandles",{},"Beyond.Resource.IAssetProxy",false);api.proxyGet=Method(assetProxy,"Get",{},"UnityEngine.Object",false);
+  // BundleAssetProxy implements IAssetProxy's unloaded state. Loadable has a
+  // different, nonvirtual property with the same name; dispatch the interface
+  // rather than accidentally observing that base implementation.
+  BindRawAssetApi(FindClass("Beyond.Resource","IAssetProxy",assemblies,count),assetProxy);
   api.proxyPath=StartupDependencies::Inherited(assetProxy,"get_pathOrName",{},"System.String");
   auto manifest=FindClass("Beyond.ManifestBinary","RuntimeManifestBinary",assemblies,count);void* infoIterator=nullptr;
   while(manifest)if(auto method=il2cpp_class_get_methods(manifest,&infoIterator)){

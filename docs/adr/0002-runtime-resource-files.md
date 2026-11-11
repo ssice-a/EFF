@@ -4,6 +4,13 @@
 - Date: 2026-10-30
 - Scope: Mod format, DLL runtime inputs, Blender round-trip, Mod Manager migration
 
+Author-facing INI assembly and reuse examples: [Format 3 INI assembly](../format3-ini-assembly.md).
+
+The unified numeric control compiler, declarative panel, animation-effective
+values, reload policy and current adapter limits are described in
+[INI control program](../ini-control-program.md). The author DLL and runtime
+share this compiler; controls do not require a parallel persisted program.
+
 ## Decision
 
 1. The new Mod format uses `[Mod] format=3`. The new DLL accepts format 3 only.
@@ -65,29 +72,36 @@
    document and its `EFFSKEL` dependency. Metadata records both extents and
    the author snapshot SHA-256. Runtime reads only the native extent when a
    target Mesh is requested; Blender validates and restores the author data.
-5. A Texture declaration names a native Texture2D scaffold (`path`) and an
-   ordinary DDS (`dds`) in the same default `textures/` directory. The
-   scaffold is a small native serialized Texture2D with an empty image-data
-   field; it carries the game-readable object schema and CAB/PathID identity,
-   not image dimensions or a pixel-length contract. The standard DDS is the
-   sole source of dimensions, pixel format, mip count, and mip bytes. Runtime
-   reads those values from the DDS header, updates the corresponding fields
-   in the scaffold, injects its mip payload, and gives the result to the
-   game's normal deserializer. The DDS file remains byte-for-byte unchanged.
-   Replacing it with another valid DDS, including a different size or mip
-   layout, needs no Blender re-export and no change to `mod.ini`.
+5. A Texture declaration names an ordinary DDS (`dds`) and the current game's
+   logical Texture2D source (`source.path`, `source.asset`). A legacy package
+   may additionally contain a native Texture2D scaffold (`path`); the DLL
+   keeps reading that form. For the new form, runtime resolves the current
+   Texture2D object by logical identity, copies its native schema and identity
+   into a private carrier, updates dimensions, format, mip count, image bytes
+   and INI sampler settings, and gives the result to the game's normal
+   deserializer. DDS is the sole pixel source and remains byte-for-byte
+   unchanged. A DDS can therefore be replaced or reused by editing only its
+   INI binding and does not require a second per-texture `.effres` file.
 6. Physics files and each native Effect bundle are separate resources named by
    `Resource` declarations in `mod.ini`. They are opened only when a matched
    owner needs them. Physics author data is co-located with its native input;
-   no Skeleton sidecar is needed for Blender round-trip. `ResourceControls` names one self-describing control-state
-   resource; `ShapeAnimation`, `MaterialAnimation`, and `EffectAttachment`
-   sections name the authored records within that resource and point to the
-   same file. The DLL verifies that these declarations match the control-state
-   contents. It does not keep a second generated relationship index.
+   no Skeleton sidecar is needed for Blender round-trip. New packages put
+   defaults, persistence, key bindings, part visibility, material tracks,
+   animation playback and effect attachments directly in INI. Sampled numeric
+   animation channels remain in independently addressable sample resources;
+   effect native bundles remain independent resources. New packages declare
+   `controls=ini` and do not emit `controls.effres`. Existing packages that
+   declare `controls=resource`, or omit the mode while retaining
+   `ResourceControls`, continue to use that legacy control resource. The DLL
+   verifies INI references and treats INI as the only relationship source in
+   `controls=ini` packages.
 7. The default layout keeps resource types easy to browse: `meshes/`,
    `materials/`, `textures/`, `physics/`, and `effects/`, with
-   `controls.effres` at the Mod root. A Texture scaffold and its `.dds` file
-   live together under `textures/`; there is no parallel `native/` tree.
+   legacy `controls.effres` at the Mod root only when preserving an older
+   package. New DDS-only Textures store their `.dds` file under `textures/`
+   and resolve the current Texture2D schema from their logical source identity;
+   no per-Texture scaffold or `.effres` is required. There is no parallel
+   `native/` tree.
    Directory layout remains user-controlled: the DLL resolves each declared
    path relative to its Mod root, rejects traversal outside that root, and
    does not recursively scan or hash payload files at startup. Relative file
@@ -106,8 +120,9 @@
     scene export, selected-resource export, and selective import all use the
     same `mod.ini` relationships. Export timing separates snapshot, resource
     encoding, DDS compression, validation, and publication. Sampled animation
-    metadata is encoded into the control-state resource offline; effect bundle
-    files remain independent and are read on demand.
+    data is encoded into independent sample resources offline while playback
+    and channel relationships remain in INI; effect bundle files remain
+    independent and are read on demand.
 
 ## Migration and Acceptance
 

@@ -23,6 +23,7 @@
 
 #include "eiem_expression.h"
 #include "eiem_keys.h"
+#include "eiem_control_program.h"
 #include "eiem_effect_native_types.h"
 #include "eiem_mod_directory.h"
 #pragma comment(lib, "bcrypt.lib")
@@ -230,6 +231,8 @@ using Settings = std::map<std::string, std::string>;
 struct Section {
   std::string id;
   Settings values;
+  size_t line=0;
+  std::string source;
 };
 inline bool Begins(const std::string& s, const char* prefix) {
   return s.compare(0, strlen(prefix), prefix) == 0;
@@ -289,35 +292,34 @@ inline std::vector<Section> ParseIni(const Bytes& bytes) {
   size_t number = 0;
   while (std::getline(input, line)) {
     ++number;
-    line = Trim(line);
+    auto raw=line;line = Trim(line);
+    if(!line.empty()&&line.front()=='['&&line.back()==']'){}
+    else if(!out.empty())out.back().source+=raw+"\n";
+    if(!(line.size()>1&&line.front()=='['&&line.back()==']')&&
+       !out.empty()&&Begins(out.back().id,"Action")&&out.back().values.count("code")&&
+       !raw.empty()&&(raw[0]==' '||raw[0]=='\t')){out.back().values["code"]+=line+"\n";continue;}
     if (line.empty() || line[0] == ';' || line[0] == '#') continue;
     if (line[0] == '[' && line.back() == ']') {
       auto id = line.substr(1, line.size() - 2);
       Require(Identifier(id) && seen.insert(id).second,
               "invalid/duplicate section at line " + std::to_string(number));
-      out.push_back({id, {}});
+      out.push_back({id, {},number,raw+"\n"});
       continue;
     }
     auto equals = line.find('=');
     Require(!out.empty() && equals != line.npos,
             "expected key=value at line " + std::to_string(number));
     auto key = Trim(line.substr(0, equals)), value = Trim(line.substr(equals + 1));
-    Require(!key.empty() && !value.empty() && out.back().values.emplace(key, value).second,
+    Require(!key.empty() && (!value.empty()||(Begins(out.back().id,"Action")&&key=="code")) && out.back().values.emplace(key, value).second,
             "empty/duplicate setting at line " + std::to_string(number));
   }
   return out;
 }
+// Required keys define the current schema; additional keys are forward-compatible metadata.
 inline void Keys(const Section& s, std::initializer_list<const char*> required,
-                 std::initializer_list<const char*> optional = {},
-                 std::initializer_list<const char*> prefixes = {}) {
+                 std::initializer_list<const char*> = {},
+                 std::initializer_list<const char*> = {}) {
   for (auto k : required) Require(s.values.count(k) != 0, "missing " + s.id + "." + k);
-  for (const auto& v : s.values) {
-    bool ok = false;
-    for (auto k : required) ok |= v.first == k;
-    for (auto k : optional) ok |= v.first == k;
-    for (auto k : prefixes) ok |= Begins(v.first, k);
-    Require(ok, "unknown setting " + s.id + "." + v.first);
-  }
 }
 struct Identity {
   std::string path, asset;
@@ -408,11 +410,17 @@ struct Package {
   std::map<std::string,MaterialTrack> materialTracks;
   std::map<std::string,EffectAttachment> effects;
   bool keySwitchEnabled=true;
+  std::shared_ptr<const EiemControlProgram::Program> program;
+  std::string loadError;
   // Compiler-only ownership metadata, reconstructed from the original authors
   // when a composed manifest is decoded. Never authored in mod.ini.
   bool composed=false;
   std::map<std::string,std::pair<std::string,std::string>> partOwners;
+  // Installed runtime IDs isolate copies. Persisted INI/state ownership still
+  // uses the author's declared ID; the directory isolates each state file.
+  std::string authorId;
 };
+inline const std::string& DeclaredId(const Package& p){return p.authorId.empty()?p.id:p.authorId;}
 inline void RestoreRuntimeControls(Package& p){
  for(const auto& row:p.resources){const auto& resource=*row.second;
   if(resource.kind==9){std::string owner;std::map<std::string,MaterialTrack> tracks;auto clip=DecodeMaterialAnimation(resource,owner,tracks);if(owner!=p.id)continue;

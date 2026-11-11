@@ -1,6 +1,7 @@
 #pragma once
 #include "eiem_target_mod_precedence.h"
 #include "eiem_demand_generation_routes.h"
+#include "eiem_demand_target_lookup.h"
 // Creation-before observation, with an explicitly separate native-input
 // acceptance build. The ordinary observation build never changes inputs.
 namespace DemandLoadingProbe {
@@ -9,9 +10,10 @@ using RuntimeShapes::Ref;using RuntimeShapes::Call;
 namespace Q=EiemDemandRequests;
 namespace R=EiemNativeRandomAccess;
 struct Api {void *lookup=nullptr,*subLookup=nullptr,*packClass=nullptr,*proxyInfo=nullptr,*assetPath=nullptr;size_t packSize=0,bundleOffset=0,assetOffset=0;} api;
-struct Binding {size_t target=0;uint64_t bundle=0,asset=0;};
+struct Binding {size_t target=0;uint64_t bundle=0,asset=0;std::string cab;int64_t object=0;};
 struct InstalledGeneration;
 struct Manifest {Ref object;uint64_t serial=0;std::vector<Binding> bindings;std::unordered_set<uint64_t> bundles;std::mutex candidateMutex;std::map<uint64_t,Q::Candidate> candidates;
+  std::vector<size_t> unresolved;
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
   std::shared_ptr<const InstalledGeneration> catalog;
 #endif
@@ -114,7 +116,9 @@ void PrepareReplacement(uint64_t token,uint64_t scope,R::Reader& reader,const st
       phase("match-target-meshes");
       std::map<std::string,AssetIndex> selectedByMod;std::map<std::string,std::set<size_t>> bindingIndices;auto hashes=reader.HashAssets(member,layout);std::vector<Asset> names;
       for(size_t bi=0;bi<manifest->bindings.size();++bi){const auto& binding=manifest->bindings[bi];if(binding.bundle!=record.bundle)continue;const auto& target=manifest->catalog->targets.at(binding.target);
-        const EiemNativeInput::Asset* selected=nullptr;auto hashed=hashes.find(binding.asset);if(binding.asset&&hashed!=hashes.end()&&hashed->second.classId==43&&nativeName(hashed->second.cab)==nativeName(member.name))selected=&hashed->second;
+        EiemNativeInput::Asset observed;const EiemNativeInput::Asset* selected=nullptr;
+        if(binding.object&&nativeName(binding.cab)==nativeName(member.name)){auto object=layout.objects.find(binding.object);if(object!=layout.objects.end()&&layout.types.at(object->second.type).classId==43){observed.cab=member.name;observed.pathId=binding.object;observed.classId=43;observed.type=layout.types.at(object->second.type).hash;selected=&observed;}}
+        auto hashed=hashes.find(binding.asset);if(!selected&&binding.asset&&hashed!=hashes.end()&&hashed->second.classId==43&&nativeName(hashed->second.cab)==nativeName(member.name))selected=&hashed->second;
         if(!selected){if(names.empty())names=reader.Assets(member,layout);for(const auto& candidate:names)if(candidate.classId==43&&candidate.cab==member.name&&nativeName(candidate.path)==nativeName(target.source.path)&&candidate.asset==target.source.asset){selected=&candidate;break;}}
         if(!selected)continue;auto asset=*selected;asset.path=target.source.path;asset.asset=target.source.asset;
         if(target.skip)Log("[DEMAND-SKIP-MESH] token=%llu mod=%s target=%s#%s cab=%s pathId=%lld",token,target.mod.c_str(),target.source.path.c_str(),target.source.asset.c_str(),asset.cab.c_str(),asset.pathId);
@@ -292,6 +296,14 @@ void UnsupportedInput(const char* kind) noexcept {
 #endif
   if(!enabled)return;auto n=++gaps;if(n<=32)Log("[DEMAND-PROBE-GAP] phase=input boundary=%s fileCorrelationUnavailable=1 originalArgumentsPreserved=1",kind);
 }
+bool LookupTarget(void* object,const Identity& source,Bytes& info,bool& exact){
+  info.assign(api.packSize,0);exact=false;
+  auto byPath=[&](){std::fill(info.begin(),info.end(),static_cast<unsigned char>(0));auto path=FullResourceReload::Path(source.path);uint64_t hash=0;
+    il2cpp_field_get_value(path.Get(),FullResourceReload::api.pathHashField,&hash);void* args[]={&hash,info.data()};return RuntimeShapes::Scalar<unsigned char>(api.lookup,object,args)!=0;};
+  auto byAsset=[&](){std::fill(info.begin(),info.end(),static_cast<unsigned char>(0));auto path=Ref::Make(il2cpp_string_new(source.path.c_str()),false),name=Ref::Make(il2cpp_string_new(source.asset.c_str()),false);
+    void* args[]={path.Get(),info.data(),name.Get()};exact=RuntimeShapes::Scalar<unsigned char>(api.subLookup,object,args)!=0;return exact;};
+  return EiemLogicalAssetLookup::Find(source.path,byPath,byAsset);
+}
 std::shared_ptr<Manifest> Current(void* object) {
   for(;;){
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
@@ -317,9 +329,11 @@ std::shared_ptr<Manifest> Current(void* object) {
   std::map<std::string,uint64_t> hintKeys;
   if(!hintNames.empty())try{hintKeys=StartupDependencies::ManifestKeys(object,StartupDependencies::State(object),hintNames,false);}
   catch(const std::exception& e){Log("[DEMAND-TARGET-ROUTE-GAP] scope=%llu reason=%s",state->serial,e.what());}
-  for(size_t i=0;i<activeTargets.size();++i){const auto& source=activeTargets[i].source;Bytes info(api.packSize);bool found=false;
+  for(size_t i=0;i<activeTargets.size();++i){const auto& source=activeTargets[i].source;Bytes info;bool exactLookup=false;
     const auto& hint=activeTargets[i].bundle;auto hinted=hintKeys.find(hint);
-    if(!hint.empty()&&hinted!=hintKeys.end()){
+    const bool found=LookupTarget(object,source,info,exactLookup);
+    if(!found||(!exactLookup&&(source.path.size()<5||source.path.compare(source.path.size()-5,5,".mesh")!=0)))state->unresolved.push_back(i);
+    if(!found&&!hint.empty()&&hinted!=hintKeys.end()){
       // Some dependency-only Meshes have no standalone RuntimeManifest asset
       // entry. A logical Bundle route locates their current native input; the
       // payload is still opened only on a game request, then path+asset checked.
@@ -327,9 +341,6 @@ std::shared_ptr<Manifest> Current(void* object) {
       Log("[DEMAND-TARGET-BUNDLE-ROUTE] scope=%llu mod=%s target=%s#%s logical=%s bundle=%016llX payloadBytes=0",
         state->serial,activeTargets[i].mod.c_str(),source.path.c_str(),source.asset.c_str(),hint.c_str(),hinted->second);continue;
     }
-    if(source.path.size()>=4&&source.path.substr(source.path.size()-4)==".fbx"){
-      auto path=Ref::Make(il2cpp_string_new(source.path.c_str()),false),name=Ref::Make(il2cpp_string_new(source.asset.c_str()),false);void* args[]={path.Get(),info.data(),name.Get()};found=RuntimeShapes::Scalar<unsigned char>(api.subLookup,object,args)!=0;
-    }else{auto path=FullResourceReload::Path(source.path);uint64_t hash=0;il2cpp_field_get_value(path.Get(),FullResourceReload::api.pathHashField,&hash);void* args[]={&hash,info.data()};found=RuntimeShapes::Scalar<unsigned char>(api.lookup,object,args)!=0;}
     if(!found){Log("[DEMAND-TARGET-UNRESOLVED] scope=%llu mod=%s target=%s#%s bundleHint=%s replacementUnavailable=1",state->serial,activeTargets[i].mod.c_str(),source.path.c_str(),source.asset.c_str(),hint.c_str());if(activeTargets[i].skip)Log("[DEMAND-SKIP-MANIFEST] scope=%llu mod=%s target=%s#%s resolved=0",state->serial,activeTargets[i].mod.c_str(),source.path.c_str(),source.asset.c_str());continue;}
     Binding binding;binding.target=i;std::memcpy(&binding.bundle,info.data()+api.bundleOffset,8);std::memcpy(&binding.asset,info.data()+api.assetOffset,8);state->bindings.push_back(binding);state->bundles.insert(binding.bundle);
     if(activeTargets[i].skip)Log("[DEMAND-SKIP-MANIFEST] scope=%llu mod=%s target=%s#%s resolved=1 bundle=%016llX asset=%016llX",state->serial,activeTargets[i].mod.c_str(),source.path.c_str(),source.asset.c_str(),binding.bundle,binding.asset);
@@ -338,17 +349,7 @@ std::shared_ptr<Manifest> Current(void* object) {
   for(const auto& name:catalog->deltaBundles){auto key=hintKeys.find(name);if(key!=hintKeys.end())state->bundles.insert(key->second);}
   EiemDemandGenerationRoutes::IncludeTargetRoots(state->bundles,catalog->delta.targets,
     [&](const std::string& path,const std::string& asset){
-      auto routed=catalog->deltaRoutes.find({path,asset});
-      if(routed!=catalog->deltaRoutes.end())for(const auto& name:routed->second)if(hintKeys.count(name))return uint64_t(0);
-      Bytes info(api.packSize);bool found=false;
-      if(path.size()>=4&&path.substr(path.size()-4)==".fbx"){
-        auto sourcePath=Ref::Make(il2cpp_string_new(path.c_str()),false),name=Ref::Make(il2cpp_string_new(asset.c_str()),false);
-        void* args[]={sourcePath.Get(),info.data(),name.Get()};found=RuntimeShapes::Scalar<unsigned char>(api.subLookup,object,args)!=0;
-      }else{
-        auto sourcePath=FullResourceReload::Path(path);uint64_t pathHash=0;
-        il2cpp_field_get_value(sourcePath.Get(),FullResourceReload::api.pathHashField,&pathHash);
-        void* args[]={&pathHash,info.data()};found=RuntimeShapes::Scalar<unsigned char>(api.lookup,object,args)!=0;
-      }
+      Bytes info;bool exact=false;const bool found=LookupTarget(object,{path,asset},info,exact);
       uint64_t bundle=0;if(found)memcpy(&bundle,info.data()+api.bundleOffset,sizeof(bundle));return bundle;
     });
 #endif
@@ -399,6 +400,9 @@ void CacheCandidate(const std::shared_ptr<Manifest>& state,uint64_t bundle,Q::Ca
 }
 std::atomic<unsigned> prefabCandidateObservations{0};
 std::atomic<unsigned> assetTreeRouteObservations{0};
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+bool PrepareDependencyGroup(const std::shared_ptr<Manifest>& manifest,uint64_t hash,void* prototype);
+#endif
 Q::Record PrefabAssetRequest(void* manager,void* asset) noexcept {
   if(!enabled||!manager||!asset||!api.proxyInfo||!api.assetPath)return {};
   try{
@@ -421,6 +425,12 @@ Q::Record PrefabAssetRequest(void* manager,void* asset) noexcept {
         complete?Q::Candidate::No:Q::Candidate::Unknown;
       CacheCandidate(state,bundle,verdict);
     }
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+    if(verdict!=Q::Candidate::Target&&verdict!=Q::Candidate::Yes&&!state->unresolved.empty()){
+      auto list=StartupDependencies::NewListForManifest(manifest);
+      if(PrepareDependencyGroup(state,bundle,list.Get())){verdict=Q::Candidate::Yes;CacheCandidate(state,bundle,verdict);}
+    }
+#endif
     auto routeOrdinal=++prefabCandidateObservations;
     if(routeOrdinal<=256)Log("[DEMAND-PREFAB-ROUTE-DECISION] ordinal=%u path=%s bundle=%016llX cached=%d selfTarget=%d dependencyTarget=%d dependencyCount=%zu complete=%d verdict=%d",
       routeOrdinal,path.c_str(),(unsigned long long)bundle,int(cached),int(state->bundles.count(bundle)!=0),int(dependencyTarget),dependencyCount,int(complete),int(verdict));
@@ -454,10 +464,11 @@ void Dependencies(void* manifest,uint64_t hash,void* list,bool complete,bool dir
   if(!enabled)return;try{auto state=Current(manifest);auto dependencies=StartupDependencies::ReadList(list);
     auto verdict=state->bundles.count(hash)?Q::Candidate::Target:EiemMeshTargetDirectory::Candidate(hash,dependencies,state->bundles)?Q::Candidate::Yes:complete?Q::Candidate::No:Q::Candidate::Unknown;
     if(verdict==Q::Candidate::Target||verdict==Q::Candidate::Yes||(!direct&&complete))CacheCandidate(state,hash,verdict);
-    if(verdict!=Q::Candidate::Yes&&verdict!=Q::Candidate::Target)return;
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
-    if(sharedRequestDepth)PrepareDependencyGroup(state,hash,list);
+    if(sharedRequestDepth&&(verdict==Q::Candidate::Yes||verdict==Q::Candidate::Target||!state->unresolved.empty()))
+      if(PrepareDependencyGroup(state,hash,list)&&verdict!=Q::Candidate::Target){verdict=Q::Candidate::Yes;CacheCandidate(state,hash,verdict);}
 #endif
+    if(verdict!=Q::Candidate::Yes&&verdict!=Q::Candidate::Target)return;
     void* args[]={&hash};auto name=String(Call(StartupDependencies::api.bundleName,manifest,args));
     auto record=CandidateRoute(state,hash,name,verdict);bool report=false;
     if(record.token){std::lock_guard<std::mutex> lock(mutex);report=dependencyLogged.insert({record.token,complete}).second;}
@@ -652,14 +663,17 @@ std::shared_ptr<const InstalledGeneration> BuildInstalledGeneration(
     const std::shared_ptr<const std::vector<Package>>& expectedPackages={}){
   auto begin=std::chrono::steady_clock::now();std::map<std::string,std::shared_ptr<N::Author>> next;auto graph=std::make_shared<std::vector<Package>>();std::vector<EiemMeshTargetDirectory::Target> selected;
   EiemDemandGenerationDiff::Snapshot snapshot;
+  auto previous=std::atomic_load(&installedGeneration);
   for(const auto& root:DiscoverModRoots()){
     std::string mod=root.filename().u8string();
     try{
       auto catalog=std::make_shared<EiemDemandAuthorResources::Catalog>(root);
-      mod=catalog->Directory().mod;auto author=std::make_shared<N::Author>(std::move(catalog));author->package.root=root;
+      auto author=std::make_shared<N::Author>(std::move(catalog));author->InstallInstance();mod=author->package.id;author->package.root=root;
       EiemDemandGenerationDiff::Mod fingerprint;fingerprint.root=author->catalog->Root().generic_u8string();
       fingerprint.files=author->catalog->FileFingerprints();
+      fingerprint.resourceDeclarations=author->catalog->ResourceDeclarations();
       auto modTargets=author->catalog->Targets();
+      for(auto& target:modTargets)target.mod=mod;
       for(const auto& rule:author->package.rules)for(const auto& target:rule.second.targets){
         EiemDemandGenerationDiff::Target diff;diff.rule=rule.first;diff.lod=target.first;diff.path=target.second.path;diff.asset=target.second.asset;diff.parts.insert(rule.second.parts.begin(),rule.second.parts.end());diff.skip=rule.second.skip;fingerprint.targets.insert(std::move(diff));
       }
@@ -668,11 +682,19 @@ std::shared_ptr<const InstalledGeneration> BuildInstalledGeneration(
       selected.insert(selected.end(),std::make_move_iterator(modTargets.begin()),std::make_move_iterator(modTargets.end()));
       snapshot.emplace(mod,std::move(fingerprint));
     }catch(const std::exception& error){
+      bool retained=false;if(previous)for(const auto& old:previous->authors)if(old.second->catalog->Root()==std::filesystem::weakly_canonical(root)){
+        auto stamp=previous->snapshot.at(old.first);for(const auto& file:stamp.files)if(file.first!="mod.ini")Require(EiemDemandGenerationDiff::FileFingerprint(root/std::filesystem::u8path(file.first))==file.second,"invalid edited Mod also changed resource files; previous generation retained");
+        stamp.files["mod.ini"]=EiemDemandGenerationDiff::FileFingerprint(root/"mod.ini");auto author=std::make_shared<N::Author>(*old.second);author->package.loadError=error.what();
+        Require(!next.count(old.first),"duplicate native Mod id while retaining invalid edit");next.emplace(old.first,author);graph->push_back(author->package);snapshot.emplace(old.first,std::move(stamp));
+        auto targets=author->catalog->Targets();for(auto& target:targets)target.mod=old.first;selected.insert(selected.end(),targets.begin(),targets.end());retained=true;
+        Log("[DEMAND-AUTHOR-MOD-RETAIN] mod=%s root=%s reason=%s previousDeclarationsRetained=1",old.first.c_str(),root.u8string().c_str(),error.what());break;
+      }
+      if(retained)continue;
       Log("[DEMAND-AUTHOR-MOD-SKIP] mod=%s root=%s reason=%s otherModsContinue=1",mod.c_str(),root.u8string().c_str(),error.what());
     }
   }
   auto result=std::make_shared<InstalledGeneration>();result->serial=++installedGenerationSerial;result->authors=std::move(next);result->targets=std::move(selected);result->packages=graph;result->snapshot=std::move(snapshot);
-  auto previous=std::atomic_load(&installedGeneration);result->delta=EiemDemandGenerationDiff::Compare(previous?previous->snapshot:EiemDemandGenerationDiff::Snapshot{},result->snapshot);
+  result->delta=EiemDemandGenerationDiff::Compare(previous?previous->snapshot:EiemDemandGenerationDiff::Snapshot{},result->snapshot);
   auto retainRoutes=[&](const auto& targets){for(const auto& target:targets)if(!target.bundle.empty()&&result->delta.targets.count({target.source.path,target.source.asset})){
     result->deltaBundles.insert(target.bundle);result->deltaRoutes[target.source].insert(target.bundle);}};
   retainRoutes(result->targets);if(previous)retainRoutes(previous->targets);

@@ -11,6 +11,7 @@ using namespace EiemDirectory;
 namespace D = EiemRuntimeAuthorDirectory;
 struct TextureSettings {
   bool linear = false;
+  bool hasLinear = false;
   unsigned filter = 1, wrap = 0, aniso = 1;
   double mipBias = 0.0;
 };
@@ -26,6 +27,7 @@ struct Resource {
   TextureSettings textureSettings;
   std::map<std::string, std::string> textureBindings;
   std::vector<std::string> targetRules;
+  std::map<Identity,std::pair<std::string,unsigned>> targetBindings;
 };
 struct Part {
   std::string mesh;
@@ -38,6 +40,8 @@ struct Manifest {
   std::map<std::string, Resource> resources;
   std::map<std::string, Part> parts;
   std::vector<EiemMeshTargetDirectory::Target> targets;
+  std::vector<Section> sections;
+  bool inlineControls = true;
 };
 
 inline void ResourcePath(const std::string& value) {
@@ -85,13 +89,14 @@ inline Manifest Read(const std::filesystem::path& root,
                      const std::vector<Section>& sections) {
   Manifest result;
   result.root = std::filesystem::canonical(root);
+  result.sections = sections;
   std::map<std::string, const Section*> index;
   for (const auto& section : sections)
     Require(index.emplace(section.id, &section).second, "duplicate author manifest section");
 
   auto mod = index.find("Mod");
   Require(mod != index.end(), "format 3 Mod section absent");
-  Keys(*mod->second, {"format", "id"}, {"key_switch_enabled", "type"});
+  Keys(*mod->second, {"format", "id"}, {"controls", "key_switch_enabled", "type"});
   Require(mod->second->values.at("format") == "3", "runtime accepts format 3 Mods only");
   Require(Identifier(mod->second->values.at("id")), "invalid format 3 Mod id");
   result.id = mod->second->values.at("id");
@@ -130,7 +135,10 @@ inline Manifest Read(const std::filesystem::path& root,
       resource.type = "material-animation";
       resource.path = values.at("path");
       isResource = true;
+    } else if (Begins(section.id, "Animation") || Begins(section.id, "MaterialTrack")) {
+      continue;
     } else if (Begins(section.id, "EffectAttachment")) {
+      if(!values.count("path"))continue;
       Keys(section, {"path"}, {"author"});
       Require(section.id.size() > strlen("EffectAttachment"), "empty EffectAttachment id");
       resource.kind = 6;
@@ -150,15 +158,16 @@ inline Manifest Read(const std::filesystem::path& root,
         }
       isResource = true;
     } else if (Begins(section.id, "Texture")) {
-      Keys(section, {"path", "dds"}, {"source.path", "source.asset", "linear", "filter", "wrap", "aniso", "mip_bias"});
+      Keys(section, {"dds"});
       resource.kind = 3;
-      resource.path = values.at("path");
+      if(values.count("path"))resource.path=values.at("path");
       resource.dds = values.at("dds");
       if (auto linear = values.find("linear"); linear != values.end()) {
         Require(linear->second == "true" || linear->second == "false" ||
                     linear->second == "1" || linear->second == "0",
                 "Texture linear setting is invalid");
         resource.textureSettings.linear = linear->second == "true" || linear->second == "1";
+        resource.textureSettings.hasLinear = true;
       }
       resource.textureSettings.filter = TextureInteger(values, "filter", 1, 2);
       resource.textureSettings.wrap = TextureInteger(values, "wrap", 0, 3);
@@ -168,13 +177,15 @@ inline Manifest Read(const std::filesystem::path& root,
         Require(values.count("source.path") && values.count("source.asset"), "Texture source identity is incomplete");
         resource.source = Source(values, "source.");
       }
+      Require(!resource.path.empty() || (!resource.source.path.empty() && !resource.source.asset.empty()),
+              "DDS Texture requires a logical source template");
       isResource = true;
     } else if (Begins(section.id, "Resource")) {
       Keys(section, {"type", "path"}, {"targets"});
       const auto& type = values.at("type");
-      Require(type == "physics" || type == "effect" || type == "controls" || type == "effect-author",
+      Require(type == "physics" || type == "effect" || type == "controls" || type == "effect-author" || type == "animation-samples",
               "unknown format 3 resource type");
-      resource.kind = type == "physics" ? 4 : type == "effect" ? 5 : type == "effect-author" ? 7 : 6;
+      resource.kind = type == "physics" ? 4 : type == "effect" ? 5 : type == "effect-author" ? 7 : type == "animation-samples" ? 9 : 6;
       resource.type = type;
       resource.path = values.at("path");
       if (type == "controls") {
@@ -183,6 +194,13 @@ inline Manifest Read(const std::filesystem::path& root,
         controlsPath = resource.path;
       }
       if (values.count("targets")) resource.targetRules = Split(values.at("targets"));
+      std::set<std::string> bindings;
+      for(const auto& field:values)if(Begins(field.first,"bind.")){auto end=field.first.find('.',5);Require(end!=field.first.npos,"Physics binding field is incomplete");bindings.insert(field.first.substr(0,end+1));}
+      for(const auto& prefix:bindings){Require(type=="physics","target bindings require Physics");
+        for(const auto* field:{"rule","lod","source.path","source.asset"})Require(values.count(prefix+field),"Physics target binding is incomplete");
+        const auto& rule=values.at(prefix+"rule");auto lod=Integer(values.at(prefix+"lod"));Require(lod<=UINT_MAX&&std::find(resource.targetRules.begin(),resource.targetRules.end(),rule)!=resource.targetRules.end(),"Physics target binding rule/LOD differs");
+        Require(resource.targetBindings.emplace(Source(values,prefix+"source."),std::make_pair(rule,unsigned(lod))).second,"Physics source binding is duplicated");
+      }
       isResource = true;
     } else if (Begins(section.id, "Part")) {
       Keys(section, {"mesh", "visible"}, {"material", "material_slot"}, {"shape."});
@@ -192,17 +210,25 @@ inline Manifest Read(const std::filesystem::path& root,
           PartMaterialSlot(values)});
     }
     if (!isResource) continue;
-    ResourcePath(resource.path);
+    if(!resource.path.empty())ResourcePath(resource.path);
     if (resource.kind == 3) ResourcePath(resource.dds);
     Require(result.resources.emplace(resource.id, std::move(resource)).second,
             "duplicate format 3 resource id");
   }
 
-  Require(!controlsPath.empty(), "format 3 Controls resource is absent");
+  result.inlineControls=controlsPath.empty();
+  auto controlMode=mod->second->values.find("controls");
+  if(controlMode!=mod->second->values.end()){
+    Require(controlMode->second=="ini"||controlMode->second=="resource","unknown format 3 controls mode");
+    result.inlineControls=controlMode->second=="ini";
+  }
+  if(!result.inlineControls)
+    Require(!controlsPath.empty(), "format 3 controls=resource requires ResourceControls");
   std::map<std::string, Resource> textureFiles;
   for (const auto& row : result.resources) {
     const auto& resource = row.second;
     if (resource.kind != 3) continue;
+    if(resource.path.empty())continue;
     auto inserted = textureFiles.emplace(resource.path, resource);
     if (!inserted.second) {
       const auto& prior = inserted.first->second;

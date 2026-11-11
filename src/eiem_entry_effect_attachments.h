@@ -168,7 +168,7 @@ void Frame(){
  if(NativeBundle::Ms(reconcileClock)>1000.){reconcileClock=NativeBundle::Clock();auto retry=std::move(retryOwners);retryOwners.clear();for(auto& owner:retry)if(RuntimeShapes::Alive(owner.first))ModelReadyDetails(owner.first,false);}
  if(bindings.empty())return;performance.hit=true;auto clock=NativeBundle::Clock();std::set<Native::Generation*> stepped;++cleanupTick;
  for(auto it=bindings.begin();it!=bindings.end();){auto& b=it->second;
-  auto values=RuntimeControls::variables.find(b.package);bool desired=active&&(values==RuntimeControls::variables.end()||!values->second.count(b.variable)?b.attachment.autoplay:values->second.at(b.variable)>=.5);bool visible=false;Ref layerSource;
+  const EiemVariables* values=RuntimeControls::variables.count(b.package)?&RuntimeControls::EffectiveValues(b.package):nullptr;bool desired=active&&(!values||!values->count(b.variable)?b.attachment.autoplay:values->at(b.variable)>=.5);bool visible=false;Ref layerSource;
   if(!desired&&!b.instance&&(uintptr_t(std::get<0>(it->first))>>4)%64!=cleanupTick%64){++it;continue;}
   auto owner=b.owner.Get();bool ownerAlive=RuntimeShapes::Alive(owner);
   if(!ownerAlive||!RuntimeShapes::Alive(b.parent.Get())){if(ownerAlive)retryOwners[owner]=Ref::Make(owner,true);Release(b);it=bindings.erase(it);continue;}

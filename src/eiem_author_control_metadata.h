@@ -8,6 +8,7 @@ namespace EiemAuthorControlMetadata {
 using namespace EiemDirectory;
 struct PartState {std::shared_ptr<EiemExpression> visible;std::map<std::string,std::string> shapes;};
 struct State {
+  std::shared_ptr<const EiemControlProgram::Program> program;
   EiemVariables defaults;
   std::set<std::string> persistent;
   std::map<std::string,Control> controls;
@@ -43,12 +44,12 @@ inline void NormalizeLegacyShapeBindingIds(State& s){
   }
 }
 inline State Capture(const Package& p){
-  State s;s.defaults=p.defaults;s.persistent=p.persistent;s.controls=p.controls;s.bindings=p.bindings;
+  State s;s.program=p.program;s.defaults=p.defaults;s.persistent=p.persistent;s.controls=p.controls;s.bindings=p.bindings;
   s.animations=p.shapeAnimations;s.materialAnimations=p.materialAnimationIds;s.materialTracks=p.materialTracks;s.effects=p.effects;s.keySwitchEnabled=p.keySwitchEnabled;
   for(const auto& row:p.parts)s.parts.emplace(row.first,PartState{row.second.visible,row.second.shapes});return s;
 }
 inline void Apply(const State& s,Package& p){
-  p.defaults=s.defaults;p.persistent=s.persistent;p.controls=s.controls;p.bindings=s.bindings;
+  p.program=s.program;p.defaults=s.defaults;p.persistent=s.persistent;p.controls=s.controls;p.bindings=s.bindings;
   p.shapeAnimations=s.animations;p.materialAnimationIds=s.materialAnimations;p.materialTracks=s.materialTracks;p.effects=s.effects;p.keySwitchEnabled=s.keySwitchEnabled;
   for(auto& row:p.parts){auto found=s.parts.find(row.first);
     if(found==s.parts.end()){row.second.visible=EiemExpression::Make();row.second.visible->number=1;}
@@ -71,7 +72,7 @@ inline void Validate(const State& s){
   for(const auto& row:s.parts){std::string error;Require(!row.first.empty()&&row.second.visible,"author Part visibility absent");
     std::map<const EiemExpression*,unsigned char> seen;std::vector<std::pair<const EiemExpression*,bool>> pending{{row.second.visible.get(),false}};
     while(!pending.empty()){auto next=pending.back();pending.pop_back();auto node=next.first;if(next.second){seen[node]=2;continue;}Require(seen[node]!=1,"author visibility expression cycle");if(seen[node]==2)continue;seen[node]=1;
-      auto op=node->op;bool leaf=op==EiemExpression::Number||op==EiemExpression::Variable,unary=op==EiemExpression::Not||op==EiemExpression::Negative;Require(op<=EiemExpression::Or&&std::isfinite(node->number)&&(leaf?(!node->left&&!node->right):(unary?(bool(node->left)&&!node->right):(bool(node->left)&&bool(node->right)))),"author visibility expression arity/opcode differs");
+      auto op=node->op;bool leaf=op==EiemExpression::Number||op==EiemExpression::Variable,unary=op==EiemExpression::Not||op==EiemExpression::Negative;Require(op<=EiemExpression::Modulo&&std::isfinite(node->number)&&(leaf?(!node->left&&!node->right):(unary?(bool(node->left)&&!node->right):(bool(node->left)&&bool(node->right)))),"author visibility expression arity/opcode differs");
       if(op==EiemExpression::Variable)Require(s.defaults.count(node->variable),"author visibility variable absent");pending.push_back({node,true});if(node->right)pending.push_back({node->right.get(),false});if(node->left)pending.push_back({node->left.get(),false});}
     for(const auto& shape:row.second.shapes)Require(!shape.first.empty()&&s.controls.count(shape.second),"author Part shape variable absent");}
   Package p;p.defaults=s.defaults;p.persistent=s.persistent;p.controls=s.controls;p.shapeAnimations=s.animations;
@@ -91,6 +92,7 @@ inline void Validate(const State& s){
   }
 }
 template<class W>void Write(W& w,const State& s){
+  Require(!s.program,"unified control program requires controls=ini; binary controls would lose declarations");
   Validate(s);w.N(s.keySwitchEnabled);std::map<std::string,double> defaults(s.defaults.begin(),s.defaults.end());w.N(defaults.size());for(const auto& row:defaults){w.S(row.first);w.D(row.second);}
   w.Strings({s.persistent.begin(),s.persistent.end()});w.N(s.controls.size());for(const auto& row:s.controls){w.S(row.first);w.S(row.second.label);w.D(row.second.minimum);w.D(row.second.maximum);}
   w.N(s.bindings.size());for(const auto& b:s.bindings){w.S(b.id);w.S(b.variable);w.S(b.type);w.N(b.key.vk);w.N(b.key.modifiers);w.D(b.speed);w.S(b.label);w.N(b.values.size());for(auto v:b.values)w.D(v);}

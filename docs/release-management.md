@@ -35,6 +35,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File tools/release/build_deploy_local.p
 
 `-Component All` 依次构建并部署四端。每个组件只运行自己的本机验证一次；EFF 发布准备会再运行一套 EFF Release 回归，然后上传阶段不重建、不重测。
 
+Blender 部署同时构建 `eff_author_assets_format3.dll`，并更新共享工具目录当前选中的作者 DLL，避免 Python 插件已更新、实际使用的原生作者工具仍旧的情况。`deploy_shared_author_assets.py` 复制完整已安装共享工具包，保留其余文件，验证新 DLL 的控制编译入口后生成新 ZIP 与 SHA256 代际目录，最后原子更新 `tools/current.json`；旧代不覆盖，回执包含原选择与所有文件摘要。此本地步骤不发布或下载远程 Release。
+
 若 AnimeStudio 回归已对同一源码提交通过、但随后的构建或部署失败，可用 `-Component AnimeStudio -SkipAnimeStudioTests` 只重试构建与部署；正常构建不要跳过测试。
 
 | 组件 | 本机安装目标 | 部署前要求 |

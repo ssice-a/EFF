@@ -22,6 +22,11 @@ void *modelClass=(void*)0x2011,*delegateClass=(void*)0x2012,*loadCallback=(void*
 void* gameObjectClass=(void*)0x2014;void* resourceSource=(void*)0x1000;std::string resourceLabel="assets/model.prefab";
 uint64_t pathHashValue=0,fixtureProxyHash=0;void* proxyCloneResult=nullptr;
 void *assetProxyObject=(void*)0x2015,*assetProxyClass=(void*)0x2016;bool instanceHandle=false;
+bool directPartFixture=false,partUsesPool=true,partHandleLive=true,rawProxyUnloaded=false,rawUnloadDelayed=false;
+int rawProxyRefs=1;unsigned rawReloads=0;
+void *weaponPart=(void*)0x2080,*weaponConfig=(void*)0x2081,*weaponPartClass=(void*)0x2082;
+void *oldWeaponRoot=(void*)0x2083,*newWeaponRoot=(void*)0x2084,*weaponTransform=(void*)0x2085,*weaponRoot=nullptr;
+bool parentWeaponFixture=false;std::map<void*,uint64_t> fixturePathHashes;
 void *unrelatedRenderer=(void*)0x1100,*unrelatedHelper=(void*)0x1101,*unrelatedEntity=(void*)0x1102,*unrelatedModel=(void*)0x1103,*unrelatedRoot=(void*)0x1104;
 void *unrelatedPart=(void*)0x1105,*unrelatedConfig=(void*)0x1106;
 std::vector<void*> sceneRenderers;
@@ -79,6 +84,8 @@ void* byteClass=(void*)0xAA10;unsigned memoryCalls=0,fileFallbackCalls=0;
 std::set<void*> unloadedStreamBundles;
 std::vector<void*>* identityUnloaded=nullptr;
 unsigned prefabProxyUnloadCalls=0;bool prefabProxyUnloadAllowed=true;
+std::map<void*,std::vector<unsigned char>> prefabProxyUnloadPlan;
+std::map<void*,size_t> prefabProxyUnloadIndex;
 std::function<void(void*)> nativeAliveCallback;
 std::map<uint32_t,void*> handles;uint32_t sequence=0;
 unsigned cloneCalls=0,removeCalls=0,discardCalls=0,loadCalls=0,followCalls=0,disposeCalls=0,unloadCalls=0;
@@ -99,12 +106,14 @@ void* PropertyIds(){auto b=std::make_unique<Bytes>(32+propertyIds.size()*4);uint
 uint32_t Root(void* p,bool){handles[++sequence]=p;return sequence;}
 void* Target(uint32_t h){return handles.at(h);}
 void Free(uint32_t h){Require(handles.erase(h)==1,"fixture handle double free");}
-void* GetClass(void* p){if(p==animation&&characterAnimation)return characterAnimationClass;if(p==&yes||p==&no)return uiBooleanClass;if(p==uiProxy)return uiUntrackedClass;if(p==oldRenderer||p==newRenderer||p==unrelatedRenderer||p==auxiliaryRenderer)return staticRenderers?staticClass:skinClass;return propertyArrays.count(p)?propertyArrayClass:p==assetProxyObject?assetProxyClass:(p==source||p==candidate||p==lazyCandidate||p==unrelatedRoot||p==oldRoot||p==newRoot||p==restoredRoot||p==lazyRoot)?gameObjectClass:p==audio?audioClass:(p==model||p==unrelatedModel)?modelClass:p==loadCallback?delegateClass:p==leaseHandle?handleClass:p==pathValue?pathClass:(p==configBox||p==unrelatedConfig)?configClass:instanceClass;}
-void* Fields(void*,void** it){auto n=uintptr_t(*it);if(n==17)return nullptr;*it=(void*)(n+1);return (void*)(n+1);}
-const char* FieldName(void* f){const char* names[]={"","modelManager","effectManager","m_entity","m_mainPart","m_cfg","usePersistentPool","modelPath","m_model","m_loadFinishCb","hash","m_untrackedHandle","m_instance2AssetHandle","<>4__this","parent","callback","requestId","m_disposed"};return names[uintptr_t(f)];}
-const char* TypeName(void* t){const char* names[]={"","Beyond.Gameplay.View.ModelManager","Beyond.Gameplay.EffectManager","Beyond.Gameplay.Core.Entity","Beyond.Gameplay.View.ComplexModelViewPart","Beyond.Gameplay.View.BaseModelViewPartData","System.Boolean","System.String","UnityEngine.GameObject","System.Action<System.Boolean,Beyond.Gameplay.View.BaseModelViewPart>","System.UInt64","Beyond.Resource.FAssetProxyUntrackedHandle","Dictionary","Beyond.UI.UIModelLoader","UnityEngine.Transform","System.Action<UnityEngine.GameObject>","System.Int32","System.Boolean"};return names[uintptr_t(t)];}
+void* GetClass(void* p){if(p==weaponPart)return weaponPartClass;if(p==weaponConfig)return configClass;if(p==oldWeaponRoot||p==newWeaponRoot)return gameObjectClass;if(fixturePathHashes.count(p))return pathClass;if(p==animation&&characterAnimation)return characterAnimationClass;if(p==&yes||p==&no)return uiBooleanClass;if(p==uiProxy)return uiUntrackedClass;if(p==oldRenderer||p==newRenderer||p==unrelatedRenderer||p==auxiliaryRenderer)return staticRenderers?staticClass:skinClass;return propertyArrays.count(p)?propertyArrayClass:p==assetProxyObject?assetProxyClass:(p==source||p==candidate||p==lazyCandidate||p==unrelatedRoot||p==oldRoot||p==newRoot||p==restoredRoot||p==lazyRoot)?gameObjectClass:p==audio?audioClass:(p==model||p==unrelatedModel)?modelClass:p==loadCallback?delegateClass:p==leaseHandle?handleClass:p==pathValue?pathClass:(p==configBox||p==unrelatedConfig)?configClass:instanceClass;}
+void* Fields(void*,void** it){auto n=uintptr_t(*it);if(n==21)return nullptr;*it=(void*)(n+1);return (void*)(n+1);}
+const char* FieldName(void* f){const char* names[]={"","modelManager","effectManager","m_entity","m_mainPart","m_cfg","usePersistentPool","modelPath","m_model","m_loadFinishCb","hash","m_untrackedHandle","m_instance2AssetHandle","<>4__this","parent","callback","requestId","m_disposed","items","size","usePool","m_assetHandle"};return names[uintptr_t(f)];}
+const char* TypeName(void* t){const char* names[]={"","Beyond.Gameplay.View.ModelManager","Beyond.Gameplay.EffectManager","Beyond.Gameplay.Core.Entity","Beyond.Gameplay.View.ComplexModelViewPart","Beyond.Gameplay.View.BaseModelViewPartData","System.Boolean","System.String","UnityEngine.GameObject","System.Action<System.Boolean,Beyond.Gameplay.View.BaseModelViewPart>","System.UInt64","Beyond.Resource.FAssetProxyUntrackedHandle","Dictionary","Beyond.UI.UIModelLoader","UnityEngine.Transform","System.Action<UnityEngine.GameObject>","System.Int32","System.Boolean","Array","System.Int32","System.Boolean","Beyond.Resource.FAssetProxyHandle"};return names[uintptr_t(t)];}
 int FieldFlags(void* f){return (f==(void*)1||f==(void*)2)&&managersStatic?0x16:0x6;}
 void FieldValue(void* self,void* f,void* out){++profiledFields;Require(!(FieldFlags(f)&0x10)&&self,"instance getter used for a static field");
+ if(f==(void*)20){*(unsigned char*)out=self==weaponConfig?false:partUsesPool;return;}
+ if(f==(void*)21){memset(out,0,64);return;}
  if(f==(void*)160){Require(self==instance,"world field read on another receiver");*(void**)out=world;return;}
  if(f==(void*)161){Require(self==world,"perform manager field read on another world");*(void**)out=performManager;return;}
  if(f==(void*)150){*(void**)out=dependencyManifest;return;}
@@ -115,7 +124,9 @@ void FieldValue(void* self,void* f,void* out){++profiledFields;Require(!(FieldFl
  if(f==(void*)18){std::vector<void*> values;for(auto value:dependencyLists.at(self))values.push_back((void*)value);auto array=Array(values);propertyArrays.insert(array);*(void**)out=array;return;}
  if(f==(void*)19){*(int*)out=int(dependencyLists.at(self).size());return;}
  if(f==(void*)12){*(void**)out=uiDictionary;return;}if(f==(void*)13){*(void**)out=uiLoader;return;}if(f==(void*)14){*(void**)out=factoryParent;return;}if(f==(void*)15){*(void**)out=uiRequestCallback;return;}if(f==(void*)16){*(int*)out=7;return;}if(f==(void*)17){*(bool*)out=false;return;}
- if(f==(void*)11){memset(out,0,64);return;}if(f==(void*)10){*(uint64_t*)out=pathHashValue;return;}if(f==(void*)5){memset(out,0,64);memcpy(out,&self,8);return;}if(f==(void*)6){*(unsigned char*)out=0;return;}
+ if(f==(void*)11){memset(out,0,64);return;}if(f==(void*)10){*(uint64_t*)out=fixturePathHashes.count(self)?fixturePathHashes.at(self):pathHashValue;return;}if(f==(void*)5){memset(out,0,64);memcpy(out,&self,8);return;}if(f==(void*)6){*(unsigned char*)out=0;return;}
+ if(f==(void*)8&&self==weaponPart){*(void**)out=weaponRoot;return;}
+ if(f==(void*)7&&self==weaponConfig){*(void**)out=StringValue("assets/weapon.prefab");return;}
  auto v=f==(void*)1?manager:f==(void*)2?effect:f==(void*)3?(self==unrelatedHelper?unrelatedEntity:hasEntity?entity:nullptr):f==(void*)4?(self==unrelatedModel?unrelatedPart:hasPart?mainPart:nullptr):f==(void*)7?StringValue(self==unrelatedConfig?"assets/unmodified-character.prefab":modelPath):self==unrelatedPart?unrelatedRoot:currentRoot;memcpy(out,&v,8);}
 void StaticFieldValue(void* f,void* out){Require((FieldFlags(f)&0x10)&&(f==(void*)1||f==(void*)2),"static getter used for an instance field");auto v=f==(void*)1?manager:effect;memcpy(out,&v,8);}
 void* NativeClone(void* p){++cloneCalls;return p==lazyCandidate?lazyRoot:p==candidate&&!ignoreCandidate?(creatingUI&&uiResultRoot?uiResultRoot:newRoot):restoredRoot;}
@@ -182,7 +193,9 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==131)return &shaderPasses;
  if(m==20){++instanceCalls;return hasInstance?instance:nullptr;}
  if(m==21)return self==unrelatedModel?unrelatedRoot:currentRoot;
- if(m==22){++removeCalls;if(performActive&&performPropAlive){performPropAlive=false;stalePerformProp=true;}currentRoot=nullptr;return nullptr;}
+ if(m==22){++removeCalls;if(performActive&&performPropAlive){performPropAlive=false;stalePerformProp=true;}currentRoot=nullptr;
+  if(parentWeaponFixture&&self==model)FullResourceReload::liveParts.erase(mainPart);
+  if(directPartFixture&&partHandleLive){partHandleLive=false;--rawProxyRefs;if(!rawProxyRefs&&!rawUnloadDelayed)rawProxyUnloaded=true;}return nullptr;}
  if(m==155){Require(self==performManager&&args&&args[0]==entity&&!args[1],"perform exit used another entity or squad-switch reason");Require(!performActive||(currentRoot&&animationRoot==currentRoot),"perform exit ran after retiring its model/Animator");++performStops;consumerCalls.push_back(155);performActive=performPropAlive=stalePerformProp=false;return nullptr;}
  if(m==97){++overrideReleases;++removeCalls;currentRoot=nullptr;return nullptr;}
  if(m==23){Require(!currentRoot,"pool discarded before old owner released");if(FullResourceReload::api.discardHasUnloadImmediately)Require(args[1]&&*(unsigned char*)args[1]==0,"pool discard forced asset unload or omitted updated Boolean argument");++discardCalls;return nullptr;}
@@ -196,7 +209,7 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==32){auto it=scheduleBundles.find(self);return it==scheduleBundles.end()?bundle:it->second;}
  if(m==33){Require(args&&*(unsigned char*)args[0]==0,"unloaded candidate objects still in use");++unloadCalls;return nullptr;}
  if(m==40){if(self==unrelatedRenderer)return foreignRoot;Require(self==oldRenderer||self==newRenderer||self==animator,"Component getter invoked on a GameObject");return renderTransform;}
- if(m==41){Require(uiOwned.count(self)||self==uiProxyRoot||self==currentRoot||self==oldRoot||self==newRoot||self==restoredRoot||self==candidate||self==lazyCandidate||self==unrelatedRoot,"GameObject getter invoked on a Component");return prefabTransform;}
+ if(m==41){if(self==oldWeaponRoot||self==newWeaponRoot)return weaponTransform;Require(uiOwned.count(self)||self==uiProxyRoot||self==currentRoot||self==oldRoot||self==newRoot||self==restoredRoot||self==candidate||self==lazyCandidate||self==unrelatedRoot,"GameObject getter invoked on a Component");return prefabTransform;}
  if(m==42)return transformParents.at(self);
  if(m==50){auto request=(void*)(uintptr_t(0x8000)+ ++opened);scheduleDone[request]=false;scheduleBundles[request]=(void*)(uintptr_t(0x9000)+opened);return request;}
  if(m==87){Require(!self&&args&&args[0]&&*(uint32_t*)args[1]==0&&*(uint32_t*)args[2]==0,"archive stream Bundle load argument ABI differs");auto view=NativeBundle::StreamView(args[0]);auto native=nativeStreams.find(args[0]);if(view){unsigned char bytes[4]{};Require(view->Length()==4&&view->Read(bytes,4)==4&&memcmp(bytes,"\1\2\3\4",4)==0,"registered native view payload differs");}else if(native!=nativeStreams.end()){Require(native->second.second==4&&memcmp(native->second.first,"\1\2\3\4",4)==0,"native archive stream byte lifetime differs");}else{auto array=*(void**)args[0];size_t length=0;Require(Entry::ArrayLength(array,&length)&&length==4&&memcmp((char*)array+32,"\1\2\3\4",4)==0,"archive stream Bundle payload differs");}++memoryCalls;return Invoke((void*)50,nullptr,nullptr,exception);}
@@ -205,7 +218,8 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==170){Require(self&&args&&*(int64_t*)args[1]==4,"native archive constructor length ABI differs");nativeStreams[self]={(const unsigned char*)args[0],*(int64_t*)args[1]};return nullptr;}
  if(m==88){Require(self&&args[0]&&!*(bool*)args[1],"read-only MemoryStream constructor ABI differs");*(void**)self=args[0];return nullptr;}
  if(m==51){++leaseRequests;return leaseHandle;}
- if(m==52){pathHashValue=std::hash<std::string>{}(FullResourceReload::NormalizeAssetPath(String(args[0])));return pathValue;}
+ if(m==52){pathHashValue=std::hash<std::string>{}(FullResourceReload::NormalizeAssetPath(String(args[0])));
+  if(parentWeaponFixture){auto bytes=std::make_unique<Bytes>(64);auto p=bytes->data();storage.push_back(std::move(bytes));fixturePathHashes[p]=pathHashValue;return p;}return pathValue;}
  if(m==53)return self==auxiliaryRenderer?auxiliaryHelper:self==unrelatedRenderer?unrelatedHelper:hasHelper?helper:nullptr;
  if(m==54)return self==unrelatedEntity?unrelatedModel:hasModel?model:nullptr;
  if(m==55)return StringValue(self==unrelatedModel?"assets/unmodified-character.prefab":modelPath);
@@ -219,10 +233,16 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==92)return assetProxyObject;
  if(m==93)return &fixtureProxyHash;
  if(m==94)return resourceSource;
- if(m==95)return creatingUI||instanceHandle?instance:assetProxyObject;
+ if(m==95)return (directPartFixture||parentWeaponFixture)&&!partHandleLive?nullptr:creatingUI||instanceHandle?instance:assetProxyObject;
+ if(m==184)throw std::runtime_error("raw asset unload interface was invoked without resolving its implementation");
+ if(m==186){Require(self==assetProxyObject,"raw cache polled another proxy");return rawProxyUnloaded?&yes:&no;}
+ if(m==185){Require(self==assetProxyObject,"raw cache read another refcount");return &rawProxyRefs;}
  if(m==99)return StringValue(modelPath);
  if(m==61)return &no;
- if(m==62){Require(discardCalls>=removeCalls,"display loaded before old root pool discard");++loadCalls;currentRoot=NativeCreate(source);FullResourceReload::PartFinished(mainPart,nullptr);return &yes;}
+ if(m==62){Require(discardCalls>=removeCalls,"display loaded before old root pool discard");++loadCalls;
+  Require(!parentWeaponFixture||self!=weaponPart,"F10 resurrected a weapon part retired by its parent");
+  if(directPartFixture){Require(rawProxyUnloaded,"direct load reused the old cached Prefab");++rawReloads;partHandleLive=true;currentRoot=newRoot;}
+  else currentRoot=NativeCreate(source);FullResourceReload::PartFinished(mainPart,nullptr);return &yes;}
  if(m==63){Require(args&&args[0]==configBox,"display SetupData did not use preserved value config");FullResourceReload::PartConfigured(self,args[0],nullptr);return nullptr;}
  if(m==64)return self==unrelatedEntity?nullptr:animation;
  if(m==65)return animationData;
@@ -233,8 +253,10 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==156||m==157){Require(characterAnimation&&self==animation&&animationRoot==currentRoot&&currentRoot,"performance preload preceded animation setup or used another owner");consumerCalls.push_back(int(m));
   if(m==156){performIdleHeld=true;++performIdlePreloads;}else{performDashHeld=true;++performDashPreloads;}return nullptr;}
  if(m==69)return self==unrelatedEntity?nullptr:weapons;
- if(m==70){Require(self==weapons&&args&&*(unsigned char*)args[0]==1,"weapon unload arguments differ");consumerCalls.push_back(70);++weaponUnloads;return nullptr;}
- if(m==71){Require(animationRoot==currentRoot&&self==weapons&&*(unsigned char*)args[0]==1,"weapons reloaded before animation rebound");consumerCalls.push_back(71);weaponRequestMountRoot=weaponMountRoot;++weaponReloads;return nullptr;}
+ if(m==70){Require(self==weapons&&args&&*(unsigned char*)args[0]==1,"weapon unload arguments differ");consumerCalls.push_back(70);++weaponUnloads;
+  if(parentWeaponFixture){weaponRoot=nullptr;partHandleLive=false;--rawProxyRefs;rawProxyUnloaded=!rawProxyRefs&&!rawUnloadDelayed;FullResourceReload::liveParts.erase(weaponPart);}return nullptr;}
+ if(m==71){Require(animationRoot==currentRoot&&self==weapons&&*(unsigned char*)args[0]==1,"weapons reloaded before animation rebound");consumerCalls.push_back(71);weaponRequestMountRoot=weaponMountRoot;++weaponReloads;
+  if(parentWeaponFixture){Require(rawProxyUnloaded,"parent rebuilt its weapon before the direct Prefab cache retired");weaponRoot=newWeaponRoot;++rawReloads;}return nullptr;}
  if(m==72){consumerCalls.push_back(72);weaponMountRoot=currentRoot;++weaponRemounts;return nullptr;}
  if(m==73)return self==unrelatedEntity?nullptr:typedAudioOnly?instance:audio;
  if(m==96){Require(args&&args[1]&&args[2]&&!*(unsigned char*)args[2],"typed game component query out/warning ABI differs");*(void**)args[1]=self==unrelatedEntity?nullptr:audio;return self==unrelatedEntity?&no:&yes;}
@@ -252,7 +274,9 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==83){++texturePropertyReads;Require(self==material&&args&&args[0],"public Texture ID getter arguments absent");auto property=*(int32_t*)args[0];Require(std::find(propertyIds.begin(),propertyIds.end(),property)!=propertyIds.end(),"public Texture ID getter received wrong ABI value");auto found=propertyTextures.find(property);return found==propertyTextures.end()?textureValue:found->second;}
  if(m==84){if(!self){++nullDelegateTargetCalls;throw std::runtime_error("Delegate.get_Target invoked with a null receiver");}return self==uiCompletionDelegate?uiClosure:callbackTarget;}
  if(m==85)return self==model||self==animation?entity:unrelatedEntity;
- if(m==98){Require(!self&&args&&args[0],"prefab proxy cache invalidation used the wrong ABI");++prefabProxyUnloadCalls;return prefabProxyUnloadAllowed?&yes:&no;}
+ if(m==98){Require(!self&&args&&args[0],"prefab proxy cache invalidation used the wrong ABI");++prefabProxyUnloadCalls;
+  auto proxy=args[0];auto plan=prefabProxyUnloadPlan.find(proxy);if(plan==prefabProxyUnloadPlan.end())return prefabProxyUnloadAllowed?&yes:&no;
+  auto& index=prefabProxyUnloadIndex[proxy];return index<plan->second.size()&&plan->second[index++]?&yes:&no;}
  if(m==86){Require(self&&args&&args[0]==(void*)81&&*(unsigned char*)args[1]==1,"controls queried scene objects instead of inactive model children");
   auto found=controlRenderers.find(self);return found==controlRenderers.end()?Array(self==newRoot||self==uiResultRoot?newRenderer:oldRenderer):Array(found->second);}
  throw std::runtime_error("unexpected fixture managed call: "+std::to_string(m));
@@ -260,14 +284,14 @@ void* Invoke(void* method,void* self,void** args,void** exception){
 void Setup(){
  il2cpp_gchandle_new=Root;il2cpp_gchandle_get_target=Target;il2cpp_gchandle_free=Free;il2cpp_object_get_class=GetClass;
  RuntimeShapes::Ref::weakHandle=Root;
- il2cpp_object_get_virtual_method=[](void*,void* method)->void*{return displayOverride?(void*)97:method;};
- il2cpp_class_get_name=[](void* klass){return klass==characterAnimationClass?"CharacterAnimationComponent":klass==uiBooleanClass?"Boolean":klass==skinClass?"SkinnedMeshRenderer":klass==staticClass?"MeshRenderer":klass==assetProxyClass?"AssetProxy":klass==gameObjectClass?"GameObject":klass==audioClass?"CharacterAudioComponent":klass==modelClass?"BaseModelComponent":klass==delegateClass?"Delegate":"fixture";};
- il2cpp_class_get_namespace=[](void* klass){return klass==skinClass||klass==staticClass||klass==gameObjectClass?"UnityEngine":klass==assetProxyClass?"":klass==modelClass||klass==characterAnimationClass?"Beyond.Gameplay.View":klass==delegateClass||klass==uiBooleanClass?"System":"Beyond.Gameplay.Core";};
+ il2cpp_object_get_virtual_method=[](void* self,void* method)->void*{if(self==assetProxyObject&&method==(void*)184)return (void*)186;return displayOverride?(void*)97:method;};
+ il2cpp_class_get_name=[](void* klass){return klass==weaponPartClass?"WeaponModelViewPart":klass==characterAnimationClass?"CharacterAnimationComponent":klass==uiBooleanClass?"Boolean":klass==skinClass?"SkinnedMeshRenderer":klass==staticClass?"MeshRenderer":klass==assetProxyClass?"AssetProxy":klass==gameObjectClass?"GameObject":klass==audioClass?"CharacterAudioComponent":klass==modelClass?"BaseModelComponent":klass==delegateClass?"Delegate":"fixture";};
+ il2cpp_class_get_namespace=[](void* klass){return klass==skinClass||klass==staticClass||klass==gameObjectClass?"UnityEngine":klass==assetProxyClass?"":klass==modelClass||klass==characterAnimationClass||klass==weaponPartClass?"Beyond.Gameplay.View":klass==delegateClass||klass==uiBooleanClass?"System":"Beyond.Gameplay.Core";};
  il2cpp_object_unbox=[](void* p){return p;};il2cpp_class_get_fields=Fields;il2cpp_class_get_parent=[](void*)->void*{return nullptr;};
  il2cpp_field_get_name=FieldName;il2cpp_field_get_flags=FieldFlags;il2cpp_field_static_get_value=StaticFieldValue;il2cpp_field_get_type=[](void* p){return p;};
  il2cpp_field_get_offset=[](void* field)->size_t{return field==(void*)10?2*sizeof(void*):0;};
  il2cpp_type_get_name=TypeName;il2cpp_free=[](void*){};il2cpp_field_get_value=FieldValue;il2cpp_runtime_invoke=Invoke;
- il2cpp_class_from_type=[](void*)->void*{return configClass;};il2cpp_class_value_size=[](void* klass,uint32_t* alignment)->int32_t{*alignment=8;return klass==propertyElementClass?propertyElementWidth:64;};il2cpp_value_box=[](void* klass,void* data)->void*{++profiledBoxes;return klass==uiUntrackedClass?uiProxy:klass==handleClass?leaseHandle:*(void**)data==unrelatedPart?unrelatedConfig:configBox;};
+ il2cpp_class_from_type=[](void*)->void*{return configClass;};il2cpp_class_value_size=[](void* klass,uint32_t* alignment)->int32_t{*alignment=8;return klass==propertyElementClass?propertyElementWidth:64;};il2cpp_value_box=[](void* klass,void* data)->void*{++profiledBoxes;return klass==uiUntrackedClass?uiProxy:klass==handleClass?leaseHandle:*(void**)data==weaponPart?weaponConfig:*(void**)data==unrelatedPart?unrelatedConfig:configBox;};
  il2cpp_class_get_element_class=[](void* klass)->void*{return klass==propertyArrayClass?propertyElementClass:nullptr;};
  il2cpp_string_new=[](const char* value)->void*{return StringValue(value);};
  il2cpp_array_new=[](void* klass,size_t size)->void*{Require(klass==byteClass||klass==uiObjectClass,"managed array element type differs");auto b=std::make_unique<Bytes>(32+size*(klass==uiObjectClass?8:1));uint64_t count=size;memcpy(b->data()+24,&count,8);auto p=b->data();storage.push_back(std::move(b));return p;};
@@ -293,6 +317,7 @@ void Setup(){
  a.handlePath=(void*)89;a.assetSync=(void*)90;FullResourceReload::originalResourceGet=[](void*,void*){return resourceSource;};
  a.pathHashField=(void*)10;a.proxyAsset=(void*)92;a.proxyHash=(void*)93;a.proxyGet=(void*)94;a.proxyPath=(void*)99;
  a.proxyTryUnloadImmediately=(void*)98;
+ a.rawAssetUnloaded=(void*)184;a.rawAssetRefCount=(void*)185;
  a.handleUntrackedField=(void*)11;a.handleUntrackedClass=configClass;a.untrackedAssetGet=(void*)95;
  FullResourceReload::originalProxyPreload=[](void*,bool asynchronous,void*){proxyCloneResult=asynchronous?FullResourceReload::InstantiateAsync(resourceSource,1,factoryParent,factoryPosition,factoryRotation):FullResourceReload::Clone(resourceSource);};
  a.get=(void*)60;a.error=(void*)61;a.partRelease=(void*)22;a.partLoad=(void*)62;a.partSetup=(void*)63;NativeBundle::api.assetLoad=(void*)58;NativeBundle::api.result=(void*)59;
@@ -353,11 +378,14 @@ FullResourceReload::Attempt MakeAttempt(){
  owner.pathHash=RuntimeShapes::Ref::Make(pathValue,false);owner.path="assets/model.prefab";owner.oldRootId=int(uintptr_t(oldRoot));owner.originalMeshes=FullResourceReload::MeshProfile(oldRoot);a.owners.push_back(owner);return a;
 }
 void Reset(){
+ directPartFixture=false;partUsesPool=true;partHandleLive=true;rawProxyUnloaded=rawUnloadDelayed=false;rawProxyRefs=1;rawReloads=0;
+ parentWeaponFixture=false;weaponRoot=oldWeaponRoot;fixturePathHashes.clear();
  FullResourceReload::controlledPrefabSources.clear();FullResourceReload::pendingControlledClones.clear();
+ FullResourceReload::rawPrefabsByPath.clear();
  nullDelegateTargetCalls=0;
  performActive=performPropAlive=stalePerformProp=unrelatedPerformActive=false;performStops=0;
  characterAnimation=false;performIdleHeld=performDashHeld=true;performIdlePreloads=performDashPreloads=0;
- unloadedStreamBundles.clear();prefabProxyUnloadCalls=0;prefabProxyUnloadAllowed=true;
+ unloadedStreamBundles.clear();prefabProxyUnloadCalls=0;prefabProxyUnloadAllowed=true;prefabProxyUnloadPlan.clear();prefabProxyUnloadIndex.clear();
  propertyArrays.clear();propertyIds={314};propertyTextures.clear();propertyElementWidth=4;
  std::atomic_store(&FullResourceReload::routes,std::shared_ptr<const FullResourceReload::Routes>(std::make_shared<FullResourceReload::Routes>()));
  currentRoot=oldRoot;removeCalls=discardCalls=loadCalls=cloneCalls=followCalls=disposeCalls=unloadCalls=0;rejectVertex=false;sourceAlive=true;throwDispose=false;done=0;generation=2;
@@ -385,6 +413,105 @@ void PrefabProxyInvalidationRegression(){
  try{InvalidatePrefabProxyCache(hash,modelPath);}catch(const std::exception&){refused=true;}
  Require(refused&&prefabProxyUnloadCalls==2&&prefabProxiesByPath.count(hash),
    "F10 accepted an old prefab cache after the game refused its unload");Reset();
+}
+void PrefabProxyPartialInvalidationRegression(){
+ using namespace FullResourceReload;Reset();constexpr uint64_t hash=0x91A02B3C4D5E6F71ULL;
+ prefabProxyUnloadPlan[instance]={1};prefabProxyUnloadPlan[candidate]={0,1};
+ RememberPrefabProxy(hash,instance);RememberPrefabProxy(hash,candidate);
+ bool retained=false;try{InvalidatePrefabProxyCache(hash,modelPath);}catch(const PrefabProxyRetainedError&){retained=true;}
+ auto found=prefabProxiesByPath.find(hash);
+ Require(retained&&prefabProxyUnloadCalls==2&&found!=prefabProxiesByPath.end()&&found->second.size()==1&&
+         found->second.front().Get()==candidate,
+   "partially unloaded proxies were not retired individually");
+ Require(InvalidatePrefabProxyCache(hash,modelPath)==1&&prefabProxyUnloadCalls==3&&!prefabProxiesByPath.count(hash),
+   "retry called an already-unloaded proxy again or failed to release the remaining proxy");Reset();
+}
+void PrefabProxyRetainedWaitRegression(){
+ using namespace DemandGenerationReload;Reset();reloads.clear();pendingUIPaths.clear();DemandGenerationReload::active=false;
+ directPartFixture=true;partUsesPool=false;
+ FullResourceReload::LivePart live;live.part=Ref::Make(mainPart,true);live.root=Ref::Make(oldRoot,true);live.path=modelPath;
+ auto owner=MakePartOwner(mainPart,live);auto& batch=AddPath(modelPath,OwnerPathHash(owner));batch.owners.push_back({std::move(owner),OwnerPhase::Queued});
+ FullResourceReload::RememberPrefabProxy(batch.hash,instance);prefabProxyUnloadAllowed=false;
+ bool retained=false;try{ReleasePath(batch);}catch(const FullResourceReload::PrefabProxyRetainedError&){retained=true;}
+ const auto calls=prefabProxyUnloadCalls;ReleasePath(batch);
+ Require(retained&&calls==1&&prefabProxyUnloadCalls==calls&&batch.prefabBlockedSince&&batch.prefabRetryAt,
+   "retained prefab cache was retried on every Frame instead of being throttled");
+ batch.prefabBlockedSince=GetTickCount64()-kPrefabProxyWaitTimeoutMs-1;batch.prefabRetryAt=GetTickCount64()+kPrefabProxyRetryIntervalMs;
+ DemandGenerationReload::active=true;cursor=0;Frame();
+ Require(batch.failed&&!DemandGenerationReload::active&&batch.owners.front().phase==OwnerPhase::Released,
+   "retained prefab proxy blocked F10 for the old 30-second timeout");
+ DemandLoadingProbe::InstalledGeneration unchanged;AddAffectedOwners(unchanged);
+ Require(reloads.size()==1&&!reloads.front().failed&&!reloads.front().prefabBlockedSince&&
+         !reloads.front().prefabRetryAt&&!reloads.front().prefabInvalidationAttempted,
+   "fast-deferred prefab path was not preserved for the next F10 retry");
+ reloads.clear();Reset();DemandGenerationReload::active=false;
+}
+void RawAssetApiBindingRegression(){
+ // IL2CPP abstract interface slots have metadata but no native entry point.
+ // Exercise the startup binder, not just the already-populated runtime Api.
+ Reset();
+ struct MethodRow {MInfo info{};void* owner;const char* name;const char* result;uint32_t flags;unsigned parameters=0;};
+ static MethodRow rows[]={{{},(void*)0x9010,"get_isUnloaded","System.Boolean",0xdc6},
+   {{},(void*)0x9011,"RefCount","System.Int32",0xc6},
+   {{},(void*)0x9012,"get_isUnloaded","System.Boolean",0x886},
+   {{},(void*)0x9013,"get_isUnloaded","System.Boolean",0x9e6},
+   {{},nullptr,"get_isUnloaded","System.Boolean",0xdc6}};
+ rows[0].info.mp=nullptr;rows[1].info.mp=rows[2].info.mp=rows[3].info.mp=(void*)1;
+ auto oldApi=FullResourceReload::api;
+ auto previous=std::make_tuple(il2cpp_class_get_methods,il2cpp_method_get_name,il2cpp_method_get_param_count,
+   il2cpp_method_get_flags,il2cpp_method_get_return_type,il2cpp_type_get_name,il2cpp_class_get_type,
+   il2cpp_object_get_virtual_method,il2cpp_runtime_invoke);
+ auto restore=[&]{std::tie(il2cpp_class_get_methods,il2cpp_method_get_name,il2cpp_method_get_param_count,
+   il2cpp_method_get_flags,il2cpp_method_get_return_type,il2cpp_type_get_name,il2cpp_class_get_type,
+   il2cpp_object_get_virtual_method,il2cpp_runtime_invoke)=previous;FullResourceReload::api=oldApi;};
+ il2cpp_class_get_methods=[](void* klass,void** it)->void*{
+   for(auto i=uintptr_t(*it);i<std::size(rows);++i){*it=(void*)(i+1);if(rows[i].owner==klass)return &rows[i];}return nullptr;};
+ il2cpp_method_get_name=[](void* method)->const char*{return static_cast<MethodRow*>(method)->name;};
+ il2cpp_method_get_param_count=[](void* method)->uint32_t{return static_cast<MethodRow*>(method)->parameters;};
+ il2cpp_method_get_flags=[](void* method,uint32_t*)->uint32_t{return static_cast<MethodRow*>(method)->flags;};
+ il2cpp_method_get_return_type=[](void* method)->void*{return const_cast<char*>(static_cast<MethodRow*>(method)->result);};
+ il2cpp_type_get_name=[](void* type)->const char*{return static_cast<const char*>(type);};
+ il2cpp_class_get_type=[](void*)->void*{return const_cast<char*>("Beyond.Resource.IAssetProxy");};
+ il2cpp_object_get_virtual_method=[](void* self,void* method)->void*{
+   Require(self==assetProxyObject,"startup-bound lifecycle dispatch used the wrong proxy");
+   if(method==&rows[0])return &rows[3];if(method==&rows[1])return method;
+   throw std::runtime_error("startup-bound lifecycle dispatched the wrong contract");};
+ il2cpp_runtime_invoke=[](void* method,void* self,void** args,void** exception)->void*{
+   if(method==&rows[0]||method==&rows[2])throw std::runtime_error("raw asset invoked the abstract slot or nonvirtual base getter");
+   if(method==&rows[3]){Require(self==assetProxyObject,"startup-bound getter used the wrong proxy");return rawProxyUnloaded?&yes:&no;}
+   if(method==&rows[1])return &rawProxyRefs;
+   return Invoke(method,self,args,exception);};
+ try{
+   Require(!Exact(rows[0].owner,"get_isUnloaded",{},"System.Boolean",false),
+     "fixture did not reproduce the addressless abstract interface rejected by Exact");
+   FullResourceReload::BindRawAssetApi(rows[0].owner,rows[1].owner);
+   Require(FullResourceReload::api.rawAssetUnloaded==&rows[0]&&FullResourceReload::api.rawAssetRefCount==&rows[1]&&
+           !Address(FullResourceReload::api.rawAssetUnloaded),
+     "startup did not retain the abstract interface contract for later virtual dispatch");
+   auto rejects=[&](void* contract,const char* reason){
+     bool rejected=false;try{FullResourceReload::BindRawAssetApi(contract,rows[1].owner);}catch(const std::exception&){rejected=true;}
+     Require(rejected,reason);
+   };
+   rejects(rows[2].owner,"startup accepted the nonvirtual Loadable getter as an interface contract");
+   rows[0].flags|=0x10;rejects(rows[0].owner,"startup accepted a static interface getter");rows[0].flags&=~0x10;
+   rows[0].parameters=1;rejects(rows[0].owner,"startup accepted a getter with arguments");rows[0].parameters=0;
+   rows[0].result="System.Int32";rejects(rows[0].owner,"startup accepted the wrong interface return type");rows[0].result="System.Boolean";
+   rows[4].owner=rows[0].owner;rejects(rows[0].owner,"startup accepted an ambiguous interface slot");rows[4].owner=nullptr;
+   rows[1].info.mp=nullptr;rejects(rows[0].owner,"startup weakened concrete method address validation");rows[1].info.mp=(void*)1;
+   rejects(nullptr,"startup accepted an absent interface class");
+   // The actual cache gate must dispatch the interface bound above, rather than
+   // relying only on the hand-populated API used by the other reload fixtures.
+   DemandGenerationReload::PathReload batch;batch.path=modelPath;batch.hash=0x9014;
+   batch.poolDiscarded=batch.prefabInvalidated=batch.rawCaptured=true;
+   batch.rawAssets.push_back(RuntimeShapes::Ref::Make(assetProxyObject,false));
+   bool waiting=false;try{DemandGenerationReload::ReleasePath(batch);}catch(const std::exception& error){
+     waiting=std::string(error.what()).find("game raw prefab cache has not unloaded")!=std::string::npos;
+   }
+   Require(waiting&&!batch.cacheInvalidated,"startup-bound API skipped the native asset unload guard");
+   rawProxyUnloaded=true;DemandGenerationReload::ReleasePath(batch);
+   Require(batch.cacheInvalidated,"startup-bound API did not observe the concrete proxy's unloaded state");
+ }catch(...){restore();throw;}
+ restore();Reset();
 }
 void VersionedGenerationRouteRegression(){
  using namespace EiemDemandGenerationRoutes;
@@ -633,6 +760,12 @@ void PrefabProxyLookupGenerationRegression(){
     "failed preparation returned null or discarded an already committed generation alias");
   Require(D::SharedGetOrCreate(manager,unrelated,true,(void*)0x7900)==oldRoot&&fixtureProxyHash==unrelated&&preparations==2&&lookups==2,
     "failed preparation replaced native proxy lookup with a null result");
+  state->bundles.clear();state->unresolved={0};
+  Require(D::SharedGetOrCreate(manager,unrelated,true,(void*)0x7900)==oldRoot&&preparations==3&&lookups==3,
+    "unresolved retarget without a matching Bundle hint never reached request-local discovery");
+  D::sharedRequestDepth=0;
+  Require(D::SharedGetOrCreate(manager,unrelated,true,(void*)0x7900)==oldRoot&&preparations==3&&lookups==4,
+    "unresolved targets opened payloads outside a real load-tree request");
   Require(shared->graph.Size()==0&&shared->preparedGroups.empty()&&D::sharedLoadSubmits==loads,
     "failed preparation submitted assets or published a partial dependency group");
   std::cout<<"PASS preparation failure preserves the game proxy lookup exactly once and retains committed generation aliases\n";
@@ -781,6 +914,115 @@ void OwnerlessCachedPrefabGenerationRegression(){
    "ownerless F10 did not retire the cached prefab and model pool before the next load");
  reloads.clear();DemandGenerationReload::active=false;Reset();
 }
+void DirectPrefabGenerationRegression(){
+ using namespace DemandGenerationReload;Reset();reloads.clear();pendingUIPaths.clear();
+ directPartFixture=true;partUsesPool=false;
+ FullResourceReload::LivePart live;live.part=Ref::Make(mainPart,true);live.root=Ref::Make(oldRoot,true);live.path=modelPath;
+ auto owner=MakePartOwner(mainPart,live);
+ auto& batch=AddPath(modelPath,OwnerPathHash(owner));batch.owners.push_back({std::move(owner),OwnerPhase::Queued});
+ ReleasePath(batch);Start(batch);
+ Require(batch.cacheInvalidated&&batch.owners.front().phase==OwnerPhase::Done&&rawReloads==1&&
+         currentRoot==newRoot&&!prefabProxyUnloadCalls,
+   "a direct Prefab owner without PrefabInstantiateProxy did not refresh through the game lifecycle");
+ reloads.clear();Reset();
+}
+void DirectPrefabLeaseAndRetryRegression(){
+ using namespace DemandGenerationReload;
+ for(bool externalLease:{false,true}){
+  Reset();reloads.clear();pendingUIPaths.clear();directPartFixture=true;partUsesPool=false;
+  rawUnloadDelayed=true;rawProxyRefs=externalLease?2:1;
+  FullResourceReload::LivePart live;live.part=Ref::Make(mainPart,true);live.root=Ref::Make(oldRoot,true);live.path=modelPath;
+  auto owner=MakePartOwner(mainPart,live);auto& batch=AddPath(modelPath,OwnerPathHash(owner));
+  batch.owners.push_back({std::move(owner),OwnerPhase::Queued});
+  bool retained=false;try{ReleasePath(batch);}catch(const std::exception& error){
+   retained=std::string(error.what()).find("game raw prefab cache has not unloaded")!=std::string::npos;
+  }
+  Start(batch);
+  Require(retained&&!batch.cacheInvalidated&&!loadCalls&&rawProxyRefs==(externalLease?1:0),
+    "direct F10 bypassed a shared handle or the game's deferred asset unload");
+  // Run the real timeout/settlement path, then rescan identical declarations.
+  batch.started=GetTickCount64()-30001;DemandGenerationReload::active=true;Frame();
+  Require(batch.failed&&!DemandGenerationReload::active&&batch.owners.front().phase==OwnerPhase::Released,
+    "cache timeout lost the released owner needed for the next F10");
+  DemandLoadingProbe::InstalledGeneration unchanged;
+  AddAffectedOwners(unchanged);
+  Require(reloads.size()==1&&!reloads.front().failed&&reloads.front().owners.front().phase==OwnerPhase::Released,
+    "unchanged F10 forgot the owner after a published generation's cache failure");
+  rawProxyRefs=0;rawProxyUnloaded=true;ReleasePath(reloads.front());Start(reloads.front());
+  Require(rawReloads==1&&reloads.front().owners.front().phase==OwnerPhase::Done&&removeCalls==1,
+    "retry did not resume after native unload or released the same owner twice");
+ }
+ reloads.clear();Reset();
+}
+void PooledPrefabEvidenceRegression(){
+ using namespace DemandGenerationReload;Reset();reloads.clear();
+ auto owner=MakeAttempt().owners.front();
+ auto& batch=AddPath(modelPath,OwnerPathHash(owner));batch.owners.push_back({std::move(owner),OwnerPhase::Queued});
+ bool rejected=false;try{ReleasePath(batch);}catch(const std::exception& error){
+  rejected=std::string(error.what()).find("affected prefab proxy was not observed")!=std::string::npos;
+ }
+ Start(batch);Require(rejected&&!batch.cacheInvalidated&&!loadCalls,"pooled F10 silently accepted missing cache provenance");
+ reloads.clear();Reset();
+}
+void DirectPrefabNewHolderRetryRegression(){
+ using namespace DemandGenerationReload;Reset();reloads.clear();pendingUIPaths.clear();
+ directPartFixture=true;partUsesPool=false;rawUnloadDelayed=true;
+ FullResourceReload::LivePart live;live.part=Ref::Make(mainPart,true);live.root=Ref::Make(oldRoot,true);live.path=modelPath;
+ auto owner=MakePartOwner(mainPart,live);auto& batch=AddPath(modelPath,OwnerPathHash(owner));
+ batch.owners.push_back({std::move(owner),OwnerPhase::Queued});
+ try{ReleasePath(batch);}catch(const std::exception&){}
+ batch.started=GetTickCount64()-30001;DemandGenerationReload::active=true;Frame();
+ Require(batch.failed,"new-holder retry fixture did not first fail at the real cache gate");
+ // The game created a different part while the failed transaction was idle.
+ // The old part still has no root; only actual live-owner capture can find it.
+ partHandleLive=true;rawProxyRefs=1;
+ FullResourceReload::LivePart newHolder;newHolder.part=Ref::Make(weaponPart,true);newHolder.root=Ref::Make(oldWeaponRoot,true);
+ newHolder.path=modelPath;FullResourceReload::liveParts[weaponPart]=newHolder;
+ DemandLoadingProbe::InstalledGeneration unchanged;AddAffectedOwners(unchanged);
+ Require(reloads.size()==1&&reloads.front().owners.size()==2&&std::any_of(
+   reloads.front().owners.begin(),reloads.front().owners.end(),[](const auto& item){
+     return item.owner.component.Get()==weaponPart&&item.phase==OwnerPhase::Queued;
+   }),"unchanged retry ignored a new live holder of the previously failed logical path");
+ reloads.clear();Reset();
+}
+void ParentWeaponGenerationRegression(){
+ using namespace DemandGenerationReload;Reset();reloads.clear();pendingUIPaths.clear();
+ parentWeaponFixture=true;rawUnloadDelayed=true;
+ RuntimeControls::specs.at("marker").package="changed";
+ FullResourceReload::LivePart parent;parent.part=Ref::Make(mainPart,true);parent.model=Ref::Make(model,true);
+ parent.root=Ref::Make(oldRoot,true);parent.path=modelPath;FullResourceReload::liveParts[mainPart]=parent;
+ FullResourceReload::LivePart child;child.part=Ref::Make(weaponPart,true);child.root=Ref::Make(oldWeaponRoot,true);
+ child.path="assets/weapon.prefab";FullResourceReload::liveParts[weaponPart]=child;
+ transformParents[weaponTransform]=prefabTransform;
+ DemandLoadingProbe::InstalledGeneration next;next.delta.changed=true;next.delta.packages.insert("changed");
+ AddAffectedOwners(next);
+ Require(reloads.size()==2,"parent and direct weapon were not captured as distinct logical paths");
+ auto parentIt=std::find_if(reloads.begin(),reloads.end(),[](const auto& row){return row.path==modelPath;});
+ auto childIt=std::find_if(reloads.begin(),reloads.end(),[](const auto& row){return row.path=="assets/weapon.prefab";});
+ Require(childIt->owners.front().rebuildParent.Get()==model,"child weapon was not assigned to the parent game lifecycle");
+ FullResourceReload::RememberPrefabProxy(parentIt->hash,instance);
+ // Exercise the harder order: child is visited before its parent releases it.
+ ReleasePath(*childIt);Require(childIt->owners.front().phase==OwnerPhase::Queued,"live child ended prematurely");
+ ReleasePath(*parentIt);
+ bool retained=false;try{ReleasePath(*childIt);}catch(const std::exception&){retained=true;}
+ Start(*parentIt);
+ Require(retained&&!loadCalls&&childIt->owners.front().phase==OwnerPhase::Ended&&!FullResourceReload::liveParts.count(weaponPart),
+   "parent loaded before its retired weapon's raw cache became fresh");
+ childIt->started=GetTickCount64()-30001;DemandGenerationReload::active=true;cursor=size_t(parentIt-reloads.begin());
+ Frame();Frame();
+ Require(!DemandGenerationReload::active&&parentIt->failed&&parentIt->owners.front().phase==OwnerPhase::Released,
+   "failed child cache lost its already-released parent instead of deferring it for retry");
+ DemandLoadingProbe::InstalledGeneration unchanged;AddAffectedOwners(unchanged);
+ parentIt=std::find_if(reloads.begin(),reloads.end(),[](const auto& row){return row.path==modelPath;});
+ childIt=std::find_if(reloads.begin(),reloads.end(),[](const auto& row){return row.path=="assets/weapon.prefab";});
+ Require(parentIt!=reloads.end()&&childIt!=reloads.end()&&!parentIt->failed&&!childIt->failed,
+   "unchanged F10 did not retain both the parent and its retired weapon");
+ rawProxyUnloaded=true;ReleasePath(*childIt);ReleasePath(*parentIt);Start(*childIt);Start(*parentIt);PollOwner(parentIt->owners.front());
+ Require(parentIt->owners.front().phase==OwnerPhase::Done&&childIt->owners.front().phase==OwnerPhase::Ended&&
+         weaponUnloads==1&&weaponReloads==1&&rawReloads==1&&weaponRoot==newWeaponRoot&&loadCalls==1,
+   "parent/child F10 duplicated the retired weapon or failed to recreate it through ReloadWeapon");
+ reloads.clear();Reset();
+}
 void DemandGenerationModIsolationRegression(){
  using namespace DemandGenerationReload;
  auto source=std::make_shared<DemandLoadingProbe::InstalledGeneration>();
@@ -793,6 +1035,26 @@ void DemandGenerationModIsolationRegression(){
          filtered->standalone->size()==1&&filtered->standalone->front().id=="good"&&
          filtered->snapshot.size()==1&&filtered->snapshot.count("good")&&filtered->targets.size()==1&&filtered->targets.front().mod=="good",
          "one invalid Mod was not isolated from the installed generation");
+}
+void ControlProgramGenerationRegression(){
+ namespace D=DemandLoadingProbe;
+ auto savedGame=gameDirectory;auto savedGeneration=D::CurrentInstalledGeneration();
+ auto folder=std::filesystem::absolute("bin")/("control-generation-fixture-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));
+ Require(std::filesystem::create_directory(folder),"control generation fixture exists");
+ struct Restore{std::filesystem::path game,folder;std::shared_ptr<const D::InstalledGeneration> generation;~Restore(){gameDirectory=game;std::atomic_store(&D::installedGeneration,generation);std::error_code error;std::filesystem::remove_all(folder,error);}} restore{savedGame,folder,savedGeneration};
+ gameDirectory=folder;auto root=folder/"plugin/mods/outer/controls";std::filesystem::create_directories(root);
+ auto write=[&](const std::string& source){std::ofstream stream(root/"mod.ini",std::ios::binary|std::ios::trunc);stream<<source;Require(bool(stream),"control fixture write");};
+ const std::string source="[Mod]\nformat=3\nid=ControlFixture\ncontrols=ini\n[ParameterMode]\nvariable=$mode\ntype=bool\ndefault=true\npublic=true\n[ActionToggle]\npublic=true\ncode=\n    $mode = !$mode\n[EventToggle]\nkey=F7\naction=ActionToggle\n";
+ write(source);std::atomic_store(&D::installedGeneration,std::shared_ptr<const D::InstalledGeneration>{});
+ auto first=D::BuildInstalledGeneration();Require(first->authors.size()==1&&first->packages->size()==1&&first->packages->front().program,"installed catalog lost INI program");const auto instance=first->packages->front().id;
+ D::PublishInstalledGeneration(first);write(source+"[UIMode]\ntype=checkbox\nvariable=$mode\n");
+ auto ui=D::BuildInstalledGeneration();Require(ui->delta.controlOnlyPackages.count(instance)&&ui->packages->front().program->ui.count("UIMode"),"UI-only catalog edit rebuilds resources or lost UI");
+ D::PublishInstalledGeneration(ui);write(source+"[ActionBad]\ncode=$missing=1\n");
+ auto invalid=D::BuildInstalledGeneration();Require(invalid->authors.size()==1&&!invalid->packages->front().loadError.empty()&&invalid->packages->front().program->ui.count("UIMode")&&invalid->delta.removedPackages.empty()&&invalid->delta.controlOnlyPackages.count(instance)&&D::InstalledGenerationFilesUnchanged(*invalid),"invalid edit deleted Mod, lost previous program, or violated precommit file guard");
+ D::PublishInstalledGeneration(invalid);write(source);
+ auto repaired=D::BuildInstalledGeneration();Require(repaired->packages->front().loadError.empty()&&repaired->packages->front().program->ui.empty(),"repaired INI retained old program/error");
+ D::PublishInstalledGeneration(repaired);std::filesystem::remove(root/"mod.ini");auto removed=D::BuildInstalledGeneration();Require(removed->delta.removedPackages.count(instance)&&removed->packages->empty(),"actual Mod removal retained invalid-edit fallback");
+ std::cout<<"PASS installed INI controls: nested discovery, shared parser, UI-only delta, invalid edit retains last-good program, repaired edit and actual removal\n";
 }
 void IdlePoolRegression(){
  using namespace FullResourceReload;Reset();auto a=MakeAttempt();a.owners.clear();currentRoot=nullptr;
@@ -2459,7 +2721,7 @@ void DependencyOnlyMeshRouteRegression(){
  struct Restore{decltype(oldApi) a;decltype(oldS) s;decltype(oldCatalog) catalog;decltype(oldManifests) manifests;decltype(oldScopes) scopes;
   ~Restore(){D::api=a;S::api=s;std::atomic_store(&D::installedGeneration,catalog);D::manifests=std::move(manifests);D::scopes=std::move(scopes);Reset();}
  } restore{oldApi,oldS,oldCatalog,oldManifests,oldScopes};
- D::api.packSize=16;D::api.bundleOffset=0;D::api.assetOffset=8;D::api.subLookup=(void*)181;
+ D::api.packSize=16;D::api.bundleOffset=0;D::api.assetOffset=8;D::api.subLookup=D::api.lookup=(void*)181;
  S::api.bundleName=(void*)143;S::api.manifestData=(void*)150;S::api.mappedBase=(void*)151;S::api.mappedLength=(void*)152;S::api.mappedData=(void*)153;S::api.bundles=(void*)154;
  S::api.arraySize=24;S::api.arrayCount=4;S::api.arrayHead=16;S::api.bundleSize=64;S::api.bundleNameOffset=20;S::api.bundleKeyOffset=40;
  constexpr uint64_t key=0xF0FFD8EC6AA24E24ULL;dependencyNames={{"main/weapon.ab",key}};BuildDependencyManifest();
@@ -2472,9 +2734,15 @@ void DependencyOnlyMeshRouteRegression(){
  auto resolved=D::Current(dependencyManifest);
  Require(resolved->bindings.size()==1&&resolved->bindings[0].bundle==key&&resolved->bindings[0].asset==0&&resolved->bundles.count(key),
   "dependency-only Mesh was dropped instead of routed by its current native Bundle key with exact payload identity deferred");
+ D::api.subLookup=(void*)183;materialVfsBundle=0x1111976;materialVfsAsset=42;
+ auto changed=std::make_shared<D::InstalledGeneration>(*routed);changed->serial++;
+ std::atomic_store(&D::installedGeneration,std::shared_ptr<const D::InstalledGeneration>(changed));auto logical=D::Current(dependencyManifest);
+ Require(logical->bindings.size()==1&&logical->bindings[0].bundle==materialVfsBundle&&logical->bindings[0].asset==42,
+  "stale exporter Bundle hint overrode the current logical target");
  auto removed=std::make_shared<D::InstalledGeneration>();removed->serial=routed->serial+1;removed->deltaBundles.insert("main/weapon.ab");
+ removed->delta.targets.insert({target.source.path,target.source.asset});removed->deltaRoutes[target.source].insert("main/weapon.ab");
  std::atomic_store(&D::installedGeneration,std::shared_ptr<const D::InstalledGeneration>(removed));auto restored=D::Current(dependencyManifest);
- Require(restored->bindings.empty()&&restored->bundles.count(key),"removing an unaddressable Mesh target lost its original Bundle route");
+ Require(restored->bindings.empty()&&restored->bundles.count(key)&&restored->bundles.count(materialVfsBundle),"F10 removed-target routing did not preserve both legacy hint and current logical roots");
  Require(Test::memoryCalls==loaded&&!leaseRequests&&!sceneQueries,"resolving weapon routes loaded native resources or scanned the scene");
 }
 void StartupDependencyHookRegression(bool profile=false){
@@ -2598,6 +2866,9 @@ int main(int argc,char** argv){
   check("idle stream lifetime",IdleStreamLifetimeRegression);
   check("same-CAB Bundle reload",NativeBundleIdentityReloadRegression);
   check("game prefab proxy cache invalidation",PrefabProxyInvalidationRegression);
+  check("partially unloaded prefab proxies",PrefabProxyPartialInvalidationRegression);
+  check("demand F10 throttles and quickly defers retained prefab proxies",PrefabProxyRetainedWaitRegression);
+  check("raw asset startup binds addressless abstract interface",RawAssetApiBindingRegression);
   check("demand F10 routes retained Bundles by generation and restores deleted targets",VersionedGenerationRouteRegression);
   check("demand F10 reuses cached source views across dependency groups",PreparedRootViewCacheRegression);
   check("cross-scene cached root retains authored dependencies",CrossGroupRootDeclarationRegression);
@@ -2609,7 +2880,14 @@ int main(int argc,char** argv){
   std::cout<<"PASS demand synthetic dependencies and sync game-proxy lifecycle: matched lazy view, out-of-tree dependency polls, direct fast path, existing async promotion, terminal failure/unload, no unmatched loads\n";
   check("matched Prefab routes past old proxy cache and unrelated lookup stays lazy",PrefabProxyLookupGenerationRegression);
   check("demand F10 invalidates cached prefab without active owner",OwnerlessCachedPrefabGenerationRegression);
+  check("demand F10 direct Prefab weapon without instantiate proxy",DirectPrefabGenerationRegression);
+  check("demand F10 respects direct Prefab leases and retries unchanged bytes",DirectPrefabLeaseAndRetryRegression);
+  check("demand F10 unchanged retry captures new holders",DirectPrefabNewHolderRetryRegression);
+  check("demand F10 still requires pooled Prefab cache evidence",PooledPrefabEvidenceRegression);
+  check("demand F10 parent lifecycle recreates its direct weapon",ParentWeaponGenerationRegression);
+  std::cout<<"PASS direct Prefab F10: no instantiate proxy, native deferred unload/shared handles, unchanged retry, parent weapon retirement and rebuild, pooled provenance guard\n";
   check("demand F10 Mod failure isolation",DemandGenerationModIsolationRegression);
+  check("unified INI installed generation retention",ControlProgramGenerationRegression);
   check("native stream read views",NativeStreamViewRegression);
   check("static Renderer verification and visibility",[]{
     Reset();staticRenderers=true;staticSkinCalls=0;staticEnabled=1;

@@ -14,9 +14,11 @@ struct Snapshot {
   std::map<std::string,bool> keySwitchEnabled;
   std::shared_ptr<const std::vector<EiemDirectory::Package>> graph;
   std::map<std::string,EiemVariables> values;
+  std::map<std::string,EiemVariables> effective;
+  std::map<std::string,std::string> errors;
   std::map<std::string,std::map<std::string,EiemShapeAnimation::Playback>> animations;
 };
-enum class Action { Select, Keyboard, Invoke, Hold, Value, AnimationPlay, AnimationPause, AnimationStop, AnimationSpeed, AnimationReset };
+enum class Action { Select, Keyboard, Invoke, Hold, Value, AnimationPlay, AnimationPause, AnimationStop, AnimationSpeed, AnimationReset, InvokeAction };
 struct Command {
   uint64_t revision=0, scope=0;
   Action action=Action::Select;

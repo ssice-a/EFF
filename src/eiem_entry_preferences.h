@@ -37,6 +37,7 @@ class EiemEntryPreferences {
   static void Validate(const EiemDirectory::Package& p,const EiemVariables& values) {
     for (const auto& v:values) {
       EiemDirectory::Require(p.defaults.count(v.first) && std::isfinite(v.second),"undeclared/nonfinite state value");
+      if(p.program){auto d=p.program->parameters.find(v.first);if(d!=p.program->parameters.end())d->second.Validate(v.second);}
       for(const auto& clip:p.shapeAnimations)if(clip.second.speedVariable==v.first)EiemDirectory::Require(v.second>0,"animation speed must be positive");
       auto control=p.controls.find(v.first);
       if (control!=p.controls.end()) EiemDirectory::Require(v.second>=control->second.minimum && v.second<=control->second.maximum,"state exceeds shape range");
@@ -69,9 +70,9 @@ class EiemEntryPreferences {
     if (p.persistent.empty()) return values;
     EiemVariables saved;bool queued=false;
     {std::lock_guard<std::mutex> lock(mutex);auto found=entries.find(Path(p));
-      if(found!=entries.end() && found->second.owner!=p.id) requireOwner=true;
-      if(found!=entries.end() && found->second.owner==p.id && found->second.dirty) {saved=found->second.values;queued=true;}}
-    if(!queued) saved=Read(Path(p),p.id,requireOwner);
+      if(found!=entries.end() && found->second.owner!=EiemDirectory::DeclaredId(p)) requireOwner=true;
+      if(found!=entries.end() && found->second.owner==EiemDirectory::DeclaredId(p) && found->second.dirty) {saved=found->second.values;queued=true;}}
+    if(!queued) saved=Read(Path(p),EiemDirectory::DeclaredId(p),requireOwner);
     EiemVariables selected;
     for (const auto& key:p.persistent) if (saved.count(key)) selected[key]=saved.at(key);
     Validate(p,selected);
@@ -81,7 +82,7 @@ class EiemEntryPreferences {
   EiemVariables Load(const EiemDirectory::Package& p) {
     auto values=Preview(p);if(p.persistent.empty()) return values;
     std::lock_guard<std::mutex> lock(mutex);auto& entry=entries[Path(p)];
-    if(entry.owner!=p.id) {entry=Entry{};entry.owner=p.id;}
+    if(entry.owner!=EiemDirectory::DeclaredId(p)) {entry=Entry{};entry.owner=EiemDirectory::DeclaredId(p);}
     entry.values.clear();for(const auto& key:p.persistent) entry.values[key]=values.at(key);
     return values;
   }
@@ -91,7 +92,7 @@ class EiemEntryPreferences {
     std::lock_guard<std::mutex> lock(mutex);
     if (p.persistent.empty() && !entries.count(Path(p))) return;
     auto& entry=entries[Path(p)];
-    if(entry.owner!=p.id) {entry=Entry{};entry.owner=p.id;}
+    if(entry.owner!=EiemDirectory::DeclaredId(p)) {entry=Entry{};entry.owner=EiemDirectory::DeclaredId(p);}
     if (entry.values!=selected) {entry.values=std::move(selected);entry.dirty=true;}
   }
   template<class Log> void Flush(Log log,bool force=false) {

@@ -11,9 +11,9 @@ int main() {
   try {
     std::filesystem::create_directories(root);
     const std::string ini =
-        "[Mod]\nformat=3\nid=FormatThree\n\n"
+        "[Mod]\nformat=3\nid=FormatThree\nname=Human readable name\nmanager.note=ignored metadata\n\n"
         "[Constants]\n$outfit=0\n\n"
-        "[MeshBody]\npath=author/characters/body.mesh\n\n"
+        "[MeshBody]\npath=author/characters/body.mesh\nfuture.mesh_option=ignored\n\n"
         "[ShapeAnimationWalk]\npath=author/controls.effres\n\n"
         "[MaterialAnimationGlow]\npath=author/controls.effres\n\n"
         "[EffectAttachmentSpark]\npath=author/controls.effres\nauthor=ResourceEffectAuthor_Spark\n\n"
@@ -25,7 +25,7 @@ int main() {
         "[ResourceEffectAuthor_Spark]\ntype=effect-author\npath=effects/author/spark.effres\n\n"
         "[ResourceControls]\ntype=controls\npath=author/controls.effres\n\n"
         "[PartBody]\nmesh=MeshBody\nmaterial=MaterialBody\nvisible=1\n\n"
-        "[ReplaceBody]\ntarget.path=packages/com.hg.game/runtime/characters/body.asset\ntarget.asset=Body\nparts=PartBody\n";
+        "[ReplaceBody]\ntarget.path=packages/com.hg.game/runtime/characters/body.asset\ntarget.asset=Body\nparts=PartBody\nmanager.target_note=ignored\n";
     { std::ofstream output(root / "mod.ini", std::ios::binary); output << ini; }
 
     auto manifest = EiemRuntimeAuthorManifest::Read(root);

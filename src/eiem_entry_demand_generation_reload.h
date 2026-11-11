@@ -3,23 +3,29 @@
 namespace DemandGenerationReload {
 using FullResourceReload::Owner;
 using RuntimeShapes::Ref;
+constexpr ULONGLONG kPrefabProxyRetryIntervalMs=250;
+constexpr ULONGLONG kPrefabProxyWaitTimeoutMs=3000;
 
 struct Prepared {
   std::shared_ptr<const DemandLoadingProbe::InstalledGeneration> generation;
   EiemGlobalConfig config;
 };
-enum class OwnerPhase {AwaitExisting, Queued, Released, WaitingModel, WaitingUI, Done, Failed};
+enum class OwnerPhase {AwaitExisting, Queued, Released, WaitingModel, WaitingUI, Done, Ended, Failed};
 struct OwnerReload {
   Owner owner;
   OwnerPhase phase=OwnerPhase::Queued;
   ULONGLONG started=0;
   bool timeoutLogged=false;
+  Ref rebuildParent;
 };
 struct PathReload {
   std::string path;
   uint64_t hash=0;
   std::vector<OwnerReload> owners;
   bool poolDiscarded=false,cacheInvalidated=false;
+  bool prefabInvalidated=false,prefabInvalidationAttempted=false,rawCaptured=false;
+  ULONGLONG prefabRetryAt=0,prefabBlockedSince=0;
+  std::vector<Ref> rawAssets;
   bool failed=false;
   ULONGLONG started=0;
   bool waitLogged=false;
@@ -59,12 +65,12 @@ bool Affected(void* root,const DemandLoadingProbe::InstalledGeneration& next) {
   if(!next.delta.changed)return false;
   if(!RuntimeShapes::Alive(root))return true;
   std::set<std::string> changedParts;
-  for(const auto& target:next.targets)if(next.delta.packages.count(target.mod))
+  for(const auto& target:next.targets)if(next.delta.packages.count(target.mod)&&!next.delta.controlOnlyPackages.count(target.mod))
     changedParts.insert(target.partIds.begin(),target.partIds.end());
   for(const auto& renderer:FullResourceReload::Components(root)) {
     auto mesh=RuntimeShapes::SourceMesh(renderer.Get());
     auto spec=RuntimeShapes::Match(renderer.Get(),mesh);
-    if(spec&&next.delta.packages.count(spec->package))return true;
+    if(spec&&next.delta.packages.count(spec->package)&&!next.delta.controlOnlyPackages.count(spec->package))return true;
     if(changedParts.empty()||!RuntimeShapes::api.rendererGameObject)continue;
     auto gameObject=Ref::Make(RuntimeShapes::Call(RuntimeShapes::api.rendererGameObject,renderer.Get()),false);
     if(!RuntimeShapes::Alive(gameObject.Get()))continue;
@@ -138,6 +144,14 @@ Owner MakePartOwner(void* part,const FullResourceReload::LivePart& live) {
     owner.path=String(FullResourceReload::ReadObject(
       config.Get(),"modelPath","System.String"));
   }
+  auto config=owner.config.Get()?owner.config:FullResourceReload::PartConfig(part);
+  unsigned char pooled=0;il2cpp_field_get_value(config.Get(),FullResourceReload::Field(
+    il2cpp_object_get_class(config.Get()),"usePool","System.Boolean"),&pooled);
+  owner.directAsset=!pooled;
+  if(owner.directAsset){
+    owner.rawAsset=FullResourceReload::PartRawAsset(part);
+    Require(owner.rawAsset.Get()||!RuntimeShapes::Alive(owner.root.Get()),"direct model part has no raw AssetProxy: "+owner.path);
+  }
   EnsureOwnerPathHash(owner);
   return owner;
 }
@@ -185,8 +199,22 @@ void Prepare() {
 }
 
 void AddAffectedOwners(const DemandLoadingProbe::InstalledGeneration& candidate) {
+  auto previous=std::move(reloads);
   reloads.clear();pendingUIPaths.clear();cursor=0;uncoveredHelpers=0;
   std::vector<OwnerReload> foundOwners;std::set<std::string> affectedPaths;
+  // A failed published path remains affected even when the disk delta is
+  // empty. Capture holders created since that failure before merging retries.
+  for(const auto& old:previous)if(old.failed)
+    affectedPaths.insert(FullResourceReload::NormalizeAssetPath(old.path));
+  for(auto it=FullResourceReload::rawPrefabsByPath.begin();it!=FullResourceReload::rawPrefabsByPath.end();){
+    bool affected=false;
+    for(auto entry=it->second.begin();entry!=it->second.end();){
+      if(!entry->proxy.Get()){entry=it->second.erase(entry);continue;}
+      auto source=entry->source.Get();if(RuntimeShapes::Alive(source)&&Affected(source,candidate))affected=true;++entry;
+    }
+    if(affected){AddPath(it->first,PathHash(it->first));affectedPaths.insert(it->first);}
+    if(it->second.empty())it=FullResourceReload::rawPrefabsByPath.erase(it);else ++it;
+  }
   for(auto it=FullResourceReload::prefabProxySourcesByPath.begin();it!=FullResourceReload::prefabProxySourcesByPath.end();) {
     bool affected=false;
     for(auto source=it->second.begin();source!=it->second.end();) {
@@ -230,6 +258,43 @@ void AddAffectedOwners(const DemandLoadingProbe::InstalledGeneration& candidate)
     if(!affectedPaths.count(FullResourceReload::NormalizeAssetPath(item.owner.path)))continue;
     auto& batch=AddPath(item.owner.path,OwnerPathHash(item.owner));
     batch.owners.push_back(std::move(item));
+  }
+  // Publication precedes owner refresh. A cache-stage failure must survive a
+  // subsequent unchanged disk snapshot: that F10 still has work to retry.
+  for(auto& old:previous)if(old.failed){
+    auto& batch=AddPath(old.path,old.hash);
+    const bool empty=batch.owners.empty()&&!batch.rawCaptured;
+    if(empty){batch=std::move(old);batch.failed=false;batch.started=0;batch.lastError.clear();batch.waitLogged=false;}
+    else{
+      for(auto& item:old.owners)if(std::none_of(batch.owners.begin(),batch.owners.end(),[&](const auto& next){
+          return next.owner.component.Get()==item.owner.component.Get();}))batch.owners.push_back(std::move(item));
+      batch.rawAssets.insert(batch.rawAssets.end(),old.rawAssets.begin(),old.rawAssets.end());
+    }
+    // Cached sources may have appeared while the transaction was idle.
+    // Revisit the pool/raw observations; retain proof of an already-unloaded
+    // instantiate proxy so an absent old proxy is not required a second time.
+    batch.poolDiscarded=false;batch.cacheInvalidated=false;batch.rawCaptured=false;
+    batch.prefabInvalidationAttempted=false;batch.prefabRetryAt=0;batch.prefabBlockedSince=0;
+    for(auto& item:batch.owners)if(item.phase==OwnerPhase::Released){
+      auto root=FullResourceReload::CurrentRoot(item.owner);
+      if(RuntimeShapes::Alive(root)){
+        item.owner.root=Ref::Make(root,false);item.owner.oldRootId=FullResourceReload::Id(root);
+        if(item.owner.directAsset)item.owner.rawAsset=FullResourceReload::PartRawAsset(item.owner.component.Get());
+        item.phase=OwnerPhase::Queued;batch.poolDiscarded=false;batch.prefabInvalidated=false;
+        batch.cacheInvalidated=false;batch.rawCaptured=false;batch.prefabInvalidationAttempted=false;
+        batch.prefabRetryAt=0;batch.prefabBlockedSince=0;
+      }
+    }
+    Log("[DEMAND-F10-PATH-RETRY] path=%s previousCacheFailure=1 diskDeltaRequired=0",batch.path.c_str());
+  }
+  for(auto& batch:reloads)for(auto& child:batch.owners){
+    if(!child.owner.viewPart||child.owner.uiModel||!FullResourceReload::Inherits(
+       child.owner.component.Get(),"Beyond.Gameplay.View","WeaponModelViewPart"))continue;
+    for(const auto& parentBatch:reloads)for(const auto& parent:parentBatch.owners){
+      if(parent.owner.viewPart||parent.owner.uiModel||!parent.owner.weapons.Get())continue;
+      if(FullResourceReload::RootContains(parent.owner.root.Get(),child.owner.root.Get()))
+        child.rebuildParent=parent.owner.component;
+    }
   }
   for(const auto& row:FullResourceReload::liveHelperModels){
     auto helperRoot=row.second.root.Get();if(!RuntimeShapes::Alive(helperRoot)||!Affected(helperRoot,candidate))continue;
@@ -279,6 +344,8 @@ void AppendOwner(Owner owner,OwnerPhase phase) {
   });
   if(duplicate==batch.owners.end())batch.owners.push_back({std::move(owner),phase});
   batch.started=0;batch.poolDiscarded=false;batch.cacheInvalidated=false;
+  batch.prefabInvalidated=false;batch.prefabInvalidationAttempted=false;batch.rawCaptured=false;
+  batch.prefabRetryAt=0;batch.prefabBlockedSince=0;
   batch.failed=false;
 }
 
@@ -286,6 +353,17 @@ void StartLoads(PathReload& batch) {
   for(auto& item:batch.owners)if(item.phase==OwnerPhase::Released){
     auto& owner=item.owner;item.started=GetTickCount64();item.timeoutLogged=false;
     try{
+      bool waitingForChild=false;
+      for(const auto& childBatch:reloads)for(const auto& child:childBatch.owners)
+        if(child.rebuildParent.Get()==owner.component.Get()){
+          if(childBatch.failed){
+            batch.failed=true;
+            Log("[DEMAND-F10-PARENT-DEFERRED] path=%s weaponPath=%s retryRetainsReleasedOwner=1",
+              owner.path.c_str(),childBatch.path.c_str());
+          }
+          waitingForChild=waitingForChild||!childBatch.cacheInvalidated;
+        }
+      if(waitingForChild)continue;
       if(owner.uiModel){
         owner.uiRequest=FullResourceReload::LoadUIModel(owner.component.Get(),owner.path,owner.uiParent.Get(),nullptr,{});
         item.phase=OwnerPhase::WaitingUI;
@@ -305,12 +383,29 @@ void StartLoads(PathReload& batch) {
 
 void ReleasePath(PathReload& batch) {
   if(!batch.started)batch.started=GetTickCount64();
+  if(!batch.rawCaptured){
+    auto remember=[&](void* proxy){if(proxy&&std::none_of(batch.rawAssets.begin(),batch.rawAssets.end(),
+        [&](const auto& ref){return ref.Get()==proxy;}))batch.rawAssets.push_back(Ref::Make(proxy,false));};
+    for(const auto& item:batch.owners)remember(item.owner.rawAsset.Get());
+    auto found=FullResourceReload::rawPrefabsByPath.find(FullResourceReload::NormalizeAssetPath(batch.path));
+    if(found!=FullResourceReload::rawPrefabsByPath.end())for(const auto& raw:found->second)remember(raw.proxy.Get());
+    batch.rawCaptured=true;
+  }
   for(auto& item:batch.owners){
     auto& owner=item.owner;
+    if(item.rebuildParent.Get()&&(item.phase==OwnerPhase::Queued||item.phase==OwnerPhase::AwaitExisting)){
+      // UnloadWeapons/ReloadWeapon owns this part's lifecycle. Never resurrect
+      // the old part after the parent has removed it from the component.
+      if(!RuntimeShapes::Alive(FullResourceReload::CurrentRoot(owner))){
+        item.phase=OwnerPhase::Ended;
+        Log("[DEMAND-F10-OWNER-COVERED] path=%s parentRecreatesWeapon=1 oldPartReloaded=0",owner.path.c_str());
+      }
+      continue;
+    }
     if(item.phase==OwnerPhase::AwaitExisting){
       auto root=FullResourceReload::CurrentRoot(owner);
       if(!RuntimeShapes::Alive(root)){
-        item.phase=OwnerPhase::Done;
+        item.phase=OwnerPhase::Ended;
         Log("[DEMAND-F10-OWNER-ABSENT] path=%s reason=old-owner-ended futureRequestUsesCurrentGeneration=1",owner.path.c_str());
         continue;
       }
@@ -352,7 +447,36 @@ void ReleasePath(PathReload& batch) {
   }
   if(!batch.cacheInvalidated){
     Require(batch.hash,"affected prefab path hash unavailable: "+batch.path);
-    FullResourceReload::InvalidatePrefabProxyCache(batch.hash,batch.path,!batch.owners.empty());
+    if(!batch.prefabInvalidated||FullResourceReload::prefabProxiesByPath.count(batch.hash)){
+      const auto now=GetTickCount64();
+      if(batch.prefabRetryAt&&now<batch.prefabRetryAt)return;
+      batch.prefabRetryAt=0;
+      const bool pooled=!batch.prefabInvalidated&&std::any_of(batch.owners.begin(),batch.owners.end(),[](const auto& item){
+        return !item.owner.directAsset&&item.phase!=OwnerPhase::Ended;
+      });
+      const bool logAttempt=!batch.prefabInvalidationAttempted;batch.prefabInvalidationAttempted=true;
+      try{
+        FullResourceReload::InvalidatePrefabProxyCache(batch.hash,batch.path,pooled,logAttempt);
+        batch.prefabInvalidated=true;batch.prefabBlockedSince=0;
+      }catch(const FullResourceReload::PrefabProxyRetainedError&){
+        if(!batch.prefabBlockedSince)batch.prefabBlockedSince=now;
+        batch.prefabRetryAt=now+kPrefabProxyRetryIntervalMs;throw;
+      }catch(...){batch.prefabRetryAt=now+kPrefabProxyRetryIntervalMs;throw;}
+    }
+    for(const auto& raw:batch.rawAssets)if(auto proxy=raw.Get()){
+      Require(FullResourceReload::api.rawAssetUnloaded&&FullResourceReload::api.rawAssetRefCount,
+        "game raw AssetProxy lifecycle API unavailable");
+      auto unloaded=il2cpp_object_get_virtual_method(proxy,FullResourceReload::api.rawAssetUnloaded);
+      Require(unloaded,"game raw AssetProxy unload-state implementation unavailable");
+      if(!RuntimeShapes::Scalar<unsigned char>(unloaded,proxy)){
+        auto refCount=il2cpp_object_get_virtual_method(proxy,FullResourceReload::api.rawAssetRefCount);
+        Require(refCount,"game raw AssetProxy refcount implementation unavailable");
+        auto refs=RuntimeShapes::Scalar<int>(refCount,proxy);
+        throw std::runtime_error("game raw prefab cache has not unloaded: "+batch.path+" handles="+std::to_string(refs));
+      }
+    }
+    Log("[DEMAND-F10-ASSET-CACHE] path=%s rawProxies=%zu gameHandlesReleased=1 cacheUnloaded=1",
+      batch.path.c_str(),batch.rawAssets.size());
     batch.cacheInvalidated=true;
   }
 }
@@ -420,13 +544,19 @@ void Frame() {
       }
     }
   size_t ownerCount=0,settled=0,failed=0,failedPaths=0,settledPaths=0;
+  const auto now=GetTickCount64();
+  for(auto& batch:reloads)if(!batch.failed&&!batch.cacheInvalidated&&batch.prefabBlockedSince&&
+      now-batch.prefabBlockedSince>=kPrefabProxyWaitTimeoutMs){
+    batch.failed=true;
+    Log("[DEMAND-F10-PATH-FAIL] path=%s elapsedMs=%llu phase=prefab-proxy-release retryOnNextF10=1 otherPathsContinue=1",
+      batch.path.c_str(),(unsigned long long)(now-batch.prefabBlockedSince));
+  }
   for(auto& batch:reloads)if(!batch.failed&&batch.started&&GetTickCount64()-batch.started>30000&&
       !batch.cacheInvalidated){
     batch.failed=true;
-    for(auto& item:batch.owners)if(item.phase!=OwnerPhase::Done&&item.phase!=OwnerPhase::Failed)item.phase=OwnerPhase::Failed;
     const bool ownersReleased=std::all_of(batch.owners.begin(),batch.owners.end(),[](const auto& item){
       return item.phase==OwnerPhase::Released||item.phase==OwnerPhase::WaitingModel||item.phase==OwnerPhase::WaitingUI||
-        item.phase==OwnerPhase::Done||item.phase==OwnerPhase::Failed;
+        item.phase==OwnerPhase::Done||item.phase==OwnerPhase::Ended||item.phase==OwnerPhase::Failed;
     });
     Log("[DEMAND-F10-PATH-FAIL] path=%s elapsedMs=%llu phase=owner-release oldOwnersReleased=%d cacheInvalidated=%d otherPathsContinue=1",
       batch.path.c_str(),(unsigned long long)(GetTickCount64()-batch.started),
@@ -434,15 +564,18 @@ void Frame() {
   }
   for(const auto& batch:reloads){
     bool pathSettled=batch.failed||batch.cacheInvalidated;
-    for(const auto& item:batch.owners){++ownerCount;const bool terminal=item.phase==OwnerPhase::Done||item.phase==OwnerPhase::Failed;
+    for(const auto& item:batch.owners){++ownerCount;const bool terminal=batch.failed||item.phase==OwnerPhase::Done||item.phase==OwnerPhase::Ended||item.phase==OwnerPhase::Failed;
       if(terminal)++settled;if(item.phase==OwnerPhase::Failed)++failed;pathSettled=pathSettled&&terminal;}
     if(batch.failed)++failedPaths;
     if(pathSettled)++settledPaths;
   }
   if(pendingUIPaths.empty()&&settledPaths==reloads.size()){
     active=false;
-    Log("[DEMAND-F10-SETTLED] generation=%llu paths=%zu owners=%zu refreshed=%zu failed=%zu failedPaths=%zu uncoveredHelpers=%zu allModResourcesLoaded=0",
-      (unsigned long long)committedGeneration,reloads.size(),ownerCount,ownerCount-failed,failed+failedPaths,failedPaths,uncoveredHelpers);return;
+    size_t refreshed=0,ended=0;for(const auto& batch:reloads)for(const auto& item:batch.owners){
+      if(item.phase==OwnerPhase::Done)++refreshed;if(item.phase==OwnerPhase::Ended)++ended;
+    }
+    Log("[DEMAND-F10-SETTLED] generation=%llu paths=%zu owners=%zu refreshed=%zu ended=%zu failed=%zu failedPaths=%zu uncoveredHelpers=%zu allModResourcesLoaded=0",
+      (unsigned long long)committedGeneration,reloads.size(),ownerCount,refreshed,ended,failed+failedPaths,failedPaths,uncoveredHelpers);return;
   }
   if(reloads.empty())return;
   if(cursor>=reloads.size())cursor=0;
@@ -456,7 +589,7 @@ void Frame() {
     if(!batch.waitLogged&&batch.started&&GetTickCount64()-batch.started>30000){batch.waitLogged=true;
       Log("[DEMAND-F10-PATH-UNRESOLVED] path=%s elapsedMs=%llu oldOwnersReleased=%d cacheInvalidated=%d",
         batch.path.c_str(),(unsigned long long)(GetTickCount64()-batch.started),
-        int(std::all_of(batch.owners.begin(),batch.owners.end(),[](const auto& item){return item.phase==OwnerPhase::Released||item.phase==OwnerPhase::WaitingModel||item.phase==OwnerPhase::WaitingUI||item.phase==OwnerPhase::Done||item.phase==OwnerPhase::Failed;})),int(batch.cacheInvalidated));
+        int(std::all_of(batch.owners.begin(),batch.owners.end(),[](const auto& item){return item.phase==OwnerPhase::Released||item.phase==OwnerPhase::WaitingModel||item.phase==OwnerPhase::WaitingUI||item.phase==OwnerPhase::Done||item.phase==OwnerPhase::Ended||item.phase==OwnerPhase::Failed;})),int(batch.cacheInvalidated));
     }
   }
 }

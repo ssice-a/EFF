@@ -14,6 +14,41 @@ struct Asset {
   EiemMeshBindingMetadata::Mesh binding;
   std::vector<std::string> fields;
 };
+// A subasset can be owned by an exact Prefab container without having its
+// own string directory entry. The preload interval is the ownership proof;
+// merely finding a similarly named object elsewhere in the CAB is insufficient.
+inline bool TemplateIdentity(const Bytes& bytes,const SerializedLayout& layout,
+ const std::string& cab,int64_t id,const Identity& identity,int expectedClass){
+ auto object=layout.objects.find(id);if(object==layout.objects.end())return false;
+ const auto& type=layout.types.at(object->second.type);if(type.classId!=expectedClass)return false;
+ auto value=ObjectFields(bytes,layout,id,{"m_Name"});
+ const auto& name=Child(type,value,"m_Name");if(Text(name.raw.data(),name.raw.size())!=identity.asset)return false;
+ for(const auto& asset:SerializedAssets(bytes,cab,layout))if(asset.path==identity.path&&asset.cab==cab&&asset.pathId==id&&asset.classId==expectedClass)return true;
+ for(auto bundleId:layout.order){const auto& bt=layout.types.at(layout.objects.at(bundleId).type);if(bt.classId!=142)continue;
+  auto bundle=ObjectValue(bytes,layout,bundleId);const auto& preloads=ConstArray(bt,Child(bt,bundle,"m_PreloadTable")).children;
+  for(const auto& entry:ConstArray(bt,Child(bt,bundle,"m_Container")).children){const auto& key=Child(bt,entry,"first");
+   if(Text(key.raw.data(),key.raw.size())!=identity.path)continue;const auto& info=Child(bt,entry,"second");
+   auto start=Integer(Child(bt,info,"preloadIndex")),count=Integer(Child(bt,info,"preloadSize"));
+   Require(start<=preloads.size()&&count<=preloads.size()-start,"author template container preload range differs");
+   for(size_t i=size_t(start);i<size_t(start+count);++i)if(PointerIdentity(bt,preloads[i],layout,cab)==NativeReference{cab,id})return true;
+  }
+ }return false;
+}
+inline void LocalReferencesOnly(const Type& type,const Value& value){
+ if(type.nodes.at(value.node).type.rfind("PPtr<",0)==0){Require(Integer(Child(type,value,"m_FileID"))==0,"isolated author asset retains external reference");return;}
+ for(const auto& child:value.children)LocalReferencesOnly(type,child);
+}
+inline Bytes StripUnusedExternals(Bytes bytes){
+ auto layout=ParseSerialized(bytes);if(layout.externals.empty())return bytes;
+ for(auto id:layout.order)LocalReferencesOnly(layout.types.at(layout.objects.at(id).type),ObjectValue(bytes,layout,id));
+ Reader reader(bytes,layout.tableEnd,false,48+layout.metadataSize);auto scripts=reader.Count();reader.Skip(MultiplySize(scripts,12));
+ auto start=reader.p;auto count=reader.Count();for(size_t i=0;i<count;++i){reader.Z();reader.Skip(20);reader.Z();}
+ Bytes result(bytes.begin(),bytes.begin()+start);result.resize(start+4,0);result.insert(result.end(),bytes.begin()+reader.p,bytes.begin()+48+layout.metadataSize);
+ auto metadata=result.size()-48;result.resize(AlignSize(result.size(),16));auto data=result.size();
+ result.insert(result.end(),bytes.begin()+layout.dataOffset,bytes.end());
+ WriteInteger(result,20,metadata,4,true);WriteInteger(result,24,result.size(),8,true);WriteInteger(result,32,data,8,true);
+ Require(ParseSerialized(result).externals.empty(),"isolated author asset external cleanup differs");return result;
+}
 inline Bytes EnvelopeHeader(){
  Bytes b(49);EndfieldInput::Put(b,0,0x4A92F0CD,4);EndfieldInput::Put(b,4,0xD8B1E637,4);
  auto info=EndfieldInput::Encode32(1);auto size=EndfieldInput::Encode64(b.size());
@@ -24,7 +59,7 @@ inline Bytes EnvelopeHeader(){
  EndfieldInput::ReadHeader(b);return b;
 }
 inline Asset Isolate(const Bytes& source,const std::string& sourceCab,int64_t meshId,
- const std::string& path,const Value& mesh,const std::string& token,int expectedClass=43){
+ const std::string& path,const Value& mesh,const std::string& token,int expectedClass=43,const std::string& templatePath={}){
  Require(token.size()==64&&token.find_first_not_of("0123456789abcdefABCDEF")==std::string::npos,
          "author Mesh bundle token must be a content digest");
  auto layout=ParseSerialized(source);auto found=layout.objects.find(meshId);
@@ -32,7 +67,7 @@ inline Asset Isolate(const Bytes& source,const std::string& sourceCab,int64_t me
          "author asset template identity is not a local Mesh/Texture2D");
  // A Mesh asset has no external runtime objects. Do not turn a template with
  // unresolved references into a supposedly standalone asset.
- Require(layout.externals.empty(),"standalone Mesh template has external dependencies");
+ LocalReferencesOnly(layout.types.at(found->second.type),mesh);
  int64_t bundleId=0;
  for(const auto& row:layout.objects)if(layout.types.at(row.second.type).classId==142){
   Require(!bundleId,"standalone Mesh requires one AssetBundle directory");bundleId=row.first;
@@ -52,16 +87,26 @@ inline Asset Isolate(const Bytes& source,const std::string& sourceCab,int64_t me
   SetInteger(bt,Child(bt,info,"preloadIndex"),0);SetInteger(bt,Child(bt,info,"preloadSize"),1);
   SetReference(bt,Child(bt,info,"asset"),{sourceCab,meshId},layout,sourceCab);
  };
+ auto sourcePath=templatePath.empty()?path:templatePath;std::set<NativeReference> owners;
+ // Keep an owning container's string/hash address, but point it at the
+ // isolated Mesh. Validate the original range before replacing preloads.
+ auto originalBundle=ObjectValue(source,layout,bundleId);const auto& originalList=ConstArray(bt,Child(bt,originalBundle,"m_PreloadTable")).children;
+ for(const auto& entry:ConstArray(bt,Child(bt,originalBundle,"m_Container")).children){const auto& name=Child(bt,entry,"first");if(Text(name.raw.data(),name.raw.size())!=sourcePath)continue;
+  const auto& info=Child(bt,entry,"second");auto ref=PointerIdentity(bt,Child(bt,info,"asset"),layout,sourceCab);
+  if(ref==NativeReference{sourceCab,meshId})owners.insert(ref);
+  auto start=Integer(Child(bt,info,"preloadIndex")),count=Integer(Child(bt,info,"preloadSize"));Require(start<=originalList.size()&&count<=originalList.size()-start,"standalone Mesh preload ownership range differs");
+  for(size_t i=size_t(start);i<size_t(start+count);++i)if(PointerIdentity(bt,originalList[i],layout,sourceCab)==NativeReference{sourceCab,meshId})owners.insert(ref);
+ }
  bool exactPath=false;
  for(const char* field:{"m_Container","m_HashContainer"}){
   auto& entries=ArrayValue(bt,Child(bt,bundle,field));std::vector<Value> kept;
   for(const auto& entry:entries.children){auto ref=PointerIdentity(bt,Child(bt,Child(bt,entry,"second"),"asset"),layout,sourceCab);
-   if(ref!=NativeReference{sourceCab,meshId})continue;
+   if(!owners.count(ref))continue;
    if(!strcmp(field,"m_Container")){
     const auto& name=Child(bt,entry,"first");auto label=Text(name.raw.data(),name.raw.size());
-    if(label!=path)continue;exactPath=true;
+    if(label!=sourcePath)continue;exactPath=true;
    }
-   auto copy=entry;assetInfo(Child(bt,copy,"second"));kept.push_back(std::move(copy));
+   auto copy=entry;if(!strcmp(field,"m_Container"))SetString(bt,Child(bt,copy,"first"),path);assetInfo(Child(bt,copy,"second"));kept.push_back(std::move(copy));
   }
   Require(!kept.empty(),"standalone Mesh lacks an exact string/hash asset directory entry");
   entries.children=std::move(kept);entries.raw.clear();entries.rawOrigins.clear();entries.count=entries.children.size();
@@ -71,7 +116,7 @@ inline Asset Isolate(const Bytes& source,const std::string& sourceCab,int64_t me
  SetInteger(bt,Child(bt,main,"preloadSize"),0);SetReference(bt,Child(bt,main,"asset"),{sourceCab,0},layout,sourceCab);
  std::set<int64_t> removed;for(const auto& row:layout.objects)if(row.first!=meshId&&row.first!=bundleId)removed.insert(row.first);
  auto native=BuildSerialized(source,layout,{{meshId,EncodeValue(mt,mesh)},{bundleId,EncodeValue(bt,bundle)}},{},removed);
- auto after=ParseSerialized(native);Require(after.objects.size()==2&&after.externals.empty(),"standalone Mesh retains source objects/dependencies");
+ native=StripUnusedExternals(std::move(native));auto after=ParseSerialized(native);Require(after.objects.size()==2&&after.externals.empty(),"standalone Mesh retains source objects/dependencies");
  Require(EncodeValue(after.types.at(after.objects.at(meshId).type),ObjectValue(native,after,meshId))==EncodeValue(mt,mesh),
          "standalone Mesh changed native metadata/geometry");
  Asset asset;asset.member="CAB-"+token.substr(0,32);asset.bundle=key;asset.path=path;asset.meshId=meshId;
@@ -112,7 +157,7 @@ inline std::string RuntimePartName(const std::string& owner,const std::string& p
 inline Asset Build(const std::string& owner,const std::string& part,const std::string& material,
  const Identity& target,const Bytes& source,const std::string& sourceCab,int64_t meshId,
  const Resource& authored,const Mesh& mesh,const std::string& resourceFile,
- const Bytes& editableSnapshot){
+ const Bytes& editableSnapshot,const Identity* templateIdentity=nullptr){
  Require(!owner.empty()&&!part.empty()&&(material.empty()||Identifier(material))&&!resourceFile.empty(),
          "typed author Mesh identity is incomplete");
  Require(editableSnapshot.size()>=12&&!memcmp(editableSnapshot.data(),"EFFMESH\0",8)&&
@@ -123,11 +168,8 @@ inline Asset Build(const std::string& owner,const std::string& part,const std::s
  auto layout=ParseSerialized(source);auto found=layout.objects.find(meshId);
  Require(found!=layout.objects.end()&&layout.types.at(found->second.type).classId==43,
          "typed author Mesh template object absent");
- auto assets=SerializedAssets(source,sourceCab,layout);
- Require(std::any_of(assets.begin(),assets.end(),[&](const auto& asset){
-   return asset.path==target.path&&asset.asset==target.asset&&asset.pathId==meshId&&
-          asset.cab==sourceCab&&asset.classId==43;
- }),"typed author Mesh template identity differs");
+ const auto& origin=templateIdentity?*templateIdentity:target;
+ Require(TemplateIdentity(source,layout,sourceCab,meshId,origin,43),"typed author Mesh template identity differs");
  const auto& type=layout.types.at(found->second.type);
  Require(type.hash==authored.type,"typed author Mesh TypeTree differs from exact template");
  auto sourceValue=ObjectValue(source,layout,meshId);
@@ -136,7 +178,7 @@ inline Asset Build(const std::string& owner,const std::string& part,const std::s
  auto payload=EncodeValue(type,value);
  auto label=owner+"\n"+part+"\n"+target.path+"\n"+target.asset+"\n";
  payload.insert(payload.end(),label.begin(),label.end());auto hash=Sha(payload.data(),payload.size());
- auto asset=Isolate(source,sourceCab,meshId,target.path,value,Hex(hash.data(),hash.size()));
+ auto asset=Isolate(source,sourceCab,meshId,target.path,value,Hex(hash.data(),hash.size()),43,origin.path);
  asset.binding=BuildMeshBindingMetadata(type,value,authored,mesh);
  std::set<std::string> fields{"m_Name"};
  for(const auto& block:authored.blocks)if(!block.first.empty()&&block.first[0]!='@')fields.insert(block.first);
