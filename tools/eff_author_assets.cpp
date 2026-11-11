@@ -6,6 +6,7 @@
 #include "../src/eiem_native_random_access.h"
 #include "../src/eiem_runtime_author_directory.h"
 #include "../src/eiem_runtime_author_manifest.h"
+#include "../src/eiem_author_controls_ini.h"
 #include <chrono>
 
 namespace AuthorAssets {
@@ -46,9 +47,8 @@ struct Sources {
    auto before=FileStamp(t->second.file);Source file;file.bytes=Read(t->second.file);auto hash=Sha(file.bytes.data(),file.bytes.size());file.hash=Hex(hash.data(),hash.size());
    Require(SameStamp(before,FileStamp(t->second.file))&&file.hash==t->second.hash,"author template content changed");file.layout=ParseSerialized(file.bytes);found=files.emplace(t->second.file,std::move(file)).first;
   }Require(found->second.hash==t->second.hash,"shared template digest differs");
-  auto asset=SerializedAssets(found->second.bytes,t->second.cab,found->second.layout);
   auto classId=!strcmp(kind,"Mesh")?43u:28u;
-  Require(std::any_of(asset.begin(),asset.end(),[&](const auto& row){return row.path==identity.path&&row.asset==identity.asset&&row.pathId==t->second.id&&row.classId==classId;}),"author template asset is not its declared logical identity");
+  Require(EiemAuthorMeshBundle::TemplateIdentity(found->second.bytes,found->second.layout,t->second.cab,t->second.id,identity,classId),"author template asset is not its declared logical identity");
   return {t->second,found->second};
  }
 };
@@ -90,9 +90,9 @@ inline std::string Export(const unsigned char* data,size_t size,const std::files
  auto templates=ReadTemplates(reader);auto templateMap=TemplateMap(templates);Sources sources{templateMap};
  auto meshCount=reader.Count();std::set<std::string> outputFiles;std::vector<MeshInput> expectedMeshes;size_t nativeBytes=0;
  auto target=std::filesystem::weakly_canonical(output);Require(std::filesystem::is_directory(target),"typed author output directory must exist");
- for(size_t i=0;i<meshCount;++i){auto row=ReadMesh(reader,templates);Require(outputFiles.insert(row.file).second,"typed Mesh output path duplicated");auto templateRow=sources.Get(row.target,"Mesh");auto& source=templateRow.second.bytes;auto meshId=templateRow.first.id;
+ for(size_t i=0;i<meshCount;++i){auto row=ReadMesh(reader,templates);Require(outputFiles.insert(row.file).second,"typed Mesh output path duplicated");const auto& templateIdentity=templates.at(row.templateIndex).identity;auto templateRow=sources.Get(templateIdentity,"Mesh");auto& source=templateRow.second.bytes;auto meshId=templateRow.first.id;
   row.fields.type=templateRow.second.layout.types.at(templateRow.second.layout.objects.at(meshId).type).hash;
-  auto asset=EiemAuthorMeshBundle::Build(mod,row.part,row.material,row.target,source,templateRow.first.cab,meshId,row.fields,row.mesh,row.file,row.author);
+  auto asset=EiemAuthorMeshBundle::Build(mod,row.part,row.material,row.target,source,templateRow.first.cab,meshId,row.fields,row.mesh,row.file,row.author,&templateIdentity);
   EiemRuntimeAuthorDirectory::MeshAsset entry;entry.part=row.part;entry.file=row.file;entry.path=row.target.path;entry.marker=asset.meshName;entry.material=row.material;entry.vertices=asset.vertices;entry.indices=asset.indices;entry.bones=row.mesh.bones;entry.shapes=row.mesh.shapes;entry.binding=std::move(asset.binding);entry.fields=std::move(asset.fields);entry.nativeBytes=asset.bytes.size();entry.authorBytes=row.author.size();
   auto nativeHash=Sha(asset.bytes.data(),asset.bytes.size());entry.hash=Hex(nativeHash.data(),nativeHash.size());auto authorHash=Sha(row.author.data(),row.author.size());entry.authorHash=Hex(authorHash.data(),authorHash.size());
   auto metadata=EiemAuthorResourceMetadata::EncodeMesh(entry);Bytes payload=std::move(asset.bytes);payload.insert(payload.end(),row.author.begin(),row.author.end());auto envelope=EiemAuthorResourceFile::Encode(1,metadata,payload);Save(target,row.file,envelope);nativeBytes+=envelope.size();expectedMeshes.push_back(std::move(row));
@@ -140,6 +140,20 @@ inline std::string Export(const unsigned char* data,size_t size,const std::files
 }
 
 extern "C" __declspec(dllexport) unsigned __cdecl EFF_AuthorAssetsAbi(){return 3;}
+// The authoring side consumes the exact same control grammar as the runtime.
+// This endpoint only parses text and never opens resource payloads.
+extern "C" __declspec(dllexport) int __cdecl EFF_ControlProgram_Describe(
+ const unsigned char* input,size_t size,char* response,size_t capacity){
+ auto copy=[&](const std::string& value,int status){if(!response||!capacity)return 2;auto n=std::min(value.size(),capacity-1);memcpy(response,value.data(),n);response[n]=0;return n==value.size()?status:2;};
+ try{using namespace EiemDirectory;namespace P=EiemControlProgram;Require(input&&size,"control source absent");auto sections=ParseIni(Bytes(input,input+size));EiemVariables values;std::set<std::string> persistent,clips;
+  for(const auto& s:sections){if(s.id=="Constants")for(const auto& row:s.values){bool saved=Begins(row.first,"persist ");auto name=saved?row.first.substr(8):row.first;Require(EiemVariableName(name),"invalid constant");Require(values.emplace(name,P::Number(row.second)).second,"duplicate constant");if(saved)persistent.insert(name);}if(Begins(s.id,"Animation"))clips.insert(s.id.substr(strlen("Animation")));}
+  auto program=P::Declare(sections,values,persistent);P::Compile(*program,sections,values,clips);
+  auto quote=[](const std::string& text){std::string out="\"";const char* hex="0123456789abcdef";for(unsigned char c:text){if(c=='"'||c=='\\'){out+='\\';out+=char(c);}else if(c<32){out+="\\u00";out+=hex[c>>4];out+=hex[c&15];}else out+=char(c);}return out+'"';};
+  std::ostringstream out;out.precision(17);out<<"{\"parameters\":[";bool first=true;for(const auto& row:program->parameters){const auto& d=row.second;if(d.id.empty())continue;if(!first)out<<',';first=false;out<<"{\"variable\":"<<quote(row.first)<<",\"label\":"<<quote(d.label)<<",\"default\":"<<d.initial<<",\"min\":"<<d.minimum<<",\"max\":"<<d.maximum<<",\"public\":"<<(d.exposed?"true":"false")<<",\"persist\":"<<(d.persistent?"true":"false")<<",\"computed\":"<<(d.computed?"true":"false")<<'}';}
+  out<<"],\"bindings\":[";first=true;for(const auto& b:program->bindings){if(!first)out<<',';first=false;std::string expression;for(const auto& s:sections)if(s.id==b.id)expression=s.values.at("value");out<<"{\"id\":"<<quote(b.id)<<",\"target\":"<<quote(b.target)<<",\"variable\":"<<quote(b.variable)<<",\"material\":"<<quote(b.material)<<",\"property\":"<<quote(b.property)<<",\"part\":"<<quote(b.part)<<",\"channel\":"<<quote(b.channel)<<",\"value\":"<<quote(expression)<<'}';}
+  out<<"],\"defaults\":{";first=true;for(const auto& row:values){if(!first)out<<',';first=false;out<<quote(row.first)<<':'<<row.second;}out<<"},\"source\":{";first=true;for(const auto& row:program->rawSections){if(!first)out<<',';first=false;out<<quote(row.first)<<':'<<quote(row.second);}out<<"}}";return copy(out.str(),0);
+ }catch(const std::exception& e){return copy(std::string("FAIL ")+e.what(),1);}
+}
 extern "C" __declspec(dllexport) int __cdecl EFF_AuthorAssets_ExportTypedW(
  const unsigned char* input,size_t inputSize,const wchar_t* output,char* response,size_t responseCapacity){
  auto copy=[&](const std::string& value,int status){if(!response||!responseCapacity)return 2;auto count=std::min(value.size(),responseCapacity-1);if(count)memcpy(response,value.data(),count);response[count]=0;return count==value.size()?status:2;};
