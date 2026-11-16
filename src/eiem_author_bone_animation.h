@@ -122,7 +122,6 @@ inline void ValidateSample(const TransformSample& sample) {
   for (size_t i = 0; i < sample.size(); ++i) {
     if (!std::isfinite(sample[i])) throw std::runtime_error("author animation sample is non-finite");
     if (i >= 3 && i < 7) length += double(sample[i]) * sample[i];
-    if (i >= 7 && sample[i] <= 0) throw std::runtime_error("author animation scale is not positive");
   }
   if (std::abs(length - 1.0) > .001)
     throw std::runtime_error("author animation rotation is not normalized");
@@ -165,7 +164,7 @@ inline Skeleton DecodeSkeleton(const unsigned char* bytes, size_t size) {
     if (std::abs(rotationLength - 1.0) > .001)
       throw std::runtime_error("author Skeleton rotation is not normalized: " + node.path);
     for (float value : node.scale)
-      if (value <= 0) throw std::runtime_error("author Skeleton scale is not positive: " + node.path);
+      if (value == 0) throw std::runtime_error("author Skeleton bind transform is singular: " + node.path);
     result.nodes.push_back(std::move(node));
   }
   if (!reader.Done()) throw std::runtime_error("author Skeleton has trailing bytes");

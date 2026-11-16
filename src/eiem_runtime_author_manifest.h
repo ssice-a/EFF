@@ -24,6 +24,7 @@ struct Resource {
   std::string author;
   std::string skeleton;
   Identity source;
+  std::string sourcePrefab;
   TextureSettings textureSettings;
   std::map<std::string, std::string> textureBindings;
   std::vector<std::string> targetRules;
@@ -137,6 +138,8 @@ inline Manifest Read(const std::filesystem::path& root,
       isResource = true;
     } else if (Begins(section.id, "Animation") || Begins(section.id, "MaterialTrack")) {
       continue;
+    } else if ((Begins(section.id,"AttachEffect")||Begins(section.id,"ReplaceEffect"))&&values.count("effect")) {
+      continue; // Effect usage is assembled by the controls/relationship reader.
     } else if (Begins(section.id, "EffectAttachment")) {
       if(!values.count("path"))continue;
       Keys(section, {"path"}, {"author"});
@@ -151,6 +154,9 @@ inline Manifest Read(const std::filesystem::path& root,
       resource.kind = 2;
       resource.path = values.at("path");
       resource.source = Source(values, "source.");
+      if(values.count("source.prefab")){resource.sourcePrefab=values.at("source.prefab");
+        Require(resource.sourcePrefab.rfind("assets/",0)==0&&resource.sourcePrefab.size()>7&&
+          resource.sourcePrefab.compare(resource.sourcePrefab.size()-7,7,".prefab")==0,"Material source Prefab logical path differs");}
       for (const auto& row : values)
         if (Begins(row.first, "texture.")) {
           Require(row.first.size() > 8, "empty Material texture property");
@@ -158,10 +164,10 @@ inline Manifest Read(const std::filesystem::path& root,
         }
       isResource = true;
     } else if (Begins(section.id, "Texture")) {
-      Keys(section, {"dds"});
+      Keys(section, {});
       resource.kind = 3;
       if(values.count("path"))resource.path=values.at("path");
-      resource.dds = values.at("dds");
+      if(values.count("dds"))resource.dds=values.at("dds");
       if (auto linear = values.find("linear"); linear != values.end()) {
         Require(linear->second == "true" || linear->second == "false" ||
                     linear->second == "1" || linear->second == "0",
@@ -179,13 +185,16 @@ inline Manifest Read(const std::filesystem::path& root,
       }
       Require(!resource.path.empty() || (!resource.source.path.empty() && !resource.source.asset.empty()),
               "DDS Texture requires a logical source template");
+      Require(!resource.dds.empty()||resource.path.empty(),"Texture scaffold without DDS is not a game logical reference");
+      if(resource.dds.empty())for(const auto* setting:{"linear","filter","wrap","aniso","mip_bias"})
+        Require(!values.count(setting),"game Texture sampling is owned by the game");
       isResource = true;
     } else if (Begins(section.id, "Resource")) {
       Keys(section, {"type", "path"}, {"targets"});
       const auto& type = values.at("type");
-      Require(type == "physics" || type == "effect" || type == "controls" || type == "effect-author" || type == "animation-samples",
+      Require(type == "physics" || type == "effect" || type == "controls" || type == "effect-author" || type == "animation-samples" || type == "animation-clip",
               "unknown format 3 resource type");
-      resource.kind = type == "physics" ? 4 : type == "effect" ? 5 : type == "effect-author" ? 7 : type == "animation-samples" ? 9 : 6;
+      resource.kind = type == "physics" ? 4 : type == "effect" ? 5 : type == "effect-author" ? 7 : type == "animation-samples" ? 9 : type == "animation-clip" ? 10 : 6;
       resource.type = type;
       resource.path = values.at("path");
       if (type == "controls") {
@@ -211,7 +220,7 @@ inline Manifest Read(const std::filesystem::path& root,
     }
     if (!isResource) continue;
     if(!resource.path.empty())ResourcePath(resource.path);
-    if (resource.kind == 3) ResourcePath(resource.dds);
+    if (resource.kind == 3 && !resource.dds.empty()) ResourcePath(resource.dds);
     Require(result.resources.emplace(resource.id, std::move(resource)).second,
             "duplicate format 3 resource id");
   }
@@ -258,6 +267,9 @@ inline Manifest Read(const std::filesystem::path& root,
               "format 3 control declaration does not reference ResourceControls: " + row.first);
   }
 
+  for(const auto& resource:result.resources)if(resource.second.kind==2)
+    for(const auto& binding:resource.second.textureBindings){auto texture=result.resources.find(binding.second);
+      Require(texture!=result.resources.end()&&texture->second.kind==3,"Material Texture resource is unresolved: "+resource.first+"/"+binding.first);}
   for (const auto& row : result.parts) {
     auto mesh = result.resources.find(row.second.mesh);
     Require(mesh != result.resources.end() && mesh->second.kind == 1,
@@ -274,7 +286,9 @@ inline Manifest Read(const std::filesystem::path& root,
     }
   }
 
-  result.targets = EiemMeshTargetDirectory::Read(result.root, sections);
+  auto meshSections=sections;meshSections.erase(std::remove_if(meshSections.begin(),meshSections.end(),[](const auto& section){
+    return (Begins(section.id,"AttachEffect")||Begins(section.id,"ReplaceEffect"))&&section.values.count("effect");}),meshSections.end());
+  result.targets = EiemMeshTargetDirectory::Read(result.root, meshSections);
   std::set<std::string> rules;
   for (const auto& target : result.targets) rules.insert(target.rule);
   for (const auto& row : result.resources)

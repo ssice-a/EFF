@@ -5,6 +5,12 @@
 namespace RuntimeMaterials {void Register(void*,void*,const RuntimeControls::Spec&);void Frame();void Forget(void*);void Install(void**,size_t);}
 namespace RuntimeAttachments {void ModelReady(void*);void QueueOwnerReady(void*);void OwnerReleasing(void*) noexcept;void Frame();}
 namespace FullResourceReload {void HelperReady(void*);}
+#if defined(EIEM_MOD_ANIMATION_PROBE)
+namespace ModAnimationProbe {
+ void BeginFrame();void Forget(void*);
+ std::set<std::string> Apply(void*,void*,const RuntimeControls::Spec&);
+}
+#endif
 
 // Main Meshes retain native blend shapes. Only the capture consumer receives
 // a local-space, immutable, shape-evaluated copy through its Mesh getter.
@@ -205,6 +211,9 @@ bool TakeRetiredNativeIntent(void* renderer,bool& nativeEnabled) {
   return true;
 }
 void RetireRenderer(void* renderer) {
+#if defined(EIEM_MOD_ANIMATION_PROBE)
+  ModAnimationProbe::Forget(renderer);
+#endif
   auto found=bound.find(renderer);
   if(found==bound.end())return;
   try {
@@ -707,9 +716,9 @@ bool CurrentGeneration() {
   checkedGeneration=current;
   if (!graph || !controlGraph) return false;
   if(graph!=controlGraph){
-    bool same=graph->size()==controlGraph->size();
-    for(size_t i=0;same&&i<graph->size();++i)
-      same=EiemNativeInput::PackageDigest(graph->at(i))==EiemNativeInput::PackageDigest(controlGraph->at(i));
+    bool same=true;
+    for(const auto& package:*graph){auto found=std::find_if(controlGraph->begin(),controlGraph->end(),[&](const Package& p){return p.id==package.id&&p.root==package.root;});
+      same=same&&found!=controlGraph->end()&&EiemNativeInput::PackageDigest(package)==EiemNativeInput::PackageDigest(*found);}
     if(!same)Log("[CONTROL-RUNTIME-GENERATION] generation=%u committedGraphMismatch=1 activeControlsRetained=1 registrationContinues=1",current);
   }
   packageGeneration=current;
@@ -833,6 +842,9 @@ void Update() {
   {EiemLoadPerformance::Scope input(EiemLoadPerformance::ControlInput);PanelCommands(focused);PollControls(focused,elapsed);}
   {EiemLoadPerformance::Scope animation(EiemLoadPerformance::ShapeAnimation);AdvanceAnimations(elapsed);}
   RuntimeMaterials::Frame();
+#if defined(EIEM_MOD_ANIMATION_PROBE)
+  ModAnimationProbe::BeginFrame();
+#endif
 #if defined(EIEM_DIAGNOSTICS)
   if (traceBoundaries && frame%300==0)
     Log("[DEBUG-shape-v24-INPUT] frame=%d focusPid=%lu focused=%d packages=%zu bound=%zu delta=%.9g",
@@ -859,7 +871,14 @@ void Update() {
       auto key=it->first;++it;RetireRenderer(key);continue;
     }
     ApplyVisibility(renderer,it->second,spec,true);
+#if defined(EIEM_MOD_ANIMATION_PROBE)
+    auto nativeShapes=it->second.shapeCompatible&&it->second.modelReady?
+      ModAnimationProbe::Apply(renderer,mesh,spec):std::set<std::string>{};
+#endif
     if(it->second.shapeCompatible) for (const auto& control : spec.controls) {
+#if defined(EIEM_MOD_ANIMATION_PROBE)
+      if(nativeShapes.count(control.first))continue;
+#endif
       int index=it->second.indices.at(control.first);
       float target=float(ShapeValue(spec.package,control.second)*100.0);
       void* readArgs[]={&index};

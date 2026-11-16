@@ -40,5 +40,16 @@ struct Bundle {
  size_t Size()const{return bytes?bytes->size():size;}
  std::shared_ptr<const void> Owner()const{return bytes?std::shared_ptr<const void>(bytes):backing;}
 };
-struct Manifest {std::string key,prefab,rootName;size_t root=0,particles=0;std::vector<Bundle> bundles;};
+struct GameResource {
+ std::string path,type,asset,sourcePrefab,sourceRoot;
+ struct Patch {size_t bundle=0,offset=0,kind=0;};
+ std::string relocationCab;uint64_t relocationId=0;std::vector<Patch> patches;
+};
+// A resource's usage belongs to the INI relationship, not its file type.
+// These IDs use the same Catalog as model Parts and Material texture slots.
+struct AuthorResource {
+ std::string resource,type;
+ std::string relocationCab;uint64_t relocationId=0;std::vector<GameResource::Patch> patches;
+};
+struct Manifest {std::string key,prefab,rootName,authorRoot;size_t root=0,particles=0;bool unifiedResources=false;std::vector<Bundle> bundles;std::vector<GameResource> gameResources;std::vector<AuthorResource> authorResources;};
 }

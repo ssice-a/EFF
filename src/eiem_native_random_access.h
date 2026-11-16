@@ -20,6 +20,11 @@ struct Limits {
   size_t cacheBytes = 4 * 1024 * 1024;
   size_t readBytes = 64 * 1024 * 1024;
 };
+// A fixed input and fixed limits cannot succeed when retried in the same
+// manifest generation. Keep this distinct from transient dependency failures.
+struct InspectionBudgetExceeded : std::runtime_error {
+  explicit InspectionBudgetExceeded(const char* reason="native inspection read budget exhausted") : std::runtime_error(reason) {}
+};
 struct Statistics {
   size_t reads = 0, encodedBytes = 0, inflatedBytes = 0, inflatedBlocks = 0;
   size_t cacheHits = 0, cacheResident = 0, cachePeak = 0, largestBlock = 0;
@@ -137,8 +142,7 @@ class DecodedViewSource {
       auto bytes = it->bytes; cache_.splice(cache_.begin(), cache_, it); return bytes;
     }
     const auto& block = blocks_.at(index).block;
-    Require(block.encoded <= blockLimit_ && block.decoded <= blockLimit_,
-            "native streamed block budget exhausted");
+    if(!(block.encoded <= blockLimit_ && block.decoded <= blockLimit_))throw InspectionBudgetExceeded{"native streamed block budget exhausted"};
     Bytes encoded(block.encoded); source_(blocks_[index].offset, encoded.data(), encoded.size());
     EndfieldInput::CryptBlock(encoded);
     auto decoded = std::make_shared<const Bytes>(Lz4(encoded.data(), encoded.size(), block.decoded, true));
@@ -194,8 +198,8 @@ class Reader {
   mutable std::weak_ptr<DecodedViewSource> decodedView_;
   void Source(size_t at, unsigned char* output, size_t size) {
     Require(at <= sourceSize_ && size <= sourceSize_ - at, "native range read exceeds source");
-    Require(stats.encodedBytes <= limits.readBytes && size <= limits.readBytes - stats.encodedBytes,
-            "native inspection read budget exhausted");
+    if(stats.encodedBytes > limits.readBytes || size > limits.readBytes - stats.encodedBytes)
+      throw InspectionBudgetExceeded{};
     source_(at, output, size); ++stats.reads; stats.encodedBytes += size;
   }
   std::shared_ptr<const Bytes> Block(size_t index) {
@@ -204,8 +208,7 @@ class Reader {
       auto bytes = it->bytes; cache_.splice(cache_.begin(), cache_, it); ++stats.cacheHits; return bytes;
     }
     const auto& block = directory.blocks.at(index);
-    Require(block.block.encoded <= limits.blockBytes && block.block.decoded <= limits.blockBytes,
-            "native inspection block budget exhausted");
+    if(!(block.block.encoded <= limits.blockBytes && block.block.decoded <= limits.blockBytes))throw InspectionBudgetExceeded{"native inspection block budget exhausted"};
     pinned_.reset(); pinnedIndex_=SIZE_MAX; stats.pinnedBytes=0;
     Bytes encoded(block.block.encoded); Source(block.offset, encoded.data(), encoded.size());
     EndfieldInput::CryptBlock(encoded);
@@ -233,8 +236,7 @@ public:
     headerBytes.resize(48); Source(0, headerBytes.data(), 48);
     header = EndfieldInput::ReadHeader(headerBytes);
     Require(header.bytes <= sourceSize_, "native header exceeds source range");
-    Require(header.compressedInfo <= limits.directoryBytes && header.decodedInfo <= limits.directoryBytes,
-            "native inspection directory budget exhausted");
+    if(!(header.compressedInfo <= limits.directoryBytes && header.decodedInfo <= limits.directoryBytes))throw InspectionBudgetExceeded{"native inspection directory budget exhausted"};
     auto at = header.flags & 0x80 ? header.bytes - header.compressedInfo : header.prefix;
     Bytes info(header.compressedInfo); Source(at, info.data(), info.size());
     directory = EiemNativeViewWriter::ReadDirectory(header, std::move(info));
@@ -256,7 +258,7 @@ public:
     }
   }
   Bytes ReadAt(size_t at, size_t size, size_t budget) {
-    Require(size <= budget, "native inspection allocation budget exhausted");
+    if(!(size <= budget))throw InspectionBudgetExceeded{"native inspection allocation budget exhausted"};
     Bytes bytes(size); ReadAt(at, bytes.data(), size); return bytes;
   }
   void DiscardDecodedCache() {
@@ -269,7 +271,7 @@ public:
     auto metadata = size_t(h.Get(4)), full = h.Get(8), data = h.Get(8);
     Require(full == member.size && data <= full && data >= 48 && metadata <= data - 48,
             "native member serialized header differs");
-    Require(metadata <= limits.metadataBytes, "native inspection metadata budget exhausted");
+    if(!(metadata <= limits.metadataBytes))throw InspectionBudgetExceeded{"native inspection metadata budget exhausted"};
     prefix.resize(AddSize(48, metadata));
     ReadAt(member.offset + 48, prefix.data() + 48, metadata);
     return ParseSerialized(prefix, member.size);
@@ -337,7 +339,7 @@ public:
       auto at = cursor.position; Skip(type, child, cursor);
       const auto& name = type.nodes[child].name; if (!wanted.count(name)) continue;
       auto size = cursor.position-at, padding = (at-begin)&3;
-      Require(size <= limits.fieldBytes, "native inspection field budget exhausted");
+      if(!(size <= limits.fieldBytes))throw InspectionBudgetExceeded{"native inspection field budget exhausted"};
       Bytes bytes(AddSize(padding,size)); ReadAt(at,bytes.data()+padding,size);
       EiemNativeInput::Reader value(bytes,padding); auto decoded=ReadValue(type,child,value,0);
       Require(value.p==bytes.size()&&result.emplace(name,std::move(decoded)).second,"native projected field extent/identity differs");
@@ -360,55 +362,56 @@ public:
     for(auto child:type.nodes.at(0).children){auto found=values.find(type.nodes.at(child).name);if(found!=values.end())result.children.push_back(std::move(found->second));}
     return result;
   }
-  std::vector<Asset> Assets(const EiemNativeViewWriter::Member& member, const SerializedLayout& layout) {
-    std::vector<Asset> result;
-    for (auto id : layout.order) {
-      const auto& type = layout.types.at(layout.objects.at(id).type); if (type.classId != 142) continue;
-      auto fields = Fields(member,layout,id,{"m_Container"});
-      for (const auto& row : ArrayValue(type,fields.at("m_Container")).children) {
-        const auto& key=Child(type,row,"first"); const auto& info=Child(type,row,"second");
-        const auto& ptr=Child(type,info,"asset"); auto file=Integer(Child(type,ptr,"m_FileID"));
-        Require(file<=layout.externals.size(),"native container external index differs");
-        Asset asset; asset.path=Text(key.raw.data(),key.raw.size());
-        std::transform(asset.path.begin(),asset.path.end(),asset.path.begin(),[](unsigned char c){return char(std::tolower(c));});
-        asset.cab=file?layout.externals[size_t(file)-1]:member.name;
-        asset.pathId=int64_t(Integer(Child(type,ptr,"m_PathID")));
-        auto target=layout.objects.find(asset.pathId);
-        if (!file && target!=layout.objects.end()) { const auto& t=layout.types.at(target->second.type); asset.classId=t.classId; asset.type=t.hash;
-          if (std::any_of(t.nodes[0].children.begin(),t.nodes[0].children.end(),[&](size_t n){return t.nodes[n].name=="m_Name";})) {
-            auto name=Fields(member,layout,asset.pathId,{"m_Name"}); const auto& v=name.at("m_Name"); asset.asset=Text(v.raw.data(),v.raw.size());
-          }
-        }
-        result.push_back(std::move(asset));
-      }
-    }
-    return result;
-  }
-  // A prefab's embedded objects need not have their own container entries.
-  // Only expose references owned by the exact requested container's native
-  // preload interval; callers still verify the referenced object's class/name.
-  std::vector<NativeReference> ContainerPreloads(const EiemNativeViewWriter::Member& member,
-      const SerializedLayout& layout,const std::string& path) {
-    std::set<NativeReference> result;
+  struct ContainerEntry {
+    Asset asset;
+    int64_t owner=0;
+    size_t preloadIndex=0,preloadSize=0;
+  };
+  // Semantic directory rows, independent of target count. Object names and
+  // preload tables remain lazy so unrelated payloads are not inspected.
+  std::vector<ContainerEntry> Containers(const EiemNativeViewWriter::Member& member,const SerializedLayout& layout) {
+    std::vector<ContainerEntry> result;
     for(auto id:layout.order){const auto& type=layout.types.at(layout.objects.at(id).type);if(type.classId!=142)continue;
       auto fields=Fields(member,layout,id,{"m_Container"});
-      std::vector<std::pair<size_t,size_t>> ranges;
-      for(const auto& row:ArrayValue(type,fields.at("m_Container")).children){const auto& key=Child(type,row,"first");
-        auto logical=Text(key.raw.data(),key.raw.size());
-        std::transform(logical.begin(),logical.end(),logical.begin(),[](unsigned char c){return char(std::tolower(c));});
-        if(logical!=path)continue;const auto& info=Child(type,row,"second");
-        ranges.emplace_back(size_t(Integer(Child(type,info,"preloadIndex"))),size_t(Integer(Child(type,info,"preloadSize"))));
+      for(const auto& row:ArrayValue(type,fields.at("m_Container")).children){
+        ContainerEntry entry;entry.owner=id;
+        const auto& key=Child(type,row,"first");const auto& info=Child(type,row,"second");const auto& ptr=Child(type,info,"asset");
+        auto file=Integer(Child(type,ptr,"m_FileID"));Require(file<=layout.externals.size(),"native container external index differs");
+        auto& asset=entry.asset;asset.path=Text(key.raw.data(),key.raw.size());
+        std::transform(asset.path.begin(),asset.path.end(),asset.path.begin(),[](unsigned char c){return char(std::tolower(c));});
+        asset.cab=file?layout.externals[size_t(file)-1]:member.name;asset.pathId=int64_t(Integer(Child(type,ptr,"m_PathID")));
+        entry.preloadIndex=size_t(Integer(Child(type,info,"preloadIndex")));entry.preloadSize=size_t(Integer(Child(type,info,"preloadSize")));
+        auto target=layout.objects.find(asset.pathId);
+        if(!file&&target!=layout.objects.end()){const auto& t=layout.types.at(target->second.type);asset.classId=t.classId;asset.type=t.hash;}
+        result.push_back(std::move(entry));
       }
-      if(ranges.empty())continue;
-      auto preloads=Fields(member,layout,id,{"m_PreloadTable"});const auto& values=ArrayValue(type,preloads.at("m_PreloadTable")).children;
-      for(const auto& range:ranges){Require(range.first<=values.size()&&range.second<=values.size()-range.first,"native container preload range differs");
-        for(size_t i=range.first;i<range.first+range.second;++i){const auto& pointer=values[i];auto file=Integer(Child(type,pointer,"m_FileID"));
-          Require(file<=layout.externals.size(),"native container preload external index differs");
-          auto object=int64_t(Integer(Child(type,pointer,"m_PathID")));if(object)result.emplace(file?layout.externals[size_t(file)-1]:member.name,object);
+    }return result;
+  }
+  std::vector<NativeReference> Preloads(const EiemNativeViewWriter::Member& member,const SerializedLayout& layout,int64_t owner) {
+    const auto& type=layout.types.at(layout.objects.at(owner).type);auto fields=Fields(member,layout,owner,{"m_PreloadTable"});
+    std::vector<NativeReference> result;
+    for(const auto& pointer:ArrayValue(type,fields.at("m_PreloadTable")).children){
+      auto file=Integer(Child(type,pointer,"m_FileID"));Require(file<=layout.externals.size(),"native container preload external index differs");
+      result.emplace_back(file?layout.externals[size_t(file)-1]:member.name,int64_t(Integer(Child(type,pointer,"m_PathID"))));
+    }return result;
+  }
+  std::vector<Asset> Assets(const EiemNativeViewWriter::Member& member,const SerializedLayout& layout) {
+    std::vector<Asset> result;
+    for(auto& entry:Containers(member,layout)){auto& asset=entry.asset;auto object=layout.objects.find(asset.pathId);
+      if(asset.cab==member.name&&object!=layout.objects.end()){const auto& type=layout.types.at(object->second.type);
+        if(std::any_of(type.nodes[0].children.begin(),type.nodes[0].children.end(),[&](size_t n){return type.nodes[n].name=="m_Name";})){
+          auto fields=Fields(member,layout,asset.pathId,{"m_Name"});const auto& name=fields.at("m_Name");asset.asset=Text(name.raw.data(),name.raw.size());
         }
-      }
-    }
-    return {result.begin(),result.end()};
+      }result.push_back(std::move(asset));
+    }return result;
+  }
+  std::vector<NativeReference> ContainerPreloads(const EiemNativeViewWriter::Member& member,const SerializedLayout& layout,const std::string& path) {
+    std::set<NativeReference> result;std::map<int64_t,std::vector<NativeReference>> tables;
+    for(const auto& entry:Containers(member,layout)){if(entry.asset.path!=path)continue;
+      auto found=tables.find(entry.owner);if(found==tables.end())found=tables.emplace(entry.owner,Preloads(member,layout,entry.owner)).first;
+      const auto& values=found->second;Require(entry.preloadIndex<=values.size()&&entry.preloadSize<=values.size()-entry.preloadIndex,"native container preload range differs");
+      for(size_t i=entry.preloadIndex;i<entry.preloadIndex+entry.preloadSize;++i)if(values[i].second)result.insert(values[i]);
+    }return {result.begin(),result.end()};
   }
   std::map<uint64_t,Asset> HashAssets(const EiemNativeViewWriter::Member& member, const SerializedLayout& layout) {
     std::map<uint64_t,Asset> result;

@@ -137,6 +137,17 @@ inline std::string Export(const unsigned char* data,size_t size,const std::files
  auto elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
  std::ostringstream report;report<<"AUTHOR-TYPED-FORMAT3 meshes="<<meshCount<<" textures="<<textureCount<<" nativeBytes="<<nativeBytes<<" templateFiles="<<sources.files.size()<<" milliseconds="<<elapsed;return report.str();
 }
+struct DeclaredControls {
+ EiemVariables values;std::set<std::string> persistent;
+ std::shared_ptr<EiemControlProgram::Program> program;
+};
+inline DeclaredControls CompileControls(const std::vector<EiemDirectory::Section>& sections){
+ using namespace EiemDirectory;namespace P=EiemControlProgram;DeclaredControls result;std::set<std::string> clips;
+ for(const auto& s:sections){if(s.id=="Constants")for(const auto& row:s.values){bool saved=Begins(row.first,"persist ");auto name=saved?row.first.substr(8):row.first;
+   Require(EiemVariableName(name),"invalid constant");Require(result.values.emplace(name,P::Number(row.second)).second,"duplicate constant");if(saved)result.persistent.insert(name);}
+  if(Begins(s.id,"Animation"))clips.insert(s.id.substr(strlen("Animation")));}
+ result.program=P::Declare(sections,result.values,result.persistent);P::Compile(*result.program,sections,result.values,clips);return result;
+}
 }
 
 extern "C" __declspec(dllexport) unsigned __cdecl EFF_AuthorAssetsAbi(){return 3;}
@@ -145,14 +156,32 @@ extern "C" __declspec(dllexport) unsigned __cdecl EFF_AuthorAssetsAbi(){return 3
 extern "C" __declspec(dllexport) int __cdecl EFF_ControlProgram_Describe(
  const unsigned char* input,size_t size,char* response,size_t capacity){
  auto copy=[&](const std::string& value,int status){if(!response||!capacity)return 2;auto n=std::min(value.size(),capacity-1);memcpy(response,value.data(),n);response[n]=0;return n==value.size()?status:2;};
- try{using namespace EiemDirectory;namespace P=EiemControlProgram;Require(input&&size,"control source absent");auto sections=ParseIni(Bytes(input,input+size));EiemVariables values;std::set<std::string> persistent,clips;
-  for(const auto& s:sections){if(s.id=="Constants")for(const auto& row:s.values){bool saved=Begins(row.first,"persist ");auto name=saved?row.first.substr(8):row.first;Require(EiemVariableName(name),"invalid constant");Require(values.emplace(name,P::Number(row.second)).second,"duplicate constant");if(saved)persistent.insert(name);}if(Begins(s.id,"Animation"))clips.insert(s.id.substr(strlen("Animation")));}
-  auto program=P::Declare(sections,values,persistent);P::Compile(*program,sections,values,clips);
+ try{using namespace EiemDirectory;Require(input&&size,"control source absent");auto sections=ParseIni(Bytes(input,input+size));auto declarations=AuthorAssets::CompileControls(sections);auto& values=declarations.values;auto& program=declarations.program;
   auto quote=[](const std::string& text){std::string out="\"";const char* hex="0123456789abcdef";for(unsigned char c:text){if(c=='"'||c=='\\'){out+='\\';out+=char(c);}else if(c<32){out+="\\u00";out+=hex[c>>4];out+=hex[c&15];}else out+=char(c);}return out+'"';};
   std::ostringstream out;out.precision(17);out<<"{\"parameters\":[";bool first=true;for(const auto& row:program->parameters){const auto& d=row.second;if(d.id.empty())continue;if(!first)out<<',';first=false;out<<"{\"variable\":"<<quote(row.first)<<",\"label\":"<<quote(d.label)<<",\"default\":"<<d.initial<<",\"min\":"<<d.minimum<<",\"max\":"<<d.maximum<<",\"public\":"<<(d.exposed?"true":"false")<<",\"persist\":"<<(d.persistent?"true":"false")<<",\"computed\":"<<(d.computed?"true":"false")<<'}';}
   out<<"],\"bindings\":[";first=true;for(const auto& b:program->bindings){if(!first)out<<',';first=false;std::string expression;for(const auto& s:sections)if(s.id==b.id)expression=s.values.at("value");out<<"{\"id\":"<<quote(b.id)<<",\"target\":"<<quote(b.target)<<",\"variable\":"<<quote(b.variable)<<",\"material\":"<<quote(b.material)<<",\"property\":"<<quote(b.property)<<",\"part\":"<<quote(b.part)<<",\"channel\":"<<quote(b.channel)<<",\"value\":"<<quote(expression)<<'}';}
   out<<"],\"defaults\":{";first=true;for(const auto& row:values){if(!first)out<<',';first=false;out<<quote(row.first)<<':'<<row.second;}out<<"},\"source\":{";first=true;for(const auto& row:program->rawSections){if(!first)out<<',';first=false;out<<quote(row.first)<<':'<<quote(row.second);}out<<"}}";return copy(out.str(),0);
  }catch(const std::exception& e){return copy(std::string("FAIL ")+e.what(),1);}
+}
+// Manager uses the current runtime's declaration grammar, without compiling
+// Prefab consumers or opening/hashing any declared payload. Supplying the INI
+// bytes also lets disabled installations be checked without renaming files.
+extern "C" __declspec(dllexport) int __cdecl EFF_AuthorAssets_ValidateManifestW(
+ const wchar_t* root,const unsigned char* input,size_t size,char* response,size_t capacity){
+ auto copy=[&](const std::string& value,int status){if(!response||!capacity)return 2;auto n=std::min(value.size(),capacity-1);if(n)memcpy(response,value.data(),n);response[n]=0;return n==value.size()?status:2;};
+ try{using namespace EiemDirectory;Require(root&&input&&size&&size<=16*1024*1024,"manifest validation input is absent or exceeds 16 MiB");
+  auto canonicalRoot=std::filesystem::canonical(std::filesystem::path(root));auto sections=ParseIni(Bytes(input,input+size));auto manifest=EiemRuntimeAuthorManifest::Read(canonicalRoot,sections);
+  if(manifest.inlineControls){auto controls=AuthorAssets::CompileControls(sections);
+   for(const auto& row:manifest.parts){auto section=std::find_if(sections.begin(),sections.end(),[&](const Section& s){return s.id==row.first;});std::string error;auto expression=EiemExpressionParser(section->values.at("visible"),error).Parse();
+    Require(expression&&expression->Validate(controls.values,error),"invalid Part visibility: "+row.first+": "+error);}}
+  std::set<std::string> checked;
+  auto check=[&](const std::string& relative){if(relative.empty()||!checked.insert(relative).second)return;auto file=canonicalRoot/std::filesystem::u8path(relative);
+   std::error_code error;auto resolved=std::filesystem::canonical(file,error);Require(!error,"declared resource is missing or inaccessible: "+relative);
+   auto inside=resolved.lexically_relative(canonicalRoot);Require(!inside.empty()&&!inside.is_absolute()&&*inside.begin()!="..","declared resource escapes Mod: "+relative);
+   Require(std::filesystem::is_regular_file(resolved),"declared resource is not a regular file: "+relative);};
+  for(const auto& row:manifest.resources){check(row.second.path);check(row.second.dds);}
+  return copy("FORMAT3-DECLARATIONS-VALID resources="+std::to_string(manifest.resources.size())+" files="+std::to_string(checked.size())+"; payload contents and current game logical matches are validated on demand; no files changed",0);
+ }catch(const std::exception& error){return copy(std::string("FAIL ")+error.what(),1);}catch(...){return copy("FAIL unknown manifest validation error",1);}
 }
 extern "C" __declspec(dllexport) int __cdecl EFF_AuthorAssets_ExportTypedW(
  const unsigned char* input,size_t inputSize,const wchar_t* output,char* response,size_t responseCapacity){

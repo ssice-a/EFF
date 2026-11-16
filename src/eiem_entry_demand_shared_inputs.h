@@ -2,6 +2,7 @@
 #include "eiem_demand_dependency_scope.h"
 #include "eiem_demand_material_build.h"
 #include "eiem_demand_texture_build.h"
+#include "eiem_native_generation_identity.h"
 // Included inside DemandLoadingProbe after the current-manifest resolver.
 // Only real load-tree entry points permit preparation; proxy/catalog creation
 // and unrelated dependency queries cannot open author or game payloads.
@@ -17,6 +18,7 @@ struct SharedScope {
   struct RootUsage {
     std::set<std::string> mods,materials;
     std::set<Identity> logicalDependencies;
+    std::map<std::string,std::shared_ptr<EiemAnimationSamples::Owner>> animationOwners;
   };
   uint64_t serial=0;
   std::shared_ptr<Manifest> manifest;
@@ -29,13 +31,19 @@ struct SharedScope {
   EiemDemandGenerationRoutes::GenerationNamespace bundleNamespace;
   std::map<uint64_t,uint64_t> preparedGroups;
   std::map<uint64_t,RootUsage> rootUsage;
+  std::map<uint64_t,size_t> effectRoots;
   std::set<uint64_t> activeAuthorProxies,pendingRetires;
   std::map<std::string,uint64_t> cabKeys;
+  EiemNativeGenerationIdentity::Names generationNames;
   std::set<uint64_t> targetDiscoveryChecked;
+  std::set<uint64_t> targetDiscoveryBudgetFailures;
   std::set<uint64_t> targetDiscoveryMisses;
+  std::map<uint64_t,std::exception_ptr> preparationFailures;
   std::vector<Binding> discoveredTargets;
   std::map<uint64_t,uint64_t> vfsRoutes;
   std::map<Identity,LogicalDependencyBinding> logicalDependencies;
+  EiemDemandMeshProvenance::Meshes observedMeshes;
+  std::set<uint64_t> observationChecked;
   std::map<std::string,EiemNativeStandaloneInput::Input> materialVariants;
   std::atomic<unsigned> activePreparations{0},waitingPreparations{0};
   std::atomic<uint64_t> activeRoot{0},activeKey{0};
@@ -49,6 +57,23 @@ struct SharedLoadRouteContext {
   EiemDemandSharedGraph::Input input;
   SharedLoadRouteContext* previous=nullptr;
 };
+// Inspection outcomes belong to the shared manifest, not a particular root
+// request: several character/UI roots may reach the same native input.
+template<class Inspect>bool InspectTargetInput(SharedScope& shared,uint64_t key,Inspect&& inspect){
+ if(shared.targetDiscoveryChecked.count(key)||shared.targetDiscoveryBudgetFailures.count(key))return false;
+ try{inspect();shared.targetDiscoveryChecked.insert(key);return true;}
+ catch(const R::InspectionBudgetExceeded& error){
+  shared.targetDiscoveryBudgetFailures.insert(key);
+  Log("[DEMAND-TARGET-DISCOVERY-GAP] bundle=%016llX reason=%s originalInputPreserved=1 failureCachedForManifest=1",key,error.what());
+ }
+ catch(const std::exception& error){Log("[DEMAND-TARGET-DISCOVERY-GAP] bundle=%016llX reason=%s originalInputPreserved=1",key,error.what());}
+ return false;
+}
+// Only deterministic inspection limits are retained. Transient VFS/dependency
+// failures remain retryable, and a new manifest/F10 owns a fresh outcome map.
+bool RememberPreparationFailure(SharedScope& shared,uint64_t key,std::exception_ptr failure){
+ try{std::rethrow_exception(failure);}catch(const R::InspectionBudgetExceeded&){shared.preparationFailures.emplace(key,failure);return true;}catch(...){return false;}
+}
 thread_local SharedLoadRouteContext* activeSharedLoadRoute=nullptr;
 struct SharedLoadRouteScope {
   SharedLoadRouteContext value;
@@ -67,7 +92,7 @@ void PruneSharedLocked(){
     std::lock_guard<std::mutex> lifetime(shared->lifetimeMutex);
     bool nativeLease=false;for(const auto& row:requests)nativeLease|=row.second.generation==shared->manifest&&row.second.weak.Get();
     for(const auto& row:bundles)nativeLease|=row.second.generation==shared->manifest&&row.second.weak.Get();
-    if(nativeLease||!shared->activeAuthorProxies.empty()){++it;continue;}
+    if(nativeLease||!shared->activeAuthorProxies.empty()||!shared->effectRoots.empty()){++it;continue;}
     registry.RetireScope(shared->serial);it=sharedScopes.erase(it);
   }
 }
@@ -105,7 +130,7 @@ bool SharedInputByVfsHash(uint64_t hash,std::shared_ptr<SharedScope>& owner,Eiem
 }
 bool SharedInputByName(const std::string& name,std::shared_ptr<SharedScope>& owner,EiemDemandSharedGraph::Input& input){
   if(name.rfind("eff/",0)!=0)return false;const auto hash=SharedVfsHash(name);
-  return SharedInputByVfsHash(hash,owner,input)&&input.name==name;
+  return SharedInputByVfsHash(hash,owner,input)&&EiemDemandGenerationRoutes::NameEquals(input.name,name);
 }
 bool SharedSyntheticPath(void* path)noexcept{
   static constexpr wchar_t fullPrefix[]=L"data/bundles/windows/eff/";
@@ -134,7 +159,8 @@ struct SharedApi {
   void *proxyBundleFlag=nullptr,*proxyIsLoading=nullptr,*proxyIsSuccessToLoad=nullptr;
   void *proxyIsFailedToLoad=nullptr,*proxyHasErrorOrUnloaded=nullptr;
   void *proxyFinishWithBundle=nullptr;
-  void *managerTryGetBundleProxy=nullptr,*proxyReleaseBundleRef=nullptr;
+  void *managerTryGetBundleProxy=nullptr,*proxyRetainBundleRef=nullptr,*proxyReleaseBundleRef=nullptr,*reverseInfo=nullptr;
+  void *proxyLookupInfo=nullptr,*treeSyncInfo=nullptr;
 } sharedApi;
 using SharedNameFn=void*(*)(void*,uint64_t,void*);
 using SharedIntFn=int32_t(*)(void*,uint64_t,void*);
@@ -248,18 +274,15 @@ uint64_t SharedVfsPathHash(const std::string& value){
 uint64_t SharedVfsHash(const std::string& name){
   return SharedVfsPathHash("Data/Bundles/Windows/"+name);
 }
-size_t RetirePreviousSharedInput(const EiemDemandSharedGraph::Input& input){
-  Require(!input.cab.empty(),"shared native input source CAB identity absent");
-  return NativeBundle::UnloadIdentity(input.cab);
-}
+#include "eiem_entry_demand_bundle_handoff.h"
 void* SubmitSharedInput(const EiemDemandSharedGraph::Input& input,uint32_t crc,bool asynchronous,const char* boundary){
   auto started=std::chrono::steady_clock::now();if(asynchronous)++sharedPendingLoads;
-  try{const auto retired=RetirePreviousSharedInput(input);
+  try{const auto retired=RetirePreviousSharedInput(input);RememberNativeCabAliases(input);
     auto completed=[key=input.key,cab=input.cab,started,asynchronous,boundary=std::string(boundary)](void* bundle){
       if(asynchronous)--sharedPendingLoads;++sharedLoadCompletions;if(!bundle)++sharedLoadFailures;
       Log("[DEMAND-SHARED-COMPLETE] route=%s key=%016llX cab=%s async=%d bundle=%p elapsedMs=%.3f",
         boundary.c_str(),key,cab.c_str(),int(asynchronous),bundle,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count());};
-    auto result=NativeBundle::LoadView(input.view,crc,asynchronous,asynchronous?std::move(completed):std::function<void(void*)>{},input.cab);
+    auto result=NativeBundle::LoadView(input.view,crc,asynchronous,asynchronous?std::move(completed):std::function<void(void*)>{},input.generationIsolated?input.name:input.cab);
     if(!result){if(asynchronous)--sharedPendingLoads;++sharedLoadFailures;}
     else{++sharedLoadSubmits;if(!asynchronous)completed(result);}
     Log("[DEMAND-SHARED-SUBMIT] route=%s key=%016llX cab=%s async=%d crc=%u result=%p inputBytes=%zu priorGenerationBundlesRetired=%zu gameProxyOwnsRequest=1",
@@ -276,14 +299,16 @@ bool SharedVfsLoad(uint64_t vfsHash,uint32_t crc,bool asynchronous,void*& result
         if(found!=activeSharedLoadRoute->shared->vfsRoutes.end())route=found->second;}
       if(route==activeSharedLoadRoute->input.key){shared=activeSharedLoadRoute->shared;input=activeSharedLoadRoute->input;}
     }
-    if(!shared&&!SharedInputByVfsHash(vfsHash,shared,input))return false;
-    if(!input.view)return false;
+    if(!shared&&!SharedInputByVfsHash(vfsHash,shared,input)){RetireSyntheticForNativeVfs(vfsHash);return false;}
+    if(!input.view){RetireSyntheticForNativeVfs(vfsHash);return false;}
     ++sharedVfsRouteMatches;auto sequence=sharedVfsRouteMatches.load();if(sequence<=64)
       Log("[DEMAND-SHARED-VFS-ROUTE] hash=%016llX key=%016llX name=%s async=%d crc=%u inputBytes=%zu gameBundleProxy=1",
         vfsHash,input.key,input.name.c_str(),int(asynchronous),crc,input.view->Size());
-    ++sharedLoadAttempts;++sharedLoadMatches;result=SubmitSharedInput(input,crc,asynchronous,"vfs-load");return result!=nullptr;
-  }catch(const std::exception& e){++gaps;Log("[DEMAND-SHARED-GAP] phase=vfs-route hash=%016llX reason=%s",vfsHash,e.what());return false;}
-   catch(...){++gaps;Log("[DEMAND-SHARED-GAP] phase=vfs-route hash=%016llX reason=unknown",vfsHash);return false;}
+    // A matched failure stays a failed game load. Falling through here would
+    // silently load the original bytes into an already selected Mod graph.
+    ++sharedLoadAttempts;++sharedLoadMatches;result=SubmitSharedInput(input,crc,asynchronous,"vfs-load");return true;
+  }catch(const std::exception& e){++gaps;Log("[DEMAND-SHARED-GAP] phase=vfs-route hash=%016llX reason=%s originalFallbackBlocked=1",vfsHash,e.what());return true;}
+   catch(...){++gaps;Log("[DEMAND-SHARED-GAP] phase=vfs-route hash=%016llX reason=unknown originalFallbackBlocked=1",vfsHash);return true;}
 }
 uint8_t SharedVfsGetFileInfo(void* self,void* path,void* info,void* methodInfo){
   auto found=originalSharedVfsQuery(self,path,info,methodInfo);if(!sharedInputsEnabled||!path||!info)return found;
@@ -393,6 +418,8 @@ void* LoadSharedInput(void* path,void* info,bool asynchronous){
   if(sharedInputsEnabled&&!matched)matched=SharedInputByName(name,owner,input);
   if(!matched){if(name.find("eff/")!=std::string::npos){++sharedPathMissEvents;if(sharedPathMissEvents<=64)
       Log("[DEMAND-SHARED-PATH-MISS] path=%s async=%d graphNameLookup=0",name.c_str(),int(asynchronous));}
+    if(sharedInputsEnabled&&nativeCabAliasesPresent.load(std::memory_order_relaxed)&&name.rfind("eff/",0)!=0)try{RetireSyntheticForNativeVfs(SharedVfsHash(name));}
+      catch(const std::exception& error){++gaps;Log("[DEMAND-SHARED-GAP] phase=native-return name=%s reason=%s originalFallbackBlocked=1",name.c_str(),error.what());return nullptr;}
     return (asynchronous?originalSharedLoadAsync:originalSharedLoad)(path,info);}
   ++sharedLoadMatches;
   if(!input.view)return (asynchronous?originalSharedLoadAsync:originalSharedLoad)(path,info);
@@ -436,7 +463,8 @@ void* SharedGetOrCreate(void* manager,uint64_t hash,bool cancelRecycle,void* inf
     // Some game paths select a cached BundleProxy before querying dependencies.
     // A real request may also discover dependency-only targets whose logical
     // identity is absent from the public manifest. Negative groups are cached.
-    if(sharedRequestDepth&&manifest){auto state=Current(manifest);
+    EiemDemandSharedGraph::Input published;
+    if(sharedRequestDepth&&manifest&&!SharedInput(manifest,hash,published)){auto state=Current(manifest);
       auto verdict=CachedCandidate(state,hash);
       if(state->bundles.count(hash)||verdict==Q::Candidate::Yes||verdict==Q::Candidate::Target||!state->unresolved.empty()){
         auto prototype=StartupDependencies::NewListForManifest(manifest);
@@ -597,6 +625,13 @@ uint8_t SharedProxyLoadAsync(void* proxy,void* info){
             hash,input.name.c_str(),request);
         }else Log("[DEMAND-PROXY-LOAD-GAP] phase=request-bind key=%016llX request=%p retained=%p",
           hash,request,retained);
+      }else if(sharedApi.proxyFinishWithBundle){
+        // A null native submission cannot be pumped: there is no request for
+        // UpdateLoading to finish. Use the game's terminal failure path rather
+        // than leaving every dependent Prefab waiting on an empty operation.
+        void* args[]={nullptr};RuntimeShapes::Call(sharedApi.proxyFinishWithBundle,proxy,args);
+        Log("[DEMAND-PROXY-LOAD-FAILED] key=%016llX name=%s gameFinishWithBundle=1 emptyRequestWait=0",
+          hash,input.name.c_str());
       }
     }
   }
@@ -662,14 +697,18 @@ void ReportShared(int frame){
      sharedLoadTreeMatches.load(),sharedAssetTreeCalls.load(),sharedProxyLoadObservations.load(),sharedProxyPumpObservations.load(),sharedOperationUpdateCalls.load(),sharedProxyRetireObservations.load(),sharedFlagQueries.load(),sharedCategoryQueries.load(),sharedVfsRouteMatches.load(),sharedLoadAttempts.load(),sharedLoadMatches.load(),sharedLoadSubmits.load(),
     sharedLoadCompletions.load(),sharedLoadFailures.load(),sharedPendingLoads.load());
 }
-void RetireSharedLocked(const std::shared_ptr<SharedScope>& shared,uint64_t hash) {
+void RetireSharedLocked(const std::shared_ptr<SharedScope>& shared,uint64_t hash,bool proxyRetired=true) {
   uint64_t rootHash=hash;shared->bundleNamespace.Source(hash,rootHash);
   const auto before=shared->graph.Size();EiemDemandSharedGraph::Input input;const bool authored=shared->graph.Find(hash,input);
-  const bool prepared=shared->preparedGroups.erase(rootHash)!=0;{std::lock_guard<std::mutex> lock(shared->usageMutex);shared->rootUsage.erase(rootHash);}bool active=false;
-  {std::lock_guard<std::mutex> lock(shared->lifetimeMutex);active=shared->activeAuthorProxies.erase(hash)!=0;shared->pendingRetires.erase(hash);}
+  const bool prepared=shared->preparedGroups.erase(rootHash)!=0;
+  bool nativeProxyActive=false;{std::lock_guard<std::mutex> lock(shared->lifetimeMutex);nativeProxyActive=shared->activeAuthorProxies.count(hash)!=0;}
+  {std::lock_guard<std::mutex> lock(shared->usageMutex);if(!shared->effectRoots.count(rootHash)&&
+    (proxyRetired||!nativeProxyActive))shared->rootUsage.erase(rootHash);}bool active=false;
+  {std::lock_guard<std::mutex> lock(shared->lifetimeMutex);if(proxyRetired){active=shared->activeAuthorProxies.erase(hash)!=0;shared->pendingRetires.erase(hash);}else active=shared->activeAuthorProxies.count(hash)!=0;}
   if(!prepared&&!active&&!authored)return;
   std::vector<uint64_t> roots;roots.reserve(shared->preparedGroups.size());
   for(const auto& row:shared->preparedGroups)roots.push_back(row.first);
+  for(const auto& row:shared->effectRoots)roots.push_back(row.first);
   {std::lock_guard<std::mutex> lock(shared->lifetimeMutex);roots.insert(roots.end(),shared->activeAuthorProxies.begin(),shared->activeAuthorProxies.end());}
   auto evicted=shared->graph.RetireUnreachable(roots);std::set<std::string> liveMods,liveMaterials;
   std::vector<std::pair<uint64_t,uint64_t>> retiredRoutes;
@@ -692,13 +731,17 @@ void RetireSharedLocked(const std::shared_ptr<SharedScope>& shared,uint64_t hash
     it=shared->logicalDependencies.erase(it);++logicalCacheEvictions;}else ++it;
   if(roots.empty())shared->cabKeys.clear();
   std::vector<std::shared_ptr<EiemDemandAuthorResources::Catalog>> catalogs;
+  // The generation's Catalogs are shared by all native scopes. Trim only
+  // unleased assets even when another target of the same Mod remains alive.
+  if(shared->manifest->catalog)for(const auto& row:shared->manifest->catalog->authors)
+    if(row.second->catalog)catalogs.push_back(row.second->catalog);
   size_t removedMods=0;
   {
     std::lock_guard<std::mutex> lock(mutex);auto found=authors.find(shared->serial);
     if(found!=authors.end()){
       std::set<std::string> removed;
       for(auto it=found->second.begin();it!=found->second.end();)if(!liveMods.count(it->first)){
-        if(it->second.author&&it->second.author->catalog)catalogs.push_back(it->second.author->catalog);
+        if(it->second.author&&it->second.author->catalog&&std::find(catalogs.begin(),catalogs.end(),it->second.author->catalog)==catalogs.end())catalogs.push_back(it->second.author->catalog);
         removed.insert(it->first);it=found->second.erase(it);++removedMods;
       }else ++it;
       if(found->second.empty())authors.erase(found);
@@ -714,7 +757,7 @@ void RetireSharedLocked(const std::shared_ptr<SharedScope>& shared,uint64_t hash
     if(liveMods.empty())scopeParts.erase(shared->serial);
   }
   EiemDemandAuthorResources::Catalog::CacheCounts cached;
-  for(const auto& catalog:catalogs){auto counts=catalog->ClearAssetCaches();cached.meshes+=counts.meshes;cached.textures+=counts.textures;
+  for(const auto& catalog:catalogs){auto counts=catalog->TrimUnusedAssetCaches();cached.meshes+=counts.meshes;cached.textures+=counts.textures;
     cached.materials+=counts.materials;cached.physics+=counts.physics;}
   const auto sequence=++sharedProxyRetireObservations;
   if(sequence<=256)Log("[DEMAND-LIFETIME-RECLAIM] scope=%llu key=%016llX authoredInput=%d preparedRoot=%d activeProxy=%d liveRoots=%zu graphInputs=%zu->%zu evictedViews=%zu evictedViewBytes=%zu evictedDependencyNodes=%zu releasedMods=%zu catalogMeshes=%zu catalogTextures=%zu catalogMaterials=%zu catalogPhysics=%zu materialVariants=%zu logicalDependencies=%zu",
@@ -771,6 +814,11 @@ struct DependencyGroup {
   std::map<uint64_t,std::shared_ptr<GroupSource>> sources;
   EiemBundleDependencies::Keys native,edges;
   std::map<std::string,std::pair<std::shared_ptr<GroupSource>,size_t>> cabs;
+  Bytes schedulingPack;
+  // Private native logic can bind different shared resources while retaining
+  // byte-identical source archives. Its own members need a resource identity
+  // before the common installed-generation isolation is applied.
+  EiemNativeGenerationIdentity::Names privateMembers;
   std::vector<EiemDemandSharedGraph::Input> inputs;
   EiemDemandSharedGraph::PreparedRootViews prepared;
   std::set<uint64_t> pendingTokens;
@@ -781,7 +829,7 @@ struct DependencyGroup {
   const std::vector<uint64_t>& Native(uint64_t key){auto found=native.find(key);if(found!=native.end())return found->second;
     return native.emplace(key,NativeDependencies(manifest->object.Get(),key,prototype)).first->second;}
   std::shared_ptr<GroupSource> Open(uint64_t key){auto prior=sources.find(key);if(prior!=sources.end())return prior->second;
-    openingKey=key;openingName.clear();auto source=std::make_shared<GroupSource>();source->key=key;
+    openingKey=key;openingName.clear();auto failure=shared->preparationFailures.find(key);if(failure!=shared->preparationFailures.end())std::rethrow_exception(failure->second);auto source=std::make_shared<GroupSource>();source->key=key;
     Stage("open-bundle-name",key);void* args[]={&key};source->name=String(Call(StartupDependencies::api.bundleName,manifest->object.Get(),args));openingName=source->name;
     Stage("open-vfs-singleton");auto vfs=Call(sharedApi.vfsInstance);Require(vfs,"shared native VFS singleton absent");
     auto label=Ref::Make(il2cpp_string_new(("Data/Bundles/Windows/"+source->name).c_str()),false);Bytes info(sharedApi.infoSize);void* query[]={label.Get(),info.data()};
@@ -809,37 +857,44 @@ struct DependencyGroup {
     if(found!=cabs.end()){Native(found->second.first->key);Stage("native-dependency-source-ready");return found->second;}
     Stage("native-dependency-source-not-found");throw std::runtime_error("referenced CAB absent from requested native dependency group: "+cab);
   }
-  LogicalDependencyBinding ResolveLogicalDependency(const EiemRuntimeAuthorDirectory::NativeDependency& declaration){
+  LogicalDependencyBinding ResolveLogicalDependency(const EiemRuntimeAuthorDirectory::NativeDependency& declaration,const std::string& sourcePrefab={}){
     Stage("resolve-declared-game-dependency");
-    Require(!declaration.logical.path.empty()&&!declaration.logical.asset.empty()&&declaration.classId,
+    Require(!declaration.logical.path.empty()&&declaration.classId,
       "native Material game dependency has no logical identity");
     usedLogicalDependencies.insert(declaration.logical);
     auto prior=shared->logicalDependencies.find(declaration.logical);
-    if(prior!=shared->logicalDependencies.end()){
+    if(prior!=shared->logicalDependencies.end()&&!schedulingPack.empty()){
       Require(prior->second.classId==declaration.classId,"logical game dependency class differs");
       Open(prior->second.bundle);Native(prior->second.bundle);return prior->second;
     }
     Bytes info(api.packSize);const auto& identity=declaration.logical;
-    auto byPath=[&](){std::fill(info.begin(),info.end(),static_cast<unsigned char>(0));auto path=FullResourceReload::Path(identity.path);uint64_t hash=0;
+    std::string lookupPath=identity.path;
+    auto byPath=[&](){std::fill(info.begin(),info.end(),static_cast<unsigned char>(0));auto path=FullResourceReload::Path(lookupPath);uint64_t hash=0;
       il2cpp_field_get_value(path.Get(),FullResourceReload::api.pathHashField,&hash);void* args[]={&hash,info.data()};
       return RuntimeShapes::Scalar<unsigned char>(api.lookup,manifest->object.Get(),args)!=0;};
     auto byPathAndAsset=[&](){std::fill(info.begin(),info.end(),static_cast<unsigned char>(0));
       auto path=Ref::Make(il2cpp_string_new(identity.path.c_str()),false),name=Ref::Make(il2cpp_string_new(identity.asset.c_str()),false);
       void* args[]={path.Get(),info.data(),name.Get()};return RuntimeShapes::Scalar<unsigned char>(api.subLookup,manifest->object.Get(),args)!=0;};
-    const bool found=EiemLogicalAssetLookup::Find(identity.path,byPath,byPathAndAsset);
+    bool found=EiemLogicalAssetLookup::Find(identity.path,byPath,byPathAndAsset);
+    if(!found&&!sourcePrefab.empty()){lookupPath=sourcePrefab;found=byPath();}
     Require(found,"declared game dependency logical path is absent: "+identity.path);
+    if(schedulingPack.empty())schedulingPack=info;
+    if(prior!=shared->logicalDependencies.end()){
+      Require(prior->second.classId==declaration.classId,"logical game dependency class differs");
+      Open(prior->second.bundle);Native(prior->second.bundle);return prior->second;
+    }
     uint64_t bundle=0,asset=0;memcpy(&bundle,info.data()+api.bundleOffset,8);memcpy(&asset,info.data()+api.assetOffset,8);
-    auto source=Open(bundle);Native(bundle);NativeReference resolved;size_t matches=0;
+    auto source=Open(bundle);keys.push_back(bundle);Native(bundle);NativeReference resolved;size_t matches=0;
     for(const auto& member:source->reader->directory.members){if(!(member.flags&4))continue;
       auto layout=source->reader->Layout(member);auto hashes=source->reader->HashAssets(member,layout);auto selected=hashes.find(asset);
       if(selected!=hashes.end()&&selected->second.classId==int(declaration.classId)){
         auto exact=source->reader->Assets(member,layout);
         auto exactIdentity=std::find_if(exact.begin(),exact.end(),[&](const auto& candidate){return candidate.pathId==selected->second.pathId&&
-          candidate.classId==int(declaration.classId)&&candidate.path==identity.path&&candidate.asset==identity.asset;});
+          candidate.classId==int(declaration.classId)&&candidate.path==identity.path&&(identity.asset.empty()||candidate.asset==identity.asset);});
         if(exactIdentity!=exact.end()){resolved={exactIdentity->cab,exactIdentity->pathId};++matches;continue;}
       }
       for(const auto& candidate:source->reader->Assets(member,layout))if(candidate.classId==int(declaration.classId)&&
-          candidate.path==identity.path&&candidate.asset==identity.asset){resolved={candidate.cab,candidate.pathId};++matches;}
+          candidate.path==identity.path&&(identity.asset.empty()||candidate.asset==identity.asset)){resolved={candidate.cab,candidate.pathId};++matches;}
     }
     bool embedded=false;
     if(!matches){
@@ -848,7 +903,7 @@ struct DependencyGroup {
       // Never search all named objects in a Bundle or unrelated prefabs.
       std::set<NativeReference> candidates,selected;
       for(const auto& member:source->reader->directory.members)if(member.flags&4){auto layout=source->reader->Layout(member);
-        auto refs=source->reader->ContainerPreloads(member,layout,identity.path);candidates.insert(refs.begin(),refs.end());}
+        auto refs=source->reader->ContainerPreloads(member,layout,lookupPath);candidates.insert(refs.begin(),refs.end());}
       std::map<std::string,std::pair<std::pair<std::shared_ptr<GroupSource>,size_t>,SerializedLayout>> layouts;
       uint64_t selectedBundle=0;
       for(const auto& reference:candidates){
@@ -861,7 +916,7 @@ struct DependencyGroup {
         const auto& type=nativeLayout.types.at(object->second.type);if(type.classId!=int(declaration.classId))continue;
         const auto& location=layout->second.first;auto& reader=*location.first->reader;
         auto fields=reader.Fields(reader.directory.members.at(location.second),nativeLayout,reference.second,{"m_Name"});
-        auto name=fields.find("m_Name");if(name==fields.end()||Text(name->second.raw.data(),name->second.raw.size())!=identity.asset)continue;
+        auto name=fields.find("m_Name");if(name==fields.end()||(!identity.asset.empty()&&Text(name->second.raw.data(),name->second.raw.size())!=identity.asset))continue;
         auto canonical=CanonicalSerializedAssetReference(reference);if(selected.insert(canonical).second){resolved=reference;selectedBundle=location.first->key;}
       }
       matches=selected.size();if(matches==1){bundle=selectedBundle;embedded=true;}
@@ -873,20 +928,34 @@ struct DependencyGroup {
       identity.path.c_str(),identity.asset.c_str(),bundle,declaration.classId,int(resolved!=NativeReference{declaration.cab,declaration.pathId}),int(embedded));
     return shared->logicalDependencies.at(identity);
   }
-  std::shared_ptr<const EiemDemandAuthorResources::Texture> TextureInput(const EiemDemandAuthorResources::Texture& texture){
+  LogicalDependencyBinding TextureSource(const EiemDemandAuthorResources::Texture& texture){
     EiemRuntimeAuthorDirectory::NativeDependency logical;logical.logical=texture.source;logical.classId=28;
-    auto binding=ResolveLogicalDependency(logical);auto source=cabs.find(binding.reference.first);
+    auto binding=ResolveLogicalDependency(logical);
+    if(texture.GameOwned()&&texture.id)Require(binding.reference==NativeReference{texture.cab,texture.id},
+      "cached game Texture identity differs from the current manifest");
+    return binding;
+  }
+  std::shared_ptr<const EiemDemandAuthorResources::Texture> TextureInput(const EiemDemandAuthorResources::Texture& texture){
+    auto binding=TextureSource(texture);auto source=cabs.find(binding.reference.first);
     Require(source!=cabs.end(),"current logical Texture CAB was not opened");
+    if(texture.GameOwned()){
+      auto result=std::make_shared<EiemDemandAuthorResources::Texture>(texture);
+      result->cab=binding.reference.first;result->id=binding.reference.second;return result;
+    }
     auto& reader=*source->second.first->reader;auto layout=reader.Layout(reader.directory.members.at(source->second.second));
     auto file=source->second.first->file;auto extent=size_t(source->second.first->length);
     auto lease=[file,extent](size_t at,unsigned char* output,size_t size){Require(at<=extent&&size<=extent-at,"current Texture source range exceeds Bundle");file->ReadAt(at,output,size);};
     return EiemDemandTextureBuild::Build(texture,reader,source->second.second,layout,binding.reference.second,std::move(lease));
   }
-  EiemNativeStandaloneInput::Input MaterialInput(const EiemDemandAuthorResources::Material& material,const M::Use& use){
+  EiemNativeStandaloneInput::Input MaterialInput(const EiemDemandAuthorResources::Material& material){
     // Resolve the declared source Material in the current game's manifest,
     // then edit that serialized object before the game's normal creation.
     EiemRuntimeAuthorDirectory::NativeDependency logical;logical.logical=material.declaration.source;logical.classId=21;
-    auto binding=ResolveLogicalDependency(logical);usedLogicalDependencies.insert(logical.logical);
+    auto binding=ResolveLogicalDependency(logical,material.sourcePrefab);usedLogicalDependencies.insert(logical.logical);
+    // Catalog descriptors are shared across consumers. A cache hit can skip
+    // TextureInput, but this dependency group still owns each declared logical
+    // source and must retain it through the game's proxy lifecycle.
+    for(const auto& texture:material.textureAssets)if(!texture.second->source.path.empty())TextureSource(*texture.second);
     auto cacheKey=material.ownerRoot.u8string()+"\n"+logical.logical.path+"\n"+logical.logical.asset+
       "\n"+binding.reference.first+"/"+std::to_string(binding.reference.second)+"\n"+material.declaration.hash;
     for(const auto& texture:material.textures)cacheKey+="\n"+texture.first+"="+texture.second.first+"/"+std::to_string(texture.second.second);
@@ -900,6 +969,7 @@ struct DependencyGroup {
       binding.reference.second,logical.logical,material.authored,material.textures,std::move(lease));
     shared->materialVariants.emplace(std::move(cacheKey),input);return input;
   }
+  EiemNativeStandaloneInput::Input MaterialInput(const EiemDemandAuthorResources::Material& material,const M::Use&){return MaterialInput(material);}
   uint64_t Key(const std::string& name){Bytes identity(name.begin(),name.end());auto digest=Sha(identity.data(),identity.size());uint64_t key=0;memcpy(&key,digest.data(),8);
     Require(key&&std::find(keys.begin(),keys.end(),key)==keys.end(),"shared native bundle key collides with requested game bundle");return key;}
   EiemDemandSharedGraph::Input Input(const std::string& cab,const std::shared_ptr<const EiemInputSpanView::View>& view){
@@ -916,7 +986,8 @@ struct DependencyGroup {
     // Reuse the whole published declaration, not just its payload pointer.
     EiemDemandSharedGraph::Input prior;
     if(shared->graph.Find(input.key,prior)){
-      Require(prior.versionedRoot&&prior.name==input.name&&prior.cab==input.cab&&prior.view==input.view,
+      Require(prior.versionedRoot&&prior.name==input.name&&prior.cab==input.cab&&
+        (prior.sourceView?prior.sourceView:prior.view)==input.view,
         "cached native root declaration differs from its published view");
       Require(edgesForRoot==edges.end()||input.dependencies==prior.dependencies,
         "cached native root authored dependencies changed within one manifest generation");
@@ -924,10 +995,7 @@ struct DependencyGroup {
     }
     return input;
   }
-  M::Shared PrepareMaterials(const N::Author& author,const std::vector<M::Use>& uses){
-    Stage("open-authored-material-edits");auto result=M::PrepareShared(author,uses,
-      [&](const auto& material,const auto& use){return MaterialInput(material,use);},
-      [&](const auto& texture){return TextureInput(texture);});
+  void AddResourceInputs(const M::Shared& result){
     Stage("build-authored-material-inputs");
     std::map<std::string,EiemDemandSharedGraph::Input> authored;
     for(const auto& row:result.textures.inputs)authored.emplace(row.first,Input(row.first,row.second->input));
@@ -938,14 +1006,23 @@ struct DependencyGroup {
       output.dependencies.assign(dependencies.begin(),dependencies.end());}
     Stage("publish-native-material-dependency-edges");auto& required=edges[consumer];for(const auto& row:result.inputs)required.push_back(authored.at(row.first).key);
     for(const auto& row:authored)inputs.push_back(row.second);
-    materials+=result.variants;return result;
+    materials+=result.variants;
+  }
+  M::Shared PrepareMaterials(const N::Author& author,const std::vector<M::Use>& uses){
+    Stage("open-authored-material-edits");auto result=M::PrepareShared(author,uses,
+      [&](const auto& material,const auto& use){return MaterialInput(material,use);},
+      [&](const auto& texture){return TextureInput(texture);});
+    AddResourceInputs(result);return result;
   }
   Q::Record Prepare(uint64_t key,Q::Candidate verdict){auto source=Open(key);Stage("route-native-input",key);auto record=CandidateRoute(manifest,key,source->name,verdict);Require(record.token,"native dependency route budget exhausted");
     // Carrier-first ordering can visit the same input again as a consumer.
     // Its view remains unpublished until the whole dependency graph commits.
     if(pendingTokens.count(record.token))return record;
     {std::lock_guard<std::mutex> lock(mutex);auto found=preparedInputs.find(record.token);if(found!=preparedInputs.end()&&found->second->ready){
+        if(found->second->blocked&&found->second->failure)std::rethrow_exception(found->second->failure);
         Require(!found->second->blocked,"requested native dependency has a failed preparation");
+        usedMods.insert(found->second->usedMods.begin(),found->second->usedMods.end());usedMaterials.insert(found->second->usedMaterials.begin(),found->second->usedMaterials.end());
+        usedLogicalDependencies.insert(found->second->usedLogicalDependencies.begin(),found->second->usedLogicalDependencies.end());
         if(verdict==Q::Candidate::Target||verdict==Q::Candidate::Yes)
           EiemDemandSharedGraph::ReusePreparedRootView(prepared,record.token,found->second->ready,
             found->second->blocked,found->second->view);
@@ -958,18 +1035,216 @@ struct DependencyGroup {
     Stage("rewrite-native-input",key);
     auto phaseChanged=[](void* context,const char* value){static_cast<DependencyGroup*>(context)->Stage(value);};
     PrepareReplacement(record.token,record.scope,*source->reader,source->file,manifest,&material,&publish,scopeTransaction,&phase,phaseChanged,this,&usedMods);
+    {std::lock_guard<std::mutex> lock(mutex);auto& input=*preparedInputs.at(record.token);
+      input.usedMods=usedMods;input.usedMaterials=usedMaterials;input.usedLogicalDependencies=usedLogicalDependencies;}
     source->reader->DiscardDecodedCache();return record;
   }
 };
+void CommitDependencyInputs(DependencyGroup& group){
+  auto shared=group.shared;auto manifest=group.manifest;
+    group.Stage("isolate-native-generation-identities");
+    std::vector<EiemNativeGenerationIdentity::View> sourceViews;
+    for(const auto& input:group.inputs)sourceViews.push_back(input.sourceView?input.sourceView:input.view);
+    auto generationNames=shared->generationNames;
+    for(const auto& row:EiemNativeGenerationIdentity::Collect(shared->serial,sourceViews)){
+      if(group.privateMembers.count(row.first))continue;
+      auto prior=generationNames.emplace(row);Require(prior.second||prior.first->second==row.second,"native generation member mapping changed");}
+    auto isolatedNames=generationNames;
+    for(const auto& row:group.privateMembers)isolatedNames.insert_or_assign(row.first,row.second);
+    for(auto& input:group.inputs){EiemDemandSharedGraph::Input prior;
+      if(shared->graph.Find(input.key,prior)){
+        auto sourceView=input.sourceView?input.sourceView:input.view;auto previous=prior.sourceView?prior.sourceView:prior.view;
+        Require((sourceView==previous||EiemInputSpanView::SameBytes(*sourceView,*previous))&&
+          input.dependencies==prior.dependencies,"cached native generation input changed");input=std::move(prior);continue;}
+      input.sourceView=input.view;
+      input.view=EiemNativeGenerationIdentity::Isolate(input.sourceView,isolatedNames,input.name);
+      input.generationIsolated=true;
+    }
+    group.Stage("commit-shared-graph");
+    std::map<uint64_t,uint64_t> stagedVfsRoutes;
+    for(const auto& input:group.inputs)for(auto vfsHash:{SharedVfsHash(input.name),SharedVfsPathHash(input.name)}){
+      Require(!manifest->bundles.count(vfsHash),"author VFS path hash collides with a native Bundle");
+      auto staged=stagedVfsRoutes.emplace(vfsHash,input.key);
+      Require(staged.second||staged.first->second==input.key,"author VFS path hash collision within dependency group");}
+    std::map<uint64_t,SharedVfsRoute> stagedRouteIndex;
+    for(const auto& row:stagedVfsRoutes)stagedRouteIndex.emplace(row.first,SharedVfsRoute{shared,row.second});
+    std::unique_lock<std::mutex> routeLock(shared->vfsRouteMutex);
+    for(const auto& row:stagedVfsRoutes){auto prior=shared->vfsRoutes.find(row.first);
+      Require(prior==shared->vfsRoutes.end()||prior->second==row.second,"author VFS path hash collision within manifest");}
+    std::unique_lock<std::mutex> routeIndexLock(sharedVfsRouteIndexMutex);
+    for(const auto& row:stagedRouteIndex){auto prior=sharedVfsRouteIndex.find(row.first);
+      if(prior!=sharedVfsRouteIndex.end())Require(prior->second.owner.lock()==shared&&prior->second.key==row.second.key,
+        "author VFS path hash collision across manifests");}
+    shared->graph.Commit(group.inputs,group.edges,group.native);
+    shared->generationNames.swap(generationNames);
+    shared->vfsRoutes.merge(stagedVfsRoutes);routeLock.unlock();
+    sharedVfsRouteIndex.merge(stagedRouteIndex);routeIndexLock.unlock();
+    if(!group.inputs.empty())sharedTreeRawArmed=true;
+}
+std::shared_ptr<Manifest> CurrentEffectManifest(){
+ Require(RuntimeShapes::Main(),"effect resource resolution requires the game main thread");
+ std::shared_ptr<Manifest> state;
+ {std::lock_guard<std::mutex> lock(mutex);auto installed=std::atomic_load(&installedGeneration);
+  for(const auto& row:manifests)if(row.second->catalog==installed&&row.second->object.Get()&&(!state||state->serial<row.second->serial))state=row.second;}
+ Require(bool(state),"effect resource has no current game manifest");return state;
+}
+unsigned EffectResourceClass(const std::string& type){
+ static const std::map<std::string,unsigned> classes{{"Material",21},{"Mesh",43},{"Shader",48},{"Texture2D",28},{"Texture",28},
+   {"Cubemap",89},{"Texture3D",117},{"Texture2DArray",187},{"CubemapArray",188},{"Sprite",213},{"AnimationClip",74}};
+ auto kind=classes.find(type);Require(kind!=classes.end(),"unsupported logical effect resource class: "+type);return kind->second;
+}
+NativeReference ResolveEffectLogicalResource(const EiemEffectNative::GameResource& resource){
+ auto state=CurrentEffectManifest();
+ auto shared=SharedFor(state);std::unique_lock<std::mutex> transaction(shared->preparation);
+ auto prototype=StartupDependencies::NewListForManifest(state->object.Get());
+ DependencyGroup group;group.manifest=state;group.shared=shared;group.prototype=prototype.Get();
+ EiemRuntimeAuthorDirectory::NativeDependency declaration;declaration.logical={resource.path,resource.asset};declaration.classId=EffectResourceClass(resource.type);
+ auto resolved=group.ResolveLogicalDependency(declaration,resource.sourcePrefab);for(const auto& source:group.sources)source.second->file->VerifyStable();
+ return resolved.reference;
+}
+// SharedGraph owns immutable input declarations; the game's BundleProxy owns
+// native loads and recycling. A live effect pins its own root proxies through
+// the same RetainBundleRef/ReleaseBundleRef API used by native dependencies.
+struct EffectResourceLease {
+ std::shared_ptr<SharedScope> shared;std::vector<uint64_t> roots;std::vector<Ref> proxies;
+ bool released=false;
+ void Release(){
+  if(released)return;Require(RuntimeShapes::Main(),"effect resource retirement requires game main thread");
+  for(auto& proxy:proxies)if(proxy.Get()){void* args[]={proxy.Get()};Call(sharedApi.proxyReleaseBundleRef,proxy.Get(),args);proxy={};}
+  if(shared){std::unique_lock<std::mutex> transaction(shared->preparation);
+   for(auto root:roots){auto found=shared->effectRoots.find(root);Require(found!=shared->effectRoots.end()&&found->second,"effect shared root lease differs");
+    if(--found->second==0)shared->effectRoots.erase(found);
+    RetireSharedLocked(shared,root,false);}}
+  proxies.clear();roots.clear();shared.reset();released=true;
+ }
+};
+using EffectLease=std::shared_ptr<EffectResourceLease>;
+EffectLease PrepareEffectResources(const EiemEffectNative::Manifest& effect,
+    const std::vector<std::shared_ptr<const EiemInputSpanView::View>>& sourceViews,const std::string& contextPath={}){
+ Require((effect.unifiedResources||!effect.authorResources.empty())&&sourceViews.size()==effect.bundles.size(),"effect author resource preparation is incomplete");
+ auto state=CurrentEffectManifest();auto shared=SharedFor(state);std::unique_lock<std::mutex> transaction(shared->preparation);
+ auto author=std::find_if(state->catalog->authors.begin(),state->catalog->authors.end(),[&](const auto& row){return row.second->catalog->Root().u8string()==effect.authorRoot;});
+ Require(author!=state->catalog->authors.end(),"effect author Catalog does not belong to the installed generation");
+ auto prototype=StartupDependencies::NewListForManifest(state->object.Get());DependencyGroup group;
+ group.manifest=state;group.shared=shared;group.prototype=prototype.Get();group.usedMods.insert(author->first);
+ auto privateIdentity=effect.authorRoot+"\n"+effect.key;auto privateHash=Sha(reinterpret_cast<const unsigned char*>(privateIdentity.data()),privateIdentity.size());uint64_t privateScope=0;
+ memcpy(&privateScope,privateHash.data(),8);if(!privateScope)privateScope=1;
+ for(const auto& row:EiemNativeGenerationIdentity::Collect(privateScope,sourceViews))
+  group.privateMembers.emplace(row.first,EiemNativeGenerationIdentity::Scoped(shared->serial,row.second));
+ // Scheduling belongs to the real consumer. The original template Prefab is
+ // author provenance and need not exist in the current game at all.
+ Bytes pack(api.packSize);
+ if(!contextPath.empty()){
+  auto path=FullResourceReload::Path(contextPath);uint64_t pathHash=0;
+  il2cpp_field_get_value(path.Get(),FullResourceReload::api.pathHashField,&pathHash);void* lookupArgs[]={&pathHash,pack.data()};
+  if(RuntimeShapes::Scalar<unsigned char>(api.lookup,state->object.Get(),lookupArgs))memcpy(&group.root,pack.data()+api.bundleOffset,8);
+ }
+ if(group.root){group.schedulingPack=pack;group.keys.push_back(group.root);group.Native(group.root);}
+ auto lease=std::make_shared<EffectResourceLease>();
+ std::vector<uint64_t> bundleKeys;for(size_t i=0;i<effect.bundles.size();++i){auto name=shared->bundleNamespace.ResourceName("effect/"+effect.key+"/"+std::to_string(i));bundleKeys.push_back(group.Key(name));}
+ group.consumer=bundleKeys.at(effect.root);
+ std::map<std::string,NativeReference> resources;
+ M::Shared materials;
+ for(const auto& declaration:effect.authorResources){auto previous=resources.find(declaration.resource);if(previous!=resources.end())continue;
+  NativeReference reference;
+  if(declaration.type=="Material"){
+   auto material=author->second->catalog->GetMaterial(declaration.resource,[&](const auto& texture){return group.TextureInput(texture);});
+   auto input=group.MaterialInput(*material);reference=input.asset;
+   auto inserted=materials.inputs.emplace(input.cab,input);Require(inserted.second||M::SameInput(inserted.first->second,input),"effect author Material CAB collision");
+   for(const auto& texture:material->textureAssets)if(texture.second->input)materials.textures.inputs.emplace(texture.second->cab,texture.second);
+  }else if(declaration.type=="Mesh"){
+   auto mesh=author->second->catalog->GetMeshResource(declaration.resource);
+   // ParticleSystemRenderer consumes Unity Mesh geometry directly. A Mesh
+   // carrying unused skinning fields is still a valid native Mesh resource.
+   reference=mesh->native;
+   auto input=group.Input(reference.first,mesh->input);group.edges[group.consumer].push_back(input.key);group.inputs.push_back(std::move(input));
+  }else if(declaration.type=="Texture2D"||declaration.type=="Texture"){
+   auto texture=author->second->catalog->GetTexture(declaration.resource,[&](const auto& value){return group.TextureInput(value);});reference={texture->cab,texture->id};
+   if(!texture->source.path.empty())group.TextureSource(*texture);
+   if(texture->input){auto input=group.Input(reference.first,texture->input);group.edges[group.consumer].push_back(input.key);group.inputs.push_back(std::move(input));}
+   else group.edges[group.consumer].push_back(group.DependencySource(reference.first).first->key);
+  }else throw std::runtime_error("unsupported effect author Resource type: "+declaration.type);
+  resources.emplace(declaration.resource,std::move(reference));
+ }
+ materials.variants=materials.inputs.size();group.AddResourceInputs(materials);
+ std::map<const EiemEffectNative::GameResource*,NativeReference> gameResources;
+ for(const auto& resource:effect.gameResources){EiemRuntimeAuthorDirectory::NativeDependency logical;
+  logical.logical={resource.path,resource.asset};logical.classId=EffectResourceClass(resource.type);
+  auto binding=group.ResolveLogicalDependency(logical,resource.sourcePrefab);gameResources.emplace(&resource,binding.reference);
+  group.edges[group.consumer].push_back(binding.bundle);
+ }
+ if(!group.root&&!group.schedulingPack.empty()){pack=group.schedulingPack;memcpy(&group.root,pack.data()+api.bundleOffset,8);}
+ Require(group.root,"effect has neither a current consumer nor a logical game resource scheduling context");
+ for(auto& input:group.inputs)input.categorySource=group.root;
+ auto dependencies=group.edges[group.consumer];
+ for(size_t i=0;i<sourceViews.size();++i){
+  auto view=EiemEffectRelocation::Bind(sourceViews[i],i,effect.gameResources,[&](const auto& resource){return gameResources.at(&resource);},
+    effect.authorResources,[&](const auto& resource){return resources.at(resource.resource);});
+  auto input=group.Input("effect/"+effect.key+"/"+std::to_string(i),view);input.key=bundleKeys[i];
+  R::Reader nativeView(view->Size(),[view](size_t at,unsigned char* out,size_t n){Require(view->ReadAt(at,out,n)==n,"effect native source truncated");});
+  auto member=std::find_if(nativeView.directory.members.begin(),nativeView.directory.members.end(),[](const auto& row){return row.flags&4;});
+  Require(member!=nativeView.directory.members.end(),"effect native Bundle has no SerializedFile");input.cab=member->name;
+  // Each effect Bundle can directly reference shared assets. Native dependency
+  // ordering is declared once and remains under the game's loader.
+  input.dependencies=dependencies;for(auto edge:effect.bundles[i].dependencies)input.dependencies.push_back(bundleKeys.at(edge));
+  std::sort(input.dependencies.begin(),input.dependencies.end());input.dependencies.erase(std::unique(input.dependencies.begin(),input.dependencies.end()),input.dependencies.end());
+  group.inputs.push_back(std::move(input));
+ }
+ group.edges.clear();for(const auto& source:group.sources)source.second->file->VerifyStable();
+ // Find the already observed game manager for this exact manifest. No scene
+ // traversal and no duplicate Material/Texture native loading is necessary.
+ Ref manager;{std::lock_guard<std::mutex> lock(StartupDependencies::mutex);for(const auto& row:StartupDependencies::snapshots)
+  if(row.second.manifest.Get()==state->object.Get()&&row.second.proxy.Get()){void* value=nullptr;il2cpp_field_get_value(row.second.proxy.Get(),StartupDependencies::api.proxyManagerField,&value);if(value){manager=Ref::Make(value,false);break;}}}
+ Require(manager.Get()&&sharedApi.proxyLookupInfo&&sharedApi.treeSyncInfo&&sharedApi.proxyRetainBundleRef&&sharedApi.proxyReleaseBundleRef,
+  "effect shared game Bundle manager is unavailable");
+ // Allocate owner bookkeeping before graph publication. A failed preparation
+ // must not strand a published graph behind a partially created root lease.
+ std::map<uint64_t,size_t> stagedOwners;
+ std::map<uint64_t,SharedScope::RootUsage> stagedUsage;
+ {std::lock_guard<std::mutex> usageLock(shared->usageMutex);for(auto root:bundleKeys){
+   auto owner=shared->effectRoots.find(root);stagedOwners.emplace(root,owner==shared->effectRoots.end()?1:owner->second+1);
+   auto prior=shared->rootUsage.find(root);auto& usage=stagedUsage[root];if(prior!=shared->rootUsage.end())usage=prior->second;
+   usage.mods.insert(group.usedMods.begin(),group.usedMods.end());usage.materials.insert(group.usedMaterials.begin(),group.usedMaterials.end());
+   usage.logicalDependencies.insert(group.usedLogicalDependencies.begin(),group.usedLogicalDependencies.end());}}
+ lease->roots=bundleKeys;lease->proxies.reserve(bundleKeys.size());
+ CommitDependencyInputs(group);
+ {std::lock_guard<std::mutex> usageLock(shared->usageMutex);
+  for(const auto& row:stagedOwners){auto prior=shared->effectRoots.find(row.first);if(prior!=shared->effectRoots.end())prior->second=row.second;}
+  shared->effectRoots.merge(stagedOwners);
+  for(auto& row:stagedUsage){auto prior=shared->rootUsage.find(row.first);if(prior!=shared->rootUsage.end())std::swap(prior->second,row.second);}
+  shared->rootUsage.merge(stagedUsage);}
+ lease->shared=shared;
+ transaction.unlock();
+ try{
+  for(auto key:bundleKeys){bool cancel=true;void* args[]={&key,&cancel};auto proxy=Ref::Make(Call(sharedApi.proxyLookupInfo,manager.Get(),args),false);
+   Require(proxy.Get(),"effect shared BundleProxy is missing");void* retainArgs[]={proxy.Get()};Call(sharedApi.proxyRetainBundleRef,proxy.Get(),retainArgs);lease->proxies.push_back(proxy);
+   int32_t depth=0;void* loadArgs[]={pack.data(),proxy.Get(),&depth};Call(sharedApi.treeSyncInfo,manager.Get(),loadArgs);
+   Require(RuntimeShapes::Scalar<unsigned char>(sharedApi.proxyIsSuccessToLoad,proxy.Get()),"effect shared BundleProxy could not load its dependency tree");
+  }
+  Log("[EFFECT-SHARED-RESOURCES] mod=%s authorResources=%zu effectBundles=%zu materials=%zu gameProxyOwner=1 duplicateNativeLoads=0",author->first.c_str(),resources.size(),bundleKeys.size(),materials.variants);
+  return lease;
+ }catch(...){lease->Release();throw;}
+}
+void* EffectResourceBundle(const EffectLease& lease,size_t index){
+ Require(lease&&!lease->released&&index<lease->proxies.size(),"effect shared resource lease is incomplete");
+ void* result=nullptr;il2cpp_field_get_value(lease->proxies[index].Get(),sharedApi.proxyAssetBundleField,&result);Require(RuntimeShapes::Alive(result),"effect shared native Bundle has retired");return result;
+}
+#include "eiem_entry_native_mesh_provenance.h"
 bool PrepareDependencyGroup(const std::shared_ptr<Manifest>& manifest,uint64_t hash,void* prototype){
   // Includes lock acquisition and already-prepared lookups, which prepareMs
   // deliberately excludes. Native proxy/tree bodies are measured separately.
   EiemLoadPerformance::Scope performance(EiemLoadPerformance::DemandPrepare);
-  if(!sharedInputsEnabled)return false;auto shared=SharedFor(manifest);++shared->waitingPreparations;std::unique_lock<std::mutex> serial(shared->preparation);--shared->waitingPreparations;
+  if(!sharedInputsEnabled)return false;
+  // Published synthetic keys (including still-live older generations) already
+  // have an authoritative graph. They are not native discovery candidates:
+  // their query-only VFS alias points at a source file, not their own payload.
+  EiemDemandSharedGraph::Input published;
+  if(SharedInput(manifest->object.Get(),hash,published))return false;
+  auto shared=SharedFor(manifest);++shared->waitingPreparations;std::unique_lock<std::mutex> serial(shared->preparation);--shared->waitingPreparations;
   shared->activeRoot=hash;shared->activeKey=hash;shared->activePhase="read-native-dependencies";shared->preparationStarted=GetTickCount64();shared->watchdogReported=0;shared->activePreparations=1;
   struct Activity {std::shared_ptr<SharedScope> scope;~Activity(){scope->activePreparations=0;scope->activePhase=nullptr;scope->activeRoot=0;scope->activeKey=0;scope->preparationStarted=0;}} activity{shared};
   auto prior=shared->preparedGroups.find(hash);if(prior!=shared->preparedGroups.end()&&registry.Get(prior->second).token)return true;
-  if(shared->targetDiscoveryMisses.count(hash))return false;
+  if(shared->targetDiscoveryMisses.count(hash)||shared->preparationFailures.count(hash))return false;
   auto begin=std::chrono::steady_clock::now();DependencyGroup group;group.manifest=manifest;group.shared=shared;group.prototype=prototype;group.root=hash;
   std::vector<uint64_t> native;
   try{group.Stage("read-native-dependencies",hash);native=group.Native(hash);}
@@ -980,17 +1255,16 @@ bool PrepareDependencyGroup(const std::shared_ptr<Manifest>& manifest,uint64_t h
     // Request-local routing snapshots keep the published manifest immutable.
     // Negative directory checks are cached once per native input/generation.
     EiemDemandTargetLookup::Inspection targetInspection;
-    for(auto key:group.keys)if(!shared->targetDiscoveryChecked.count(key)){
-      try{auto source=group.Open(key);for(auto index:manifest->unresolved){const auto& target=manifest->catalog->targets.at(index);
+    for(auto key:group.keys)InspectTargetInput(*shared,key,[&]{
+      auto source=group.Open(key);for(auto index:manifest->unresolved){const auto& target=manifest->catalog->targets.at(index);
         auto resolve=[&](const NativeReference& reference,const Identity& identity,Asset& asset){auto location=group.DependencySource(reference.first);
           return targetInspection.ReferencedMesh(*location.first->reader,reference,identity,asset);};
         for(const auto& asset:targetInspection.Find(*source->reader,target.source,resolve)){
           const auto carrier=group.cabs.at(asset.cab).first->key;
           auto duplicate=std::find_if(shared->discoveredTargets.begin(),shared->discoveredTargets.end(),[&](const auto& row){return row.target==index&&row.bundle==carrier&&row.cab==asset.cab&&row.object==asset.pathId;});
           if(duplicate==shared->discoveredTargets.end()){shared->discoveredTargets.push_back({index,carrier,0,asset.cab,asset.pathId});Log("[DEMAND-TARGET-DISCOVERED] mod=%s path=%s asset=%s bundle=%016llX requestLocal=1",target.mod.c_str(),target.source.path.c_str(),target.source.asset.c_str(),carrier);}
-        }}source->reader->DiscardDecodedCache();shared->targetDiscoveryChecked.insert(key);
-      }catch(const std::exception& error){Log("[DEMAND-TARGET-DISCOVERY-GAP] bundle=%016llX reason=%s originalInputPreserved=1",key,error.what());}
-    }
+        }}source->reader->DiscardDecodedCache();
+    });
     if(!shared->discoveredTargets.empty()){routing=std::make_shared<Manifest>();routing->object=manifest->object;routing->serial=manifest->serial;routing->catalog=manifest->catalog;routing->bindings=manifest->bindings;routing->bundles=manifest->bundles;
       std::set<size_t> discovered;for(const auto& binding:shared->discoveredTargets)discovered.insert(binding.target);
       routing->bindings.erase(std::remove_if(routing->bindings.begin(),routing->bindings.end(),[&](const auto& binding){return discovered.count(binding.target)!=0;}),routing->bindings.end());
@@ -1041,34 +1315,20 @@ bool PrepareDependencyGroup(const std::shared_ptr<Manifest>& manifest,uint64_t h
       }else{hadPreparedGroup=true;previousPreparedGroup=prior->second;prior->second=root.token;}
       std::lock_guard<std::mutex> lock(shared->usageMutex);auto oldUsage=shared->rootUsage.find(hash);
       if(oldUsage!=shared->rootUsage.end()){hadRootUsage=true;previousRootUsage=oldUsage->second;}
-      shared->rootUsage.insert_or_assign(hash,SharedScope::RootUsage{group.usedMods,group.usedMaterials,group.usedLogicalDependencies});}
+      SharedScope::RootUsage usage{group.usedMods,group.usedMaterials,group.usedLogicalDependencies};
+      for(const auto& mod:group.usedMods){auto author=manifest->catalog->authors.find(mod);
+        if(author!=manifest->catalog->authors.end())usage.animationOwners.emplace(mod,author->second->catalog->AcquireAnimationOwner());}
+      shared->rootUsage.insert_or_assign(hash,std::move(usage));}
     {std::lock_guard<std::mutex> lock(mutex);for(const auto& inspection:inspections)inspected.insert(inspection);}
-    group.Stage("commit-shared-graph");
-    std::map<uint64_t,uint64_t> stagedVfsRoutes;
-    for(const auto& input:group.inputs)for(auto vfsHash:{SharedVfsHash(input.name),SharedVfsPathHash(input.name)}){
-      Require(!manifest->bundles.count(vfsHash),"author VFS path hash collides with a native Bundle");
-      auto staged=stagedVfsRoutes.emplace(vfsHash,input.key);
-      Require(staged.second||staged.first->second==input.key,"author VFS path hash collision within dependency group");}
-    std::map<uint64_t,SharedVfsRoute> stagedRouteIndex;
-    for(const auto& row:stagedVfsRoutes)stagedRouteIndex.emplace(row.first,SharedVfsRoute{shared,row.second});
-    std::unique_lock<std::mutex> routeLock(shared->vfsRouteMutex);
-    for(const auto& row:stagedVfsRoutes){auto prior=shared->vfsRoutes.find(row.first);
-      Require(prior==shared->vfsRoutes.end()||prior->second==row.second,"author VFS path hash collision within manifest");}
-    std::unique_lock<std::mutex> routeIndexLock(sharedVfsRouteIndexMutex);
-    for(const auto& row:stagedRouteIndex){auto prior=sharedVfsRouteIndex.find(row.first);
-      if(prior!=sharedVfsRouteIndex.end())Require(prior->second.owner.lock()==shared&&prior->second.key==row.second.key,
-        "author VFS path hash collision across manifests");}
-    shared->graph.Commit(group.inputs,group.edges,group.native);
-    shared->vfsRoutes.merge(stagedVfsRoutes);routeLock.unlock();
-    sharedVfsRouteIndex.merge(stagedRouteIndex);routeIndexLock.unlock();
+    CommitDependencyInputs(group);
     for(const auto& row:rootAliases)shared->bundleNamespace.BindRoot(row.first,row.second);
-    if(!group.inputs.empty())sharedTreeRawArmed=true;
     group.Stage("publish-prepared-inputs");
     for(auto& row:group.prepared)PublishPrepared(row.first,std::move(row.second));
     Log("[DEMAND-SHARED-GROUP] scope=%llu bundle=%016llX nativeDependencies=%zu openedHeaders=%zu preparedInputs=%zu sharedInputs=%zu completeMaterials=%zu prepareMs=%.3f wholeGameScan=0 nativeObjectsCreatedByEff=0",
       manifest->serial,hash,native.size(),group.headerReads,group.prepared.size(),shared->graph.Size(),group.materials,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count());
     return true;
   }catch(...){
+    auto failure=std::current_exception();bool deterministic=RememberPreparationFailure(*shared,hash,failure);
     try{throw;}catch(const std::exception& e){Log("[DEMAND-SHARED-GAP] phase=group bundle=%016llX stage=%s openKey=%016llX openName=%s reason=%s",hash,group.phase,group.openingKey,group.openingName.c_str(),e.what());}
       catch(...){Log("[DEMAND-SHARED-GAP] phase=group bundle=%016llX stage=%s reason=non-standard-exception",hash,group.phase);}
     {std::lock_guard<std::mutex> lock(mutex);if(snapshot.hadAuthors)authors[manifest->serial]=std::move(snapshot.authors);else authors.erase(manifest->serial);
@@ -1076,7 +1336,9 @@ bool PrepareDependencyGroup(const std::shared_ptr<Manifest>& manifest,uint64_t h
       for(const auto& inspection:inspections)inspected.erase(inspection);}
     if(insertedPreparedGroup)shared->preparedGroups.erase(hash);else if(hadPreparedGroup)shared->preparedGroups[hash]=previousPreparedGroup;
     {std::lock_guard<std::mutex> lock(shared->usageMutex);if(hadRootUsage)shared->rootUsage.insert_or_assign(hash,std::move(previousRootUsage));else shared->rootUsage.erase(hash);}
-    for(auto token:group.pendingTokens)PublishPrepared(token,{},true);throw;
+    for(auto token:group.pendingTokens)PublishPrepared(token,{},true,failure);
+    if(!deterministic){std::lock_guard<std::mutex> lock(mutex);for(auto token:group.pendingTokens)preparedInputs.erase(token);}
+    throw;
   }
 }
 void InstallSharedInputs(void** assemblies,size_t count){
@@ -1138,6 +1400,7 @@ void InstallSharedInputs(void** assemblies,size_t count){
     Require(Entry::Install(klass,name,args,result,isStatic,detour,original),std::string("shared native hook absent: ")+name);};
   auto treeSync=unique(manager,"_LoadBundleProxySync",3),tree=unique(manager,"_LoadBundleProxy",6),assetTree=unique(manager,"_LoadAssetProxy",4);
   auto proxyLookup=unique(manager,"GetOrCreateBundleProxy",2);auto proxyType=StartupDependencies::TypeName(il2cpp_method_get_return_type(proxyLookup));
+  sharedApi.proxyLookupInfo=proxyLookup;sharedApi.treeSyncInfo=treeSync;
   auto operationUpdate=unique(manager,"_UpdateOperationLoadBundle",1);
   auto operationParam=il2cpp_method_get_param(operationUpdate,0);
   auto operationType=StartupDependencies::TypeName(operationParam);
@@ -1160,7 +1423,8 @@ void InstallSharedInputs(void** assemblies,size_t count){
   auto pack=StartupDependencies::TypeName(il2cpp_method_get_param(tree,0));auto proxyName=StartupDependencies::TypeName(il2cpp_method_get_param(tree,1));
   sharedApi.managerTryGetBundleProxy=Exact(manager,"TryGetBundleProxy",{scalar.c_str()},proxyName.c_str(),false);
   sharedApi.proxyReleaseBundleRef=Exact(proxy,"ReleaseBundleRef",{proxyName.c_str()},"System.Void",false);
-  Require(sharedApi.managerTryGetBundleProxy&&sharedApi.proxyReleaseBundleRef,"shared native dependency release API absent");
+  sharedApi.proxyRetainBundleRef=Exact(proxy,"RetainBundleRef",{proxyName.c_str()},"System.Void",false);
+  Require(sharedApi.managerTryGetBundleProxy&&sharedApi.proxyReleaseBundleRef&&sharedApi.proxyRetainBundleRef,"shared native dependency reference API absent");
   Require(StartupDependencies::TypeName(il2cpp_method_get_param(treeSync,0))==pack&&StartupDependencies::TypeName(il2cpp_method_get_param(treeSync,1))==proxyName,
     "shared native load-tree argument ABI differs");
   auto packSize=StartupDependencies::ValueSize(il2cpp_class_from_type(il2cpp_method_get_param(tree,0)));Require(packSize>8&&packSize<=4096,"shared native AssetPackInfo indirect ABI differs");
@@ -1180,6 +1444,8 @@ void InstallSharedInputs(void** assemblies,size_t count){
   hook(manifest,"GetBundleNameString",{scalar.c_str()},"System.String",false,(void*)SharedName,(void**)&originalSharedName);
   hook(manifest,"GetBundleNameUnSafeString",{scalar.c_str()},"Beyond.UnSafeString",false,(void*)SharedUnsafe,(void**)&originalSharedUnsafe);
   auto listName=StartupDependencies::TypeName(il2cpp_method_get_param(StartupDependencies::api.allInfo,1));
+  sharedApi.reverseInfo=Exact(manifest,"TryGetBundleReverseDeps",{scalar.c_str(),listName.c_str()},"System.Boolean",false);
+  Require(sharedApi.reverseInfo,"shared native reverse dependency method info absent");
   hook(manifest,"TryGetBundleReverseDeps",{scalar.c_str(),listName.c_str()},"System.Boolean",false,(void*)SharedReverse,(void**)&originalSharedReverse);
   hook(vfs,"GetFileInfo",{"System.String",infoTypeName.c_str()},"System.Boolean",false,(void*)SharedVfsGetFileInfo,(void**)&originalSharedVfsQuery);
   hook(proxy,"_LoadAssetBundle",{"System.String"},"UnityEngine.AssetBundle",true,(void*)SharedLoad,(void**)&originalSharedLoad);

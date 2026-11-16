@@ -2,6 +2,8 @@
 #include "../../src/eiem_demand_author_resources.h"
 #include "../../src/eiem_demand_material_assembly.h"
 #include "../../src/eiem_runtime_shape_identity.h"
+#include "../../src/eiem_shape_animation_player.h"
+#include "../../src/eiem_effect_relocation.h"
 #include <fstream>
 #include <iostream>
 #include <cstring>
@@ -99,6 +101,10 @@ static int SmokeRealMod(const std::filesystem::path& root){
   }
   size_t meshBytes=0,materialBytes=0,textureBytes=0,physicsBytes=0;
   for(const auto& declaration:directory.meshes){try{auto mesh=catalog->GetMesh(declaration.part);
+    auto manifest=EiemRuntimeAuthorManifest::Read(root);const auto& resourceId=manifest.parts.at(declaration.part).mesh;
+    auto resource=catalog->GetMeshResource(resourceId);
+    Require(resource->input==mesh->input&&resource==mesh->resourceOwner&&resource->native==mesh->native,
+      "Part and effect Resource ID opened duplicate native Mesh inputs");
     Require(mesh->object.fields.size()>=declaration.fields.size(),"real Mesh selected fields are absent");meshBytes+=mesh->metadataReadBytes;
   }catch(const std::exception& error){throw std::runtime_error("real Mesh "+declaration.part+" ("+declaration.file+"): "+error.what());}}
   std::map<std::string,std::shared_ptr<const A::Texture>> texturesById;
@@ -173,6 +179,37 @@ static int SmokeRealMod(const std::filesystem::path& root){
   return 0;
 }
 
+static int SmokeUnifiedEffectResources(const std::filesystem::path& root){
+ auto catalog=std::make_shared<A::Catalog>(root);
+ Require(!catalog->OpenMeshes()&&!catalog->OpenMaterials()&&!catalog->OpenTextures(),"effect Catalog eagerly opened author payloads");
+ Package package;EiemAuthorControlMetadata::Apply(catalog->Directory().runtime,package);catalog->BindEffects(package);
+ Require(!package.effects.empty(),"unified effect fixture has no effect relationship");
+ size_t materials=0,meshes=0,textures=0,bundles=0,patches=0;
+ auto declarations=EiemRuntimeAuthorManifest::Read(root);
+ for(const auto& row:declarations.resources){const auto& resource=row.second;
+  if(resource.kind==1){auto input=catalog->GetMeshResource(row.first);Require(input==catalog->GetMeshResource(row.first)&&input->input&&input->native.second,
+    "effect Mesh did not use the shared Catalog resource input");++meshes;}
+  if(resource.kind==2){auto material=catalog->GetMaterial(row.first);Require(material==catalog->GetMaterial(row.first),"effect Material reopened its sparse edit");
+   for(const auto& binding:resource.textureBindings)Require(material->textureAssets.at(binding.first)==catalog->GetTexture(binding.second),"effect Material did not reuse its independently declared Texture");++materials;}
+  if(resource.kind==3){auto texture=catalog->GetTexture(row.first);if(resource.dds.empty()&&resource.path.empty())
+    Require(texture->GameOwned()&&!texture->dds&&!texture->input&&!texture->source.path.empty(),"logical game Texture created an author carrier");++textures;}
+ }
+ for(const auto& effect:package.effects){const auto& manifest=*effect.second.native;
+  Require(manifest.unifiedResources&&manifest.authorRoot==catalog->Root().u8string(),"new effect relationship did not select unified resource assembly");
+  for(const auto& resource:manifest.authorResources)Require(!resource.patches.empty(),"effect author Resource has no native reference sites");
+  for(size_t i=0;i<manifest.bundles.size();++i){auto source=manifest.bundles[i].open();
+   auto bound=EiemEffectRelocation::Bind(source,i,manifest.gameResources,[](const auto&)->EiemEffectRelocation::Reference{return {"CAB-11111111111111111111111111111111",11};},
+    manifest.authorResources,[](const auto&)->EiemEffectRelocation::Reference{return {"CAB-22222222222222222222222222222222",22};});
+   Require(bound&&bound->Size()==source->Size(),"unified effect relocation changed its Bundle extent");
+   for(const auto& resource:manifest.authorResources)for(const auto& patch:resource.patches)if(patch.bundle==i){
+    Bytes bytes(patch.kind?8:36);bound->ReadAt(patch.offset,bytes.data(),bytes.size());
+    if(patch.kind)Require(Le(bytes,0,8)==22,"effect author PPtr did not bind to its Resource");
+    else Require(std::string(bytes.begin(),bytes.end())=="CAB-22222222222222222222222222222222","effect author CAB did not bind to its Resource");++patches;}
+   ++bundles;
+  }
+ }
+ std::cout<<"PASS real unified effect Catalog: materials="<<materials<<" meshes="<<meshes<<" textures="<<textures<<" bundles="<<bundles<<" authorPatches="<<patches<<" sourcePrefabLoad=0\n";return 0;
+}
 static void PhysicsRetargetChecks(){
  const Identity oldA{"assets/old.mesh","OldA"},oldB{"assets/old.mesh","OldB"};
  const Identity newA{"assets/new.mesh","NewA"},newB{"assets/new.mesh","NewB"};
@@ -188,6 +225,9 @@ static void PhysicsRetargetChecks(){
  std::cout<<"PASS Physics source integrity separated from current INI targets: per-group rule/LOD bindings, legacy single-rule retarget and ambiguous binding rejection\n";
 }
 int main(int argc,char** argv){
+  if(argc==3&&std::string(argv[1])=="--effect-resources"){
+    try{return SmokeUnifiedEffectResources(std::filesystem::u8path(argv[2]));}
+    catch(const std::exception& error){std::cerr<<"FAIL unified effect resources: "<<error.what()<<'\n';return 1;}}
   if(argc==3&&std::string(argv[1])=="--staged-metadata"){
     try{return SmokeStagedMeshMetadata(std::filesystem::u8path(argv[2]));}
     catch(const std::exception& error){std::cerr<<"FAIL staged Mesh metadata: "<<error.what()<<'\n';return 1;}}
@@ -212,6 +252,8 @@ int main(int argc,char** argv){
     texture.ddsFile="editable/body.dds";
     nativeMesh.insert(nativeMesh.end(),authorMesh.begin(),authorMesh.end());
     Save(root/mesh.file,F::Encode(1,M::EncodeMesh(mesh),nativeMesh));
+    Require(A::ReadMeshMetadata(root,mesh,"PartRenamed").declaration.part==mesh.part,
+      "Mesh author identity was incorrectly coupled to assembly Part name");
     Save(root/material.file,F::Encode(2,M::EncodeMaterial(material),authorMaterial));
     D::MaterialEntry twin=material;twin.id="MaterialTwin";twin.file="custom/materials/twin.author";
     Save(root/twin.file,F::Encode(2,M::EncodeMaterial(twin),authorMaterial));
@@ -275,8 +317,16 @@ int main(int argc,char** argv){
       directory.runtime.materialAnimations.count("shared")&&
       directory.runtime.materialTracks.count("$mat")&&
       directory.runtime.animations.at("shared").boneTracks.size()==1&&
-      directory.runtime.animations.at("shared").boneTracks.front().samples.size()==3,
+      directory.runtime.animations.at("shared").sampleSource&&catalog.OpenAnimationSamples()==0,
       "format 3 Catalog did not keep Shape and Bone tracks in one sampled clip");
+    Package animationPackage;EiemAuthorControlMetadata::Apply(directory.runtime,animationPackage);
+    EiemShapeAnimation::Player animationPlayer;animationPlayer.Prepare(animationPackage);const auto& lazyClip=animationPackage.shapeAnimations.at("shared");
+    animationPlayer.Play(lazyClip);Require(catalog.OpenAnimationSamples()==0,"unmatched animation Play opened payload");
+    auto animationOwner=catalog.AcquireAnimationOwner();animationPlayer.Advance(animationPackage,animationPackage.defaults,.5);
+    Require(catalog.OpenAnimationSamples()==1&&std::abs(animationPlayer.output.at("$smile")-.5)<1e-6,"matched animation failed to load/sample shared payload");
+    auto lease=lazyClip.sampleSource->Open();Require(lease==lazyClip.sampleSource->Open(),"shared animation sample payload decoded twice");lease.reset();
+    animationOwner.reset();animationPlayer.Advance(animationPackage,animationPackage.defaults,.1);
+    Require(catalog.OpenAnimationSamples()==0&&animationPlayer.output.empty(),"retired animation retained payload/output");
     auto skeleton=catalog.GetSkeleton("WeaponRig");
     Require(skeleton->paths.count("WeaponRoot/FxAnchor")&&catalog.OpenSkeletons()==1,
       "format 3 Catalog did not resolve the mixed clip Bone path through its Skeleton");
@@ -351,6 +401,35 @@ int main(int argc,char** argv){
     auto conflictRight=MatAsm::PrepareShared(nativeAuthor,{equivalentUses[1]},conflictingBytes);
     Require(Fails([&]{MatAsm::Merge(conflictLeft,std::move(conflictRight));}),
       "different Material bytes with the same CAB were merged across dependency groups");
+    {auto cloneIni=editedIni;auto marker=cloneIni.find("persist $anim_speed_shared=1");Require(marker!=cloneIni.npos,"sample clone default marker absent");
+      cloneIni.insert(marker,"persist $anim_speed_clone=1\n");
+      cloneIni+="\n[Animationclone]\nlabel=Clone\nduration=1\nspeed_variable=$anim_speed_clone\nspeed=1\nloop=1\nautoplay=0\ntrack.0=$mat\ntrack.1=$smile\nbone.0.skeleton=WeaponRig\nbone.0.path=WeaponRoot/FxAnchor\nsamples=ResourceSamples_shared\n";
+      SaveText(root/"mod.ini",cloneIni);A::Catalog samplesCatalog(root);const auto& clips=samplesCatalog.Directory().runtime.animations;
+      Require(samplesCatalog.OpenAnimationSamples()==0&&clips.at("shared").sampleSource==clips.at("clone").sampleSource,"two clips eagerly loaded or duplicated a shared sample source");
+      auto held=clips.at("shared").sampleSource->Open();Require(held==clips.at("clone").sampleSource->Open()&&samplesCatalog.OpenAnimationSamples()==1,"two clips decoded separate sample payloads");
+      held.reset();Require(samplesCatalog.OpenAnimationSamples()==0,"sample cache retained unused payload");SaveText(root/"mod.ini",editedIni);}
+    {EiemAnimationSamples::Source broken;size_t attempts=0;broken.read=[&]()->EiemAnimationSamples::Data{++attempts;throw std::runtime_error("invalid fixture samples");};
+      Require(Fails([&]{broken.Open();})&&Fails([&]{broken.Open();})&&attempts==1,"invalid animation payload was repeatedly read every frame");}
+    {A::Catalog cache(root);auto kept=cache.GetMaterial("MaterialBody");auto idle=cache.GetMaterial("MaterialTwin");idle.reset();
+      auto trimmed=cache.TrimUnusedAssetCaches();Require(trimmed.materials==1&&cache.OpenMaterials()==1&&cache.OpenTextures()==1,"retiring one target failed to trim only unleased assets");
+      auto textureLease=kept->textureAssets.at("_BaseMap");kept.reset();trimmed=cache.TrimUnusedAssetCaches();
+      Require(trimmed.materials==1&&cache.OpenTextures()==1&&textureLease->dds,"active Texture lease was evicted");
+      textureLease.reset();cache.TrimUnusedAssetCaches();Require(cache.OpenMaterials()==0&&cache.OpenTextures()==0,"unused Texture/DDS retained until entire Mod retirement");
+      auto changedDds=dds;changedDds.back()^=0x7f;Save(root/"artist/albedo-final.dds",changedDds);
+      Require(Fails([&]{cache.GetTexture("TextureAlt");}),"trimmed cache silently mixed changed DDS into the old generation");
+      A::Catalog next(root);Require(bool(next.GetTexture("TextureAlt")),"new generation did not accept changed DDS");}
+    {auto gameRoot=root/"game-reference";auto source=material;source.id="MaterialGame";source.file="materials/game.effmat";
+      Save(gameRoot/source.file,F::Encode(2,M::EncodeMaterial(source),authorMaterial));
+      SaveText(gameRoot/"mod.ini","[Mod]\nformat=3\nid=GameTexture\ncontrols=ini\n[MaterialGame]\npath=materials/game.effmat\nsource.path=assets/edited/body.mat\nsource.asset=EditedMaterial\ntexture._BaseMap=TextureGame\n[TextureGame]\nsource.path=assets/game/star.png\nsource.asset=Star\n");
+      auto sourceCatalog=std::make_shared<A::Catalog>(gameRoot);Native::Author sourceAuthor(sourceCatalog);size_t resolves=0;
+      auto resolver=[&](const A::Texture& input)->std::shared_ptr<const A::Texture>{++resolves;Require(input.GameOwned()&&!input.dds&&!input.input,"game Texture opened an author payload");
+        auto resolved=std::make_shared<A::Texture>(input);resolved->cab="CAB-11111111111111111111111111111111";resolved->id=7;return resolved;};
+      auto result=MatAsm::PrepareShared(sourceAuthor,{{{1,"Part"},"MaterialGame"}},[&](const auto& material,const auto&){auto input=DummyMaterialInput(material);input.dependencies.insert(material.textures.at("_BaseMap"));return input;},resolver);
+      Require(result.inputs.size()==1&&result.textures.inputs.empty()&&resolves==1,"logical game Texture was copied into an author carrier");
+      auto resolved=sourceCatalog->GetTexture("TextureGame",resolver);Require(resolves==1&&resolved->id==7&&!resolved->input&&!resolved->dds,"logical game Texture reference was reloaded");
+      Require(Fails([&]{auto ini=Read(gameRoot/"mod.ini");std::string text(ini.begin(),ini.end());text+="filter=2\n";SaveText(gameRoot/"mod.ini",text);A::Catalog invalid(gameRoot);}),"game Texture declaration accepted author sampling edits without DDS");
+      std::cout<<"PASS independent Material game Texture binding: logical identity only, no DDS/scaffold/carrier, one current resolver and shared native reference\n";
+    }
     std::filesystem::remove_all(root);
     std::cout<<"PASS format 3 Catalog defers missing unhit Mesh/Material/Texture/Physics files and reads mod.ini without assets.bin\n";
     return 0;

@@ -2,6 +2,7 @@
 #include "eiem_target_mod_precedence.h"
 #include "eiem_demand_generation_routes.h"
 #include "eiem_demand_target_lookup.h"
+#include "eiem_demand_mesh_provenance.h"
 // Creation-before observation, with an explicitly separate native-input
 // acceptance build. The ordinary observation build never changes inputs.
 namespace DemandLoadingProbe {
@@ -12,8 +13,16 @@ namespace R=EiemNativeRandomAccess;
 struct Api {void *lookup=nullptr,*subLookup=nullptr,*packClass=nullptr,*proxyInfo=nullptr,*assetPath=nullptr;size_t packSize=0,bundleOffset=0,assetOffset=0;} api;
 struct Binding {size_t target=0;uint64_t bundle=0,asset=0;std::string cab;int64_t object=0;};
 struct InstalledGeneration;
+struct ProvenNativeMesh {Ref mesh;std::set<Identity> identities;};
 struct Manifest {Ref object;uint64_t serial=0;std::vector<Binding> bindings;std::unordered_set<uint64_t> bundles;std::mutex candidateMutex;std::map<uint64_t,Q::Candidate> candidates;
   std::vector<size_t> unresolved;
+  std::mutex provenanceMutex;
+  std::map<std::string,std::shared_ptr<const EiemDemandMeshProvenance::Prefab>> provenancePrefabs;
+  std::set<std::string> provenanceMisses;
+  std::map<std::pair<void*,std::string>,Ref> provenPrefabSources;
+  std::map<void*,ProvenNativeMesh> provenMeshes;
+  std::map<Identity,std::pair<uint64_t,uint64_t>> observedMeshBindings;
+  std::set<uint64_t> observedMeshBundles;bool unresolvedObservedMeshes=false;
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
   std::shared_ptr<const InstalledGeneration> catalog;
 #endif
@@ -57,7 +66,8 @@ namespace N=EiemDemandNativeAssembly;
 namespace M=EiemDemandMaterialAssembly;
 using MaterialPrepare=std::function<M::Shared(const N::Author&,const std::vector<M::Use>&)>;
 using PreparedPublisher=std::function<void(uint64_t,std::shared_ptr<const EiemInputSpanView::View>,bool)>;
-struct PreparedInput {bool ready=false,blocked=false;std::shared_ptr<const EiemInputSpanView::View> view;};
+struct PreparedInput {bool ready=false,blocked=false;std::exception_ptr failure;std::shared_ptr<const EiemInputSpanView::View> view;
+  std::set<std::string> usedMods,usedMaterials;std::set<Identity> usedLogicalDependencies;};
 struct NativeMeshObservation {Ref mesh;std::set<std::string> bundleInputs;};
 std::map<uint64_t,std::shared_ptr<PreparedInput>> preparedInputs;
 struct AuthorRuntime {
@@ -75,6 +85,7 @@ struct InstalledGeneration {
   EiemDemandGenerationDiff::Delta delta;
   std::set<std::string> deltaBundles;
   std::map<Identity,std::set<std::string>> deltaRoutes;
+  std::set<Identity> observedMeshTargets;
 };
 // Immutable declarations are shared between manifest generations. Opening
 // them never opens Mesh/Texture/effect payloads or old compiled consumers.
@@ -92,9 +103,9 @@ std::map<std::tuple<uint64_t,std::string,std::string,std::string>,NativeMeshObse
 std::map<std::tuple<uint64_t,std::string,std::string>,NativeMeshObservation> nativeResourceObservations;
 thread_local bool submittingView=false;
 std::shared_ptr<std::mutex> ScopePreparationLock(uint64_t scope){std::lock_guard<std::mutex> guard(mutex);auto& value=scopePreparationLocks[scope];if(!value)value=std::make_shared<std::mutex>();return value;}
-void PublishPrepared(uint64_t token,std::shared_ptr<const EiemInputSpanView::View> view,bool blocked=false){
+void PublishPrepared(uint64_t token,std::shared_ptr<const EiemInputSpanView::View> view,bool blocked=false,std::exception_ptr failure={}){
   {std::lock_guard<std::mutex> lock(mutex);auto found=preparedInputs.find(token);if(found==preparedInputs.end())return;
-    found->second->view=std::move(view);found->second->blocked=blocked;found->second->ready=true;}
+    found->second->view=std::move(view);found->second->blocked=blocked;found->second->failure=std::move(failure);found->second->ready=true;}
   preparedReady.notify_all();
 }
 void PrepareReplacement(uint64_t token,uint64_t scope,R::Reader& reader,const std::shared_ptr<R::File>& file,const std::shared_ptr<Manifest>& manifest,
@@ -346,7 +357,14 @@ std::shared_ptr<Manifest> Current(void* object) {
     if(activeTargets[i].skip)Log("[DEMAND-SKIP-MANIFEST] scope=%llu mod=%s target=%s#%s resolved=1 bundle=%016llX asset=%016llX",state->serial,activeTargets[i].mod.c_str(),source.path.c_str(),source.asset.c_str(),binding.bundle,binding.asset);
   }
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
-  for(const auto& name:catalog->deltaBundles){auto key=hintKeys.find(name);if(key!=hintKeys.end())state->bundles.insert(key->second);}
+   for(const auto& identity:catalog->observedMeshTargets){Bytes info;bool exact=false;
+    if(!LookupTarget(object,identity,info,exact)){state->unresolvedObservedMeshes=true;continue;}
+    uint64_t bundle=0,asset=0;memcpy(&bundle,info.data()+api.bundleOffset,8);memcpy(&asset,info.data()+api.assetOffset,8);
+    state->observedMeshBundles.insert(bundle);
+    if(exact||(identity.path.size()>=5&&identity.path.compare(identity.path.size()-5,5,".mesh")==0))state->observedMeshBindings.emplace(identity,std::make_pair(bundle,asset));
+    else state->unresolvedObservedMeshes=true;
+   }
+   for(const auto& name:catalog->deltaBundles){auto key=hintKeys.find(name);if(key!=hintKeys.end())state->bundles.insert(key->second);}
   EiemDemandGenerationRoutes::IncludeTargetRoots(state->bundles,catalog->delta.targets,
     [&](const std::string& path,const std::string& asset){
       Bytes info;bool exact=false;const bool found=LookupTarget(object,{path,asset},info,exact);
@@ -553,7 +571,12 @@ uint64_t BeforeFile(void* path,uint64_t offset,bool asynchronous) noexcept {
     Log("[DEMAND-PROBE-INPUT] token=%llu bundle=%016llX path=%s offset=%llu async=%d inputBytes=%zu readBytes=%zu decodedBytes=%zu decodedBlocks=%zu totalBlocks=%zu boundMeshes=%zu rendererRefs=%zu exactRefs=%zu inspectMs=%.3f beforeNativeBundleCall=1",record.token,record.bundle,physical.c_str(),offset,int(asynchronous),reader.header.bytes,reader.stats.encodedBytes,reader.stats.inflatedBytes,reader.stats.inflatedBlocks,reader.directory.blocks.size(),bindings,refs,hits,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count());return record.token;
   }catch(const std::exception& e){++gaps;Log("[DEMAND-PROBE-GAP] phase=before-input reason=%s",e.what());
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
-    if(started)PublishPrepared(selectedToken,{},true);
+    if(started){
+      auto failure=std::current_exception();bool deterministic=false;
+      try{std::rethrow_exception(failure);}catch(const R::InspectionBudgetExceeded&){deterministic=true;}catch(...){}
+      PublishPrepared(selectedToken,{},true,failure);
+      if(!deterministic){std::lock_guard<std::mutex> lock(mutex);inspected.erase(inspection);preparedInputs.erase(selectedToken);}
+    }
 #else
     if(started){std::lock_guard<std::mutex> lock(mutex);inspected.erase(inspection);}
 #endif
@@ -677,6 +700,13 @@ std::shared_ptr<const InstalledGeneration> BuildInstalledGeneration(
       for(const auto& rule:author->package.rules)for(const auto& target:rule.second.targets){
         EiemDemandGenerationDiff::Target diff;diff.rule=rule.first;diff.lod=target.first;diff.path=target.second.path;diff.asset=target.second.asset;diff.parts.insert(rule.second.parts.begin(),rule.second.parts.end());diff.skip=rule.second.skip;fingerprint.targets.insert(std::move(diff));
       }
+      // Control-only F10 keeps existing game owners. Transfer their activity
+      // lease, while resource/target changes wait for the new native owners.
+      if(previous){auto old=previous->authors.find(mod);auto stamp=previous->snapshot.find(mod);
+        if(old!=previous->authors.end()&&stamp!=previous->snapshot.end()&&stamp->second.resourceDeclarations==fingerprint.resourceDeclarations&&stamp->second.targets==fingerprint.targets){
+          auto before=stamp->second.files,after=fingerprint.files;before.erase("mod.ini");after.erase("mod.ini");
+          if(before==after)author->catalog->ShareAnimationActivity(*old->second->catalog);
+        }}
       Require(!next.count(mod),"duplicate native Mod id");
       next.emplace(mod,author);graph->push_back(author->package);
       selected.insert(selected.end(),std::make_move_iterator(modTargets.begin()),std::make_move_iterator(modTargets.end()));
@@ -741,6 +771,14 @@ std::shared_ptr<const InstalledGeneration> BuildInstalledGeneration(
     (unsigned long long)result->serial,graph->size(),result->targets.size(),std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count());
   Log("[DEMAND-GENERATION-DIFF] generation=%llu changed=%d packages=%zu added=%zu removed=%zu modified=%zu affectedTargets=%zu resourcePayloadBytesRead=0",
     (unsigned long long)result->serial,int(result->delta.changed),result->delta.packages.size(),result->delta.addedPackages.size(),result->delta.removedPackages.size(),result->delta.modifiedPackages.size(),result->delta.targets.size());
+  // Attachments observe the game's existing Meshes. They are deliberately
+  // separate from Replace targets: no author Mesh carrier or versioned native
+  // input is created merely to prove an attachment's logical identity.
+  for(const auto& author:result->authors)for(const auto& row:author.second->package.effects){const auto& effect=row.second;
+    if(IsGamePrefabReplacement(effect))continue;
+    if(!effect.targetPath.empty()&&!effect.targetAsset.empty())result->observedMeshTargets.insert({effect.targetPath,effect.targetAsset});
+    for(const auto& lod:effect.lodTargets)result->observedMeshTargets.insert({lod.path,lod.asset});
+  }
   return result;
 }
 bool InstalledGenerationFilesUnchanged(const InstalledGeneration& value){

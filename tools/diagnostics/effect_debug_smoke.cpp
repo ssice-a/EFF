@@ -7,6 +7,7 @@
 
 namespace EffectTest {
 using namespace Entry;namespace D=Entry::EffectDebug;
+bool gameLeaseProbe=false,gameLeaseError=false;unsigned gameLeaseLoads=0,gameLeaseDisposes=0;std::string gameLeasePath;
 DWORD unityThread=0;unsigned calls=0,checks=0,adds=0,removes=0,stops=0,clears=0,destroys=0;
 bool badName=false,failRegister=false,deferDestroy=true,foreignBundle=false;
 bool rejectNextUIRenderSet=false;
@@ -20,10 +21,18 @@ unsigned layerWrites=0;
 float observedLow=.5f,observedHigh=1.5f,observedOne=1;
 int observedMode=3,observedCount=2;std::array<float,3> observedScale{1,1,1};
 unsigned observationCalls=0;
+std::array<float,6> observedBounds{10,20,30,.1f,.2f,.3f};
+uint32_t observedCameraMask=1;int observedRenderMode=0;
 std::weak_ptr<D::Instance> failedInstance;
 void Check(bool value,const char* label){++checks;Require(value,label);}
 void* Invoke(void* method,void* self,void** args,void** error){
  Check(GetCurrentThreadId()==unityThread,"effect worker called Unity");++calls;*error=nullptr;auto m=uintptr_t(method);
+ if(gameLeaseProbe){
+  if(method==FullResourceReload::api.error)return gameLeaseError?&Test::yes:&Test::no;
+  if(m==52)gameLeasePath=Entry::String(args[0]);
+  if(method==FullResourceReload::api.load){++gameLeaseLoads;Check(gameLeasePath=="assets/source.prefab","game-owned material was loaded as an independently addressable .mat");Check(args[1]==FullResourceReload::prefabType.Get(),"game dependency did not use the game's Prefab type");}
+  if(method==FullResourceReload::api.dispose)++gameLeaseDisposes;
+ }
  if(m==2){auto p=args[0];return !p||dead.count(p)?&Test::no:&Test::yes;}
  if(m==4&&self==Test::candidate)return Test::StringValue(badName?"wrong-root":"effect");
  if(m==900){++adds;auto object=args[0];Check(!active[self]&&!active[object],"effect active before registration");if(requiredLayers.count(object))Check(layers[object]==requiredLayers.at(object)&&layers[effectChildren.at(object)]==requiredLayers.at(object),"UI effect renderer layers were not set before registration/activation");if(failRegister)throw std::runtime_error("fixture registration rejected");return nullptr;}
@@ -54,9 +63,16 @@ void* Invoke(void* method,void* self,void** args,void** error){
   if(m==938)return &Test::yes;
   throw std::runtime_error("observation getter rejected");
  }
+ if(m>=941&&m<=947){++observationCalls;
+  if(m==941)return &observedBounds;if(m==942)return &observedScale;
+  if(m==943)return &Test::yes;if(m==944)return &Test::no;
+  if(m==945)return &observedRenderMode;if(m==946)return (void*)0xCAAA;
+  return &observedCameraMask;
+ }
  return Test::Invoke(method,self,args,error);
 }
 void Setup(){Test::Setup();Test::Reset();unityThread=GetCurrentThreadId();il2cpp_runtime_invoke=Invoke;
+ il2cpp_array_length=[](void* value)->uintptr_t{uintptr_t length=0;memcpy(&length,(unsigned char*)value+24,sizeof(length));return length;};
  Entry::logFile=stdout;
  D::api.add=(void*)900;D::api.remove=(void*)901;D::api.active=(void*)902;D::api.activeSelf=(void*)903;D::api.activeHierarchy=(void*)912;
  D::api.setParent=(void*)904;D::api.play=(void*)905;D::api.stop=(void*)906;D::api.clear=(void*)907;D::api.playOnAwake=(void*)912;
@@ -76,10 +92,20 @@ void Setup(){Test::Setup();Test::Reset();unityThread=GetCurrentThreadId();il2cpp
 }
 void ObservationChecks(){
  auto saved=D::Observation::api;auto& a=D::Observation::api;
+ auto savedEnabled=RuntimeShapes::api.getEnabled;RuntimeShapes::api.getEnabled=(void*)943;
  a.ready=true;a.mainModule=a.emission=(void*)930;a.life=a.start=a.rate=(void*)931;
  a.low=(void*)932;a.high=(void*)933;a.mode=a.max=a.space=(void*)934;a.count=(void*)935;
  a.time=a.speed=a.timeScale=a.duration=a.multiplier=(void*)936;a.lossyScale=(void*)937;a.loop=a.playing=(void*)938;
  D::Instance instance;instance.owner=RuntimeShapes::Ref::Make(Test::oldRoot,false);instance.object=instance.owner;instance.particles={RuntimeShapes::Ref::Make((void*)0xE000,false)};
+ instance.parent=instance.owner;particleSystems.insert((void*)0xE000);particleRenderers[(void*)0xE000]=(void*)0xF000;particleGameObjects[(void*)0xE000]=(void*)0xE001;layers[(void*)0xE001]=11;
+ a.worldPosition=(void*)942;a.bounds=(void*)941;a.forceOff=(void*)943;a.visible=(void*)944;a.renderMode=(void*)945;a.mainCamera=(void*)946;a.cameraMask=(void*)947;
+ FILE* capture=nullptr;Check(tmpfile_s(&capture)==0&&capture,"visibility observation capture unavailable");auto oldLog=Entry::logFile;Entry::logFile=capture;
+ D::Observation::RenderState(instance,(void*)0xE000,"test-visibility");fflush(capture);rewind(capture);std::string captured;char chunk[4096];while(auto n=fread(chunk,1,sizeof(chunk),capture))captured.append(chunk,n);Entry::logFile=oldLog;fclose(capture);
+ std::cout<<captured;
+ Check(captured.find("[EFFECT-RENDER]")!=std::string::npos&&captured.find("forceOff=1 visible=0 layer=11")!=std::string::npos,"playing particles hid renderer culling state");
+ Check(captured.find("mainCameraIncludesLayer=0")!=std::string::npos&&captured.find("boundsCenter=(10,20,30)")!=std::string::npos,"visibility observation lost camera-layer mismatch or bounds");
+ Check(captured.find("name:body,shader:Fixture/Character")!=std::string::npos,"visibility observation did not inspect the actual renderer material/shader");
+ a.bounds=(void*)940;D::Observation::RenderState(instance,(void*)0xE000,"test-visibility-reject");Check(instance.observationStep==0,"optional render observation failure disabled simulation observations");a.bounds=(void*)941;
  auto transformWrites=layerWrites;auto registrations=adds;auto destroyedCount=destroys;auto clearCount=clears;
  auto curve=D::Observation::Curve(a.life,instance.particles[0].Get());Check(curve.find("min:0.5,max:1.5")!=std::string::npos,"native observation lost curve limits");
  a.multiplier=nullptr;
@@ -93,10 +119,38 @@ void ObservationChecks(){
  Check(instance.observationStep==2&&observationCalls==before,"observation did not stop after bounded snapshots");
  a.life=(void*)940;D::Observation::Capture(instance,"test-reject");Check(instance.observationStep==2,"observation rejection kept retrying");
  Check(layerWrites==transformWrites&&adds==registrations&&destroys==destroyedCount&&clears==clearCount,"observation changed playback lifecycle");
- D::Observation::api=saved;std::cout<<"PASS read-only native effect observations: curve ranges, delayed samples, bounded idle, failure isolation\n";
+ D::Observation::api=saved;RuntimeShapes::api.getEnabled=savedEnabled;std::cout<<"PASS read-only native effect observations: renderer/material/camera state, curve ranges, delayed samples, bounded idle, failure isolation\n";
 }
 std::shared_ptr<const D::Manifest> Manifest(char key){auto m=std::make_shared<D::Manifest>();m->key=std::string(64,key);m->prefab="assets/effect.prefab";m->rootName="effect";m->particles=1;
  EiemEffectDebugPacket::Bundle b;b.file="runtime/bundles/test.ab";b.hash=std::string(64,key);b.bytes=std::make_shared<const Bytes>(EiemNativeInput::EndfieldInput::Encode(EiemAuthorMeshBundle::EnvelopeHeader(),{{"CAB-test",4,Bytes{1,2,3,4}}}));m->bundles.push_back(b);return m;}
+void Teardown();
+void GameLeaseChecks(){
+ Setup();gameLeaseProbe=true;gameLeaseLoads=gameLeaseDisposes=0;
+ D::Manifest manifest;manifest.gameResources={
+  {"assets/star.mat","Material","Star","assets/source.prefab","marker"},
+  {"assets/star.mesh","Mesh","StarMesh","assets/source.prefab","marker"}};
+ D::api.gameTypes["Material"]=RuntimeShapes::Ref::Make((void*)0xABCD,false);
+ std::vector<FullResourceReload::Lease> leases;Test::done=1;
+ Check(D::GameLeases(manifest,leases),"game source lease was not ready");
+ Check(gameLeaseLoads==1,"one source Prefab created duplicate game leases");
+ Check(D::GameLeases(manifest,leases)&&gameLeaseLoads==1,"ready game dependencies were requested again");
+ Check(D::DrainGameLeases(leases)&&gameLeaseDisposes==1,"shared source lease was not disposed exactly once");
+ Check(adds==0&&Test::cloneCalls==0,"loading a game dependency instantiated or played its source Prefab");
+ leases.clear();gameLeaseError=true;
+ for(unsigned retry=0;retry<3;++retry){bool rejected=false;try{D::GameLeases(manifest,leases);}catch(const std::exception&){rejected=true;}
+  Check(rejected&&!leases[0].verified&&!leases[1].verified,"failed game dependency became reusable on retry");}
+ Check(D::DrainGameLeases(leases),"failed completed dependency did not drain");leases.clear();gameLeaseError=false;
+ Check(D::GameLeases(manifest,leases)&&leases[0].verified&&leases[1].verified,"new valid dependency did not recover after failure");
+ Check(D::DrainGameLeases(leases),"recovered dependency did not drain");
+ leases.clear();manifest.gameResources[0].sourceRoot.clear();manifest.gameResources[1].sourceRoot.clear();
+ Check(D::GameLeases(manifest,leases),"logical source Prefab wrongly required a local root name");
+ Check(D::DrainGameLeases(leases),"rootless logical dependency did not drain");leases.clear();
+ manifest.gameResources[1].sourceRoot="marker";
+ Check(D::GameLeases(manifest,leases),"optional root name prevented shared logical Prefab lease");
+ Check(D::DrainGameLeases(leases),"mixed logical dependency lease did not drain");
+ leases.clear();gameLeaseProbe=false;D::api.gameTypes.clear();Teardown();
+ std::cout<<"PASS game-owned effect dependencies: logical Prefab lease, shared lifecycle, no .mat load or source instance\n";
+}
 uint64_t Submit(D::Op op,std::shared_ptr<const D::Manifest> m={},std::string path=""){D::Command c;c.op=op;c.manifest=m;c.owner=int(uintptr_t(Test::oldRoot));c.path=path;c.clock=NativeBundle::Clock();return D::mailbox.Submit(std::move(c));}
 void Pump(unsigned n=10){for(unsigned i=0;i<n;++i)D::Frame();}
 void Complete(){for(unsigned i=0;i<10;++i){for(auto& p:Test::scheduleDone)p.second=true;Test::done=1;Pump();}}
@@ -141,12 +195,15 @@ void TestCases(){
 void Teardown(){
  D::playing.reset();D::ready.reset();D::candidate.reset();D::retiredInstances.clear();D::generations.clear();D::api={};
  NativeBundle::memoryRequests.clear();NativeBundle::memoryBundles.clear();NativeBundle::memoryUnloads.clear();FullResourceReload::liveParts.clear();FullResourceReload::observedPrefabs.clear();
+ FullResourceReload::controlledPrefabSources.clear();FullResourceReload::controlledPrefabPaths.clear();FullResourceReload::pendingControlledClones.clear();FullResourceReload::pendingControlledClonePaths.clear();FullResourceReload::liveControlledClones.clear();
  Check(failedInstance.expired(),"failed native registration retained an orphaned instance");
  Check(Test::handles.empty(),"effect debugger leaked managed handles after all generations retired");RuntimeShapes::managedAlive=false;
 }
 }
 #include "material_animation_runtime_checks.h"
 #include "effect_attachment_runtime_checks.h"
+#include "effect_lod_attachment_checks.h"
+#include "effect_native_mesh_provenance_checks.h"
 // The release archive's legacy disk fixture references removed EntryReload
 // APIs. Cache regressions can compile independently of that obsolete fixture.
 #ifndef EIEM_SKIP_LEGACY_DISK_CHECK
@@ -161,15 +218,22 @@ void EffectDiskChecks(const std::filesystem::path& character,const std::filesyst
  {std::ofstream invalid(root/"mod.ini",std::ios::binary|std::ios::trunc);invalid<<"[Mod]\nformat=2\nid=Wrong\n";}
  Entry::RuntimeAttachments::PrepareDiskReload();Require(!Entry::RuntimeAttachments::reloadPending&&!Entry::RuntimeAttachments::pendingStandalone,"rejected effect refresh left an earlier candidate armed");
  std::filesystem::create_directories(game/"plugin/mods/Effects/group");std::filesystem::rename(independentRoot,game/"plugin/mods/Effects/group/Petals");std::filesystem::remove_all(root);std::atomic_store(&Entry::published,std::make_shared<const std::vector<Package>>());Entry::RuntimeAttachments::PrepareDiskReload();Require(Entry::RuntimeAttachments::reloadPending&&Entry::RuntimeAttachments::pendingStandalone->size()==1&&Entry::RuntimeAttachments::pendingEffects.empty(),"nested standalone-only startup requires a character Mod");
- auto config=Entry::settings.Get();auto candidate=Entry::EntryReload::Validate(std::atomic_load(&Entry::published),config);Require(candidate&&candidate->controls.graph->empty(),"standalone-only F10 configuration validation failed");
+ auto config=Entry::settings.Get();auto controls=Entry::RuntimeControls::PrepareInstalled(std::atomic_load(&Entry::published),Entry::RuntimeAttachments::pendingStandalone,config);Require(controls.graph->size()==1,"standalone-only F10 configuration validation failed");
  Entry::RuntimeAttachments::pendingStandalone.reset();Entry::RuntimeAttachments::pendingEffects.clear();Entry::RuntimeAttachments::reloadPending=false;
  std::cout<<"PASS effect disk snapshots: no Mesh/texture reads, nested independent discovery, failed candidate cancellation and nested standalone-only startup\n";
 }
 #endif
 #include "effect_replacement_cache_checks.h"
 #include "weapon_retarget_runtime_checks.h"
+#include "effect_relocation_checks.h"
 int main(int argc,char** argv){
  try{
+  if(argc==2&&std::string(argv[1])=="--relocation-check"){EffectRelocationTest::Checks();return 0;}
+  if(argc==2&&std::string(argv[1])=="--native-mesh-proof-check"){EffectNativeMeshProofTest::Checks();return 0;}
+  if(argc==2&&std::string(argv[1])=="--game-lease-check"){EffectTest::GameLeaseChecks();return 0;}
+  if(argc==2&&std::string(argv[1])=="--lod-attachment-check"){EffectLodAttachmentTest::Checks();return 0;}
+  if(argc==2&&std::string(argv[1])=="--attachment-match-only"){EffectAttachmentTest::RendererPathMatchingChecks();std::cout<<"PASS exact effect Renderer matching: 28 same-identity consumers reduced to the declared path\n";return 0;}
+  if(argc==2&&std::string(argv[1])=="--attachment-only"){EffectTest::Setup();EffectAttachmentTest::Checks();EffectTest::Teardown();return 0;}
   if(argc==2&&std::string(argv[1])=="--replacement-check"){EffectReplacementCacheTest::Checks();return 0;}
   if(argc==2&&std::string(argv[1])=="--retarget-check"){WeaponRetargetTest::Checks();return 0;}
   if(argc>2&&std::string(argv[1])=="--native-archives"){

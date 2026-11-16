@@ -54,6 +54,12 @@ int main(){try{
   Require(fbxFound&&lookupOrder==std::vector<std::string>({"path+asset","path"}),
       "FBX subasset lookup order or fallback differs");
   std::cout<<"PASS logical dependency lookup falls back between path and path-plus-asset indexes\n";
+  lookupOrder.clear();
+  auto namedAsset=EiemLogicalAssetLookup::Find("assets/weapon/meshes.asset",
+      [&]{lookupOrder.push_back("path");return true;},
+      [&]{lookupOrder.push_back("path+asset");return true;});
+  Require(namedAsset&&lookupOrder==std::vector<std::string>({"path+asset"}),
+      "multi-object .asset resolved the container before the declared named subasset");
   auto bytes=std::make_shared<const EiemNativeInput::Bytes>(EiemNativeInput::Bytes{1,2,3});
   auto view=std::make_shared<const EiemInputSpanView::View>(std::vector<EiemInputSpanView::Span>{{SIZE_MAX,0,bytes->size(),bytes}},std::vector<size_t>{},EiemInputSpanView::ReadRange{});
   Graph graph;Input texture{100,1,"eff/texture.ab","CAB-texture",view,{}},material{101,1,"eff/material.ab","CAB-material",view,{100,3}};

@@ -62,19 +62,9 @@ def material_decode(resource):
     clip['targets']=targets;return clip
 
 def native_build(path):
-    path=Path(path).resolve();path=path/'runtime.bin' if path.is_dir() else path
-    r=Reader(path.read_bytes());require(r.text64()=='EFF_EFFECT_DEBUG_NATIVE/inactive-root+le64','native effect build structure')
-    key,prefab,root_name=r.text64(),r.text64(),r.text64();root,particles,count=r.n(8),r.n(8),r.n(8)
-    require(0<count<=(len(r.data)-r.offset)//24 and root<count,'effect bundle count/root')
-    bundles=[]
-    for _ in range(count):
-        file,hash_value=r.text64(),r.text64();n=r.n(8);require(n<=count,'effect dependency count');deps=[r.n(8) for _ in range(n)]
-        require(len(set(deps))==len(deps) and all(d<count and d!=len(bundles) for d in deps),'effect dependency graph')
-        data=resource_path(path.parent,file).read_bytes()
-        require(sha256_bytes(data).hex().upper()==hash_value,'effect build digest')
-        require(native_archive(data),'特效资源包不是游戏原生封包，请使用更新后的 AnimeStudio 重新构建特效')
-        bundles.append(dict(file=file,hash=hash_value,dependencies=deps,data=data))
-    r.end();return dict(key=key,prefab=prefab,rootName=root_name,root=root,particles=particles,bundles=bundles)
+    from .effect_native import read_native_build
+    return read_native_build(path)
+
 
 def effect_encode(owner, effect):
     native=native_build(effect['build']);data=bytearray(encode_strings([owner,effect['id'],effect['label'],effect.get('key',''),effect['part'],effect.get('bone','')]))
@@ -89,6 +79,10 @@ def effect_encode(owner, effect):
         data.extend(struct.pack('<I',len(b['dependencies'])))
         for d in b['dependencies']:data.extend(struct.pack('<I',d))
         data.extend(struct.pack('<Q',len(b['data'])));data.extend(b['data'])
+    if native.get('gameResources'):
+        data.extend(encode_strings(['EFF_GAME_RESOURCES/1']))
+        data.extend(struct.pack('<I',len(native['gameResources'])))
+        for item in native['gameResources']:data.extend(encode_strings([item['path'],item['type'],item['asset']]))
     blocks={'@effect-attachment':data}
     if effect.get('targetPrefab'):
         renderer_path=effect.get('rendererPath','')
@@ -127,10 +121,21 @@ def effect_decode(resource):
         data=r.raw(r.n(8));require(sha256_bytes(data).hex().upper()==bundle[1],'effect bundle SHA256')
         require(native_archive(data) or data.startswith(b'UnityFS\0'),'effect archive header')
         bundles.append(dict(file=bundle[0], hash=bundle[1], dependencies=deps, data=data))
+    game_resources=[]
+    if r.offset<len(r.data):
+        from .resource_file import decode_strings
+        tag=r.strings();require(tag==['EFF_GAME_RESOURCES/1'],'game resource declaration differs')
+        n=r.n();require(n<=4096,'too many game resource dependencies')
+        for _ in range(n):
+            values=r.strings();require(len(values)==3,'game resource identity')
+            path,kind,asset=values
+            require(path.startswith(('assets/','packages/')) and '\\' not in path and ':' not in path and
+                    all(p not in ('','.','..') for p in path.split('/')) and kind and asset,'invalid game resource dependency')
+            game_resources.append(dict(path=path,type=kind,asset=asset))
     r.end();require(not bone.startswith('/') and not bone.endswith('/') and all(x not in ('','.','..') for x in bone.split('/')) if bone else True,'effect bone path')
     result=dict(owner=owner,id=cid,label=label,key=key,part=part,bone=bone,autoplay=bool(autoplay),variable='$fx_'+cid,position=list(transform[:3]),rotation=list(transform[3:7]),scale=list(transform[7:]))
     result['native']=dict(key=native[0], prefab=native[1], rootName=native[2],
-                          root=root, particles=particles, bundles=bundles)
+                          root=root, particles=particles, bundles=bundles,gameResources=game_resources)
     if '@effect-target' in resource['blocks']:
         from .resource_file import decode_strings
         target=decode_strings(resource['blocks']['@effect-target'])

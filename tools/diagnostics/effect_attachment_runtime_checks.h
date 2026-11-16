@@ -1,8 +1,10 @@
 #pragma once
+#include "effect_native_mesh_provenance_fixture.h"
 namespace EffectAttachmentTest {
 using namespace Entry;namespace A=RuntimeAttachments;namespace D=EffectDebug;
 bool rendererEnabled=true,rendererActive=true;
 bool splitOwners=false;
+bool originalSourceProof=false;
 bool helperCompletion=false;void* helperRoot=nullptr;unsigned helperInitCalls=0,ownerTraversalChecks=0;
 void* helperFieldValue=nullptr;void* helperList=nullptr;
 decltype(il2cpp_field_get_value) fallbackFieldValue=nullptr;
@@ -20,6 +22,7 @@ std::map<void*,std::string> meshNames,nodeNames;
 std::map<void*,void*> rendererMeshes;
 std::set<void*> hiddenRenderers;
 void* Invoke(void* method,void* self,void** args,void** error){
+ if(originalSourceProof&&uintptr_t(method)==79){*error=nullptr;return Test::Array(self==Test::oldRenderer?std::vector<void*>{Test::oldRenderer}:std::vector<void*>{});}
  if(splitOwners){
   *error=nullptr;auto m=uintptr_t(method);
   if(m==909&&args[0]!=(void*)910){++rendererScanCalls[self];return Test::Array(ownerRenderers[self]);}
@@ -35,7 +38,16 @@ void* Invoke(void* method,void* self,void** args,void** error){
  if(uintptr_t(method)==920){*error=nullptr;return rendererEnabled?&Test::yes:&Test::no;}
  if(uintptr_t(method)==909&&args[0]!=(void*)910){*error=nullptr;return Test::Array(Test::oldRenderer);}return EffectTest::Invoke(method,self,args,error);
 }
+void RendererPathMatchingChecks(){
+ const std::string expected="Mesh_all/lod0/S_wpn_sword_0022_01_lod0";size_t matches=0;
+ for(size_t i=0;i<28;++i){auto actual=i==17?expected:"Mesh_all/lod"+std::to_string(i%4)+"/duplicate_"+std::to_string(i);matches+=A::RendererCandidateMatches(true,expected,actual,true);}
+ Require(matches==1,"an explicit Renderer path expanded one effect into multiple Mesh consumers");
+ Require(A::RendererCandidateMatches(true,"","any/renderer",true),"legacy pathless source proof lost wildcard compatibility");
+ Require(!A::RendererCandidateMatches(true,"Mesh_all/lod0/S_wpn_sword_0022_01_lod0","Mesh_all/lod1/S_wpn_sword_0022_01_lod0",true),"different Renderer path passed an explicit attachment target");
+ Require(!A::RendererCandidateMatches(false,expected,expected,true),"Renderer path overrode a missing source identity proof");
+}
 void SplitOwnerChecks(){
+ RendererPathMatchingChecks();
  // Same source Mesh expands into distinct authored Parts with different bone
  // palettes. Exercise the actual ModelReady call with the wrong Part first.
  splitOwners=true;auto previousParents=Test::transformParents;auto previousGetter=RuntimeShapes::originalMeshGetter;auto previousClone=FullResourceReload::originalCloneParent;auto previousClass=il2cpp_object_get_class;
@@ -123,6 +135,22 @@ void SplitOwnerChecks(){
  auto refreshed=effect;refreshed.native=EffectTest::Manifest('6');
  A::pendingStandalone=std::make_shared<const std::vector<Package>>();A::pendingEffects[p.id]={{refreshed.id,refreshed}};A::pendingForceReload=true;A::reloadPending=true;tick();
  Require(world.instance!=worldBefore&&npc.instance!=npcBefore&&ui.instance!=uiBeforeReload&&world.generation==ui.generation&&world.generation==npc.generation,"changed F9 did not update all world/NPC/UI instances independently");
+ // A weapon/helper can be nested under a registered character owner. The
+ // canonical owner directory deliberately collapses descendants, but its
+ // attachment's renderer paths are relative to that exact child root. F10
+ // must update that live binding without requiring a new helper callback.
+ Test::transformParents[Test::unrelatedRoot]=Test::oldRoot;
+ auto nestedOwners=D::Owners();Require(!nestedOwners.count(FullResourceReload::Id(Test::unrelatedRoot)),"nested owner fixture was not collapsed by the canonical model directory");nestedOwners.clear();
+ auto nestedBefore=npc.instance,worldBeforeF10=world.instance,uiBeforeF10=ui.instance;
+ auto nextPackage=p;nextPackage.effects.at(effect.id).native=EffectTest::Manifest('7');
+ A::diskEffects.clear();A::overrides.clear();
+ RuntimeControls::controlGraph=std::make_shared<const std::vector<Package>>(std::vector<Package>{nextPackage});++RuntimeControls::revision;
+ tick();
+ Require(npc.instance!=nestedBefore&&world.instance!=worldBeforeF10&&ui.instance!=uiBeforeF10&&
+   npc.generation==world.generation&&npc.generation==ui.generation,
+   "F10 retained the old effect on a nested live helper until character switching recreated it");
+ Require(nestedBefore->destroyAttempted&&A::bindings.size()==3,"nested F10 effect refresh duplicated bindings or retained the retired instance");
+ Test::transformParents[Test::unrelatedRoot]=nullptr;
  // Game reads native intent, but effect attachments must use rendered state.
  auto previousEnabledGetter=RuntimeShapes::originalEnabledGetter;
  RuntimeShapes::originalEnabledGetter=[](void* renderer)->bool{return !hiddenRenderers.count(renderer);};
@@ -196,7 +224,8 @@ void LazyOwnerMetadataChecks(){
  mesh.binding.hashes={1};mesh.binding.boneBounds.resize(1);
  save("body.effres",F::Encode(1,M::EncodeMesh(mesh),Bytes{1,2}));
  EffectAttachment effect;effect.id="test";effect.part="PartBody";effect.bone="Right";effect.variable="$fx_test";effect.native=EffectTest::Manifest('6');
- effect.targetPrefab="assets/effect.prefab";effect.rendererPath="Body";effect.targetPath="assets/body.mesh";effect.targetAsset="Body";effect.targetBones={"Bone"};
+ effect.targetPrefab="assets/effect.prefab";effect.rendererPath="marker";effect.targetPath="assets/body.mesh";effect.targetAsset="Body";effect.targetBones={"Bone"};
+ Test::transformParents[Test::oldRenderer]=Test::oldRoot;
  const auto& input=effect.native->bundles.front();
  save("effect.effres",F::Encode(5,M::EncodeEffect("ResourceEffect",input.file,input.hash,input.Size()),*input.bytes));
  EiemAuthorControlMetadata::State controls;controls.defaults[effect.variable]=1;controls.controls[effect.variable]={"effect",0,1};controls.effects.emplace(effect.id,effect);
@@ -232,7 +261,7 @@ void LazyOwnerMetadataChecks(){
 }
 void Checks(){
  il2cpp_runtime_invoke=Invoke;RuntimeShapes::api.getEnabled=(void*)920;D::api.activeHierarchy=(void*)919;EffectTest::dead.clear();EffectTest::badName=false;EffectTest::foreignBundle=false;Test::done=1;
- auto original=EffectTest::Manifest('1');Package p;p.id="AttachmentMod";p.parts["PartBody"].mesh="MeshBody";p.meshes["MeshBody"].bones={"Bone"};p.defaults["$fx_test"]=1;p.controls["$fx_test"]={"effect",0,1};
+  auto original=EffectTest::Manifest('1');Package p;p.id="AttachmentMod";p.parts["PartBody"].mesh="MeshBody";p.meshes["MeshBody"].bones={"Bone"};p.defaults["$fx_test"]=1;p.controls["$fx_test"]={"effect",0,1};
  EffectAttachment effect;effect.id="test";effect.label="test";effect.part="PartBody";effect.variable="$fx_test";effect.native=original;p.effects.emplace(effect.id,effect);
  Test::transformParents[Test::right]=Test::oldRoot;auto boneEffect=effect;boneEffect.bone="Right";Require(A::Parent(Test::oldRoot,Test::oldRenderer,p,boneEffect)==Test::right,"effect cannot mount a skeleton bone absent from owner Mesh palette");
  LazyOwnerMetadataChecks();
@@ -256,8 +285,8 @@ void Checks(){
  Require(b.instance&&b.instance!=retained&&b.generation==rejectedGeneration&&b.generation->phase==D::Phase::Ready&&retained->destroyAttempted,"F9 could not retry identical effect content after an async native failure drained");
  auto recovered=effect;recovered.native=EffectTest::Manifest('4');A::Reload(p.id,recovered);tick();Require(b.instance!=retained&&retained->destroyAttempted,"valid export failed to recover rejected effect reload");
  auto current=b.instance;auto rejected=effect;rejected.part="PartOther";bool failed=false;try{A::Reload(p.id,rejected);}catch(...){failed=true;}Require(failed&&b.instance==current,"changing owner bypassed export/F10 target validation");
- RuntimeControls::variables[p.id][effect.variable]=0;++RuntimeControls::valueRevision;A::Frame();Require(!b.instance&&current->destroyAttempted,"effect control failed to stop its instance");
- RuntimeControls::variables[p.id][effect.variable]=1;++RuntimeControls::valueRevision;tick();Require(bool(b.instance),"effect control did not resume resident native generation");
+ RuntimeControls::variables[p.id][effect.variable]=0;RuntimeControls::Changed(p.id);A::Frame();Require(!b.instance&&current->destroyAttempted,"effect control failed to stop its instance");
+ RuntimeControls::variables[p.id][effect.variable]=1;RuntimeControls::Changed(p.id);tick();Require(bool(b.instance),"effect control did not resume resident native generation");
  rendererActive=false;A::Frame();Require(!b.instance,"inactive owner Mesh GameObject retained effect");rendererActive=true;tick();Require(bool(b.instance),"visible owner Mesh did not resume effect");
  rendererEnabled=false;A::Frame();Require(!b.instance,"disabled owner Mesh renderer retained effect");rendererEnabled=true;tick();Require(bool(b.instance),"re-enabled owner Mesh did not resume effect");
  // F9 publishes complete declaration maps: an empty one must remain empty on later model events.
@@ -266,9 +295,11 @@ void Checks(){
  // Standalone Mod binds a verified original renderer with no character graph/specs.
  A::OwnerReleasing(Test::oldRoot);A::diskEffects.clear();RuntimeControls::controlGraph=std::make_shared<const std::vector<Package>>();RuntimeControls::specs.clear();RuntimeControls::variables.clear();
  auto independent=effect;independent.part="";independent.bone="Right";independent.targetPrefab=Test::modelPath;independent.rendererPath="marker";independent.targetAsset="marker";independent.targetPath="assets/body.mesh";independent.targetBones={"Bone"};p.effects={{effect.id,independent}};
+ auto proofScope=std::make_unique<EffectNativeMeshFixture::Scope>();proofScope->Add(Test::modelPath,{{{EiemRenderAssemblyDescription::Segment("marker",0),0},{{independent.targetPath,independent.targetAsset}}}});originalSourceProof=true;
  Test::transformParents[Test::oldRenderer]=Test::oldRoot;A::standalone=std::make_shared<const std::vector<Package>>(std::vector<Package>{p});A::needed=true;A::ModelReady(Test::oldRoot);tick();Require(A::bindings.size()==1&&A::bindings.begin()->second.instance,"standalone effect required character Mod registration");
  A::pendingStandalone=std::make_shared<const std::vector<Package>>();A::pendingEffects.clear();A::pendingForceReload=true;A::reloadPending=true;A::Frame();Require(A::bindings.empty(),"removed standalone Mod retained its instance");
  A::OwnerReleasing(Test::oldRoot);Require(A::bindings.empty(),"effect retained instance after owner entered game pool");
+ originalSourceProof=false;proofScope.reset();
  SplitOwnerChecks();
  for(auto object:EffectTest::destroyed)EffectTest::dead.insert(object);D::Collect();A::overrides.clear();RuntimeControls::controlGraph.reset();RuntimeControls::variables.clear();RuntimeControls::specs.clear();il2cpp_runtime_invoke=EffectTest::Invoke;
  std::cout<<"PASS effect Mod attachments: exact mesh owner, native prepare, independent clone, transactional live update, target validation, controls and detach before pooling\n";

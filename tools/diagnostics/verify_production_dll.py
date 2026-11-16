@@ -60,6 +60,8 @@ for marker in (
     b"[DEBUG-", b"[ENTRY-CAPTURE]", b"[ENTRY-SNAPSHOT]", b"[ENTRY-SNAPSHOT-SELECTION]",
     b"[ENTRY-COUNTERS]", b"[CAPTURE-ELIGIBILITY]", b"[RELOAD-LOAD-SUBMITTED]",
     b"resource-input-diagnostics", b"snapshot-ranges.tsv", b"[ADAPT-PROBE-", b"[CATALOG-SURVEY-", b"[MESH-TARGET-", b"[MESH-NATIVE-",
+    b"[NATIVE-ANIMATION-PROBE]",
+    b"[MOD-ANIMATION-PROBE]",
 ):
     assert marker not in checked, f"Production DLL contains diagnostic marker: {marker!r}"
 if not format3_runtime:

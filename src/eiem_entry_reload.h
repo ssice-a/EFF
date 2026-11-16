@@ -6,10 +6,14 @@ void CommitPendingReload() {
   NativeBundle::CollectMemory();
   ::Entry::EffectDebug::Frame();
   ::Entry::RuntimeAttachments::Frame();
+  ::Entry::RuntimeAuthorTransforms::Frame();
+#if defined(EIEM_NATIVE_ANIMATION_PROBE)
+  ::Entry::NativeAnimationProbe::Frame();
+#endif
 #if defined(EIEM_LOAD_PERF)
   if(EiemLoadPerformance::RuntimeSampleDue()){
     using W=EiemLoadPerformance::Workload;using EiemLoadPerformance::Set;
-    Set(W::Mods,(RuntimeControls::controlGraph?RuntimeControls::controlGraph->size():0)+RuntimeAttachments::standalone->size());
+    Set(W::Mods,RuntimeControls::controlGraph?RuntimeControls::controlGraph->size():0);
     Set(W::Parts,FullResourceReload::liveParts.size());Set(W::UIModels,FullResourceReload::liveUIModels.size());Set(W::PendingUI,FullResourceReload::pendingUIModels.size());
     Set(W::ShapeBindings,RuntimeShapes::bound.size());Set(W::ShapeCache,RuntimeShapes::cached.size());Set(W::CaptureGroups,RuntimeShapes::groups.size());Set(W::CaptureSnapshots,RuntimeShapes::liveSnapshots);
     Set(W::MaterialBindings,RuntimeMaterials::bound.size());size_t active=0,channels=0;

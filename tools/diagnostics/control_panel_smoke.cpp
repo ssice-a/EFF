@@ -70,6 +70,40 @@ void CompiledAnimationChecks(){
  Install({},true);panel.open=false;physical=0;
  std::cout<<"PASS compiled F10 controls preserve players for plain/animated packages, clips/UI, held-key edges and shape sampling\n";
 }
+void AnimationDefaultReloadChecks(){
+ auto p=Make("AnimationDefaultReload");p.bindings.clear();p.defaults["$speed"]=1;p.persistent.insert("$speed");
+ ShapeAnimation clip;clip.id="Rotate";clip.duration=4;clip.speedVariable="$speed";clip.loop=clip.autoplay=true;clip.tracks["$shape"]={0,1};p.shapeAnimations.emplace(clip.id,clip);
+ physical=0;panel.open=true;Install({p});AdvanceAnimations(1);
+ auto changed=p;changed.defaults["$speed"]=.5;changed.shapeAnimations.at(clip.id).speed=.5;
+ Install({changed},true);Require(variables.at(p.id).at("$speed")==.5,"F10 retained the untouched old animation speed instead of the edited author default");
+ Require(animations.at(p.id).clips.at(clip.id).time==1,"edited default speed reset compatible animation phase");
+ AdvanceAnimations(1);Require(animations.at(p.id).clips.at(clip.id).time==1.5,"F10 did not apply the new speed to the preserved animation clock");
+ Queue(Action::AnimationSpeed,p.id,clip.id,2);Frame(true,0);auto newer=changed;newer.defaults["$speed"]=.25;newer.shapeAnimations.at(clip.id).speed=.25;
+ Install({newer},true);Require(variables.at(p.id).at("$speed")==2,"F10 lost an explicit runtime speed override");
+ Install({});panel.open=false;
+ std::cout<<"PASS animation F10 applies changed untouched defaults, retains runtime overrides and preserves phase\n";
+}
+void InstalledAnimationKeyChecks(){
+ auto p=Make("ZFY-test");p.authorId="ZFY";EiemComposedPackage::AssignInstalledIdentity(p);
+ ShapeAnimation clip;clip.id="legacy-shape";clip.label="Existing shape animation";
+ clip.key={VK_NUMPAD5,0};clip.duration=1.92;clip.loop=true;clip.speedVariable="$speed";
+ clip.tracks["$shape"]={0,1,0};p.defaults["$speed"]=1;p.shapeAnimations.emplace(clip.id,clip);
+ // Released packages contain a speed press binding on the same animation key.
+ p.bindings.push_back({"KeyAnimationLegacy","$speed","press",{VK_NUMPAD5,0},{1},1,"Existing shape animation"});
+ physical=0;panel.open=false;Install({p});Frame(true,0);
+ physical=VK_NUMPAD5;Frame(true,0);AdvanceAnimations(.48);
+ Require(animations.at(p.id).clips.at(clip.id).playing&&std::abs(ShapeValue(p.id,"$shape")-.5)<1e-6,
+         "installed author animation did not start alongside its legacy speed binding");
+ physical=0;Frame(true,0);panel.open=true;Queue(Action::AnimationPause,p.id,clip.id);Frame(true,0);AdvanceAnimations(.5);
+ Require(animations.at(p.id).clips.at(clip.id).time==.48,"installed animation panel pause advanced time");
+ Queue(Action::AnimationPlay,p.id,clip.id);Frame(true,0);AdvanceAnimations(1.92);
+ Require(std::abs(animations.at(p.id).clips.at(clip.id).time-.48)<1e-6,"installed animation loop changed phase");
+ Queue(Action::AnimationStop,p.id,clip.id);Frame(true,0);
+ Require(!animations.at(p.id).clips.at(clip.id).playing&&ShapeValue(p.id,"$shape")==0,"installed animation stop did not restore manual value");
+ Require(EiemControlPanel::ModLabel(p).find("_INSTANCE_")==std::string::npos,"panel label contains installed hash");
+ Install({},true);physical=0;panel.open=false;
+ std::cout<<"PASS installed Mod ID: legacy Num5 speed binding, shared playback clock, Ins pause/resume/stop and readable label\n";
+}
 void SharedChannelAnimationChecks(){
  auto p=Make("Shared");p.controls["$other"]={"other",0,1};p.defaults["$other"]=.3;
  auto clip=[&](const std::string& id,const std::string& variable,UINT key){ShapeAnimation c;c.id=id;c.label=id;c.key={key,0};c.duration=1;c.speedVariable="$speed_"+id;c.tracks[variable]={0,.5f,1};p.defaults[c.speedVariable]=1;p.persistent.insert(c.speedVariable);p.shapeAnimations[id]=c;};
@@ -214,12 +248,98 @@ variable=$mode
  Install({},true);panel.open=false;physical=0;
  std::cout<<"PASS unified INI program: shared key/UI actions, atomic failure, timeline effective values, material adapter, F10 migration/phase/stale commands, domains and focus\n";
 }
+Package ProgramPackage(const std::string& source,const std::string& id) {
+ auto ini=EiemDirectory::ParseIni(Bytes(source.begin(),source.end()));
+ auto state=EiemAuthorControlsIni::Read(ini,[](const auto&){EiemAuthorControlsIni::Samples s;s.scalar={{0,1}};return s;},[](const auto&){return EiemAuthorResourceMetadata::Effect{};});
+ Package p;p.id=id;p.root=std::filesystem::temp_directory_path()/"eff-panel-fixture"/id;
+ EiemAuthorControlMetadata::Apply(state,p);return p;
+}
+void UnifiedWriteChecks(){
+ auto p=ProgramPackage("[ParameterX]\nvariable=$x\ndefault=0\nmin=0\nmax=1\n"
+  "[ParameterSpeed]\nvariable=$speed\ndefault=1\nmin=0.1\nmax=2\npersist=true\npublic=true\n"
+  "[AnimationPulse]\nsamples=ResourceSamples\nduration=1\nspeed_variable=$speed\nspeed=1\nloop=true\nautoplay=false\ntrack.0=$x\n","WriteDomains");
+ physical=0;panel.open=true;Install({p});
+ Queue(Action::AnimationSpeed,p.id,"Pulse",5);Frame(true,0);
+ Require(variables.at(p.id).at("$speed")==1,"rejected animation speed changed live state");
+ Queue(Action::AnimationSpeed,p.id,"Pulse",1.5);Frame(true,0);
+ Require(variables.at(p.id).at("$speed")==1.5,"valid animation speed was rejected after domain failure");
+ // Defend the runtime even when a legacy/in-memory caller did not pass the
+ // author validator. Rejected input must not steal a playing track.
+ p.bindings={{"LegacyInvalid","$x","press",{VK_F7,0},{2},1}};
+ Install({p});Queue(Action::AnimationPlay,p.id,"Pulse");Frame(true,0);panel.open=false;physical=VK_F7;Frame(true,0);
+ Require(variables.at(p.id).at("$x")==0&&animations.at(p.id).clips.at("Pulse").playing,"invalid legacy key changed state or animation ownership");
+ auto computed=ProgramPackage("[ParameterX]\nvariable=$x\nvalue=1\n","ComputedWrite");
+ computed.bindings={{"LegacyComputed","$x","press",{VK_F7,0},{2},1}};
+ physical=0;Install({computed});physical=VK_F7;Frame(true,0);
+ Require(variables.at(computed.id).at("$x")==0&&ShapeValue(computed.id,"$x")==1,"legacy key wrote a computed parameter");
+ auto queued=ProgramPackage("[ParameterX]\nvariable=$x\ndefault=0.2\nmin=0\nmax=1\npublic=true\n"
+   "[ActionIncrement]\npublic=true\ncode=$x=$x+0.1\n","QueuedWrite");
+ physical=0;Install({queued});panel.open=true;EffectiveValues(queued.id);
+ Queue(Action::Value,queued.id,"$x",.6);Queue(Action::InvokeAction,queued.id,"ActionIncrement");Frame(true,0);
+ Require(std::abs(variables.at(queued.id).at("$x")-.7)<1e-9,"action read an effective value preceding the queued slider commit");
+ Install({});panel.open=false;
+ std::cout<<"PASS unified parameter writes: animation speed/legacy/computed domains, atomic ownership and ordered slider/action commits\n";
+}
+void EffectiveCacheChecks(){
+ const std::string source="[ParameterX]\nvariable=$x\ndefault=0.2\npublic=true\n"
+   "[ParameterDerived]\nvariable=$derived\nvalue=$x*2\n";
+ auto a=ProgramPackage(source,"CacheA"),b=ProgramPackage(source,"CacheB");
+ physical=0;Install({a,b});panel.open=true;EffectiveValues(a.id);EffectiveValues(b.id);
+ auto countB=effectiveEvaluations[b.id];Queue(Action::Value,a.id,"$x",.6);Frame(true,0);
+ Require(ShapeValue(a.id,"$derived")==1.2&&ShapeValue(b.id,"$derived")==.4,"per-Mod effective values changed another Mod");
+ Require(effectiveEvaluations[b.id]==countB,"editing one Mod reevaluated an unchanged Mod");
+ auto countA=effectiveEvaluations[a.id];ShapeValue(a.id,"$derived");ShapeValue(a.id,"$x");
+ Require(effectiveEvaluations[a.id]==countA,"unchanged effective state was reevaluated");
+ auto animated=ProgramPackage(source+"[Constants]\npersist $speed=1\n[AnimationPulse]\nsamples=ResourceSamples\nduration=1\nspeed_variable=$speed\nspeed=1\nloop=true\nautoplay=false\ntrack.0=$x\n",a.id);
+ Install({animated,b});Queue(Action::AnimationPlay,a.id,"Pulse");Frame(true,0);countB=effectiveEvaluations[b.id];AdvanceAnimations(.25);
+ Require(ShapeValue(a.id,"$derived")==.5&&ShapeValue(b.id,"$derived")==.4,"animation changed another Mod's effective values");
+ Require(effectiveEvaluations[b.id]==countB,"advancing one Mod animation reevaluated an unchanged Mod");
+ Install({});panel.open=false;
+ std::cout<<"PASS effective values cache only invalidates the changed Mod for manual/animation writes and reuses repeated reads\n";
+}
+void AnimationFailureIsolationChecks(){
+ auto bad=Make("BadSamples"),good=Make("GoodSamples");bad.bindings.clear();good.bindings.clear();
+ ShapeAnimation clip;clip.id="Pulse";clip.duration=1;clip.loop=true;clip.autoplay=true;clip.speedVariable="$speed";clip.tracks["$shape"]={0,1};
+ good.defaults["$speed"]=1;good.shapeAnimations.emplace(clip.id,clip);bad.defaults["$speed"]=1;
+ size_t reads=0;auto source=std::make_shared<EiemAnimationSamples::Source>();source->identity="unreadable-samples";source->activity=std::make_shared<EiemAnimationSamples::Activity>();
+ source->read=[&]()->EiemAnimationSamples::Data{++reads;throw std::runtime_error("sample file unavailable");};
+ clip.sampleSource=source;clip.tracks["$shape"].clear();clip.scalarChannels["$shape"]=0;bad.shapeAnimations.emplace(clip.id,clip);
+ physical=0;panel.open=true;Install({bad,good});Require(reads==0,"preparing inactive bad samples opened a file");
+ EiemAnimationSamples::Owner owner(source->activity);bool escaped=false;
+ try{AdvanceAnimations(.25);}catch(const std::exception&){escaped=true;}
+ Require(!escaped&&ShapeValue(good.id,"$shape")==.25,"one Mod sample failure blocked another Mod animation");
+ Require(panel.Read()->errors.count(bad.id)&&!panel.Read()->errors.count(good.id),"sample error did not remain local to its Mod");
+ AdvanceAnimations(.25);Require(ShapeValue(good.id,"$shape")==.5&&reads==1,"bad samples retried I/O or stopped the following Mod on the next frame");
+ Install({});panel.open=false;
+ std::cout<<"PASS lazy sample failures remain local to one Mod, publish diagnostics and do not retry I/O or interrupt other timelines\n";
+}
+void ParameterReloadIdentityChecks(){
+ const std::string source="[ParameterOriginal]\nvariable=$x\ndefault=0.2\nmin=0\nmax=1\npublic=true\n";
+ auto original=ProgramPackage(source,"StableVariable");physical=0;panel.open=true;Install({original});
+ auto renamed=ProgramPackage("[ParameterRenamed]\nvariable=$x\ndefault=0.3\nmin=0\nmax=1\npublic=true\n",original.id);
+ Install({renamed},true);Require(variables.at(original.id).at("$x")==.3,"unchanged default parameter masked the author's new default");
+ Queue(Action::Value,original.id,"$x",.7);Frame(true,0);
+ Install({renamed},true);Require(variables.at(original.id).at("$x")==.7,"renaming a parameter section lost the stable variable value");
+ auto narrowed=ProgramPackage("[ParameterRenamed]\nvariable=$x\ndefault=0.3\nmin=0\nmax=0.5\npublic=true\n",original.id);
+ Install({narrowed},true);Require(variables.at(original.id).at("$x")==.3,"incompatible new range retained the old parameter value");
+ auto reset=ProgramPackage("[ParameterRenamed]\nvariable=$x\ndefault=0.1\nmin=0\nmax=1\nreload=reset\npublic=true\n",original.id);
+ Install({reset},true);Require(variables.at(original.id).at("$x")==.1,"reload reset retained a compatible value");
+ auto computed=ProgramPackage("[ParameterX]\nvariable=$x\ndefault=0.6\nvalue=0.8\n",original.id);
+ Install({computed});Install({renamed},true);Require(variables.at(original.id).at("$x")==.3,"computed-to-writable reload retained an obsolete base value");
+ Install({});panel.open=false;
+ std::cout<<"PASS F10 parameter identity follows stable variable, type/range compatibility and explicit reset\n";
+}
 void Checks() {
   AnimationChecks();
   CompiledAnimationChecks();
+  AnimationDefaultReloadChecks();
   SharedChannelAnimationChecks();
   AnimationSchedulingChecks();
   ProgramChecks();
+  UnifiedWriteChecks();
+  EffectiveCacheChecks();
+  AnimationFailureIsolationChecks();
+  ParameterReloadIdentityChecks();
   EiemControlPanel::Shortcut shortcut;
   EiemKeyChord insert{VK_INSERT,0};
   Require(!shortcut.Press(insert,true,true),"startup held Insert synthesized toggle");
@@ -392,6 +512,36 @@ void KeySettingsChecks(){
   Require(EiemDirectory::KeySwitchEnabled("TRUE")&&!EiemDirectory::KeySwitchEnabled("0"),"INI key boolean parsing differs");
   std::cout<<"PASS per-Mod checkbox INI save, comments/BOM/CRLF preservation, restart/compiled control defaults, no resource rewrite, removed Mod save refusal\n";
 }
+void GraphicsRecoveryChecks(){
+  Install({Make("GraphicsRecovery")});
+  HWND owner=CreateWindowExW(0,L"STATIC",L"EFF graphics recovery fixture",WS_OVERLAPPEDWINDOW|WS_VISIBLE,50,50,800,600,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+  Require(owner!=nullptr,"graphics fixture owner missing");
+  for(unsigned fallback=1;fallback<=2;++fallback){
+    EiemControlPanel::Store store;store.gameWindow=owner;store.Publish(panel.Read());store.open=true;
+    unsigned deviceAttempts=0;
+    store.graphicsFailure=[&](const char* stage){
+      if(std::string(stage)=="composition-swap"&&fallback==1)return E_FAIL;
+      if(std::string(stage)=="device-create"&&++deviceAttempts<3&&fallback==2)return E_FAIL;
+      return S_OK;
+    };
+    EiemControlPanel::Window window(store);Require(window.Create(),"compatible backend was not selected");
+    Require(window.Backend()==fallback,"graphics failure did not select expected fallback");
+    for(int i=0;i<3;++i)window.Tick();
+    SendMessageW(window.Handle(),WM_DWMCOMPOSITIONCHANGED,0,0);
+    Require(!window.TestAcrylic(),"fallback re-enabled transparent composition");
+  }
+  EiemControlPanel::Store store;store.gameWindow=owner;store.Publish(panel.Read());store.open=true;
+  std::atomic<unsigned> ready{0};std::atomic_bool failPresent{true};std::atomic_bool hwndReady{false};
+  store.diagnostic=[&](const std::string& message){if(message.find("stage=ready ")!=std::string::npos){++ready;if(message.find("backend=hwnd")!=std::string::npos)hwndReady=true;}};
+  store.graphicsFailure=[&](const char* stage){return std::string(stage)=="present"&&failPresent.exchange(false)?DXGI_ERROR_DEVICE_REMOVED:S_OK;};
+  std::thread worker([&]{EiemControlPanel::Window::Run(&store);});
+  auto until=GetTickCount64()+15000;
+  while(GetTickCount64()<until&&ready<2){MSG msg;while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}Sleep(10);}
+  bool recovered=ready>=2&&hwndReady&&!store.failed&&store.window&&store.open;
+  store.stopping=true;worker.join();DestroyWindow(owner);
+  Require(recovered,"device loss did not recreate the panel through compatible presentation");
+  std::cout<<"PASS real D3D11 composition failure -> HWND, hardware failure -> WARP, Present device loss -> worker recreation, retained open/snapshot and fallback backdrop\n";
+}
 void WindowChecks(bool demo) {
   const std::string rendererMarker="Body__EFF_PART_0123456789abcdef";
   Require(EiemDirectory::RendererPartMarker(EiemDirectory::RendererPartTag("Body",rendererMarker))==rendererMarker,
@@ -541,6 +691,6 @@ int main(int argc,char** argv) {
   using EiemDirectory::Require;
   std::cout.setf(std::ios::unitbuf);
   if(argc==3&&std::string(argv[1])=="--animation-package")try{auto p=EiemDirectory::Load(std::filesystem::u8path(argv[2]));Require(p.shapeAnimations.size()==1,"Python animation package lost clips");const auto& clip=p.shapeAnimations.begin()->second;Require(clip.label==u8"翅膀运动"&&clip.key.vk==VK_F6&&clip.duration==1&&clip.tracks.size()==1,"Python/C++ animation fields differ");EiemOfflinePackage::Writer writer;EiemOfflinePackage::WriteAuthor(writer,p);EiemOfflinePackage::Reader reader{writer.b};auto roundtrip=EiemOfflinePackage::ReadAuthor(reader,p.root.parent_path());Require(reader.p==writer.b.size()&&roundtrip.shapeAnimations.size()==1&&roundtrip.shapeAnimations.begin()->second.tracks==clip.tracks,"compiled author animation roundtrip");std::cout<<"PASS Python/C++ animation package and offline author roundtrip\n";return 0;}catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
-  try {if(argc>1&&std::string(argv[1])=="--cross-thread-window"){TestPanel::CrossThreadWindowChecks();return 0;}TestPanel::Checks();TestPanel::SavedPreferencesChecks();TestPanel::KeySettingsChecks();if(argc>1) TestPanel::WindowChecks(std::string(argv[1])=="--demo");return 0;}
+  try {if(argc>1&&std::string(argv[1])=="--graphics-recovery"){TestPanel::GraphicsRecoveryChecks();return 0;}if(argc>1&&std::string(argv[1])=="--cross-thread-window"){TestPanel::CrossThreadWindowChecks();return 0;}TestPanel::InstalledAnimationKeyChecks();TestPanel::Checks();TestPanel::SavedPreferencesChecks();TestPanel::KeySettingsChecks();if(argc>1) TestPanel::WindowChecks(std::string(argv[1])=="--demo");return 0;}
   catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
 }

@@ -63,6 +63,7 @@
 #include "eiem_camera_fade_core.h"
 #include "eiem_package_protocol.h"
 #include "eiem_control_panel_win32.h"
+#include "eiem_effect_relocation.h"
 #if defined(EIEM_EFFECTS_DEBUG)
 #include "eiem_effect_debug_packet.h"
 #endif
@@ -98,6 +99,8 @@ bool SharedDependencies(void*,uint64_t,void*,bool,bool&) noexcept;
 bool AppendSharedDependencies(void*,uint64_t,void*,bool,bool) noexcept;
 bool SharedVfsLoad(uint64_t,uint32_t,bool,void*&) noexcept;
 void Watchdog() noexcept;
+void ObserveNativeMeshSource(void*,const std::string&) noexcept;
+std::set<EiemDirectory::Identity> ProvenNativeMeshIdentities(void*);
 #endif
 void Retire(void*,uint64_t) noexcept;
 uint64_t BeginVfs(uint64_t) noexcept;uint64_t BeginHelper(void*,void*) noexcept;void EndHelper(uint64_t) noexcept;
@@ -1220,8 +1223,15 @@ void CompleteRuleInput(void* request,void* bundle){NativeBundle::CompleteMemory(
 #include "eiem_effect_debug.h"
 #include "eiem_entry_material_animation.h"
 #include "eiem_standalone_effect_mods.h"
+#include "eiem_entry_author_transforms.h"
 #include "eiem_entry_effect_attachments.h"
 #include "eiem_entry_demand_generation_reload.h"
+#if defined(EIEM_NATIVE_ANIMATION_PROBE) || defined(EIEM_MOD_ANIMATION_PROBE)
+#include "../tools/diagnostics/native_animation_probe.h"
+#endif
+#if defined(EIEM_MOD_ANIMATION_PROBE)
+#include "../tools/diagnostics/mod_animation_probe.h"
+#endif
 #include "eiem_entry_reload.h"
 
 void ProcessReloadRequests() {
@@ -1622,6 +1632,7 @@ DWORD StartImpl() {
   InstallHooks(assemblies, count);
   managed.Detach();
   if(!RuntimeControls::panel.Read()) RuntimeControls::PublishPanel();
+  RuntimeControls::panel.diagnostic=[](const std::string& message){Log("[CONTROL-PANEL-GRAPHICS] %s",message.c_str());};
   HANDLE panelThread=CreateThread(nullptr,0,EiemControlPanel::Window::Run,&RuntimeControls::panel,0,nullptr);
   if(panelThread) {CloseHandle(panelThread);Log("[CONTROL-PANEL] workerStarted=1 shortcut=gui selectedModOnly=1");}
   else {RuntimeControls::panel.failed=true;Log("[CONTROL-PANEL-GAP] workerStartFailed=%lu",GetLastError());}
@@ -1649,8 +1660,7 @@ DWORD StartImpl() {
     auto gui=settings.Get().gui;
     bool guiPhysical=RuntimeControls::Down(gui);
     if(guiKey.Press(gui,guiPhysical,active && process==GetCurrentProcessId())) {
-      if(RuntimeControls::panel.failed) Log("[CONTROL-PANEL-GAP] unavailable=1 restartRequired=1");
-      else {
+      {
         RuntimeControls::panel.open=!RuntimeControls::panel.open.load();
         Log("[CONTROL-PANEL] requestedOpen=%d vk=%u modifiers=%u",int(RuntimeControls::panel.open.load()),gui.vk,gui.modifiers);
       }

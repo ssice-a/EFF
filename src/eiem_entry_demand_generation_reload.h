@@ -5,6 +5,7 @@ using FullResourceReload::Owner;
 using RuntimeShapes::Ref;
 constexpr ULONGLONG kPrefabProxyRetryIntervalMs=250;
 constexpr ULONGLONG kPrefabProxyWaitTimeoutMs=3000;
+constexpr ULONGLONG kPrefabProxyDeferredRetryMs=1500;
 
 struct Prepared {
   std::shared_ptr<const DemandLoadingProbe::InstalledGeneration> generation;
@@ -25,6 +26,8 @@ struct PathReload {
   bool poolDiscarded=false,cacheInvalidated=false;
   bool prefabInvalidated=false,prefabInvalidationAttempted=false,rawCaptured=false;
   ULONGLONG prefabRetryAt=0,prefabBlockedSince=0;
+  bool prefabRetryDeferred=false;
+  unsigned prefabDeferredRetries=0;
   std::vector<Ref> rawAssets;
   bool failed=false;
   ULONGLONG started=0;
@@ -61,16 +64,66 @@ size_t RetireOwnerBindings(const Owner& owner) {
   return retired;
 }
 
-bool Affected(void* root,const DemandLoadingProbe::InstalledGeneration& next) {
+// Names nominate a refresh, but only the game's logical manifest proves that
+// this owner can consume that target. No payload is opened during selection.
+bool LogicalOwnerContains(const std::string& path,const EiemDirectory::Identity& target,
+    const std::set<std::string>& hints,uint64_t pathHash=0) {
+  namespace D=DemandLoadingProbe;
+  if(path.empty()||!D::api.lookup||!D::api.subLookup||!StartupDependencies::originalAll)return false;
+  std::vector<Ref> manifests;
+  {std::lock_guard<std::mutex> lock(D::mutex);for(const auto& row:D::manifests)
+    if(row.second->object.Get())manifests.push_back(row.second->object);}
+  for(const auto& manifest:manifests)try {
+    Bytes targetInfo;bool exact=false;
+    const auto ownerBundle=D::PrefabBundle(manifest.Get(),path,pathHash);if(!ownerBundle)continue;
+    std::set<uint64_t> targetBundles;
+    if(D::LookupTarget(manifest.Get(),target,targetInfo,exact)){uint64_t key=0;
+      memcpy(&key,targetInfo.data()+D::api.bundleOffset,8);if(key)targetBundles.insert(key);}
+    if(targetBundles.empty()&&!hints.empty()){StartupDependencies::Names names;for(const auto& hint:hints)names[hint];
+      auto keys=StartupDependencies::ManifestKeys(manifest.Get(),StartupDependencies::State(manifest.Get()),names,false);
+      for(const auto& key:keys)targetBundles.insert(key.second);}
+    if(targetBundles.count(ownerBundle))return true;
+    if(targetBundles.empty())continue;
+    auto dependencies=StartupDependencies::NewListForManifest(manifest.Get());
+    StartupDependencies::originalAll(manifest.Get(),ownerBundle,dependencies.Get(),StartupDependencies::api.allInfo);
+    for(auto key:StartupDependencies::ReadList(dependencies.Get()))if(targetBundles.count(key))return true;
+  }catch(const std::exception& error){Log("[DEMAND-F10-SELECTION-GAP] path=%s target=%s#%s reason=%s nameOnlyMatchRejected=1",
+    path.c_str(),target.path.c_str(),target.asset.c_str(),error.what());}
+  return false;
+}
+std::string SourceMeshName(std::string name) {
+  for(const char* suffix:{" (Instance)","(Instance)"," (Clone)","(Clone)"}) {
+    const auto length=strlen(suffix);if(name.size()>length&&name.compare(name.size()-length,length,suffix)==0){
+      name.erase(name.size()-length);break;}}
+  return name;
+}
+struct SelectionContext {std::map<std::pair<std::string,EiemDirectory::Identity>,bool> logicalOwners;};
+bool Affected(void* root,const DemandLoadingProbe::InstalledGeneration& next,const std::string& path={},SelectionContext* context=nullptr,uint64_t pathHash=0) {
   if(!next.delta.changed)return false;
   if(!RuntimeShapes::Alive(root))return true;
   std::set<std::string> changedParts;
-  for(const auto& target:next.targets)if(next.delta.packages.count(target.mod)&&!next.delta.controlOnlyPackages.count(target.mod))
+  std::map<EiemDirectory::Identity,std::set<std::string>> changedTargets;
+  for(const auto& identity:next.delta.targets)changedTargets[{identity.first,identity.second}];
+  for(const auto& target:next.targets)if(next.delta.packages.count(target.mod)&&!next.delta.controlOnlyPackages.count(target.mod)){
     changedParts.insert(target.partIds.begin(),target.partIds.end());
+    auto& hints=changedTargets[target.source];if(!target.bundle.empty())hints.insert(target.bundle);
+  }
+  for(auto& target:changedTargets){auto hints=next.deltaRoutes.find(target.first);
+    if(hints!=next.deltaRoutes.end())target.second.insert(hints->second.begin(),hints->second.end());}
   for(const auto& renderer:FullResourceReload::Components(root)) {
     auto mesh=RuntimeShapes::SourceMesh(renderer.Get());
     auto spec=RuntimeShapes::Match(renderer.Get(),mesh);
     if(spec&&next.delta.packages.count(spec->package)&&!next.delta.controlOnlyPackages.count(spec->package))return true;
+    if(!path.empty()&&RuntimeShapes::Alive(mesh)){
+      const auto name=SourceMeshName(String(RuntimeShapes::Call(RuntimeShapes::api.name,mesh)));
+      for(const auto& target:changedTargets)if(target.first.asset==name){
+        const auto key=std::make_pair(path,target.first);bool contains=false;
+        if(context){auto found=context->logicalOwners.find(key);if(found!=context->logicalOwners.end())contains=found->second;
+          else {contains=LogicalOwnerContains(path,target.first,target.second,pathHash);context->logicalOwners.emplace(key,contains);}}
+        else contains=LogicalOwnerContains(path,target.first,target.second,pathHash);
+        if(contains)return true;
+      }
+    }
     if(changedParts.empty()||!RuntimeShapes::api.rendererGameObject)continue;
     auto gameObject=Ref::Make(RuntimeShapes::Call(RuntimeShapes::api.rendererGameObject,renderer.Get()),false);
     if(!RuntimeShapes::Alive(gameObject.Get()))continue;
@@ -163,6 +216,7 @@ Owner MakeUIOwner(void* root,const FullResourceReload::LiveUIModel& live) {
   EnsureOwnerPathHash(owner);
   owner.uiPage=FullResourceReload::CaptureUIPage(live.loader.Get(),root);
   Require(FullResourceReload::BindUIPage(owner.uiPage),"UI page does not own its recorded model");
+  owner.prefabDependencies=FullResourceReload::UIWeaponDependencies(root);
   return owner;
 }
 
@@ -199,6 +253,7 @@ void Prepare() {
 }
 
 void AddAffectedOwners(const DemandLoadingProbe::InstalledGeneration& candidate) {
+  SelectionContext selection;
   auto previous=std::move(reloads);
   reloads.clear();pendingUIPaths.clear();cursor=0;uncoveredHelpers=0;
   std::vector<OwnerReload> foundOwners;std::set<std::string> affectedPaths;
@@ -210,16 +265,17 @@ void AddAffectedOwners(const DemandLoadingProbe::InstalledGeneration& candidate)
     bool affected=false;
     for(auto entry=it->second.begin();entry!=it->second.end();){
       if(!entry->proxy.Get()){entry=it->second.erase(entry);continue;}
-      auto source=entry->source.Get();if(RuntimeShapes::Alive(source)&&Affected(source,candidate))affected=true;++entry;
+      auto source=entry->source.Get();if(RuntimeShapes::Alive(source)&&Affected(source,candidate,it->first,&selection))affected=true;++entry;
     }
     if(affected){AddPath(it->first,PathHash(it->first));affectedPaths.insert(it->first);}
     if(it->second.empty())it=FullResourceReload::rawPrefabsByPath.erase(it);else ++it;
   }
   for(auto it=FullResourceReload::prefabProxySourcesByPath.begin();it!=FullResourceReload::prefabProxySourcesByPath.end();) {
     bool affected=false;
+    const auto label="prefab-proxy:"+std::to_string(it->first);
     for(auto source=it->second.begin();source!=it->second.end();) {
       auto root=source->Get();if(!RuntimeShapes::Alive(root)){source=it->second.erase(source);continue;}
-      affected=affected||Affected(root,candidate);++source;
+      affected=affected||Affected(root,candidate,label,&selection,it->first);++source;
     }
     if(affected){auto label="prefab-proxy:"+std::to_string(it->first);AddPath(label,it->first);
       Log("[DEMAND-F10-CACHED-PREFAB] hash=%016llX activeOwnerCaptured=0 invalidateBeforeNextLoad=1",
@@ -230,7 +286,7 @@ void AddAffectedOwners(const DemandLoadingProbe::InstalledGeneration& candidate)
     auto root=it->second.Get();if(!RuntimeShapes::Alive(root)){
       it=FullResourceReload::observedPrefabs.erase(it);continue;
     }
-    if(!Affected(root,candidate)){++it;continue;}
+    if(!Affected(root,candidate,it->first,&selection)){++it;continue;}
     auto path=it->first;AddPath(path,PathHash(path));affectedPaths.insert(FullResourceReload::NormalizeAssetPath(path));
     Log("[DEMAND-F10-CACHED-PREFAB] path=%s rootId=%d activeOwnerCaptured=0 invalidateBeforeNextLoad=1",
       path.c_str(),FullResourceReload::Id(root));
@@ -241,22 +297,38 @@ void AddAffectedOwners(const DemandLoadingProbe::InstalledGeneration& candidate)
     try{
       auto owner=MakePartOwner(part,it->second);++it;
       auto phase=RuntimeShapes::Alive(owner.root.Get())?OwnerPhase::Queued:OwnerPhase::AwaitExisting;
-      if(Affected(owner.root.Get(),candidate))affectedPaths.insert(FullResourceReload::NormalizeAssetPath(owner.path));
+      if(Affected(owner.root.Get(),candidate,owner.path,&selection))affectedPaths.insert(FullResourceReload::NormalizeAssetPath(owner.path));
       foundOwners.push_back({std::move(owner),phase});
     }catch(const std::exception& error){Log("[DEMAND-F10-OWNER-GAP] kind=world-part reason=%s otherOwnersContinue=1",error.what());++it;}
   }
   for(const auto& row:FullResourceReload::liveUIModels) {
     auto root=row.first;try{
       auto owner=MakeUIOwner(root,row.second);
-      if(Affected(root,candidate))affectedPaths.insert(FullResourceReload::NormalizeAssetPath(owner.path));
+      if(Affected(root,candidate,owner.path,&selection))affectedPaths.insert(FullResourceReload::NormalizeAssetPath(owner.path));
       foundOwners.push_back({std::move(owner),OwnerPhase::Queued});
     }catch(const std::exception& error){Log("[DEMAND-F10-OWNER-GAP] kind=ui reason=%s otherOwnersContinue=1",error.what());}
   }
   for(const auto& row:FullResourceReload::pendingUIModels)
     if(candidate.delta.changed){pendingUIPaths.insert(row.second);affectedPaths.insert(FullResourceReload::NormalizeAssetPath(row.second));}
+  // A page may own the same raw weapon as the world without that weapon's
+  // Renderer being parented to the page yet. Use the native owner's dependency
+  // list, not visible geometry, to close the set of holders before releasing.
+  bool expanded=true;while(expanded){expanded=false;
+    for(const auto& item:foundOwners){const auto path=FullResourceReload::NormalizeAssetPath(item.owner.path);
+      if(affectedPaths.count(path))continue;
+      for(const auto& dependency:item.owner.prefabDependencies)if(affectedPaths.count(dependency.path)){
+        affectedPaths.insert(path);expanded=true;
+        Log("[DEMAND-F10-OWNER-DEPENDENCY] path=%s dependency=%s kind=ui-weapon nativeHandleObserved=%d",
+          item.owner.path.c_str(),dependency.path.c_str(),int(dependency.rawAsset.Get()!=nullptr));break;
+      }
+    }
+  }
   for(auto& item:foundOwners){
     if(!affectedPaths.count(FullResourceReload::NormalizeAssetPath(item.owner.path)))continue;
     auto& batch=AddPath(item.owner.path,OwnerPathHash(item.owner));
+    Log("[DEMAND-F10-OWNER-CAPTURE] path=%s kind=%s rootId=%d directAsset=%d nativeDependencies=%zu",
+      item.owner.path.c_str(),item.owner.uiModel?"ui":item.owner.viewPart?"view-part":"world",
+      item.owner.oldRootId,int(item.owner.directAsset),item.owner.prefabDependencies.size());
     batch.owners.push_back(std::move(item));
   }
   // Publication precedes owner refresh. A cache-stage failure must survive a
@@ -274,7 +346,7 @@ void AddAffectedOwners(const DemandLoadingProbe::InstalledGeneration& candidate)
     // Revisit the pool/raw observations; retain proof of an already-unloaded
     // instantiate proxy so an absent old proxy is not required a second time.
     batch.poolDiscarded=false;batch.cacheInvalidated=false;batch.rawCaptured=false;
-    batch.prefabInvalidationAttempted=false;batch.prefabRetryAt=0;batch.prefabBlockedSince=0;
+    batch.prefabInvalidationAttempted=false;batch.prefabRetryAt=0;batch.prefabBlockedSince=0;batch.prefabRetryDeferred=false;batch.prefabDeferredRetries=0;
     for(auto& item:batch.owners)if(item.phase==OwnerPhase::Released){
       auto root=FullResourceReload::CurrentRoot(item.owner);
       if(RuntimeShapes::Alive(root)){
@@ -282,7 +354,7 @@ void AddAffectedOwners(const DemandLoadingProbe::InstalledGeneration& candidate)
         if(item.owner.directAsset)item.owner.rawAsset=FullResourceReload::PartRawAsset(item.owner.component.Get());
         item.phase=OwnerPhase::Queued;batch.poolDiscarded=false;batch.prefabInvalidated=false;
         batch.cacheInvalidated=false;batch.rawCaptured=false;batch.prefabInvalidationAttempted=false;
-        batch.prefabRetryAt=0;batch.prefabBlockedSince=0;
+        batch.prefabRetryAt=0;batch.prefabBlockedSince=0;batch.prefabRetryDeferred=false;batch.prefabDeferredRetries=0;
       }
     }
     Log("[DEMAND-F10-PATH-RETRY] path=%s previousCacheFailure=1 diskDeltaRequired=0",batch.path.c_str());
@@ -307,17 +379,17 @@ void AddAffectedOwners(const DemandLoadingProbe::InstalledGeneration& candidate)
 void Commit(std::shared_ptr<Prepared> candidate) {
   Require(DemandLoadingProbe::InstalledGenerationFilesUnchanged(*candidate->generation),
     "Format 3 Mod files changed before F10 publication");
-  RuntimeControls::State controls=RuntimeControls::Prepare(candidate->generation->packages,candidate->config);
+  RuntimeControls::State controls=RuntimeControls::PrepareInstalled(candidate->generation->packages,candidate->generation->standalone,candidate->config);
   RuntimeControls::MergeLive(controls);
   AddAffectedOwners(*candidate->generation);
-  auto graph=controls.graph;RuntimeControls::Swap(controls);
+  auto graph=candidate->generation->packages;RuntimeControls::Swap(controls);
   std::atomic_store(&published,graph);settings.Publish(candidate->config);
   RuntimeAttachments::CommitResourceGeneration(candidate->generation);
   auto next=generation.load()+1;
   RuntimeShapes::packageGeneration=next;RuntimeShapes::checkedGeneration=next;generation.store(next);
   committedGeneration=candidate->generation->serial;active=true;
   size_t ownerCount=0;for(const auto& batch:reloads)ownerCount+=batch.owners.size();
-  Log("[DEMAND-F10-COMMIT] generation=%llu mods=%zu targets=%zu changed=%d paths=%zu owners=%zu pendingUIPaths=%zu uncoveredHelpers=%zu payloadsPreloaded=0 ownerReload=game-lifecycle generationProxyNamespace=1 sameCabContainersRetiredOnSubmit=1 oldBundleLeaseBarrier=0",
+  Log("[DEMAND-F10-COMMIT] generation=%llu mods=%zu targets=%zu changed=%d paths=%zu owners=%zu pendingUIPaths=%zu uncoveredHelpers=%zu payloadsPreloaded=0 ownerReload=game-lifecycle generationProxyNamespace=1 nativeGenerationIdentity=1 nativeGameBundlesRetained=1 oldBundleLeaseBarrier=0",
     (unsigned long long)candidate->generation->serial,candidate->generation->packages->size(),
     candidate->generation->targets.size(),int(candidate->generation->delta.changed),reloads.size(),ownerCount,pendingUIPaths.size(),uncoveredHelpers);
 }
@@ -345,7 +417,7 @@ void AppendOwner(Owner owner,OwnerPhase phase) {
   if(duplicate==batch.owners.end())batch.owners.push_back({std::move(owner),phase});
   batch.started=0;batch.poolDiscarded=false;batch.cacheInvalidated=false;
   batch.prefabInvalidated=false;batch.prefabInvalidationAttempted=false;batch.rawCaptured=false;
-  batch.prefabRetryAt=0;batch.prefabBlockedSince=0;
+  batch.prefabRetryAt=0;batch.prefabBlockedSince=0;batch.prefabRetryDeferred=false;batch.prefabDeferredRetries=0;
   batch.failed=false;
 }
 
@@ -354,6 +426,13 @@ void StartLoads(PathReload& batch) {
     auto& owner=item.owner;item.started=GetTickCount64();item.timeoutLogged=false;
     try{
       bool waitingForChild=false;
+      for(const auto& dependency:owner.prefabDependencies)for(const auto& dependencyBatch:reloads)
+        if(&dependencyBatch!=&batch&&FullResourceReload::SameAssetPath(dependencyBatch.path,dependency.path)){
+          if(dependencyBatch.failed){batch.failed=true;
+            Log("[DEMAND-F10-PARENT-DEFERRED] path=%s dependencyPath=%s retryRetainsReleasedOwner=1",
+              owner.path.c_str(),dependencyBatch.path.c_str());}
+          waitingForChild=waitingForChild||!dependencyBatch.cacheInvalidated;
+        }
       for(const auto& childBatch:reloads)for(const auto& child:childBatch.owners)
         if(child.rebuildParent.Get()==owner.component.Get()){
           if(childBatch.failed){
@@ -387,6 +466,9 @@ void ReleasePath(PathReload& batch) {
     auto remember=[&](void* proxy){if(proxy&&std::none_of(batch.rawAssets.begin(),batch.rawAssets.end(),
         [&](const auto& ref){return ref.Get()==proxy;}))batch.rawAssets.push_back(Ref::Make(proxy,false));};
     for(const auto& item:batch.owners)remember(item.owner.rawAsset.Get());
+    for(const auto& holderBatch:reloads)for(const auto& holder:holderBatch.owners)
+      for(const auto& dependency:holder.owner.prefabDependencies)
+        if(FullResourceReload::SameAssetPath(dependency.path,batch.path))remember(dependency.rawAsset.Get());
     auto found=FullResourceReload::rawPrefabsByPath.find(FullResourceReload::NormalizeAssetPath(batch.path));
     if(found!=FullResourceReload::rawPrefabsByPath.end())for(const auto& raw:found->second)remember(raw.proxy.Get());
     batch.rawCaptured=true;
@@ -423,7 +505,7 @@ void ReleasePath(PathReload& batch) {
     if(owner.uiModel){
       auto oldRoot=owner.uiLoadedRoot.Get();
       if(RuntimeShapes::Alive(oldRoot)&&FullResourceReload::UIOwns(owner.component.Get(),oldRoot)){
-        Require(FullResourceReload::BindUIPage(owner.uiPage,nullptr),"UI page refused to release its old model");
+        Require(FullResourceReload::BindUIPage(owner.uiPage,nullptr,true),"UI page refused to release its old model");
         void* args[]={oldRoot};FullResourceReload::Call(FullResourceReload::api.uiUnload,owner.component.Get(),args);
       }
       owner.uiLoadedRoot={};
@@ -447,17 +529,16 @@ void ReleasePath(PathReload& batch) {
   }
   if(!batch.cacheInvalidated){
     Require(batch.hash,"affected prefab path hash unavailable: "+batch.path);
+    const auto now=GetTickCount64();if(batch.prefabRetryAt&&now<batch.prefabRetryAt)return;
+    batch.prefabRetryAt=0;
     if(!batch.prefabInvalidated||FullResourceReload::prefabProxiesByPath.count(batch.hash)){
-      const auto now=GetTickCount64();
-      if(batch.prefabRetryAt&&now<batch.prefabRetryAt)return;
-      batch.prefabRetryAt=0;
       const bool pooled=!batch.prefabInvalidated&&std::any_of(batch.owners.begin(),batch.owners.end(),[](const auto& item){
         return !item.owner.directAsset&&item.phase!=OwnerPhase::Ended;
       });
       const bool logAttempt=!batch.prefabInvalidationAttempted;batch.prefabInvalidationAttempted=true;
       try{
         FullResourceReload::InvalidatePrefabProxyCache(batch.hash,batch.path,pooled,logAttempt);
-        batch.prefabInvalidated=true;batch.prefabBlockedSince=0;
+        batch.prefabInvalidated=true;
       }catch(const FullResourceReload::PrefabProxyRetainedError&){
         if(!batch.prefabBlockedSince)batch.prefabBlockedSince=now;
         batch.prefabRetryAt=now+kPrefabProxyRetryIntervalMs;throw;
@@ -475,6 +556,12 @@ void ReleasePath(PathReload& batch) {
         throw std::runtime_error("game raw prefab cache has not unloaded: "+batch.path+" handles="+std::to_string(refs));
       }
     }
+    // Shared inputs isolate their SerializedFiles, PPtrs, streams and Bundle
+    // names before publication. Native source leases may legitimately remain
+    // with another world/UI owner; they are no longer a cache handoff gate.
+    Log("[DEMAND-F10-ASSET-HANDOFF] path=%s nativeGameBundlesRetained=1 nativeGenerationIdentity=1",
+      batch.path.c_str());
+    batch.prefabBlockedSince=0;batch.prefabDeferredRetries=0;
     Log("[DEMAND-F10-ASSET-CACHE] path=%s rawProxies=%zu gameHandlesReleased=1 cacheUnloaded=1",
       batch.path.c_str(),batch.rawAssets.size());
     batch.cacheInvalidated=true;
@@ -529,12 +616,25 @@ void PollOwner(OwnerReload& item) {
   }
 }
 
+void ResumeDeferredPrefabRetries() {
+  if(active)return;const auto now=GetTickCount64();bool resumed=false;
+  for(auto& batch:reloads)if(batch.failed&&batch.prefabRetryDeferred&&batch.prefabRetryAt&&now>=batch.prefabRetryAt){
+    batch.failed=false;batch.started=now;batch.prefabBlockedSince=0;batch.prefabRetryAt=0;
+    batch.prefabRetryDeferred=false;batch.lastError.clear();batch.waitLogged=false;resumed=true;
+    Log("[DEMAND-F10-PATH-AUTO-RETRY] path=%s previousReason=prefab-proxy-retained latestGeneration=%llu",
+      batch.path.c_str(),(unsigned long long)committedGeneration);
+  }
+  if(resumed)active=true;
+}
+
 void Frame() {
   std::shared_ptr<Prepared> candidate;
   if(!active){std::lock_guard<std::mutex> lock(mutex);candidate.swap(pending);}
   if(candidate)try{Commit(std::move(candidate));}
     catch(const std::exception& error){Log("[DEMAND-F10-REJECT] phase=commit reason=%s previousGenerationRetained=1",error.what());return;}
-  if(!active||!RuntimeShapes::Main())return;
+  if(!RuntimeShapes::Main())return;
+  ResumeDeferredPrefabRetries();
+  if(!active)return;
   PollUIPaths();
   for(auto& batch:reloads)if(!batch.failed&&!batch.cacheInvalidated)try{ReleasePath(batch);}
     catch(const std::exception& error){
@@ -547,9 +647,12 @@ void Frame() {
   const auto now=GetTickCount64();
   for(auto& batch:reloads)if(!batch.failed&&!batch.cacheInvalidated&&batch.prefabBlockedSince&&
       now-batch.prefabBlockedSince>=kPrefabProxyWaitTimeoutMs){
-    batch.failed=true;
-    Log("[DEMAND-F10-PATH-FAIL] path=%s elapsedMs=%llu phase=prefab-proxy-release retryOnNextF10=1 otherPathsContinue=1",
-      batch.path.c_str(),(unsigned long long)(now-batch.prefabBlockedSince));
+    const auto exponent=std::min(batch.prefabDeferredRetries,5u);
+    const auto retryDelay=std::min<ULONGLONG>(30000,kPrefabProxyDeferredRetryMs<<exponent);
+    ++batch.prefabDeferredRetries;
+    batch.failed=true;batch.prefabRetryDeferred=true;batch.prefabRetryAt=now+retryDelay;
+    Log("[DEMAND-F10-PATH-DEFERRED] path=%s elapsedMs=%llu phase=prefab-proxy-release retry=automatic retryDelayMs=%llu otherPathsContinue=1",
+      batch.path.c_str(),(unsigned long long)(now-batch.prefabBlockedSince),(unsigned long long)retryDelay);
   }
   for(auto& batch:reloads)if(!batch.failed&&batch.started&&GetTickCount64()-batch.started>30000&&
       !batch.cacheInvalidated){

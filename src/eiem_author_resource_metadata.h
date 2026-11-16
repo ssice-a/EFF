@@ -102,16 +102,41 @@ inline D::Auxiliary DecodeAuxiliary(const EiemDirectory::Bytes& bytes, unsigned 
   EiemDirectory::Require(r.p==bytes.size(), "author auxiliary metadata trailing data");return resource;
 }
 
+struct EffectRelocation {
+  std::string cab;uint64_t id=0;
+  struct Patch {size_t bundle=0,offset=0,kind=0;};
+  std::vector<Patch> patches;
+};
+struct EffectLayout {
+  std::string prefab,rootName;size_t root=0,particles=0;
+  std::vector<EffectRelocation> game,author;
+};
+inline void WriteEffectLayout(D::Writer& w,const EffectLayout& layout){
+  w.S("EFF_EFFECT_LAYOUT/1");w.S(layout.prefab);w.S(layout.rootName);w.N(layout.root);w.N(layout.particles);
+  for(const auto* rows:{&layout.game,&layout.author}){w.N(rows->size());for(const auto& row:*rows){
+    w.S(row.cab);w.N(row.id);w.N(row.patches.size());for(const auto& p:row.patches){w.N(p.bundle);w.N(p.offset);w.N(p.kind);}}}
+}
 inline EiemDirectory::Bytes EncodeEffect(const std::string& id,const std::string& file,
-                                         const std::string& hash,size_t extent) {
-  auto w=Start(5);w.S(id);w.S(file);w.S(hash);w.N(extent);return std::move(w.b);
+    const std::string& hash,size_t extent,const EffectLayout* layout=nullptr) {
+  auto w=Start(5);w.S(id);w.S(file);w.S(hash);w.N(extent);if(layout)WriteEffectLayout(w,*layout);return std::move(w.b);
 }
 
-struct Effect {std::string id,file,hash;size_t bytes=0;};
+struct Effect {std::string id,file,hash;size_t bytes=0;std::shared_ptr<const EffectLayout> layout;};
 inline Effect DecodeEffect(const EiemDirectory::Bytes& bytes) {
   auto r=Open(bytes,5);Effect effect;effect.id=r.S();effect.file=r.S();effect.hash=r.S();
   auto extent=r.N();EiemDirectory::Require(extent<=SIZE_MAX,"author effect extent exceeds address space");
-  effect.bytes=size_t(extent);EiemDirectory::Require(r.p==bytes.size(),"author effect metadata trailing data");
+  effect.bytes=size_t(extent);
+  if(r.p<bytes.size()){
+    EiemDirectory::Require(r.S()=="EFF_EFFECT_LAYOUT/1","effect native layout version differs");
+    auto layout=std::make_shared<EffectLayout>();layout->prefab=r.S();layout->rootName=r.S();layout->root=size_t(r.N());layout->particles=size_t(r.N());
+    for(auto* rows:{&layout->game,&layout->author}){auto count=r.Count();EiemDirectory::Require(count<=4096,"too many effect resource bindings");
+      for(size_t i=0;i<count;++i){EffectRelocation row;row.cab=r.S();row.id=r.N();auto n=r.Count();
+        EiemDirectory::Require(n<=65536&&bool(row.id)==!row.cab.empty()&&
+          (row.cab.empty()||(row.cab.size()==36&&row.cab.rfind("CAB-",0)==0&&row.cab.find_first_not_of("0123456789abcdefABCDEF",4)==row.cab.npos&&n)),"invalid effect relocation marker");
+        for(size_t j=0;j<n;++j){EffectRelocation::Patch p{size_t(r.N()),size_t(r.N()),size_t(r.N())};EiemDirectory::Require(p.kind<=1,"invalid effect relocation kind");row.patches.push_back(p);}rows->push_back(std::move(row));}}
+    effect.layout=std::move(layout);
+  }
+  EiemDirectory::Require(r.p==bytes.size(),"author effect metadata trailing data");
   return effect;
 }
 

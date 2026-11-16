@@ -29,6 +29,16 @@ struct GraphData {
  std::string cab;SerializedLayout layout;std::map<int64_t,std::shared_ptr<const Value>> values;
  std::map<int64_t,int64_t> transforms;
  size_t reusedObjects=0,decodedObjects=0,sourceExtent=0;
+ // Request-time observations project only metadata from a bounded reader;
+ // they must not materialize a whole serialized member to obtain addresses.
+ GraphData(const std::string& c,SerializedLayout parsed,std::map<int64_t,std::shared_ptr<const Value>> projected)
+  :cab(c),layout(std::move(parsed)),values(std::move(projected)){
+  for(const auto& row:values)if(IsTransformClass(layout.types.at(layout.objects.at(row.first).type).classId)){
+   const auto& type=layout.types.at(layout.objects.at(row.first).type);
+   auto owner=NullableReference(type,Child(type,*row.second,"m_GameObject"),layout,cab);
+   Require(owner.first==cab&&transforms.emplace(owner.second,row.first).second,"assembly duplicate/nonlocal Transform");
+  }
+ }
  // previousBytes is the immutable input used to construct previous, retained
  // by the calling compiler for this slice's lifetime.
  GraphData(const Bytes& bytes,const std::string& c,SerializedLayout parsed,const GraphData* previous=nullptr,const Bytes* previousBytes=nullptr):cab(c),layout(std::move(parsed)),sourceExtent(bytes.size()){

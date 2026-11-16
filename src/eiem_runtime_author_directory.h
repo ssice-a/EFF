@@ -108,7 +108,7 @@ inline void Validate(const Directory& d){
   for(const auto& sample:track.samples){double rotation=0;for(size_t i=0;i<sample.size();++i){
     Require(std::isfinite(sample[i]),"author animation Bone sample is nonfinite");
     if(i>=3&&i<7)rotation+=double(sample[i])*sample[i];
-    if(i>=7)Require(sample[i]>0,"author animation Bone scale is not positive");}
+}
    Require(std::abs(rotation-1.0)<=.001,"author animation Bone rotation is not normalized");}
  }
  std::map<std::string,std::string> effectFiles;

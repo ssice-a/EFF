@@ -70,6 +70,7 @@ inline Shared PrepareShared(const N::Author& author,const std::vector<Use>& uses
     ++result.variants;
 
     for(const auto& dependency:input.dependencies)if(auto texture=author.FindTexture(dependency)){
+      if(!texture->input)continue; // Logical game Texture stays owned by the game.
       auto inserted=result.textures.inputs.emplace(texture->cab,texture);
       Require(inserted.second||inserted.first->second==texture,"native author Texture CAB collision");
       result.textures.references.emplace(texture->cab+":"+std::to_string(texture->id),dependency);

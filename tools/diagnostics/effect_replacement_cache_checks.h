@@ -62,6 +62,12 @@ void Checks(){
  check(Test::unloadCalls==unloads+3&&D::loadedReplacements.empty(),"changed generation retained old ownership");
  auto before=attempts;check(route()==Test::candidate&&attempts==before+3&&collisions==0,"changed generation could not reload");
  D::PublishReplacements({});check(NativeBundle::memoryBundles.empty(),"removed replacement left native stream owners");
+ auto dependency=std::make_shared<D::Manifest>(*next);dependency->key=std::string(64,'T');dependency->gameResources={{"assets/star.mat","Material","Star","assets/source.prefab","marker"}};
+ package.effects[effect.id].native=dependency;D::api.gameTypes["Material"]=RuntimeShapes::Ref::Make((void*)0xABCD,false);
+ EffectTest::gameLeaseProbe=true;EffectTest::gameLeaseError=true;Test::done=1;D::PublishReplacements({&package});before=attempts;
+ for(unsigned retry=0;retry<3;++retry)check(route()==Test::source&&attempts==before,"failed game lease became a replacement-ready cache entry");
+ EffectTest::gameLeaseError=false;check(route()==Test::candidate&&attempts==before+3,"replacement could not recover a valid game dependency");
+ D::PublishReplacements({});EffectTest::gameLeaseProbe=false;D::api.gameTypes.clear();
  std::cout<<"PASS replacement cache: initial load, warm hit, three prefab retirements, missing bundle, asset failure, invalid root, partial load retry, unchanged/changed/removed publication; duplicate submissions="<<collisions<<"\n";
  RuntimeShapes::managedAlive=false;
 }

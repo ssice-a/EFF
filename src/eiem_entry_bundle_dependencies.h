@@ -193,6 +193,20 @@ std::vector<BundleProxyLease> ProxiesForBundle(uint64_t hash){
   if(proxy&&manifest)result.push_back({Ref::Make(proxy,false),Ref::Make(manifest,false),hash});}
  return result;
 }
+struct BundleRetainedError:std::runtime_error {using std::runtime_error::runtime_error;};
+bool RetireIdleProxy(void* proxy) {
+ if(!proxy||RuntimeShapes::Scalar<uint8_t>(api.proxyIsUnloaded,proxy))return false;
+ if(RuntimeShapes::Scalar<uint8_t>(api.proxyIsLoading,proxy)||
+    RuntimeShapes::Scalar<uint8_t>(api.proxyIsUnloading,proxy)||
+    RuntimeShapes::Scalar<uint8_t>(api.proxyIsUnloadLocked,proxy)||
+    RuntimeShapes::Scalar<int>(api.proxyGetRefCount,proxy)!=0)return false;
+ unsigned char previous=0,preserve=0;il2cpp_field_get_value(proxy,api.proxyUnloadAllLoadedObjects,&previous);
+ il2cpp_field_set_value(proxy,api.proxyUnloadAllLoadedObjects,&preserve);
+ try{Call(api.proxyUnloadSync,proxy);}catch(...){
+   il2cpp_field_set_value(proxy,api.proxyUnloadAllLoadedObjects,&previous);throw;}
+ il2cpp_field_set_value(proxy,api.proxyUnloadAllLoadedObjects,&previous);
+ return RuntimeShapes::Scalar<uint8_t>(api.proxyIsUnloaded,proxy)!=0;
+}
 void Init(void* self,uint64_t hash,void* manager,void* info){
 #if defined(EIEM_DEMAND_LOADING_PROBE)
  if(enabled)try{auto manifest=Call(api.managerManifest,manager);if(manifest)DemandLoadingProbe::BundleRequest(manifest,hash,"proxy-init-enter");}catch(const std::exception& e){Log("[DEMAND-PROBE-GAP] phase=proxy-init reason=%s",e.what());}

@@ -1,10 +1,17 @@
 #pragma once
 // Included inside EiemDirectory after Resource and its verified block helpers.
 struct ShapeAnimation {
+ struct NativeOutput {std::string hierarchy,file,asset,revision;std::function<std::shared_ptr<const EiemInputSpanView::View>()> open;};
+ std::vector<NativeOutput> nativeOutputs;
  std::string id,label,speedVariable;EiemKeyChord key{};double duration=0,speed=1;bool loop=true,autoplay=false;
  std::map<std::string,std::vector<float>> tracks;
- struct BoneTrack {std::string skeleton,path;std::vector<std::array<float,10>> samples;};
+ struct BoneTrack {std::string skeleton,path;std::vector<std::array<float,10>> samples;size_t channel=0;};
  std::vector<BoneTrack> boneTracks;
+ std::shared_ptr<const EiemAnimationSamples::Source> sampleSource;
+ std::map<std::string,size_t> scalarChannels;
+ bool SamplesActive()const noexcept{return !sampleSource||sampleSource->Active();}
+ const std::vector<float>& ScalarSamples(const std::string& name,const EiemAnimationSamples::Data* data)const{return data?data->scalar.at(scalarChannels.at(name)):tracks.at(name);}
+ const std::vector<std::array<float,10>>& BoneSamples(const BoneTrack& track,const EiemAnimationSamples::Data* data)const{return data?data->bone.at(track.channel):track.samples;}
 };
 inline std::pair<std::string,ShapeAnimation> DecodeShapeAnimation(const Resource& resource){
  Require(resource.kind==8&&resource.blocks.size()==1&&resource.blocks.count("@shape-animation"),"shape animation resource layout");

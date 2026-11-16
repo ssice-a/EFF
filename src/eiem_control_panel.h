@@ -8,6 +8,10 @@
 // The panel never reads live control maps or calls Unity. Its commands are
 // consumed once per Unity frame against both graph and selection revisions.
 namespace EiemControlPanel {
+inline std::string ModLabel(const EiemDirectory::Package& p){
+ auto folder=p.root.filename().u8string();const auto& author=EiemDirectory::DeclaredId(p);
+ return folder.empty()?author:folder==author?folder:folder+"  ("+author+")";
+}
 struct Snapshot {
   uint64_t revision=0, scope=0;
   std::string selected;
@@ -40,6 +44,12 @@ class Store {
 public:
   std::atomic_bool open{false}, stopping{false}, failed{false};
   std::atomic<HWND> window{nullptr}, gameWindow{nullptr};
+  // Assigned before the UI worker starts; UI diagnostics never call Unity.
+  std::function<void(const std::string&)> diagnostic;
+#ifdef EIEM_PANEL_TEST
+  std::function<HRESULT(const char*)> graphicsFailure;
+#endif
+  void Report(const std::string& message) const {if(diagnostic)diagnostic(message);}
   std::shared_ptr<const Snapshot> Read() const { return std::atomic_load(&snapshot); }
   void Publish(std::shared_ptr<const Snapshot> next) noexcept { std::atomic_store(&snapshot,std::move(next)); }
   bool Submit(Command command) {

@@ -23,6 +23,9 @@ namespace P=EiemNativeSerializedSplice;namespace S=EiemNativeSpliceView;namespac
 struct Mesh {
   D::MeshAsset declaration;
   G::AuthorObject object;
+  std::shared_ptr<const EiemInputSpanView::View> input;
+  NativeReference native;
+  std::shared_ptr<const Mesh> resourceOwner;
   size_t metadataReadBytes=0;
 };
 struct MeshSnapshot {
@@ -42,10 +45,12 @@ struct Texture {
   Identity source;
   EiemRuntimeAuthorManifest::TextureSettings settings;
   std::shared_ptr<R::File> dds;
+  bool GameOwned()const{return declaration.file.empty()&&declaration.ddsFile.empty();}
 };
 using TextureResolver=std::function<std::shared_ptr<const Texture>(const Texture&)>;
 struct Material {
   std::filesystem::path ownerRoot;
+  std::string sourcePrefab;
   D::MaterialEntry declaration;
   EiemAuthorMaterialEdits::Author authored;
   std::map<std::string,NativeReference> textures;
@@ -90,7 +95,9 @@ inline MeshSnapshot ReadMeshMetadata(const std::filesystem::path& root,const D::
     [file](size_t at,unsigned char* output,size_t size){file->ReadAt(at,output,size);},&metadata);
   Require(layout.kind==1,"native author Mesh metadata kind differs");
   auto described=EiemAuthorResourceMetadata::DecodeMesh(metadata);
-  Require(described.part==partId&&described.nativeBytes>0&&described.authorBytes>0&&
+  // The persisted Part is author provenance, not the current INI assembly name.
+  (void)partId;
+  Require(!described.part.empty()&&described.nativeBytes>0&&described.authorBytes>0&&
     AddSize(described.nativeBytes,described.authorBytes)==layout.payloadBytes,
     "native/editable author Mesh metadata extents differ");
   file->VerifyStable();
@@ -131,10 +138,10 @@ inline std::shared_ptr<const Mesh> OpenMesh(const std::filesystem::path& root,co
     "control-dependent Mesh changed before F10; reload the Mod generation");
   auto described=snapshot?snapshot->declaration:
       EiemAuthorResourceMetadata::DecodeMesh(metadata);
-  Require(described.part==declaration.part&&described.nativeBytes>0&&described.authorBytes>0&&
+  Require(!described.part.empty()&&described.nativeBytes>0&&described.authorBytes>0&&
     AddSize(described.nativeBytes,described.authorBytes)==envelope.payloadBytes,
     "native/editable author Mesh payload extents differ");
-  described.file=declaration.file;described.material=declaration.material;
+  described.part=declaration.part;described.file=declaration.file;described.material=declaration.material;
   described.materialSlot=declaration.materialSlot;described.skeleton=declaration.skeleton;
   auto read=[file,base=envelope.payloadOffset,extent=described.nativeBytes](size_t at,unsigned char* out,size_t n){
     Require(at<=extent&&n<=extent-at,"native Mesh read exceeds its payload range");file->ReadAt(base+at,out,n);};
@@ -143,8 +150,13 @@ inline std::shared_ptr<const Mesh> OpenMesh(const std::filesystem::path& root,co
   const auto& member=reader.directory.members[0];auto layout=reader.Layout(member);
   Require((member.flags&4)&&layout.externals.empty()&&layout.objects.size()==2,"native author Mesh is not an isolated local asset");
   auto names=reader.Assets(member,layout);Require(names.size()==1,"native author Mesh directory is ambiguous");const auto& asset=names.front();
-  Require(asset.classId==43&&asset.cab==member.name&&asset.path==described.path&&asset.asset==described.marker,"native author Mesh declaration/identity differs");
+  Require(asset.classId==43&&asset.cab==member.name&&asset.path==described.path&&asset.asset==described.marker,
+    "native author Mesh declaration/identity differs: "+declaration.file+" expected="+described.path+"#"+described.marker+
+    " actual="+asset.path+"#"+asset.asset);
   auto result=std::make_shared<Mesh>();result->declaration=std::move(described);result->object=G::Describe(reader,0,layout,asset.pathId,read);
+  result->native={member.name,asset.pathId};
+  result->input=std::make_shared<const V::View>(std::vector<V::Span>{{0,envelope.payloadOffset,result->declaration.nativeBytes,{}}},
+    std::vector<size_t>{file->Size()},[file](size_t,size_t at,unsigned char* out,size_t n){file->ReadAt(at,out,n);});
   for(const auto& field:result->declaration.fields)Require(result->object.fields.count(field),"native author Mesh selected field absent: "+field);
   file->VerifyStable();result->metadataReadBytes=reader.stats.encodedBytes;return result;
 }
@@ -153,6 +165,7 @@ inline std::shared_ptr<const Texture> OpenTexture(const std::filesystem::path& r
     const EiemRuntimeAuthorManifest::TextureSettings& settings = {}) {
   if(declaration.file.empty()){
     auto result=std::make_shared<Texture>();result->declaration=declaration;result->ownerRoot=root;result->settings=settings;
+    if(declaration.ddsFile.empty())return result;
     result->dds=std::make_shared<R::File>(AssetPath(root,declaration.ddsFile),0,true);
     Bytes header(std::min(result->dds->Size(),size_t(148)));result->dds->ReadAt(0,header.data(),header.size());
     result->replacement=EiemDdsTexture::Parse(header,result->dds->Size());result->metadataReadBytes=header.size();result->dds->VerifyStable();return result;
@@ -274,22 +287,37 @@ class Catalog {
   D::Directory directory_;
   std::map<std::string,size_t> parts_;
   std::map<std::string,MeshSnapshot> meshSnapshots_;
+  std::map<std::string,D::MeshAsset> meshResources_;
+  std::map<std::string,std::shared_ptr<const Mesh>> meshInputs_;
   std::map<std::string,size_t> textureIds_;
   std::map<std::string,size_t> materialIds_;
   std::map<std::string,size_t> skeletonIds_;
   std::map<std::string,std::string> effectPaths_;
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
+  mutable std::map<std::string,std::string> fileStamps_;
+  void CheckAssetFile(const std::string& relative)const{if(relative.empty())return;auto path=AssetPath(root_,relative);
+    auto stamp=EiemDemandGenerationDiff::FileFingerprint(path);auto found=fileStamps_.find(relative);
+    Require(found==fileStamps_.end()||found->second==stamp,"author resource changed before F10; reload the Mod generation: "+relative);fileStamps_.emplace(relative,std::move(stamp));}
+  std::shared_ptr<EiemAnimationSamples::Activity> animationActivity_=std::make_shared<EiemAnimationSamples::Activity>();
+  std::map<std::string,std::shared_ptr<EiemAnimationSamples::Source>> animationSamples_;
   std::map<std::string,std::shared_ptr<const Mesh>> meshes_;
   std::map<std::string,std::shared_ptr<const Texture>> textures_;
   std::map<std::string,std::shared_ptr<const Material>> materials_;
   std::map<std::string,std::shared_ptr<const EiemAuthorBoneAnimation::Skeleton>> skeletons_;
   std::map<std::string,std::shared_ptr<const Physics>> physics_;
+  std::shared_ptr<const Mesh> GetMeshResourceLocked(const std::string& id){
+    auto declared=meshResources_.find(id);Require(declared!=meshResources_.end(),"author Mesh resource is absent: "+id);
+    const auto& declaration=declared->second;auto prior=meshInputs_.find(declaration.file);if(prior!=meshInputs_.end())return prior->second;
+    CheckAssetFile(declaration.file);auto snapshot=meshSnapshots_.find(declaration.file);
+    auto asset=OpenMesh(root_,declaration,snapshot==meshSnapshots_.end()?nullptr:&snapshot->second);
+    meshInputs_.emplace(declaration.file,asset);return asset;
+  }
 public:
   const std::vector<EiemMeshTargetDirectory::Target>& Targets() const{return manifest_.targets;}
   struct CacheCounts {size_t meshes=0,textures=0,materials=0,physics=0;};
   explicit Catalog(const std::filesystem::path& root):root_(std::filesystem::canonical(root)),manifest_(EiemRuntimeAuthorManifest::Read(root_)) {
     directory_.mod=manifest_.id;
-    std::map<std::string,D::MeshAsset> meshResources;std::set<std::string> effectFiles;
+    auto& meshResources=meshResources_;std::set<std::string> effectFiles;
     std::set<std::string> declaredShapeAnimations,declaredMaterialAnimations,declaredEffectAttachments;
     for(const auto& row:manifest_.resources){const auto& declaration=row.second;
       if(declaration.kind==1){
@@ -320,6 +348,8 @@ public:
         Require(effectPaths_.emplace(effect.file,declaration.path).second,"format 3 Effect source file is declared more than once");
       }else if(declaration.type=="effect-author"){
         Require(declaration.kind==7,"format 3 Effect author kind differs");
+      }else if(declaration.type=="animation-clip"){
+        Require(declaration.kind==10,"format 3 native Animation kind differs");
       }else if(declaration.type=="animation-samples"){
         Require(declaration.kind==9,"format 3 Animation sample kind differs");
       }else if(declaration.type=="shape-animation"){
@@ -356,7 +386,26 @@ public:
           auto file=std::make_shared<R::File>(AssetPath(root_,declaration->second.path),0);auto layout=AuthorLayout(file,5);
           auto effect=EiemAuthorResourceMetadata::DecodeEffect(AuthorMetadata(file,layout));
           Require(layout.payloadBytes==effect.bytes,"native Effect resource extent differs");return effect;
+        },
+        [&](const std::string& id){
+          auto declaration=manifest_.resources.find(id);Require(declaration!=manifest_.resources.end()&&declaration->second.type=="animation-samples","INI Animation sample resource is unresolved: "+id);
+          const auto& relative=declaration->second.path;auto prior=animationSamples_.find(relative);if(prior!=animationSamples_.end())return std::shared_ptr<const EiemAnimationSamples::Source>(prior->second);
+          auto source=std::make_shared<EiemAnimationSamples::Source>();source->activity=animationActivity_;
+          auto path=root_/std::filesystem::u8path(relative);std::string stamp;
+          if(std::filesystem::is_regular_file(path))stamp=EiemDemandGenerationDiff::FileFingerprint(path);
+          source->identity=relative+"\n"+stamp;auto root=root_;
+          source->read=[root,relative,stamp](){auto current=AssetPath(root,relative);
+            Require(stamp.empty()||EiemDemandGenerationDiff::FileFingerprint(current)==stamp,"Animation samples changed before F10; reload the Mod generation");
+            auto file=std::make_shared<R::File>(current,0,true);Require(file->Size()<=64*1024*1024,"Animation sample file exceeds 64 MiB");
+            Bytes bytes(file->Size());file->ReadAt(0,bytes.data(),bytes.size());file->VerifyStable();return EiemAuthorControlsIni::DecodeSamples(bytes);};
+          animationSamples_.emplace(relative,source);return std::shared_ptr<const EiemAnimationSamples::Source>(source);
         });
+      for(const auto& row:directory_.runtime.animations){const auto& clip=row.second;
+        if(!clip.sampleSource)continue; // Native-only Clip has no numeric sample file.
+        auto source=std::const_pointer_cast<EiemAnimationSamples::Source>(clip.sampleSource);
+        auto descriptor=clip;descriptor.sampleSource.reset();auto controls=directory_.runtime.controls;
+        source->validate.push_back([descriptor,controls](const auto& data){ValidateShapeAnimationSamples(descriptor,controls,&data);});
+      }
     }
     for(auto& attachment:directory_.runtime.effects){
       auto native=std::make_shared<EiemEffectNative::Manifest>(*attachment.second.native);
@@ -424,14 +473,19 @@ public:
     for(size_t i=0;i<directory_.materials.size();++i)materialIds_.emplace(directory_.materials[i].id,i);
     for(size_t i=0;i<directory_.skeletons.size();++i)skeletonIds_.emplace(directory_.skeletons[i].id,i);
   }
+  void ShareAnimationActivity(const Catalog& previous){animationActivity_=previous.animationActivity_;
+    for(auto& row:animationSamples_)row.second->activity=animationActivity_;}
+  std::shared_ptr<EiemAnimationSamples::Owner> AcquireAnimationOwner()const{return std::make_shared<EiemAnimationSamples::Owner>(animationActivity_);}
+  size_t OpenAnimationSamples()const{size_t count=0;for(const auto& row:animationSamples_)count+=row.second->Loaded();return count;}
   const D::Directory& Directory()const{return directory_;}
   const std::filesystem::path& Root()const{return root_;}
   std::map<std::string,std::string> FileFingerprints()const {
-    std::map<std::string,std::string> result;
+    std::lock_guard<std::mutex> lock(mutex_);std::map<std::string,std::string> result;
     auto add=[&](const std::string& relative){
       if(relative.empty())return;
       auto path=AssetPath(root_,relative);
-      result.emplace(relative,EiemDemandGenerationDiff::FileFingerprint(path));
+      auto stamp=EiemDemandGenerationDiff::FileFingerprint(path);result.emplace(relative,stamp);
+      fileStamps_.emplace(relative,std::move(stamp));
     };
     add("mod.ini");
     for(const auto& row:manifest_.resources){
@@ -443,14 +497,38 @@ public:
   std::string ResourceDeclarations()const{
     std::string result="EFF_RESOURCE_DECLARATIONS/1\n";
     for(const auto& section:manifest_.sections){const auto& id=section.id;
-      if(id=="Constants"||Begins(id,"Parameter")||Begins(id,"Action")||Begins(id,"Event")||Begins(id,"Binding")||Begins(id,"UI")||Begins(id,"Control")||Begins(id,"ShapeControl")||Begins(id,"Key")||Begins(id,"Animation")||Begins(id,"MaterialTrack"))continue;
+      if(id=="Constants"||Begins(id,"Hierarchy")||Begins(id,"Parameter")||Begins(id,"Action")||Begins(id,"Event")||Begins(id,"Binding")||Begins(id,"UI")||Begins(id,"Control")||Begins(id,"ShapeControl")||Begins(id,"Key")||Begins(id,"Animation")||Begins(id,"MaterialTrack"))continue;
       result+="["+id+"]\n";for(const auto& field:section.values){if(id=="Mod"&&(field.first=="key_switch_enabled"||field.first=="controls"))continue;
         if(Begins(id,"Part")&&(field.first=="visible"||Begins(field.first,"shape.")))continue;
         result+=field.first+"="+field.second+"\n";}
     }return result;
   }
   void BindEffects(Package& package)const {
+    for(auto& row:package.shapeAnimations)for(auto& output:row.second.nativeOutputs){
+      auto path=AssetPath(root_,output.file);output.revision=EiemDemandGenerationDiff::FileFingerprint(path);auto stamp=output.revision;
+      output.open=[path,stamp](){Require(EiemDemandGenerationDiff::FileFingerprint(path)==stamp,"native Animation file changed; reload Mod first");auto file=std::make_shared<R::File>(path,0);Require(file->Size()>=48&&file->Size()<=64*1024*1024,"native Animation file extent differs");file->Freeze();
+        return std::make_shared<const EiemInputSpanView::View>(std::vector<EiemInputSpanView::Span>{{0,0,file->Size(),{}}},std::vector<size_t>{file->Size()},[file](size_t,size_t at,unsigned char* out,size_t n){file->ReadAt(at,out,n);});};
+    }
     for(auto& row:package.effects){auto manifest=std::make_shared<EiemEffectNative::Manifest>(*row.second.native);
+      manifest->authorRoot=root_.u8string();
+      if(!manifest->authorResources.empty()){
+        std::set<std::string> resources;
+        std::function<void(const std::string&)> visit=[&](const auto& id){if(!resources.insert(id).second)return;
+          auto found=manifest_.resources.find(id);Require(found!=manifest_.resources.end(),"effect author Resource is unresolved: "+id);
+          if(found->second.kind==2)for(const auto& texture:found->second.textureBindings)visit(texture.second);};
+        for(const auto& resource:manifest->authorResources){visit(resource.resource);const auto& declaration=manifest_.resources.at(resource.resource);
+          Require((resource.type=="Material"&&declaration.kind==2)||(resource.type=="Mesh"&&declaration.kind==1)||
+            ((resource.type=="Texture2D"||resource.type=="Texture")&&declaration.kind==3),"effect author Resource type differs: "+resource.resource);}
+        D::Writer identity;identity.S(manifest->key);identity.S(manifest->authorRoot);
+        for(const auto& id:resources){const auto& declaration=manifest_.resources.at(id);identity.S(id);identity.N(declaration.kind);
+          identity.S(declaration.source.path);identity.S(declaration.source.asset);
+          for(const auto& path:{declaration.path,declaration.dds}){identity.S(path);if(!path.empty())identity.S(EiemDemandGenerationDiff::FileFingerprint(AssetPath(root_,path)));}
+          identity.S(declaration.sourcePrefab);
+          identity.N(declaration.textureSettings.hasLinear);identity.N(declaration.textureSettings.linear);identity.N(declaration.textureSettings.filter);
+          identity.N(declaration.textureSettings.wrap);identity.N(declaration.textureSettings.aniso);identity.D(declaration.textureSettings.mipBias);
+          for(const auto& binding:declaration.textureBindings){identity.S(binding.first);identity.S(binding.second);}}
+        auto digest=Sha(identity.b.data(),identity.b.size());manifest->key=Hex(digest.data(),digest.size());
+      }
       for(auto& input:manifest->bundles){auto root=root_;auto declaration=input;
         input.open=[root,declaration](){return OpenEffectInput(root,declaration);};
       }row.second.native=std::move(manifest);
@@ -459,15 +537,18 @@ public:
   std::shared_ptr<const Mesh> GetMesh(const std::string& part) {
     std::lock_guard<std::mutex> lock(mutex_);auto found=meshes_.find(part);if(found!=meshes_.end())return found->second;
     const auto& declaration=directory_.meshes.at(parts_.at(part));
-    auto snapshot=meshSnapshots_.find(declaration.file);
-    auto asset=OpenMesh(root_,declaration,snapshot==meshSnapshots_.end()?nullptr:&snapshot->second);
+    const auto& id=manifest_.parts.at(part).mesh;auto source=GetMeshResourceLocked(id);
+    auto asset=std::make_shared<Mesh>(*source);asset->resourceOwner=source;
+    asset->declaration.part=declaration.part;asset->declaration.material=declaration.material;
+    asset->declaration.materialSlot=declaration.materialSlot;asset->declaration.skeleton=declaration.skeleton;
     meshes_.emplace(part,asset);return asset;
   }
+  std::shared_ptr<const Mesh> GetMeshResource(const std::string& id){std::lock_guard<std::mutex> lock(mutex_);return GetMeshResourceLocked(id);}
   size_t OpenMeshes(){std::lock_guard<std::mutex> lock(mutex_);return meshes_.size();}
   std::shared_ptr<const EiemAuthorBoneAnimation::Skeleton> GetSkeleton(const std::string& id) {
     std::lock_guard<std::mutex> lock(mutex_);auto found=skeletons_.find(id);if(found!=skeletons_.end())return found->second;
     auto index=skeletonIds_.find(id);Require(index!=skeletonIds_.end(),"author Skeleton declaration is absent: "+id);
-    const auto& declaration=directory_.skeletons.at(index->second);
+    const auto& declaration=directory_.skeletons.at(index->second);CheckAssetFile(declaration.file);
     auto file=std::make_shared<R::File>(AssetPath(root_,declaration.file),0);auto layout=AuthorLayout(file,8);
     auto metadata=EiemAuthorResourceMetadata::DecodeSkeleton(AuthorMetadata(file,layout));
     Require(metadata.id==id&&metadata.file==declaration.file&&metadata.bytes==layout.payloadBytes,
@@ -489,23 +570,25 @@ private:
     const auto& entry=directory_.textures.at(index->second);const auto key=entry.file.empty()?id:entry.file;
     auto found=textures_.find(key);std::shared_ptr<const Texture> asset;
     if(found!=textures_.end())asset=found->second;
-    else{auto opened=OpenTexture(root_,entry,manifest_.resources.at(id).textureSettings);
+    else{CheckAssetFile(entry.file);CheckAssetFile(entry.ddsFile);auto opened=OpenTexture(root_,entry,manifest_.resources.at(id).textureSettings);
       auto described=std::make_shared<Texture>(*opened);described->source=manifest_.resources.at(id).source;asset=described;}
-    if(!asset->input&&resolve)asset=resolve(*asset);
+    if(!asset->input&&!asset->id&&resolve)asset=resolve(*asset);
     textures_[key]=asset;return asset;
   }
 public:
-  std::shared_ptr<const Texture> GetTexture(const std::string& id) {
-    std::lock_guard<std::mutex> lock(mutex_);return GetTextureLocked(id);
+  std::shared_ptr<const Texture> GetTexture(const std::string& id,const TextureResolver& resolve={}) {
+    std::lock_guard<std::mutex> lock(mutex_);return GetTextureLocked(id,resolve);
   }
   size_t OpenTextures(){std::lock_guard<std::mutex> lock(mutex_);return textures_.size();}
   std::shared_ptr<const Material> GetMaterial(const std::string& id,const TextureResolver& resolve={}) {
     std::lock_guard<std::mutex> lock(mutex_);auto found=materials_.find(id);
     if(found!=materials_.end()&&(!resolve||found->second->textures.size()==found->second->textureAssets.size()))return found->second;
-    auto asset=OpenMaterial(root_,directory_.materials.at(materialIds_.at(id)),manifest_.inlineControls);
+    const auto& entry=directory_.materials.at(materialIds_.at(id));CheckAssetFile(entry.file);
+    auto asset=OpenMaterial(root_,entry,manifest_.inlineControls);
+    asset->sourcePrefab=manifest_.resources.at(id).sourcePrefab;
     for(const auto& binding:asset->declaration.textures){
       auto textureAsset=GetTextureLocked(binding.second,resolve);
-      if(textureAsset->input)asset->textures.emplace(binding.first,NativeReference{textureAsset->cab,textureAsset->id});
+      if(textureAsset->input||(textureAsset->GameOwned()&&textureAsset->id))asset->textures.emplace(binding.first,NativeReference{textureAsset->cab,textureAsset->id});
       asset->textureAssets.emplace(binding.first,std::move(textureAsset));}
     materials_[id]=asset;return asset;
   }
@@ -522,7 +605,7 @@ public:
       for(const auto& target:manifest_.targets)if(std::find(declaration.targetRules.begin(),declaration.targetRules.end(),target.rule)!=declaration.targetRules.end()){
         declaredTargets.insert(target.source);relevant|=targets.count(target.source)!=0;}
       if(!relevant)continue;
-      auto file=std::make_shared<R::File>(AssetPath(root_,declaration.path),0);auto layout=AuthorLayout(file,4);
+      CheckAssetFile(declaration.path);auto file=std::make_shared<R::File>(AssetPath(root_,declaration.path),0);auto layout=AuthorLayout(file,4);
       auto metadata=AuthorMetadata(file,layout);auto entry=EiemAuthorResourceMetadata::DecodeAuxiliary(metadata,4);
       D::Relative(entry.file);Require(entry.id==row.first&&!entry.file.empty()&&!entry.targets.empty()&&
         entry.bytes<=16*1024*1024&&entry.authorBytes>0&&AddSize(entry.bytes,entry.authorBytes)==layout.payloadBytes,
@@ -538,7 +621,14 @@ public:
     }return result;
   }
   size_t OpenPhysics(){std::lock_guard<std::mutex> lock(mutex_);return physics_.size();}
+  // Catalog is a reuse cache, never the lifetime owner of a retired input.
+  // Active readers/views keep their own immutable leases; remove only entries
+  // for which the cache is the last owner, including Material -> Texture edges.
+  CacheCounts TrimUnusedAssetCaches(){std::lock_guard<std::mutex> lock(mutex_);CacheCounts counts;
+    auto trim=[](auto& cache){size_t count=0;for(auto it=cache.begin();it!=cache.end();)if(it->second.use_count()==1){it=cache.erase(it);++count;}else ++it;return count;};
+    counts.materials=trim(materials_);counts.meshes=trim(meshes_);trim(meshInputs_);
+    counts.textures=trim(textures_);counts.physics=trim(physics_);trim(skeletons_);return counts;}
   CacheCounts ClearAssetCaches(){std::lock_guard<std::mutex> lock(mutex_);CacheCounts counts{meshes_.size(),textures_.size(),materials_.size(),physics_.size()};
-    meshes_.clear();textures_.clear();materials_.clear();physics_.clear();return counts;}
+    meshes_.clear();meshInputs_.clear();textures_.clear();materials_.clear();physics_.clear();return counts;}
 };
 } // namespace EiemDemandAuthorResources

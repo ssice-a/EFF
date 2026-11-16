@@ -5,6 +5,9 @@ namespace P=EiemControlProgram;
 std::vector<Section> Ini(const std::string& text){return ParseIni(Bytes(text.begin(),text.end()));}
 std::shared_ptr<P::Program> Build(const std::string& text,EiemVariables& values){auto ini=Ini(text);std::set<std::string> saved;auto p=P::Declare(ini,values,saved);P::Compile(*p,ini,values,{"Spin"});return p;}
 void Reject(const std::string& text){EiemVariables values;bool failed=false;try{Build(text,values);}catch(const std::exception&){failed=true;}Require(failed,"invalid program accepted");}
+void RejectAuthor(const std::string& text){bool failed=false;try{
+ EiemAuthorControlsIni::Read(Ini(text),[](const auto&){return EiemAuthorControlsIni::Samples{};},[](const auto&){return EiemAuthorResourceMetadata::Effect{};});
+ }catch(const std::exception&){failed=true;}Require(failed,"invalid legacy key accepted by author entry");}
 int main(){try{
  const std::string source=R"ini([ParameterEnabled]
 variable=$enabled
@@ -58,6 +61,13 @@ action=ActionToggle
  auto on=P::Execute(*p,"ActionToggle",off.values,0);Require(on.values.at("$enabled")==1&&on.values.at("$value")==5&&on.commands.size()==1,"else/nested branch");
  Require(values.at("$value")==2&&values.at("$enabled")==1,"execution mutated source");
  Require(p->rawSections.at("ActionToggle").find("$enabled = true")!=std::string::npos,"source lost");
+  EiemVariables precise{{"$precise",.123456789}};
+  auto inherited=Build("[ParameterPrecise]\nvariable=$precise\n",precise);
+  Require(inherited->parameters.at("$precise").initial==.123456789,"implicit parameter default lost double precision");
+  EiemVariables rangeValues;
+  auto range=Build("[ParameterRange]\nvariable=$range\ndefault=0.123456789\nmin=0.123456789\nmax=0.234567891\n",rangeValues);
+  const auto& bounds=range->parameters.at("$range");
+  Require(bounds.softMin==bounds.minimum&&bounds.softMax==bounds.maximum,"implicit UI bounds lost double precision");
  std::string error;auto math=P::Expression("-2 * -3 + 8 / 2 - 5 % 2",{},"test");Require(math->Evaluate({})==9,"arithmetic precedence");
  Require(P::Expression("true || 1 / 0",{},"test")->Evaluate({})==1,"short circuit");
  auto step=P::Execute(*p,"ActionStep",values,.5);Require(step.values.at("$value")==2.5,"duration/call");
@@ -68,6 +78,9 @@ action=ActionToggle
  Reject("[ActionBad]\ncode=if true\n    $missing = 1\n");
  Reject("[ParameterX]\nvariable=$x\nvalue=1\n[ActionBad]\ncode=$x=2\n");
  Reject("[UIX]\ntype=group\norder=0.5\n");
+  RejectAuthor("[ParameterX]\nvariable=$x\nvalue=1\n[KeyLegacy]\nkey=F7\ntype=press\n$x=2\n");
+  RejectAuthor("[ParameterX]\nvariable=$x\ntype=bool\n[KeyLegacy]\nkey=F7\ntype=press\n$x=2\n");
+  RejectAuthor("[ParameterX]\nvariable=$x\ntype=int\n[KeyLegacy]\nkey=F7\ntype=hold\n$x=1\n");
  std::string expansion=source+"[ActionRepeat0]\ncode=$enabled = false\n";
  for(size_t i=1;i<=17;++i)expansion+="[ActionRepeat"+std::to_string(i)+"]\ncode=\n    call ActionRepeat"+std::to_string(i-1)+"\n    call ActionRepeat"+std::to_string(i-1)+"\n";
  EiemVariables expansionValues;auto expansionProgram=Build(expansion,expansionValues);bool limited=false;try{P::Execute(*expansionProgram,"ActionRepeat17",expansionValues,0);}catch(const std::exception& e){limited=std::string(e.what()).find("budget")!=std::string::npos;}

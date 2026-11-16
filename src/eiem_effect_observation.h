@@ -10,8 +10,44 @@ struct Api {
  void *speed=nullptr,*duration=nullptr,*loop=nullptr,*max=nullptr,*space=nullptr,*life=nullptr,*start=nullptr,*rate=nullptr;
  void *mode=nullptr,*low=nullptr,*high=nullptr,*multiplier=nullptr,*timeScale=nullptr,*lossyScale=nullptr;
  void *particleClass=nullptr,*getParticles=nullptr,*particleLife=nullptr,*remainingLife=nullptr,*velocity=nullptr;
+ void *worldPosition=nullptr,*bounds=nullptr,*forceOff=nullptr,*visible=nullptr,*renderMode=nullptr,*renderMask=nullptr;
+ void *mainCamera=nullptr,*cameraMask=nullptr;
  size_t particleSize=0;
 } api;
+// Simulation is not evidence of GPU visibility. These queries run only at the
+// existing three snapshot boundaries and never change materials or Renderers.
+void RenderState(Instance& instance,void* particle,const char* phase) noexcept {
+ try{
+  if(!EffectDebug::api.getComponent||!EffectDebug::api.particleRendererType.Get())return;
+  void* lookup[]={EffectDebug::api.particleRendererType.Get()};
+  auto renderer=Ref::Make(Call(EffectDebug::api.getComponent,particle,lookup),false);
+  std::ostringstream state;
+  if(!RuntimeShapes::Alive(renderer.Get()))state<<"rendererMissing=1";
+  else{
+   auto flag=[&](void* method){return method?int(RuntimeShapes::Scalar<unsigned char>(method,renderer.Get())):-1;};
+   auto vector=[&](const char* name,void* transform){if(!api.worldPosition||!RuntimeShapes::Alive(transform))return;auto p=RuntimeShapes::Scalar<std::array<float,3>>(api.worldPosition,transform);state<<' '<<name<<"=("<<p[0]<<','<<p[1]<<','<<p[2]<<')';};
+   auto go=Ref::Make(Call(FullResourceReload::api.componentGo,particle),false);
+   auto transform=Ref::Make(Call(FullResourceReload::api.goTransform,go.Get()),false);
+   int layer=RuntimeShapes::Scalar<int>(EffectDebug::api.layer,go.Get());
+   state<<"renderer="<<renderer.Get()<<" node="<<String(Call(RuntimeShapes::api.name,go.Get()))
+        <<" enabled="<<RuntimeShapes::ActualEnabled(renderer.Get())<<" forceOff="<<flag(api.forceOff)<<" visible="<<flag(api.visible)<<" layer="<<layer;
+   if(api.renderMode)state<<" mode="<<RuntimeShapes::Scalar<int>(api.renderMode,renderer.Get());
+   if(api.renderMask)state<<" renderMask="<<RuntimeShapes::Scalar<uint32_t>(api.renderMask,renderer.Get());
+   if(EffectDebug::api.renderInUI)state<<" renderInUI="<<flag(EffectDebug::api.renderInUI);
+   vector("particleWorld",transform.Get());vector("mountWorld",instance.parent.Get());
+   if(api.bounds){auto b=RuntimeShapes::Scalar<std::array<float,6>>(api.bounds,renderer.Get());state<<" boundsCenter=("<<b[0]<<','<<b[1]<<','<<b[2]<<") boundsExtents=("<<b[3]<<','<<b[4]<<','<<b[5]<<')';}
+   if(api.mainCamera&&api.cameraMask){auto camera=Ref::Make(Call(api.mainCamera),false);if(RuntimeShapes::Alive(camera.Get())){auto mask=RuntimeShapes::Scalar<uint32_t>(api.cameraMask,camera.Get());state<<" mainCameraMask="<<mask<<" mainCameraIncludesLayer="<<int(layer>=0&&layer<32&&bool(mask&(uint32_t(1)<<layer)));}else state<<" mainCamera=unavailable";}
+   if(FullResourceReload::api.materials){auto array=Ref::Make(Call(FullResourceReload::api.materials,renderer.Get()),false);auto materials=FullResourceReload::ReferenceArray(array.Get());Require(materials.size()<=32,"effect renderer material extent");state<<" materialSlots="<<materials.size();
+    for(size_t slot=0;slot<materials.size();++slot){auto material=materials[slot];state<<" material["<<slot<<"]={";if(!RuntimeShapes::Alive(material)){state<<"missing}";continue;}
+     auto shader=FullResourceReload::MaterialShader(material);state<<"name:"<<String(Call(RuntimeShapes::api.name,material))<<",shader:"<<shader.name<<",supported:"<<shader.supported<<",passes:"<<shader.passes;
+     if(FullResourceReload::api.textureIds&&FullResourceReload::api.textureById){auto ids=Ref::Make(Call(FullResourceReload::api.textureIds,material),false);if(ids.Get()){auto length=il2cpp_array_length(ids.Get());Require(length<=128,"effect texture property extent");for(size_t i=0;i<length;++i){int id=0;std::memcpy(&id,(unsigned char*)ids.Get()+32+i*sizeof(id),sizeof(id));void* args[]={&id};auto texture=Ref::Make(Call(FullResourceReload::api.textureById,material,args),false);state<<",tex["<<id<<"]:";if(!RuntimeShapes::Alive(texture.Get())){state<<"null";continue;}state<<String(Call(RuntimeShapes::api.name,texture.Get()));if(FullResourceReload::api.width&&FullResourceReload::api.height)state<<'('<<RuntimeShapes::Scalar<int>(FullResourceReload::api.width,texture.Get())<<'x'<<RuntimeShapes::Scalar<int>(FullResourceReload::api.height,texture.Get())<<')';}}}
+     state<<'}';
+    }
+   }
+  }
+  Log("[EFFECT-RENDER] phase=%s owner=%p particle=%p %s gpuVisibilityVerified=0",phase,instance.owner.Get(),particle,state.str().c_str());
+ }catch(const std::exception& e){Log("[EFFECT-RENDER-GAP] phase=%s owner=%p particle=%p reason=%s playbackPreserved=1",phase,instance.owner.Get(),particle,e.what());}
+}
 std::string LiveParticles(void* ps){
  if(!api.getParticles)return "unavailable";
  int count=RuntimeShapes::Scalar<int>(api.count,ps);if(count<=0)return "empty";
@@ -40,6 +76,7 @@ void Capture(Instance& instance,const char* phase) noexcept {
  if(!api.ready)return;
  try{for(const auto& particle:instance.particles){
   if(!RuntimeShapes::Alive(particle.Get()))continue;
+  RenderState(instance,particle.Get(),phase);
   auto main=Ref::Make(Call(api.mainModule,particle.Get()),false),emission=Ref::Make(Call(api.emission,particle.Get()),false);
   Require(main.Get()&&emission.Get(),"particle modules returned null");
   auto raw=il2cpp_object_unbox(main.Get()),eraw=il2cpp_object_unbox(emission.Get());
@@ -62,6 +99,11 @@ void Tick(Instance& instance){
 }
 void Install(void* ps,void* transform,void** assemblies,size_t count) noexcept {
  try{
+  auto renderer=FindClass("UnityEngine","Renderer",assemblies,count),particleRenderer=FindClass("UnityEngine","ParticleSystemRenderer",assemblies,count),camera=FindClass("UnityEngine","Camera",assemblies,count);
+  api.worldPosition=Exact(transform,"get_position",{},"UnityEngine.Vector3",false);
+  api.bounds=Exact(renderer,"get_bounds",{},"UnityEngine.Bounds",false);api.forceOff=Exact(renderer,"get_forceRenderingOff",{},"System.Boolean",false);api.visible=Exact(renderer,"get_isVisible",{},"System.Boolean",false);
+  api.renderMode=Exact(particleRenderer,"get_renderMode",{},"UnityEngine.ParticleSystemRenderMode",false);api.renderMask=Exact(renderer,"get_renderingLayerMask",{},"System.UInt32",false);
+  if(camera){api.mainCamera=Exact(camera,"get_main",{},"UnityEngine.Camera",true);api.cameraMask=Exact(camera,"get_cullingMask",{},"System.Int32",false);}
   auto nested=[&](const char* name)->void*{void* iterator=nullptr;while(auto type=il2cpp_class_get_nested_types(ps,&iterator))if(!strcmp(il2cpp_class_get_name(type),name))return type;throw std::runtime_error("particle nested type absent");};
   auto main=nested("MainModule"),emission=nested("EmissionModule"),curve=nested("MinMaxCurve");
   auto type=[](void* klass){auto raw=il2cpp_type_get_name(il2cpp_class_get_type(klass));Require(raw,"particle type name absent");std::string name=raw;il2cpp_free((void*)raw);return name;};auto method=FullResourceReload::Method;

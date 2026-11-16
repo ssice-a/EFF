@@ -58,8 +58,10 @@ template<class Section>std::shared_ptr<Program> Declare(const std::vector<Sectio
       Check(!persistent.count(d.variable)||d.persistent,"parameter persistence disagrees with Constants: "+d.variable);
       auto reload=get("reload","preserve");Check(reload=="preserve"||reload=="reset","invalid parameter reload policy");d.retain=reload=="preserve";
       if(d.type==Type::Boolean){d.minimum=0;d.maximum=1;}if(v.count("min"))d.minimum=Number(v.at("min"));if(v.count("max"))d.maximum=Number(v.at("max"));Check(d.minimum<=d.maximum,"invalid parameter range");
-      d.initial=Number(get("default",defaults.count(d.variable)?std::to_string(defaults.at(d.variable)):"0"));d.Validate(d.initial);
-      d.softMin=Number(get("ui.min",std::to_string(v.count("min")?d.minimum:0.0)));d.softMax=Number(get("ui.max",std::to_string(v.count("max")?d.maximum:std::max(1.0,d.initial))));Check(d.softMin<=d.softMax&&d.softMin>=d.minimum&&d.softMax<=d.maximum,"invalid UI soft range");
+      d.initial=v.count("default")?Number(v.at("default")):(defaults.count(d.variable)?defaults.at(d.variable):0.0);d.Validate(d.initial);
+      d.softMin=v.count("ui.min")?Number(v.at("ui.min")):(v.count("min")?d.minimum:0.0);
+      d.softMax=v.count("ui.max")?Number(v.at("ui.max")):(v.count("max")?d.maximum:std::max(1.0,d.initial));
+      Check(d.softMin<=d.softMax&&d.softMin>=d.minimum&&d.softMax<=d.maximum,"invalid UI soft range");
       Check(!defaults.count(d.variable)||defaults.at(d.variable)==d.initial,"parameter default disagrees with Constants: "+d.variable);defaults[d.variable]=d.initial;
       if(d.persistent)persistent.insert(d.variable);Check(p->parameters.emplace(d.variable,std::move(d)).second,"duplicate parameter variable");
     }catch(const std::exception& e){throw std::runtime_error("["+section.id+"] line "+std::to_string(section.line)+": "+e.what());}

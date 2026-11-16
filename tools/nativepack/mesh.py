@@ -154,6 +154,10 @@ def skin_stream(author):
 def frame_stream(source_channels, positions, normals, tangents):
     """Retain the source's packed or Float32 normal/tangent representation."""
     require(len(source_channels) == 14, 'unsupported source frame layout')
+    if not tangents.size:
+        require(np.all(np.isfinite(normals)), 'nonfinite author normal')
+        stream = np.column_stack((positions, normals)).astype('<f4')
+        return stream, 3, dict(normalMaxError=float(np.max(np.abs(stream[:,3:6]-normals))), tangentMaxError=0.)
     normal, tangent = source_channels[1], source_channels[2]
     dimension = normal['dimension'].data
     require(normal['format'].data == 0 and
@@ -191,8 +195,8 @@ def game_texture_coordinates(uv_channels, tangents, count, *, coordinate='unity-
             uv = uv.copy()
             uv[:, 1] = 1.0 - uv[:, 1]
         converted.append(uv)
-    tangent_values = np.asarray(tangents, dtype=np.float64).reshape(count, 4)
-    if blender_coordinates and uv_channels[0]:
+    tangent_values = np.asarray(tangents, dtype=np.float64).reshape(count, 4 if tangents else 0)
+    if blender_coordinates and uv_channels[0] and tangent_values.size:
         tangent_values = tangent_values.copy()
         tangent_values[:, 3] *= -1.0
     return converted, tangent_values
@@ -214,7 +218,7 @@ def native_mesh(template, author, name):
     channels = [dict(stream=0,offset=0,format=0,dimension=0) for _ in range(14)]
     channels[0] = dict(stream=0,offset=0,format=0,dimension=3)
     channels[1] = dict(stream=0,offset=12,format=0,dimension=frame_dimension)
-    if frame_dimension == 3:
+    if frame_dimension == 3 and tangents.size:
         channels[2] = dict(stream=0,offset=24,format=0,dimension=4)
     arrays = []
     offset = 0
@@ -244,10 +248,19 @@ def native_mesh(template, author, name):
     low_positions, high_positions = shape_envelope(author)
     local_bounds=aabb(np.vstack((low_positions,high_positions)))
     width=4 if max(author['indices'])>65535 else 2
-    sub=copy.deepcopy(mesh['m_SubMeshes'].items()[0])
-    for key,value in dict(firstByte=0,indexCount=len(author['indices']),topology=0,baseVertex=0,firstVertex=0,vertexCount=count,localAABB=local_bounds).items():
-        sub.set(key,value)
-    mesh['m_SubMeshes'].set_items([sub])
+    submeshes=[]
+    covered=[]
+    for topology,start,length,base,first,vertices in author['submeshes']:
+        require(topology==0 and start>=0 and length>=0 and length%3==0 and
+                start+length<=len(author['indices']), 'invalid author SubMesh index range/topology')
+        covered.extend(range(start,start+length))
+        sub=copy.deepcopy(mesh['m_SubMeshes'].items()[0])
+        for key,value in dict(firstByte=start*width,indexCount=length,topology=topology,baseVertex=base,
+                              firstVertex=first,vertexCount=vertices,localAABB=local_bounds).items():
+            sub.set(key,value)
+        submeshes.append(sub)
+    require(covered==list(range(len(author['indices']))), 'author SubMeshes do not cover indices in order')
+    mesh['m_SubMeshes'].set_items(submeshes)
     mesh.set('m_IndexFormat',1 if width==4 else 0)
     mesh['m_IndexBuffer'].set_items(np.asarray(author['indices'],dtype='<u4' if width==4 else '<u2').tobytes())
     matrix_schema=mesh['m_BindPose'].array_node().schema.children[1]
@@ -425,9 +438,10 @@ def decode_native_mesh(mesh, bone_paths):
         require(normal_descriptor['format'] == 0 and
                 normal_descriptor['dimension'] == 3 and
                 descriptors[2]['format'] == 0 and
-                descriptors[2]['dimension'] == 4,
+                descriptors[2]['dimension'] in (0, 4),
                 'native Mesh Float32 frame layout differs')
         normals, tangents = channel(1), channel(2)
+        if tangents is None:tangents = np.empty((count, 0))
     require(np.all(np.isfinite(normals)) and np.all(np.isfinite(tangents)),
             'native Mesh frame data is nonfinite')
 

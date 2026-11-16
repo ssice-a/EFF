@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "eiem_animation_samples.h"
 #include "eiem_expression.h"
 #include "eiem_keys.h"
 #include "eiem_control_program.h"
@@ -437,19 +438,32 @@ inline void RestoreShapeAnimations(Package& p){
  for(const auto& row:p.resources)if(row.second->kind==8){auto decoded=DecodeShapeAnimation(*row.second);if(decoded.first==p.id)Require(p.shapeAnimations.emplace(decoded.second.id,std::move(decoded.second)).second,"duplicate animation resource");}
  RestoreRuntimeControls(p);
 }
+inline void ValidateShapeAnimationSamples(const ShapeAnimation& clip,const std::map<std::string,Control>& controls,
+                                         const EiemAnimationSamples::Data* data=nullptr){
+ if(data)Require(data->scalar.size()==clip.tracks.size()&&data->bone.size()==clip.boneTracks.size(),"animation sample channel count differs from INI bindings");
+ size_t sampleCount=0;
+ for(const auto& track:clip.tracks){auto c=controls.find(track.first);Require(c!=controls.end(),"animation track absent");
+  const auto& samples=clip.ScalarSamples(track.first,data);
+  Require(samples.size()>=2&&(!sampleCount||sampleCount==samples.size()),"animation channels do not share one sample timeline");sampleCount=samples.size();
+  Require(std::all_of(samples.begin(),samples.end(),[&](float v){return std::isfinite(v)&&v>=c->second.minimum-1e-6&&v<=c->second.maximum+1e-6;}),"animation weight exceeds shape range");}
+ std::set<std::pair<std::string,std::string>> bones;
+ for(const auto& track:clip.boneTracks){const auto& samples=clip.BoneSamples(track,data);
+  Require(!track.skeleton.empty()&&!track.path.empty()&&bones.emplace(track.skeleton,track.path).second&&samples.size()>=2&&(!sampleCount||sampleCount==samples.size()),"animation Bone channels do not share one sample timeline or have duplicate targets");sampleCount=samples.size();
+  for(const auto& sample:samples){double rotation=0;for(size_t i=0;i<sample.size();++i){Require(std::isfinite(sample[i]),"animation Bone sample is nonfinite");if(i>=3&&i<7)rotation+=double(sample[i])*sample[i];}Require(std::abs(rotation-1.0)<=.001,"animation Bone rotation is not normalized");}}
+ Require(sampleCount>=2||!clip.nativeOutputs.empty(),"animation clip has no sampled channels or native outputs");
+}
 inline void ValidateShapeAnimations(const Package& p){
  std::set<std::string> speeds;
  for(const auto& row:p.shapeAnimations){const auto& clip=row.second;
-  size_t sampleCount=0;
   Require(!p.controls.count(clip.speedVariable)&&speeds.insert(clip.speedVariable).second,"animation speed variable aliases a shape or another group");
   Require(p.defaults.count(clip.speedVariable)&&p.defaults.at(clip.speedVariable)==clip.speed&&p.persistent.count(clip.speedVariable),"animation speed default/persistence absent");
-  for(const auto& track:clip.tracks){auto c=p.controls.find(track.first);Require(c!=p.controls.end(),"animation track absent");
-   Require(track.second.size()>=2&&(!sampleCount||sampleCount==track.second.size()),"animation channels do not share one sample timeline");sampleCount=track.second.size();
-   Require(std::all_of(track.second.begin(),track.second.end(),[&](float v){return v>=c->second.minimum-1e-6&&v<=c->second.maximum+1e-6;}),"animation weight exceeds shape range");}
-  std::set<std::pair<std::string,std::string>> bones;
-  for(const auto& track:clip.boneTracks){Require(!track.skeleton.empty()&&!track.path.empty()&&bones.emplace(track.skeleton,track.path).second&&track.samples.size()>=2&&(!sampleCount||sampleCount==track.samples.size()),"animation Bone channels do not share one sample timeline or have duplicate targets");sampleCount=track.samples.size();
-   for(const auto& sample:track.samples){double rotation=0;for(size_t i=0;i<sample.size();++i){Require(std::isfinite(sample[i]),"animation Bone sample is nonfinite");if(i>=3&&i<7)rotation+=double(sample[i])*sample[i];if(i>=7)Require(sample[i]>0,"animation Bone scale is not positive");}Require(std::abs(rotation-1.0)<=.001,"animation Bone rotation is not normalized");}}
-  Require(sampleCount>=2,"animation clip has no sampled channels");
+  if(!clip.sampleSource){ValidateShapeAnimationSamples(clip,p.controls);continue;}
+  Require(clip.scalarChannels.size()==clip.tracks.size()&&(!clip.tracks.empty()||!clip.boneTracks.empty()),"animation lazy channel declaration differs");
+  std::set<size_t> scalar,bone;std::set<std::pair<std::string,std::string>> targets;
+  for(const auto& track:clip.tracks)Require(p.controls.count(track.first)&&clip.scalarChannels.count(track.first)&&scalar.insert(clip.scalarChannels.at(track.first)).second,"animation lazy scalar binding differs");
+  for(size_t i=0;i<scalar.size();++i)Require(scalar.count(i),"animation scalar channel indices are not contiguous");
+  for(const auto& track:clip.boneTracks)Require(!track.skeleton.empty()&&!track.path.empty()&&targets.emplace(track.skeleton,track.path).second&&bone.insert(track.channel).second,"animation lazy Bone binding differs");
+  for(size_t i=0;i<bone.size();++i)Require(bone.count(i),"animation Bone channel indices are not contiguous");
  }
 }
 inline std::filesystem::path DiskPath(const std::filesystem::path& root,

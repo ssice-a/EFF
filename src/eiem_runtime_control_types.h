@@ -1,7 +1,12 @@
 #pragma once
 // Included in EiemDirectory, after Package and the resource block helpers.
 struct MaterialTrack {std::string material,property,kind;unsigned component=0;};
-struct EffectAttachment {std::string id,label,part,bone,variable;bool autoplay=true;std::array<float,3> position{0,0,0},scale{1,1,1};std::array<float,4> rotation{0,0,0,1};std::shared_ptr<const EiemEffectNative::Manifest> native;std::string targetPrefab,rendererPath,targetPath,targetAsset;std::vector<std::string> targetBones;};
+struct AuthorTransformNode {std::string path,label;std::array<float,3> position{0,0,0},scale{1,1,1};std::array<float,4> rotation{0,0,0,1};};
+struct AuthorTransformHierarchy {std::string id;std::vector<AuthorTransformNode> nodes;};
+struct EffectLodTarget {std::string renderer,path,asset;std::vector<std::string> bones;};
+struct EffectLodAnchor {std::string path;std::vector<AuthorTransformNode> nodes;};
+struct EffectAttachment {std::string id,label,part,bone,variable;bool autoplay=true;std::array<float,3> position{0,0,0},scale{1,1,1};std::array<float,4> rotation{0,0,0,1};std::shared_ptr<const EiemEffectNative::Manifest> native;std::string targetPrefab,rendererPath,targetPath,targetAsset;std::vector<std::string> targetBones;std::vector<EffectLodTarget> lodTargets;std::shared_ptr<const EffectLodAnchor> lodAnchor;std::shared_ptr<const AuthorTransformHierarchy> hierarchy;std::string node;};
+inline std::string EffectLodIdentity(const EffectAttachment& e){std::string key;for(const auto& t:e.lodTargets){for(const auto& s:{t.renderer,t.path,t.asset})key+=std::to_string(s.size())+":"+s;for(const auto& s:t.bones)key+=std::to_string(s.size())+":"+s;key+=';';}if(e.lodAnchor){key+="@"+e.lodAnchor->path;for(const auto& n:e.lodAnchor->nodes){key.append(reinterpret_cast<const char*>(n.position.data()),sizeof(n.position));key.append(reinterpret_cast<const char*>(n.rotation.data()),sizeof(n.rotation));key.append(reinterpret_cast<const char*>(n.scale.data()),sizeof(n.scale));}}return key;}
 inline bool IsGamePrefabReplacement(const EffectAttachment& effect){return !effect.targetPrefab.empty()&&effect.targetPath.empty()&&effect.targetAsset.empty();}
 struct ControlReader {
  const Resource& resource;size_t p,end;

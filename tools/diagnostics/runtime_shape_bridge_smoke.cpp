@@ -282,6 +282,7 @@ int main(int argc,char** argv) {
       {
         const auto variables=RuntimeShapes::variables;
         const auto keys=RuntimeShapes::keys;const auto held=RuntimeShapes::held;
+        const auto graph=RuntimeControls::controlGraph;const auto animations=RuntimeControls::animations;
         const auto selected=RuntimeControls::selected;RuntimeControls::selected="fixture";
       RuntimeShapes::keys.clear();RuntimeShapes::variables.clear();RuntimeShapes::held.clear();
       RuntimeShapes::variables["fixture"]={{"shape",0},{"switch",0}};
@@ -289,6 +290,9 @@ int main(int argc,char** argv) {
         {"increase","shape","hold",{VK_UP,0},{1},1},
         {"decrease","shape","hold",{VK_DOWN,0},{0},1},
         {"cycle","switch","cycle",{VK_NUMPAD1,0},{0,1,2},1}};
+      Package inputOwner;inputOwner.id="fixture";inputOwner.defaults=RuntimeShapes::variables.at(inputOwner.id);
+      inputOwner.bindings=RuntimeShapes::keys.at(inputOwner.id);RuntimeControls::animations[inputOwner.id].Prepare(inputOwner);
+      RuntimeControls::controlGraph=std::make_shared<const std::vector<Package>>(std::vector<Package>{inputOwner});
       Test::downKey=VK_UP;
       for (int frame=0;frame<4;++frame) RuntimeShapes::PollControls(true,.25,Test::KeyDown);
       Require(RuntimeShapes::variables["fixture"]["shape"]==1,"regular hold does not reach target");
@@ -305,6 +309,7 @@ int main(int argc,char** argv) {
       Test::downKey=VK_NUMPAD1;RuntimeShapes::PollControls(true,.25,Test::KeyDown);
       Require(RuntimeShapes::variables["fixture"]["switch"]==2,"cycle loses physical release edge");
         RuntimeShapes::variables=variables;RuntimeShapes::keys=keys;RuntimeShapes::held=held;
+        RuntimeControls::controlGraph=graph;RuntimeControls::animations=animations;
         RuntimeControls::selected=selected;
     }
     // Exercise the regular frame hook through Update and the actual weight
@@ -385,7 +390,7 @@ int main(int argc,char** argv) {
         }
       }
       auto state=[&](int value,int instance) {
-        RuntimeShapes::variables.at("fixture").at("$switch")=value;++RuntimeControls::valueRevision;
+        RuntimeShapes::variables.at("fixture").at("$switch")=value;RuntimeControls::Changed("fixture");
         unsigned signature=0;for(int part=0;part<2;++part){auto renderer=renderers[instance][part];auto& b=RuntimeShapes::bound.at(renderer);
           RuntimeShapes::ApplyVisibility(renderer,b,RuntimeShapes::specs.at(b.marker));
           if(Test::renderEnabled.at(renderer))signature|=1u<<part;

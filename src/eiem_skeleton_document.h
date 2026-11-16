@@ -50,7 +50,7 @@ static bool EiemValidateSkeleton(const EiemSkeletonDocument &document, std::stri
     float length = 0;
     for (float x : node.rotation) { if (!std::isfinite(x)) return fail("Non-finite Skeleton rotation"); length += x*x; }
     if (std::abs(length - 1.f) > .001f) return fail("Skeleton quaternion must be normalized");
-    for (float x : node.scale) if (!std::isfinite(x) || x <= 0) return fail("Unsupported Skeleton scale");
+    for (float x : node.scale) if (!std::isfinite(x) || x == 0) return fail("Singular/nonfinite Skeleton bind transform");
   }
   return true;
 }

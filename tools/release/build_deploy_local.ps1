@@ -189,7 +189,7 @@ function Build-Blender {
     $oldPythonPath = $env:PYTHONPATH
     try {
         $env:PYTHONPATH = @($source, (Join-Path $repoRoot 'tools')) -join [IO.Path]::PathSeparator
-        Invoke-Checked 'python' @('-m', 'unittest', 'test_author_format3', 'test_eiem_bone_animation', 'test_eiem_native_export_core', 'test_eiem_native_publish', 'test_eiem_release', 'test_eiem_shape_animation_package', 'test_eiem_material_features', 'test_eiem_effect_clipboard', 'test_eiem_update') 'Blender author/update regression suite' $source
+        Invoke-Checked 'python' @('-m', 'unittest', 'test_author_format3', 'test_eiem_bone_animation', 'test_eiem_native_export_core', 'test_eiem_native_publish', 'test_eiem_release', 'test_eiem_shape_animation_package', 'test_eiem_material_features', 'test_eiem_effect_clipboard', 'test_eiem_effect_export', 'test_eiem_effect_simulation', 'test_eiem_effect_native_preview', 'test_eiem_effect_preview_parity', 'test_eiem_effect_scope', 'test_eiem_effect_resources', 'test_eiem_effect_game_resources', 'test_eiem_shared_resources', 'test_eiem_update') 'Blender author/update regression suite' $source
     } finally {
         $env:PYTHONPATH = $oldPythonPath
     }
@@ -218,6 +218,7 @@ function Build-AnimeStudio {
     if (-not $SkipAnimeStudioTests) {
         Invoke-Checked 'dotnet' @('run', '--project', 'AnimeStudio.IndexTests/AnimeStudio.IndexTests.csproj', '-c', 'Release', '-p:TargetFrameworks=net9.0-windows') 'AnimeStudio index regression suite' $source
         Invoke-Checked 'dotnet' @('run', '--project', 'AnimeStudio.UpdateTests/AnimeStudio.UpdateTests.csproj', '-c', 'Release', '-p:TargetFrameworks=net9.0-windows') 'AnimeStudio transactional source-update suite' $source
+        Invoke-Checked 'dotnet' @('run', '--project', 'AnimeStudio.EffectsTests/AnimeStudio.EffectsTests.csproj', '-c', 'Release', '-p:TargetFrameworks=net9.0-windows') 'AnimeStudio native effect/reference suite' $source
     } else {
         Write-Host 'Skipping AnimeStudio regression tests because they already passed for this source revision.' -ForegroundColor Yellow
     }
@@ -236,6 +237,8 @@ function Build-AnimeStudio {
     $backup = Publish-Directory $candidate $target 'AnimeStudio' @('CNKeys.json', 'bin\log.txt', 'bin\log_prev.txt')
     $files = @((Join-Path $target 'AnimeStudio.GUI.exe'), (Join-Path $target 'AnimeStudio.CLI.exe'), (Join-Path $target 'bin\AnimeStudio.GUI.dll'), (Join-Path $target 'bin\AnimeStudio.CLI.dll'))
     New-Receipt 'AnimeStudio' $revision $target $backup $files @{ framework = 'net9.0-windows'; buildOutput = $candidate }
+    $registerTool = 'import sys; sys.path.insert(0, sys.argv[1]); import eiem_shared_resources as s; print(s.set_anime_studio(sys.argv[2]))'
+    Invoke-Checked 'python' @('-c', $registerTool, (Join-Path $repoRoot 'tools\Blender'), (Join-Path $target 'AnimeStudio.GUI.exe')) 'Register deployed AnimeStudio for Blender'
 }
 
 function Build-Manager {
@@ -245,7 +248,9 @@ function Build-Manager {
     if (-not (Test-Path -LiteralPath $target -PathType Container)) { throw "Mod Manager target directory not found: $target" }
     $revision = Get-Revision $source
 
+    Invoke-Checked 'cmd.exe' @('/d', '/c', 'tools\diagnostics\build_author_assets.cmd', 'format3') 'Manager shared declaration validator build'
     Invoke-Checked 'dotnet' @('run', '--project', 'tests/EFF.ModManager.Tests/EFF.ModManager.Tests.csproj', '-c', 'Release') 'Mod Manager regression suite' $source
+    Invoke-Checked 'dotnet' @('run', '--project', 'tests/EFF.ModManager.IntegrationTests/EFF.ModManager.IntegrationTests.csproj', '-c', 'Release') 'Mod Manager production service integration suite' $source
     $candidate = Join-Path $runRoot 'EFF-Mod-Manager'
     New-Item -ItemType Directory -Force -Path $candidate | Out-Null
     Invoke-Checked 'dotnet' @('publish', $project, '-c', 'Release', '-r', 'win-x64', '--self-contained', 'false', '-p:PublishSingleFile=true', '-o', $candidate) 'Mod Manager Windows publish' $repoRoot
@@ -253,7 +258,7 @@ function Build-Manager {
 
     Assert-ProcessClosed @('EFF.ModManager') 'Mod Manager deployment'
     $backup = Publish-Directory $candidate $target 'Mod-Manager'
-    $files = @(Join-Path $target 'EFF.ModManager.exe')
+    $files = @((Join-Path $target 'EFF.ModManager.exe'), (Join-Path $target 'native\eff_author_assets_format3.dll'), (Join-Path $target 'AnimeStudio.Ooz.dll'))
     New-Receipt 'Manager' $revision $target $backup $files @{ runtime = 'win-x64'; selfContained = $false; singleFile = $true }
 }
 

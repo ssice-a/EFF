@@ -27,6 +27,8 @@ int rawProxyRefs=1;unsigned rawReloads=0;
 void *weaponPart=(void*)0x2080,*weaponConfig=(void*)0x2081,*weaponPartClass=(void*)0x2082;
 void *oldWeaponRoot=(void*)0x2083,*newWeaponRoot=(void*)0x2084,*weaponTransform=(void*)0x2085,*weaponRoot=nullptr;
 bool parentWeaponFixture=false;std::map<void*,uint64_t> fixturePathHashes;
+void *uiWeaponType=(void*)0x2090,*uiWeaponOwner=(void*)0x2091,*uiWeaponBundle=(void*)0x2092,*uiWeaponList=(void*)0x2093;
+bool uiWeaponHeld=false;
 void *unrelatedRenderer=(void*)0x1100,*unrelatedHelper=(void*)0x1101,*unrelatedEntity=(void*)0x1102,*unrelatedModel=(void*)0x1103,*unrelatedRoot=(void*)0x1104;
 void *unrelatedPart=(void*)0x1105,*unrelatedConfig=(void*)0x1106;
 std::vector<void*> sceneRenderers;
@@ -41,6 +43,7 @@ std::map<uint64_t,std::vector<uint64_t>> nativeDependencyLists;
 std::map<std::string,uint64_t> dependencyNames;uint64_t dependencyHash=0;bool dependencyHashDiffers=false;void* dependencyManifest=(void*)0x7000;
 Bytes dependencyMapped;unsigned dependencyManifestReads=0,dependencyNameChecks=0;
 uint64_t materialVfsBundle=0,materialVfsAsset=0;
+uint64_t materialVfsOnlyPath=0;
 void BuildDependencyManifest(){
  namespace D=StartupDependencies;
  const size_t data=16+dependencyNames.size()*D::api.bundleSize;dependencyMapped.assign(data,0);size_t i=0;
@@ -65,7 +68,7 @@ void *uiObjectClass=(void*)0x2057,*uiBooleanClass=(void*)0x2058,*uiFactory=(void
 void* uiLuaManager=(void*)0x205b;
 void *uiLuaKey=(void*)0x205c,*uiEncryptedCode=(void*)0x205d;void* uiPlainCode=nullptr;bool uiEncryptedOnly=false,uiEncodingMismatch=false;unsigned uiEncryptions=0;
 void* uiLuaException=(void*)0x205e;bool uiLuaRaises=false;
-void* uiRequestCallback=nullptr;unsigned uiPageBinds=0,nullDelegateTargetCalls=0;bool uiPageAvailable=true,uiPageReject=false;
+void* uiRequestCallback=nullptr;unsigned uiPageBinds=0,uiPageReleases=0,nullDelegateTargetCalls=0;bool uiPageAvailable=true,uiPageReject=false;
 std::set<void*> uiOwned;void* uiRoot=nullptr;unsigned uiCallbacks=0,uiUnloads=0;bool uiInline=false;
 void* uiCompletionDelegate=(void*)0x2055;void* uiProxyRoot=nullptr;void* uiResultRoot=nullptr;bool creatingUI=false,uiLateInstantiate=false;void* uiUntrackedClass=(void*)0x2056;bool uiNativeReady=false,uiDelayed=false,uiCancelled=false;unsigned uiCancelledCompletions=0;
 void *material=(void*)0x1030,*shader=(void*)0x1031,*bone=(void*)0x1032,*pathValue=(void*)0x1033,*leaseHandle=(void*)0x1034;
@@ -112,6 +115,8 @@ const char* FieldName(void* f){const char* names[]={"","modelManager","effectMan
 const char* TypeName(void* t){const char* names[]={"","Beyond.Gameplay.View.ModelManager","Beyond.Gameplay.EffectManager","Beyond.Gameplay.Core.Entity","Beyond.Gameplay.View.ComplexModelViewPart","Beyond.Gameplay.View.BaseModelViewPartData","System.Boolean","System.String","UnityEngine.GameObject","System.Action<System.Boolean,Beyond.Gameplay.View.BaseModelViewPart>","System.UInt64","Beyond.Resource.FAssetProxyUntrackedHandle","Dictionary","Beyond.UI.UIModelLoader","UnityEngine.Transform","System.Action<UnityEngine.GameObject>","System.Int32","System.Boolean","Array","System.Int32","System.Boolean","Beyond.Resource.FAssetProxyHandle"};return names[uintptr_t(t)];}
 int FieldFlags(void* f){return (f==(void*)1||f==(void*)2)&&managersStatic?0x16:0x6;}
 void FieldValue(void* self,void* f,void* out){++profiledFields;Require(!(FieldFlags(f)&0x10)&&self,"instance getter used for a static field");
+ if(f==(void*)188){Require(self==uiWeaponOwner,"UI weapon list read from another owner");*(void**)out=uiWeaponHeld?uiWeaponList:nullptr;return;}
+ if(f==(void*)189){Require(self==uiWeaponBundle,"UI weapon path read from another bundle");*(void**)out=StringValue(modelPath);return;}
  if(f==(void*)20){*(unsigned char*)out=self==weaponConfig?false:partUsesPool;return;}
  if(f==(void*)21){memset(out,0,64);return;}
  if(f==(void*)160){Require(self==instance,"world field read on another receiver");*(void**)out=world;return;}
@@ -148,7 +153,7 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  ++profiledInvokes;
  *exception=nullptr;auto m=uintptr_t(method);
  if(m==181)return &no; // dependency-only Mesh has no standalone asset entry.
- if(m==183){Require(self==dependencyManifest&&args&&args[1],"material lookup fixture ABI differs");memcpy(args[1],&materialVfsBundle,8);memcpy((char*)args[1]+8,&materialVfsAsset,8);return &yes;}
+ if(m==183){Require(self==dependencyManifest&&args&&args[1],"material lookup fixture ABI differs");if(materialVfsOnlyPath&&*(uint64_t*)args[0]!=materialVfsOnlyPath)return &no;memcpy(args[1],&materialVfsBundle,8);memcpy((char*)args[1]+8,&materialVfsAsset,8);return &yes;}
  if(m==182){Require(self==cloneOperation,"clone result getter received a GameObject instead of its operation");++cloneResultReads;return Array(restoredRoot);}
  if(m==140){dependencyLists[self].clear();return nullptr;}
  if(m==141){dependencyLists.at(self).push_back(*(uint64_t*)args[0]);return nullptr;}
@@ -159,7 +164,9 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==2){++aliveCalls;auto p=args[0];if(nativeAliveCallback){auto callback=std::move(nativeAliveCallback);callback(p);}return !p||(p==source&&!sourceAlive)||unloadedStreamBundles.count(p)?&no:&yes;}
  if(m==3){id=int(uintptr_t(self));return &id;}
  if(m==4)return StringValue(self==shader?shaderLabel:self==material?"body":self==skeletonRoot?"Root":self==bip?"Bip001":self==left?"Left":self==right?"Right":(self==bone||self==leftBone||self==rightBone)?"Bone":"marker");
- if(m==5){auto renderer=self==unrelatedRoot?unrelatedRenderer:self==newRoot||self==uiResultRoot||self==candidate||self==lazyCandidate?newRenderer:oldRenderer;return Array(std::vector<void*>(identityRendererCopies,renderer));}
+ if(m==5){auto found=controlRenderers.find(self);if(found!=controlRenderers.end())return Array(found->second);auto renderer=self==unrelatedRoot?unrelatedRenderer:self==newRoot||self==uiResultRoot||self==candidate||self==lazyCandidate?newRenderer:oldRenderer;return Array(std::vector<void*>(identityRendererCopies,renderer));}
+ if(m==187){Require(self==uiWeaponList,"UI weapon count queried another list");static int count=1;return &count;}
+ if(m==188){Require(self==uiWeaponList&&*(int*)args[0]==0,"UI weapon list index ABI differs");return uiWeaponBundle;}
  if(m==6)return self==newMesh&&rejectVertex?&badVertex:&two;
  if(m==7)return &zero;
  if(m==8){Require(!staticRenderers,"static Renderer called get_bones");++staticSkinCalls;return Array(bone);}
@@ -183,7 +190,7 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==126){Require(!self,"UI code equality must be static");return args[0]==args[1]?&yes:&no;}
  if(m==127){Require(self==uiLuaException,"UI exception formatting used a different exception");return StringValue("HyperLua undeclared panel member: go");}
  if(m==120){if(uiLuaRaises){*exception=uiLuaException;return nullptr;}auto values=FullResourceReload::ReferenceArray(args[0]);if(self==uiFactory){Require(values.size()==2&&values[0]==uiLoader&&values[1]==uiRoot,"UI page lookup used another owner");return Array(uiPageAvailable?uiPage:nullptr);}
-  Require(self==uiPage&&values.size()==1,"UI page used a different binding");if(!values[0])return Array(&yes);
+  Require(self==uiPage&&(values.size()==1||(values.size()==2&&!values[0]&&Entry::String(values[1])=="release")),"UI page used a different binding");if(values.size()==2)++uiPageReleases;if(!values[0])return Array(&yes);
   Require(uiOwned.count(values[0]),"page binding bypassed native loader completion");if(uiPageReject)return Array(&no);++uiPageBinds;uiRoot=values[0];return Array(&yes);}
  if(m==121){auto index=*(int*)args[1];memcpy((unsigned char*)self+32+index*8,&args[0],8);return nullptr;}
  if(m==118)return &no; // UI page activation can occur after native completion.
@@ -268,7 +275,7 @@ void* Invoke(void* method,void* self,void** args,void** exception){
   static int childCount=0;childCount=int(children.size());return &childCount;
  }
  if(m==78)return self; // Local transform/GameObject identity in this fixture.
- if(m==79){Require(self==renderTransform,"direct Renderer lookup used the wrong hierarchy address");return Array(newRenderer);}
+ if(m==79){if(args[0]==uiWeaponType)return Array(uiWeaponHeld?std::vector<void*>{uiWeaponOwner}:std::vector<void*>{});Require(self==renderTransform,"direct Renderer lookup used the wrong hierarchy address");return Array(newRenderer);}
  if(m==80){++sceneQueries;return Array(sceneRenderers);}
  if(m==82){++textureEnumerations;return PropertyIds();}
  if(m==83){++texturePropertyReads;Require(self==material&&args&&args[0],"public Texture ID getter arguments absent");auto property=*(int32_t*)args[0];Require(std::find(propertyIds.begin(),propertyIds.end(),property)!=propertyIds.end(),"public Texture ID getter received wrong ABI value");auto found=propertyTextures.find(property);return found==propertyTextures.end()?textureValue:found->second;}
@@ -334,6 +341,8 @@ void Setup(){
  a.uiActiveHierarchy=(void*)118;a.uiLuaInstance=(void*)122;a.uiLuaDo=(void*)119;a.uiLuaCall=(void*)120;a.uiArraySet=(void*)121;a.uiObjectClass=uiObjectClass;
  a.uiLuaKey=(void*)123;a.uiLuaEncode=(void*)124;a.uiLuaDecode=(void*)125;a.uiLuaCodeEquals=(void*)126;
  a.uiLuaExceptionMessage=(void*)127;
+ FullResourceReload::uiWeaponDependenciesApi.componentType=RuntimeShapes::Ref::Make(uiWeaponType,false);
+ FullResourceReload::uiWeaponDependenciesApi.collections.clear();
  FullResourceReload::uiLifecycleReady=true;
  FullResourceReload::originalUILoad=[](void*,void*,void*,void*)->void*{
   auto root=FullResourceReload::rebuilding?NativeCreate(source):uiRoot;uiOwned.insert(root);uiRoot=root;
@@ -352,7 +361,8 @@ void Setup(){
   creatingUI=true;FullResourceReload::UIHandleCallback(leaseHandle,uiCompletionDelegate,nullptr);creatingUI=false;
   if(uiInline||(FullResourceReload::rebuilding&&!uiDelayed))FullResourceReload::UIComplete(uiClosure,uiProxy,nullptr);return 7;
  };
- FullResourceReload::originalUIUnload=[](void*,void* root,void*){Require(uiOwned.erase(root)==1,"UI loader released an instance twice");++uiUnloads;};
+ FullResourceReload::originalUIUnload=[](void*,void* root,void*){Require(uiOwned.erase(root)==1,"UI loader released an instance twice");++uiUnloads;
+  if(uiWeaponHeld){uiWeaponHeld=false;--rawProxyRefs;if(!rawProxyRefs&&!rawUnloadDelayed)rawProxyUnloaded=true;}};
  FullResourceReload::originalUICancel=[](void*,int,void*){uiCancelled=true;};
  FullResourceReload::originalUIDispose=[](void*,void*){uiOwned.clear();uiCancelled=true;};
  FullResourceReload::originalCloneParent=NativeParent;FullResourceReload::originalInstantiate=NativePosition;FullResourceReload::originalInstantiateParent=NativeParentPosition;
@@ -378,9 +388,11 @@ FullResourceReload::Attempt MakeAttempt(){
  owner.pathHash=RuntimeShapes::Ref::Make(pathValue,false);owner.path="assets/model.prefab";owner.oldRootId=int(uintptr_t(oldRoot));owner.originalMeshes=FullResourceReload::MeshProfile(oldRoot);a.owners.push_back(owner);return a;
 }
 void Reset(){
+ uiWeaponHeld=false;FullResourceReload::uiWeaponDependenciesApi.collections.clear();
  directPartFixture=false;partUsesPool=true;partHandleLive=true;rawProxyUnloaded=rawUnloadDelayed=false;rawProxyRefs=1;rawReloads=0;
  parentWeaponFixture=false;weaponRoot=oldWeaponRoot;fixturePathHashes.clear();
  FullResourceReload::controlledPrefabSources.clear();FullResourceReload::pendingControlledClones.clear();
+ FullResourceReload::controlledPrefabPaths.clear();FullResourceReload::pendingControlledClonePaths.clear();FullResourceReload::liveControlledClones.clear();
  FullResourceReload::rawPrefabsByPath.clear();
  nullDelegateTargetCalls=0;
  performActive=performPropAlive=stalePerformProp=unrelatedPerformActive=false;performStops=0;
@@ -396,7 +408,7 @@ void Reset(){
  hasHelper=hasEntity=hasModel=hasPart=helperMatches=rendererInside=true;released=false;modelPath="assets/model.prefab";
  RuntimeShapes::bound.clear();RuntimeShapes::retiredNativeIntents.clear();RuntimeShapes::boundCount=0;
   FullResourceReload::sourceLeases.clear();FullResourceReload::liveParts.clear();FullResourceReload::prefabProxiesByPath.clear();FullResourceReload::prefabProxySourcesByPath.clear();
- FullResourceReload::uiPageFactory={};uiPageAvailable=true;uiPageReject=false;uiPageBinds=0;uiRequestCallback=nullptr;FullResourceReload::liveUIModels.clear();FullResourceReload::pendingUIModels.clear();FullResourceReload::uiReloadRequests.clear();FullResourceReload::uiProxyRequests.clear();uiOwned.clear();uiRoot=uiProxyRoot=oldRoot;uiResultRoot=nullptr;creatingUI=uiLateInstantiate=false;uiCallbacks=uiUnloads=uiCancelledCompletions=0;uiInline=false;uiNativeReady=false;uiDelayed=uiCancelled=false;
+ FullResourceReload::uiPageFactory={};uiPageAvailable=true;uiPageReject=false;uiPageBinds=uiPageReleases=0;uiRequestCallback=nullptr;FullResourceReload::liveUIModels.clear();FullResourceReload::pendingUIModels.clear();FullResourceReload::uiReloadRequests.clear();FullResourceReload::uiProxyRequests.clear();uiOwned.clear();uiRoot=uiProxyRoot=oldRoot;uiResultRoot=nullptr;creatingUI=uiLateInstantiate=false;uiCallbacks=uiUnloads=uiCancelledCompletions=0;uiInline=false;uiNativeReady=false;uiDelayed=uiCancelled=false;
  std::atomic_store(&FullResourceReload::activeNative,std::shared_ptr<FullResourceReload::Attempt>{});FullResourceReload::retained.clear();
   FullResourceReload::observedPrefabs.clear();FullResourceReload::ownerRevision=0;resourceSource=source;resourceLabel="assets/model.prefab";
  instanceHandle=false;
@@ -440,10 +452,12 @@ void PrefabProxyRetainedWaitRegression(){
  DemandGenerationReload::active=true;cursor=0;Frame();
  Require(batch.failed&&!DemandGenerationReload::active&&batch.owners.front().phase==OwnerPhase::Released,
    "retained prefab proxy blocked F10 for the old 30-second timeout");
- DemandLoadingProbe::InstalledGeneration unchanged;AddAffectedOwners(unchanged);
- Require(reloads.size()==1&&!reloads.front().failed&&!reloads.front().prefabBlockedSince&&
-         !reloads.front().prefabRetryAt&&!reloads.front().prefabInvalidationAttempted,
-   "fast-deferred prefab path was not preserved for the next F10 retry");
+ Require(batch.prefabRetryDeferred&&batch.prefabRetryAt&&batch.prefabDeferredRetries==1,
+   "retained prefab path was not scheduled for an automatic retry");
+ prefabProxyUnloadAllowed=true;batch.prefabRetryAt=GetTickCount64()-1;
+ Frame();
+ Require(!batch.failed&&batch.cacheInvalidated&&DemandGenerationReload::active&&batch.prefabDeferredRetries==0,
+   "a released prefab proxy was not retried automatically against the committed generation");
  reloads.clear();Reset();DemandGenerationReload::active=false;
 }
 void RawAssetApiBindingRegression(){
@@ -526,6 +540,11 @@ void VersionedGenerationRouteRegression(){
  Require(oldGeneration.RootName(sourceBundle)!=newGeneration.RootName(sourceBundle)&&
          oldGeneration.ResourceName("cab-texture")!=newGeneration.ResourceName("cab-texture"),
          "root and resource Bundle names did not include their immutable generation scope");
+ Require(oldGeneration.RootName(sourceBundle)=="eff/31/root/a804871eafdcb109.ab"&&
+         NameEquals(oldGeneration.RootName(sourceBundle),"EFF/31/ROOT/A804871EAFDCB109.AB")&&
+         NameEquals("eff/31/root/d44bbe0ec853337d.ab","eff/31/root/D44BBE0EC853337D.ab")&&
+         !NameEquals(oldGeneration.RootName(sourceBundle),"eff/32/root/a804871eafdcb109.ab"),
+         "a case-normalized game VFS request did not resolve the canonical generation root name");
  struct Path {bool cacheInvalidated=false;};Path path{true};int oldBundleReferences=7;bool requested=false;
  Require(StartAfterCacheInvalidation(path,[&](Path&){requested=true;})&&requested&&oldBundleReferences==7,
          "the new generation did not route its request while the old Bundle remained referenced");
@@ -632,7 +651,7 @@ void SyntheticProxySyncLifecycleRegression(){
    void* nativeResult=(void*)0x7830;unsigned submits=0,finishes=0,files=0,pendingFinishes=0;} ;
  static Fixture fixture;fixture={};
  auto previous=std::make_tuple(D::sharedApi,StartupDependencies::api,NativeBundle::api,
-   D::originalSharedProxyLoadSync,D::originalSharedProxyLoadImmediate,
+   D::originalSharedProxyLoadSync,D::originalSharedProxyLoadImmediate,D::originalSharedProxyLoadAsync,
    il2cpp_field_get_value,il2cpp_runtime_invoke,il2cpp_object_new,NativeBundle::viewCallbacksReady);
  auto oldEnabled=D::sharedInputsEnabled.exchange(true);
  auto state=std::make_shared<D::Manifest>();state->serial=7800;state->object=RuntimeShapes::Ref::Make(dependencyManifest,false);
@@ -648,7 +667,7 @@ void SyntheticProxySyncLifecycleRegression(){
  auto restore=[&]{D::sharedScopes.erase(state->serial);D::manifests.erase(dependencyManifest);
    NativeBundle::memoryBundles.erase((void*)0x7830);D::sharedInputsEnabled=oldEnabled;
    std::tie(D::sharedApi,StartupDependencies::api,NativeBundle::api,
-     D::originalSharedProxyLoadSync,D::originalSharedProxyLoadImmediate,
+     D::originalSharedProxyLoadSync,D::originalSharedProxyLoadImmediate,D::originalSharedProxyLoadAsync,
      il2cpp_field_get_value,il2cpp_runtime_invoke,il2cpp_object_new,NativeBundle::viewCallbacksReady)=previous;};
  try{
   auto& a=D::sharedApi;a.proxyHashField=(void*)0x7810;a.proxyAssetBundleField=(void*)0x7811;
@@ -709,8 +728,13 @@ void SyntheticProxySyncLifecycleRegression(){
   Require(!D::SharedProxyLoadSync(assetProxyObject,(void*)0x7840)&&fixture.status==3&&
       fixture.submits==3&&fixture.finishes==3&&!fixture.files,
     "native view failure was concealed or fell back to an obsolete physical resource");
+  fixture.status=0;D::originalSharedProxyLoadAsync=[](void*,void*)->uint8_t{fixture.status=1;return 0;};
+  NativeBundle::api.streamAsyncIcall=NativeBundle::api.streamIcall;
+  Require(!D::SharedProxyLoadAsync(assetProxyObject,(void*)0x7840)&&fixture.status==3&&
+      fixture.submits==4&&fixture.finishes==4&&!fixture.request&&!D::sharedPendingLoads,
+    "failed async submission left the game proxy loading forever without a request");
   fixture.hash=0x7809;fixture.status=0;
-  Require(!D::SharedProxyLoadSync(assetProxyObject,(void*)0x7840)&&fixture.files==1&&fixture.submits==3,
+  Require(!D::SharedProxyLoadSync(assetProxyObject,(void*)0x7840)&&fixture.files==1&&fixture.submits==4,
     "unmatched native proxy was intercepted or prepared author resources");
  }catch(...){restore();throw;}restore();
 }
@@ -727,7 +751,7 @@ void PrefabProxyLookupGenerationRegression(){
  auto shared=std::make_shared<D::SharedScope>(state);
  shared->bundleNamespace.BindRoot(sourceBundle,alias);
  D::manifests.emplace(dependencyManifest,state);D::sharedScopes.emplace(state->serial,shared);
- auto cleanup=[&]{D::sharedScopes.erase(state->serial);D::manifests.erase(dependencyManifest);
+ auto cleanup=[&]{D::sharedScopes.erase(state->serial);D::sharedScopes.erase(7006);D::manifests.erase(dependencyManifest);
    D::sharedInputsEnabled=oldEnabled;D::originalSharedProxyLookup=oldLookup;
    StartupDependencies::api=oldApi;il2cpp_object_new=oldNew;StartupDependencies::originalAll=oldAll;
    D::sharedRequestDepth=oldDepth;std::atomic_store(&D::installedGeneration,oldGeneration);dependencyLists.clear();};
@@ -768,6 +792,38 @@ void PrefabProxyLookupGenerationRegression(){
     "unresolved targets opened payloads outside a real load-tree request");
   Require(shared->graph.Size()==0&&shared->preparedGroups.empty()&&D::sharedLoadSubmits==loads,
     "failed preparation submitted assets or published a partial dependency group");
+  // Real crash-session sequence: unresolved native targets remain while the
+  // game's tree recursively asks for already-published synthetic dependencies.
+  // Those keys do not exist in the native manifest and must never rediscover
+  // the original VFS input through its query-only alias.
+  auto bytes=std::make_shared<const Bytes>(Bytes{1});
+  auto view=std::make_shared<const EiemInputSpanView::View>(
+    std::vector<EiemInputSpanView::Span>{{EiemInputSpanView::literalSource,0,1,bytes}},
+    std::vector<size_t>{},EiemInputSpanView::ReadRange{});
+  EiemDemandSharedGraph::Input texture;texture.key=0x7005;texture.categorySource=sourceBundle;
+  texture.name="eff/7004/texture.ab";texture.cab="CAB-already-published";texture.view=view;
+  auto root=texture;root.key=alias;root.name="eff/7004/root.ab";root.cab="CAB-published-root";
+  root.versionedRoot=true;root.dependencies={texture.key};
+  shared->graph.Commit({texture,root},{},{});
+  D::sharedRequestDepth=1;auto lists=dependencyLists.size();
+  for(auto key:{texture.key,alias}){
+    D::SharedGetOrCreate(manager,key,true,(void*)0x7900);
+    Require(fixtureProxyHash==key&&preparations==3&&dependencyLists.size()==lists,
+      "published synthetic proxy re-entered native manifest discovery for unresolved targets");
+    Require(!D::PrepareDependencyGroup(state,key,nullptr)&&preparations==3,
+      "published synthetic dependency was prepared as a native source group");
+  }
+  auto next=std::make_shared<D::Manifest>();next->serial=7006;next->object=state->object;
+  next->catalog=generation;next->unresolved={0};
+  D::manifests[dependencyManifest]=next;
+  D::sharedScopes.emplace(next->serial,std::make_shared<D::SharedScope>(next));
+  for(auto key:{texture.key,alias}){
+    D::SharedGetOrCreate(manager,key,true,(void*)0x7900);
+    Require(fixtureProxyHash==key&&preparations==3&&dependencyLists.size()==lists,
+      "in-flight old-generation synthetic proxy entered current native discovery after F10");
+    Require(!D::PrepareDependencyGroup(next,key,nullptr)&&preparations==3,
+      "old-generation synthetic dependency was prepared as a current native source group");
+  }
   std::cout<<"PASS preparation failure preserves the game proxy lookup exactly once and retains committed generation aliases\n";
  }catch(...){cleanup();throw;}
  cleanup();
@@ -798,6 +854,43 @@ void PreparedRootViewCacheRegression(){
  bool emptyRejected=false;try{Graph strict;strict.Commit({invalid},{},{});}
    catch(const std::exception&){emptyRejected=true;}
  Require(emptyRejected,"shared graph accepted a versioned root without a streamable input view");
+}
+void FailedTargetInspectionRegression(){
+ namespace D=DemandLoadingProbe;namespace R=EiemNativeRandomAccess;
+ auto manifest=std::make_shared<D::Manifest>();manifest->serial=771;
+ D::SharedScope shared(manifest);size_t attempts=0,reads=0;
+ auto inspect=[&]{++attempts;R::Limits limits;limits.readBytes=0;
+  R::Reader reader(1024,[&](size_t,unsigned char*,size_t){++reads;},limits);
+ };
+ // Model two different caller groups reaching the same input each frame.
+ for(size_t i=0;i<100;++i){D::InspectTargetInput(shared,42,inspect);D::InspectTargetInput(shared,42,inspect);}
+ Require(attempts==1&&reads==0,"exhausted target input retried for every character/UI caller");
+ Require(!shared.targetDiscoveryChecked.count(42)&&!shared.targetDiscoveryMisses.count(42),"failed inspection was mislabeled as a complete negative lookup");
+ D::SharedScope next(manifest);D::InspectTargetInput(next,42,inspect);
+ Require(attempts==2,"a new manifest scope did not retry the failed input");
+ size_t transient=0;
+ D::InspectTargetInput(shared,84,[&]{++transient;throw std::runtime_error("dependency not ready");});
+ D::InspectTargetInput(shared,84,[&]{++transient;});
+ Require(transient==2&&shared.targetDiscoveryChecked.count(84),"transient dependency failure was permanently cached");
+ for(const char* reason:{"native inspection read budget exhausted","native inspection metadata budget exhausted","native inspection block budget exhausted","native inspection field budget exhausted"}){
+  auto failure=std::make_exception_ptr(R::InspectionBudgetExceeded{reason});
+  Require(D::RememberPreparationFailure(shared,123,failure)&&shared.preparationFailures.count(123),"deterministic full preparation failure was not retained");
+ }
+ Require(!D::RememberPreparationFailure(shared,124,std::make_exception_ptr(std::runtime_error("dependency not ready")))&&!shared.preparationFailures.count(124),"transient full preparation failure became permanent");
+ Require(next.preparationFailures.empty(),"new manifest retained old preparation failure");
+ {
+  auto cached=std::make_shared<D::SharedScope>(manifest);cached->preparationFailures=shared.preparationFailures;
+  D::sharedScopes.emplace(manifest->serial,cached);auto enabled=D::sharedInputsEnabled.exchange(true);
+  try{
+   for(size_t caller=0;caller<100;++caller)Require(!D::PrepareDependencyGroup(manifest,123,nullptr),"failed preparation did not preserve original input");
+   D::DependencyGroup group;group.shared=cached;bool typed=false;
+   try{group.Open(123);}catch(const R::InspectionBudgetExceeded&){typed=true;}
+   Require(typed&&!group.headerReads,"cached deterministic dependency touched native/VFS APIs again");
+  }catch(...){D::sharedInputsEnabled=enabled;D::sharedScopes.erase(manifest->serial);throw;}
+  D::sharedInputsEnabled=enabled;D::sharedScopes.erase(manifest->serial);
+ }
+
+ std::cout<<"PASS target inspection budget failure shared across root callers; no false miss; new generation and transient retries preserved\n";
 }
 void CrossGroupRootDeclarationRegression(){
  namespace D=DemandLoadingProbe;namespace G=EiemDemandSharedGraph;
@@ -835,6 +928,106 @@ void CrossGroupRootDeclarationRegression(){
   try{changed.VersionedRoot(source,record);}catch(const std::exception&){rejected=true;}
   Require(rejected,"cached native root silently accepted a different prepared view");
  std::cout<<"PASS later scene reuses the complete prepared source declaration without loading resources\n";
+}
+void LazyAnimationOwnerLifetimeRegression(){
+ namespace D=DemandLoadingProbe;namespace A=EiemDemandAuthorResources;
+ auto root=std::filesystem::temp_directory_path()/("eff-lazy-animation-owners-"+std::to_string(GetTickCount64()));
+ std::filesystem::create_directories(root);
+ struct Cleanup{std::filesystem::path path;~Cleanup(){std::error_code ignored;std::filesystem::remove_all(path,ignored);}} cleanup{root};
+ {std::ofstream out(root/"mod.ini");out<<"[Mod]\nformat=3\nid=LazyOwners\ncontrols=ini\n[Constants]\npersist $speed=1\n$x=0\n[ControlX]\nvariable=$x\nlabel=X\nmin=0\nmax=1\n[ResourceSamples]\ntype=animation-samples\npath=motion.effanim\n[AnimationLoop]\nsamples=ResourceSamples\nduration=1\nspeed_variable=$speed\nspeed=1\nloop=1\nautoplay=1\ntrack.0=$x\n";}
+ EiemRuntimeAuthorDirectory::Writer bytes;bytes.S("EFF_ANIMATION_SAMPLES/1");bytes.N(1);bytes.N(2);bytes.D(0);bytes.D(1);bytes.N(0);
+ {std::ofstream out(root/"motion.effanim",std::ios::binary);out.write(reinterpret_cast<const char*>(bytes.b.data()),bytes.b.size());}
+ auto catalog=std::make_shared<A::Catalog>(root);auto author=std::make_shared<D::N::Author>(catalog);auto generation=std::make_shared<D::InstalledGeneration>();generation->authors.emplace(author->package.id,author);
+ auto state=std::make_shared<D::Manifest>();state->serial=0xEA110;state->catalog=generation;auto shared=std::make_shared<D::SharedScope>(state);
+ EiemShapeAnimation::Player player;player.Prepare(author->package);Require(catalog->OpenAnimationSamples()==0,"unhit autoplay read animation samples");
+ for(uint64_t key:{1,2}){shared->preparedGroups[key]=key;auto& usage=shared->rootUsage[key];usage.mods.insert(author->package.id);usage.animationOwners.emplace(author->package.id,catalog->AcquireAnimationOwner());}
+ player.Advance(author->package,author->package.defaults,.25);Require(catalog->OpenAnimationSamples()==1,"matched owners did not activate samples");
+ D::RetireSharedLocked(shared,1);player.Advance(author->package,author->package.defaults,.25);
+ Require(catalog->OpenAnimationSamples()==1&&std::abs(player.output.at("$x")-.5)<1e-6,"one owner retirement invalidated another owner's samples");
+ auto refreshed=std::make_shared<A::Catalog>(root);refreshed->ShareAnimationActivity(*catalog);Require(refreshed->Directory().runtime.animations.at("Loop").SamplesActive(),"control-only reload lost existing owner activity");
+ D::RetireSharedLocked(shared,2);player.Advance(author->package,author->package.defaults,.1);
+ Require(catalog->OpenAnimationSamples()==0&&player.output.empty()&&!refreshed->Directory().runtime.animations.at("Loop").SamplesActive(),"final owner retirement retained sampled payload/output");
+ std::cout<<"PASS lazy animation owners: unhit autoplay, shared payload, partial/final retirement and control-only F10 activity\n";
+}
+void EffectSharedResourceLifetimeRegression(){
+ namespace D=DemandLoadingProbe;namespace G=EiemDemandSharedGraph;
+ auto state=std::make_shared<D::Manifest>();state->serial=0xEF300;
+ auto shared=std::make_shared<D::SharedScope>(state);
+ auto bytes=std::make_shared<const Bytes>(Bytes{1});
+ auto view=std::make_shared<const EiemInputSpanView::View>(std::vector<EiemInputSpanView::Span>{{EiemInputSpanView::literalSource,0,1,bytes}},std::vector<size_t>{},EiemInputSpanView::ReadRange{});
+ auto input=[&](uint64_t key,std::vector<uint64_t> deps){G::Input value;value.key=key;value.categorySource=10;
+  value.name="eff/effect-resource-"+std::to_string(key);value.cab="CAB-effect-resource-"+std::to_string(key);value.view=view;value.dependencies=std::move(deps);return value;};
+ shared->graph.Commit({input(10,{30}),input(20,{30}),input(30,{40}),input(40,{})},{},{});
+ shared->preparedGroups[10]=10;shared->activeAuthorProxies.insert(20);shared->effectRoots[20]=2;
+ shared->rootUsage[10].materials.insert("shared");shared->rootUsage[20].materials.insert("shared");shared->materialVariants.emplace("shared",EiemNativeStandaloneInput::Input{});
+ D::RetireSharedLocked(shared,10);
+ Require(shared->graph.Size()==3&&shared->materialVariants.size()==1,"retiring a model discarded the effect's shared Material/Texture");
+ D::EffectResourceLease first;first.shared=shared;first.roots={20};first.Release();first.Release();
+ Require(shared->effectRoots.at(20)==1&&shared->graph.Size()==3&&shared->materialVariants.size()==1,"one effect owner release invalidated another owner or released twice");
+ D::EffectResourceLease last;last.shared=shared;last.roots={20};last.Release();
+ Require(shared->effectRoots.empty()&&shared->activeAuthorProxies.count(20)&&shared->graph.Size()==3&&shared->materialVariants.size()==1,
+  "effect release unloaded a Bundle still owned by the game's active proxy");
+ D::RetireSharedLocked(shared,20);
+ Require(!shared->graph.Size()&&shared->rootUsage.empty()&&shared->materialVariants.empty(),"game proxy retirement retained author Resource inputs or caches");
+ std::cout<<"PASS effect/shared model resources: two effect owners, model retirement, game proxy release and final graph/cache reclamation\n";
+}
+void CachedResourceLogicalUsageRegression(){
+ namespace D=DemandLoadingProbe;namespace A=EiemDemandAuthorResources;
+ auto state=std::make_shared<D::Manifest>();state->serial=0xEF310;
+ D::DependencyGroup group;group.manifest=state;group.shared=std::make_shared<D::SharedScope>(state);group.schedulingPack={1};
+ EiemNativeInput::Identity materialIdentity{"assets/current/shared.mat","Shared"},textureIdentity{"assets/current/star.png","Star"};
+ auto source=std::make_shared<D::GroupSource>();source->key=10;group.sources.emplace(10,source);group.native[10]={};
+ group.shared->logicalDependencies.emplace(materialIdentity,D::LogicalDependencyBinding{{"CAB-material-source",1},10,21});
+ group.shared->logicalDependencies.emplace(textureIdentity,D::LogicalDependencyBinding{{"CAB-texture-source",7},10,28});
+ auto texture=std::make_shared<A::Texture>();texture->source=textureIdentity;texture->cab="CAB-texture-source";texture->id=7;
+ A::Material material;material.declaration.source=materialIdentity;material.declaration.hash="cached";
+ material.textures.emplace("_MainTex",std::make_pair(texture->cab,texture->id));material.textureAssets.emplace("_MainTex",texture);
+ const auto cacheKey=material.ownerRoot.u8string()+"\n"+materialIdentity.path+"\n"+materialIdentity.asset+
+  "\nCAB-material-source/1\ncached\n_MainTex=CAB-texture-source/7";
+ EiemNativeStandaloneInput::Input input;input.cab="CAB-private-material";group.shared->materialVariants.emplace(cacheKey,input);
+ auto result=group.MaterialInput(material);
+ Require(result.cab==input.cab&&group.usedMaterials.count(cacheKey)&&group.usedLogicalDependencies.size()==2&&
+  group.usedLogicalDependencies.count(materialIdentity)&&group.usedLogicalDependencies.count(textureIdentity),
+  "cached Material omitted its game Texture source from the new consumer's logical lifetime");
+ auto invalid=*texture;invalid.id=8;bool rejected=false;try{group.TextureSource(invalid);}catch(const std::exception&){rejected=true;}
+ Require(rejected,"cached Texture from another native manifest was silently reused");
+ std::cout<<"PASS cached Material/Texture reuse retains current logical source usage without reading author payloads\n";
+}
+void RealEffectSharedInputRegression(const std::filesystem::path& root){
+ namespace D=DemandLoadingProbe;namespace G=EiemDemandSharedGraph;namespace I=D::EiemNativeGenerationIdentity;
+ namespace A=EiemDemandAuthorResources;namespace R=EiemNativeRandomAccess;
+ auto catalog=std::make_shared<A::Catalog>(root);Package package;EiemAuthorControlMetadata::Apply(catalog->Directory().runtime,package);catalog->BindEffects(package);
+ Require(!package.effects.empty(),"shared effect fixture has no relationship");const auto& effect=*package.effects.begin()->second.native;
+ auto meshBinding=std::find_if(effect.authorResources.begin(),effect.authorResources.end(),[](const auto& row){return row.type=="Mesh";});
+ Require(meshBinding!=effect.authorResources.end(),"shared effect fixture has no Mesh Resource");auto mesh=catalog->GetMeshResource(meshBinding->resource);
+ auto state=std::make_shared<D::Manifest>();state->serial=0xEF320;auto shared=std::make_shared<D::SharedScope>(state);
+ std::vector<I::View> sources;for(const auto& source:effect.bundles)sources.push_back(source.open());
+ auto raw=R::Reader(sources.front()->Size(),[view=sources.front()](size_t at,unsigned char* out,size_t n){view->ReadAt(at,out,n);});
+ const auto sourceCab=raw.directory.members.front().name;
+ auto commit=[&](uint64_t privateScope,const std::string& label){
+  D::DependencyGroup group;group.manifest=state;group.shared=shared;group.root=10;
+  for(const auto& row:I::Collect(privateScope,sources))group.privateMembers.emplace(row.first,I::Scoped(shared->serial,row.second));
+  auto meshInput=group.Input(mesh->native.first,mesh->input);group.inputs.push_back(meshInput);
+  auto bound=EiemEffectRelocation::Bind(sources.front(),0,effect.gameResources,[](const auto&)->EiemEffectRelocation::Reference{return {"CAB-11111111111111111111111111111111",11};},
+   effect.authorResources,[&](const auto& resource)->EiemEffectRelocation::Reference{return resource.type=="Mesh"?mesh->native:EiemEffectRelocation::Reference{privateScope==1?"CAB-22222222222222222222222222222222":"CAB-33333333333333333333333333333333",22};});
+  auto input=group.Input("effect/"+label,bound);input.cab=sourceCab;input.dependencies={meshInput.key};group.inputs.push_back(input);
+  D::CommitDependencyInputs(group);return input.key;
+ };
+ auto first=commit(1,"first"),second=commit(2,"second");
+ G::Input left,right;Require(shared->graph.Find(first,left)&&shared->graph.Find(second,right)&&shared->graph.Size()==3,
+  "two effect variants duplicated or discarded their shared Mesh input");
+ auto inspect=[](const I::View& view){R::Reader reader(view->Size(),[view](size_t at,unsigned char* out,size_t n){view->ReadAt(at,out,n);});
+  auto member=reader.directory.members.front();auto layout=reader.Layout(member);return std::make_pair(member.name,layout.externals);};
+ auto firstIdentity=inspect(left.view),secondIdentity=inspect(right.view);
+ Require(firstIdentity.first!=secondIdentity.first&&firstIdentity.first!=sourceCab&&secondIdentity.first!=sourceCab,
+  "two resource bindings reused one private native effect CAB");
+ Require(left.dependencies==right.dependencies&&!shared->generationNames.count(sourceCab),
+  "private effect CAB contaminated common resource identity or consumer dependency sharing");
+ shared->effectRoots[first]=1;shared->effectRoots[second]=1;shared->effectRoots.erase(first);D::RetireSharedLocked(shared,first,false);
+ Require(shared->graph.Size()==2,"retiring one effect discarded the shared Mesh or retained its private input");
+ shared->effectRoots.erase(second);D::RetireSharedLocked(shared,second,false);
+ Require(!shared->graph.Size()&&shared->vfsRoutes.empty(),"final effect retirement retained shared input or VFS routes");
+ std::cout<<"PASS real effect shared input assembly: two independent native CABs, one Mesh, immutable source, staged VFS routes and final retirement\n";
 }
 void SyntheticUnloadDependencyRegression(){
  namespace D=DemandLoadingProbe;namespace G=EiemDemandSharedGraph;namespace S=StartupDependencies;using namespace Test;
@@ -914,6 +1107,123 @@ void OwnerlessCachedPrefabGenerationRegression(){
    "ownerless F10 did not retire the cached prefab and model pool before the next load");
  reloads.clear();DemandGenerationReload::active=false;Reset();
 }
+void VanillaGenerationSelectionRegression(){
+ using namespace DemandGenerationReload;namespace D=DemandLoadingProbe;Reset();reloads.clear();
+ auto oldApi=D::api;auto invoke=il2cpp_runtime_invoke;auto oldDependencies=StartupDependencies::api;auto oldNew=il2cpp_object_new;
+ auto oldAll=StartupDependencies::originalAll;auto oldWidth=propertyElementWidth;propertyElementWidth=8;
+ StartupDependencies::api.listCtor=(void*)140;StartupDependencies::api.listClass=(void*)700;
+ StartupDependencies::api.listAdd=(void*)141;StartupDependencies::api.listItems=(void*)18;StartupDependencies::api.listSize=(void*)19;
+ StartupDependencies::api.poolAllocate=nullptr;
+ StartupDependencies::originalAll=[](void*,uint64_t key,void* list,void*)->bool{dependencyLists[list]=nativeDependencyLists[key];return true;};
+ il2cpp_object_new=[](void*)->void*{auto bytes=std::make_unique<Bytes>(8);auto p=bytes->data();storage.push_back(std::move(bytes));dependencyLists[p]={};return p;};
+ auto state=std::make_shared<D::Manifest>();state->object=Ref::Make(dependencyManifest,false);
+ D::manifests.emplace(dependencyManifest,state);
+ D::api.lookup=(void*)184;D::api.subLookup=(void*)185;D::api.packSize=16;D::api.bundleOffset=0;
+ il2cpp_runtime_invoke=[](void* method,void* self,void** args,void** exception)->void*{
+   if(method==(void*)184||method==(void*)185){uint64_t key=0;
+     if(method==(void*)184){const auto hash=*(uint64_t*)args[0];
+       if(hash==std::hash<std::string>{}("assets/model.prefab"))key=0x6001;
+       if(hash==std::hash<std::string>{}("assets/unmodified-character.prefab"))key=0x6002;
+     }else if(String(args[0])=="assets/weapon.fbx")key=0x6003;
+     if(key)memcpy(args[1],&key,8);return key?&yes:&no;
+   }return Invoke(method,self,args,exception);
+ };
+ auto cleanup=[&]{D::api=oldApi;il2cpp_runtime_invoke=invoke;D::manifests.erase(dependencyManifest);
+   StartupDependencies::api=oldDependencies;StartupDependencies::originalAll=oldAll;il2cpp_object_new=oldNew;propertyElementWidth=oldWidth;
+   nativeDependencyLists.clear();reloads.clear();Reset();};
+ try{
+   RuntimeControls::specs.clear();nativeDependencyLists[0x6001]={0x6003};nativeDependencyLists[0x6002]={0x6004};
+   D::InstalledGeneration next;next.delta.changed=true;next.delta.packages.insert("added");
+   next.delta.addedPackages.insert("added");next.delta.targets.insert({"assets/weapon.fbx","marker"});
+   EiemMeshTargetDirectory::Target target;target.mod="added";target.source={"assets/weapon.fbx","marker"};next.targets.push_back(target);
+   FullResourceReload::LivePart live;live.part=Ref::Make(mainPart,true);live.root=Ref::Make(oldRoot,true);live.path=modelPath;live.model=Ref::Make(model,true);
+   FullResourceReload::liveParts.emplace(mainPart,live);
+   auto other=live;other.part=Ref::Make(unrelatedPart,true);other.root=Ref::Make(unrelatedRoot,true);other.path="assets/unmodified-character.prefab";other.model=Ref::Make(unrelatedModel,true);
+   FullResourceReload::liveParts.emplace(unrelatedPart,other);
+   FullResourceReload::UIAsync(uiLoader,StringValue(modelPath),factoryParent,uiCallback,nullptr);
+   FullResourceReload::UIComplete(uiClosure,uiProxy,nullptr);
+   const auto loads=memoryCalls,scans=sceneQueries;AddAffectedOwners(next);
+   Require(reloads.size()==1&&reloads.front().owners.size()==2&&reloads.front().owners.front().owner.component.Get()==model&&
+       reloads.front().owners.back().owner.uiModel,
+     "0-to-1 missed the vanilla owner or selected an unrelated same-name Mesh outside its logical dependencies");
+   reloads.clear();next.targets.clear();next.delta.addedPackages.clear();next.delta.removedPackages.insert("added");AddAffectedOwners(next);
+   Require(reloads.size()==1,"removed target identity did not select a vanilla owner for the next add/remove cycle");
+   reloads.clear();next.delta.targets.clear();next.delta.controlOnlyPackages.insert("added");next.targets.push_back(target);AddAffectedOwners(next);
+   Require(reloads.empty(),"control-only edit rebuilt a vanilla owner");
+   FullResourceReload::liveParts.clear();FullResourceReload::liveUIModels.clear();FullResourceReload::rawPrefabsByPath.clear();FullResourceReload::observedPrefabs.clear();
+   next.delta.controlOnlyPackages.clear();FullResourceReload::Path(modelPath);const auto cachedHash=pathHashValue;
+   FullResourceReload::RememberPrefabProxy(cachedHash,instance,source);AddAffectedOwners(next);
+   Require(reloads.size()==1&&reloads.front().owners.empty()&&reloads.front().hash==cachedHash,
+     "vanilla cached Prefab without an active owner was missed when only its native path hash was recorded");
+   Require(memoryCalls==loads&&sceneQueries==scans,"owner selection loaded payloads or scanned the scene");
+ }catch(...){cleanup();throw;}cleanup();
+ std::cout<<"PASS issue6 vanilla world/UI owners, same-name logical isolation, removal, controls-only and ownerless cached Prefab; no payload loads or scene scan\n";
+}
+void NativeSourceHandoffRegression(){
+ namespace D=DemandLoadingProbe;namespace S=StartupDependencies;using RuntimeShapes::Ref;Reset();
+ auto oldS=S::api;auto oldD=D::sharedApi;auto oldInvoke=il2cpp_runtime_invoke;auto oldField=il2cpp_field_get_value;auto oldSet=il2cpp_field_set_value;auto oldNew=il2cpp_object_new;
+ auto oldReverse=D::originalSharedReverse;auto oldWidth=propertyElementWidth;propertyElementWidth=8;
+ auto oldLookup=D::api;auto oldAll=S::originalAll;auto oldEnabled=D::sharedInputsEnabled.load();
+ auto oldGeneration=std::atomic_load(&D::installedGeneration);auto oldManifests=D::manifests;
+ auto oldSnapshots=S::snapshots;auto oldKeys=S::snapshotKeys;S::snapshots.clear();S::snapshotKeys.clear();
+ struct Proxy {int refs=0;bool loading=false,unloading=false,locked=false,unloaded=false;unsigned char destroy=1;unsigned calls=0;};
+ static std::map<void*,Proxy> proxies;proxies={{(void*)0x7B10,{}},{(void*)0x7B11,{}}};
+ S::api={};S::api.proxyAssetBundle=(void*)0x7B00;S::api.proxyGetRefCount=(void*)0x7B01;S::api.proxyIsLoading=(void*)0x7B02;S::api.proxyIsUnloading=(void*)0x7B03;
+ S::api.proxyIsUnloaded=(void*)0x7B04;S::api.proxyIsUnloadLocked=(void*)0x7B05;S::api.proxyUnloadSync=(void*)0x7B06;S::api.proxyUnloadAllLoadedObjects=(void*)0x7B07;
+ S::api.proxyManagerField=(void*)0x7B08;S::api.managerManifest=(void*)144;S::api.listCtor=(void*)140;S::api.listClass=(void*)700;S::api.listItems=(void*)18;S::api.listSize=(void*)19;
+ D::sharedApi.managerTryGetBundleProxy=(void*)0x7B09;
+ S::snapshots.emplace((void*)0x7B10,S::Snapshot{Ref::Make((void*)0x7B10,true),Ref::Make(dependencyManifest,true),0x7B20,{}});
+ S::snapshots.emplace((void*)0x7B11,S::Snapshot{Ref::Make((void*)0x7B11,true),Ref::Make(dependencyManifest,true),0x7B21,{}});
+ il2cpp_object_new=[](void*)->void*{auto bytes=std::make_unique<Bytes>(8);auto p=bytes->data();storage.push_back(std::move(bytes));dependencyLists[p]={};return p;};
+ D::originalSharedReverse=[](void*,uint64_t key,void* list,void*)->bool{dependencyLists[list]=key==0x7B20?std::vector<uint64_t>{0x7B21}:std::vector<uint64_t>{};return true;};
+ il2cpp_field_get_value=[](void* self,void* field,void* out){if(field==(void*)0x7B07){*(unsigned char*)out=proxies.at(self).destroy;return;}if(field==(void*)0x7B08){*(void**)out=manager;return;}FieldValue(self,field,out);};
+ il2cpp_field_set_value=[](void* self,void* field,void* value){Require(field==(void*)0x7B07,"handoff wrote an unrelated private field");proxies.at(self).destroy=*(unsigned char*)value;};
+ il2cpp_runtime_invoke=[](void* method,void* self,void** args,void** exception)->void*{
+   if(method==(void*)0x7B09)return *(uint64_t*)args[0]==0x7B20?(void*)0x7B10:*(uint64_t*)args[0]==0x7B21?(void*)0x7B11:nullptr;
+   if(method==(void*)0x7B0A){const uint64_t key=0x7B20;memcpy(args[1],&key,8);return &yes;}
+   auto m=uintptr_t(method);if(m>=0x7B00&&m<=0x7B06){auto& p=proxies.at(self);
+     if(m==0x7B00)return p.unloaded?nullptr:self; if(m==0x7B01)return &p.refs;
+     if(m==0x7B02)return p.loading?&yes:&no;if(m==0x7B03)return p.unloading?&yes:&no;if(m==0x7B04)return p.unloaded?&yes:&no;if(m==0x7B05)return p.locked?&yes:&no;
+     Require(!p.refs&&!p.loading&&!p.unloading&&!p.locked&&!p.destroy,"handoff forced an unsafe/destroying native proxy unload");
+     ++p.calls;p.unloaded=true;if(self==(void*)0x7B11&&proxies.at((void*)0x7B10).refs>0)--proxies.at((void*)0x7B10).refs;return nullptr;
+   }return Invoke(method,self,args,exception);};
+ auto cleanup=[&]{S::api=oldS;D::sharedApi=oldD;il2cpp_runtime_invoke=oldInvoke;il2cpp_field_get_value=oldField;il2cpp_field_set_value=oldSet;il2cpp_object_new=oldNew;D::originalSharedReverse=oldReverse;propertyElementWidth=oldWidth;S::snapshots=oldSnapshots;S::snapshotKeys=oldKeys;
+   D::api=oldLookup;S::originalAll=oldAll;D::sharedInputsEnabled=oldEnabled;D::manifests=oldManifests;std::atomic_store(&D::installedGeneration,oldGeneration);Reset();};
+ try{
+   EiemDemandSharedGraph::Input input;input.key=0x7B30;input.categorySource=0x7B20;input.cab="CAB-handoff";input.name="eff/next/root.ab";input.versionedRoot=true;
+   Require(D::RetirePreviousSharedInput(input)>=1&&proxies.at((void*)0x7B10).unloaded&&proxies.at((void*)0x7B10).destroy==1,
+     "synthetic first load did not retire the idle original game BundleProxy and restore its unload policy");
+   proxies.at((void*)0x7B10)={};proxies.at((void*)0x7B10).refs=1;proxies.at((void*)0x7B11)={};
+   D::RetirePreviousSharedInput(input);
+   Require(proxies.at((void*)0x7B10).unloaded&&proxies.at((void*)0x7B11).unloaded,"idle reverse dependency was not released before the source Bundle");
+   for(unsigned guard=0;guard<4;++guard){proxies.at((void*)0x7B10)={};proxies.at((void*)0x7B11).unloaded=true;auto& p=proxies.at((void*)0x7B10);
+     if(guard==0)p.refs=2;if(guard==1)p.loading=true;if(guard==2)p.unloading=true;if(guard==3)p.locked=true;
+     bool retained=false;try{D::RetirePreviousSharedInput(input);}catch(const std::exception&){retained=true;}
+     Require(retained&&!p.calls&&!p.unloaded&&p.destroy==1,"active, loading, unloading or locked source was unloaded or accepted for same-CAB submission");
+   }
+   auto catalog=std::make_shared<D::InstalledGeneration>();auto state=std::make_shared<D::Manifest>();
+   state->serial=0x7B40;state->catalog=catalog;state->object=Ref::Make(dependencyManifest,false);state->bundles.insert(0x7B20);
+   std::atomic_store(&D::installedGeneration,std::shared_ptr<const D::InstalledGeneration>(catalog));D::manifests[dependencyManifest]=state;
+   D::api.lookup=(void*)0x7B0A;D::api.packSize=16;D::api.bundleOffset=0;D::sharedInputsEnabled=true;
+   S::originalAll=[](void*,uint64_t,void* list,void*)->bool{dependencyLists[list]={};return true;};
+   auto& p=proxies.at((void*)0x7B10);p={};p.refs=2;
+   auto shared=std::make_shared<D::SharedScope>(state);shared->vfsRoutes[0x7B50]=input.key;
+   auto bytes=std::make_shared<const Bytes>(Bytes{1});input.view=std::make_shared<const EiemInputSpanView::View>(
+     std::vector<EiemInputSpanView::Span>{{EiemInputSpanView::literalSource,0,1,bytes}},std::vector<size_t>{},EiemInputSpanView::ReadRange{});
+   {D::SharedLoadRouteScope route(dependencyManifest,shared,input);void* result=(void*)1;
+     Require(D::SharedVfsLoad(0x7B50,0,false,result)&&!result&&!p.calls,
+       "a matched VFS retirement failure silently fell back to original input bytes");}
+   DemandGenerationReload::PathReload batch;batch.path=modelPath;batch.hash=1;
+   batch.poolDiscarded=batch.prefabInvalidated=batch.rawCaptured=true;
+   input.generationIsolated=true;
+   Require(D::RetirePreviousSharedInput(input)==0&&!p.calls&&p.refs==2&&!p.unloaded,
+     "isolated generation unloaded or waited for a legitimate native world/UI holder");
+   bool waiting=false;try{DemandGenerationReload::ReleasePath(batch);}catch(const S::BundleRetainedError&){waiting=true;}
+   Require(!waiting&&batch.cacheInvalidated&&!p.calls&&p.refs==2&&!p.unloaded,
+     "F10 left released characters blank while waiting for unrelated native Bundle leases");
+ }catch(...){cleanup();throw;}cleanup();
+ std::cout<<"PASS isolated F10 proceeds with pinned native world/UI Bundle leases; legacy unsafe unload guards remain closed\n";
+}
 void DirectPrefabGenerationRegression(){
  using namespace DemandGenerationReload;Reset();reloads.clear();pendingUIPaths.clear();
  directPartFixture=true;partUsesPool=false;
@@ -925,6 +1235,37 @@ void DirectPrefabGenerationRegression(){
          currentRoot==newRoot&&!prefabProxyUnloadCalls,
    "a direct Prefab owner without PrefabInstantiateProxy did not refresh through the game lifecycle");
  reloads.clear();Reset();
+}
+void SharedWorldUIWeaponGenerationRegression(){
+ using namespace DemandGenerationReload;Reset();reloads.clear();pendingUIPaths.clear();
+ directPartFixture=true;parentWeaponFixture=true;partUsesPool=false;rawProxyRefs=2;uiWeaponHeld=true;uiRoot=unrelatedRoot;
+ FullResourceReload::uiWeaponDependenciesApi.collections={{(void*)188,(void*)187,(void*)188,(void*)189,(void*)21,false}};
+ auto dependencies=FullResourceReload::UIWeaponDependencies(uiRoot);
+ Require(dependencies.size()==1&&dependencies.front().path==modelPath&&dependencies.front().rawAsset.Get()==assetProxyObject,
+   "native UI weapon bundle handle/path capture failed");
+ FullResourceReload::LivePart world;world.part=Ref::Make(mainPart,true);world.root=Ref::Make(oldRoot,true);world.path=modelPath;
+ FullResourceReload::liveParts[mainPart]=world;
+ FullResourceReload::LiveUIModel page;page.loader=Ref::Make(uiLoader,true);page.root=Ref::Make(uiRoot,true);page.path="assets/ui-character.prefab";
+ FullResourceReload::liveUIModels[uiRoot]=page;uiOwned.insert(uiRoot);
+ // The UI weapon handle exists before its mesh is attached to the hierarchy.
+ controlRenderers[uiRoot]={};RuntimeControls::specs.at("marker").package="changed";
+ DemandLoadingProbe::InstalledGeneration next;next.delta.changed=true;next.delta.packages.insert("changed");
+ AddAffectedOwners(next);
+ Require(reloads.size()==2,"F10 omitted a hidden UI page holding the world's modified weapon Prefab");
+ auto worldBatch=std::find_if(reloads.begin(),reloads.end(),[](const auto& row){return row.path==modelPath;});
+ auto uiBatch=std::find_if(reloads.begin(),reloads.end(),[](const auto& row){return row.path=="assets/ui-character.prefab";});
+ Require(worldBatch!=reloads.end()&&uiBatch!=reloads.end(),"shared weapon paths were not retained separately");
+ bool retained=false;try{ReleasePath(*worldBatch);}catch(const std::exception&){retained=true;}
+ Require(retained&&rawProxyRefs==1&&!loadCalls,"world owner bypassed the UI weapon handle");
+ FullResourceReload::RememberPrefabProxy(uiBatch->hash,instance);
+ ReleasePath(*uiBatch);Start(*uiBatch);
+ Require(rawProxyRefs==0&&rawProxyUnloaded&&!uiBatch->owners.front().owner.uiRequest,
+   "UI page reloaded before the shared weapon path finished its cache handoff");
+ ReleasePath(*worldBatch);Start(*worldBatch);Start(*uiBatch);
+ Require(worldBatch->cacheInvalidated&&rawReloads==1&&currentRoot==newRoot&&uiBatch->owners.front().owner.uiRequest,
+   "F10 still requires character switching after both world/UI weapon holders released");
+ reloads.clear();Reset();
+ std::cout<<"PASS shared world/UI raw weapon: hidden native dependency, both owners released, cache handoff before either reload\n";
 }
 void DirectPrefabLeaseAndRetryRegression(){
  using namespace DemandGenerationReload;
@@ -1055,6 +1396,27 @@ void ControlProgramGenerationRegression(){
  auto repaired=D::BuildInstalledGeneration();Require(repaired->packages->front().loadError.empty()&&repaired->packages->front().program->ui.empty(),"repaired INI retained old program/error");
  D::PublishInstalledGeneration(repaired);std::filesystem::remove(root/"mod.ini");auto removed=D::BuildInstalledGeneration();Require(removed->delta.removedPackages.count(instance)&&removed->packages->empty(),"actual Mod removal retained invalid-edit fallback");
  std::cout<<"PASS installed INI controls: nested discovery, shared parser, UI-only delta, invalid edit retains last-good program, repaired edit and actual removal\n";
+}
+void StandaloneControlPublicationRegression(){
+ using namespace Entry;
+ auto empty=std::make_shared<const std::vector<Package>>();
+ Package model;model.id="ModelControls";model.root="model";model.defaults["$model"]=1;
+ Package effect;effect.id="EffectControls";effect.root="effect";effect.defaults["$on"]=1;effect.persistent.insert("$on");
+ ShapeAnimation clip;clip.id="Orbit";clip.duration=2;clip.autoplay=true;clip.nativeOutputs.push_back({"Orbit","spin.ab","spin.anim","v1"});effect.shapeAnimations.emplace(clip.id,clip);
+ auto models=std::make_shared<const std::vector<Package>>(std::vector<Package>{model});
+ auto installed=std::make_shared<DemandLoadingProbe::InstalledGeneration>();installed->packages=models;installed->standalone=std::make_shared<const std::vector<Package>>(std::vector<Package>{effect});
+ auto previous=DemandLoadingProbe::CurrentInstalledGeneration();DemandLoadingProbe::PublishInstalledGeneration(installed);
+ RuntimeControls::LoadControls(models);
+ Require(RuntimeControls::variables.count(effect.id)&&RuntimeControls::animations.at(effect.id).clips.count(clip.id)&&RuntimeControls::panel.Read()->graph->size()==2,"production startup omitted standalone controls/players/panel");
+ RuntimeControls::variables.at(effect.id).at("$on")=0;
+ auto candidate=std::make_shared<DemandGenerationReload::Prepared>();candidate->generation=installed;candidate->config=settings.Get();
+ DemandGenerationReload::Commit(candidate);
+ Require(RuntimeControls::controlGraph->size()==2&&RuntimeControls::variables.at(effect.id).at("$on")==0&&std::atomic_load(&published)==models&&RuntimeAttachments::standalone==installed->standalone,"production F10 lost standalone state or published effects as model packages");
+ auto removed=std::make_shared<DemandLoadingProbe::InstalledGeneration>(*installed);removed->standalone=empty;candidate->generation=removed;DemandGenerationReload::Commit(candidate);
+ Require(RuntimeControls::controlGraph->size()==1&&!RuntimeControls::animations.count(effect.id),"F10 retained removed standalone controls");
+ auto duplicate=std::make_shared<std::vector<Package>>(std::vector<Package>{model});bool rejected=false;try{RuntimeControls::PrepareInstalled(models,duplicate,settings.Get());}catch(const std::exception&){rejected=true;}Require(rejected,"duplicate installed controls accepted");
+ DemandLoadingProbe::PublishInstalledGeneration(previous);RuntimeControls::controlGraph.reset();RuntimeControls::variables.clear();RuntimeControls::animations.clear();RuntimeAttachments::standalone=empty;
+ std::cout<<"PASS startup/F10 standalone controls: complete graph, player, panel, retained variable, removal, model projection and duplicate rejection\n";
 }
 void IdlePoolRegression(){
  using namespace FullResourceReload;Reset();auto a=MakeAttempt();a.owners.clear();currentRoot=nullptr;
@@ -1772,7 +2134,7 @@ void StoryCloneControlRegression(bool staticMesh=false){
  auto result=Clone(source);
  Require(result==restoredRoot&&RuntimeShapes::bound.count(newRenderer)&&RuntimeShapes::bound.at(newRenderer).modelReady&&!staticEnabled,
   "Timeline clone without world/UI model callbacks did not inherit the current Mod switch");
- RuntimeShapes::variables[spec.package]["shown"]=1;++RuntimeControls::valueRevision;
+ RuntimeShapes::variables[spec.package]["shown"]=1;RuntimeControls::Changed(spec.package);
  RuntimeShapes::ApplyVisibility(newRenderer,RuntimeShapes::bound.at(newRenderer),spec);
  Require(staticEnabled,"registered story clone did not follow the shared Mod state");
  RuntimeShapes::SetEnabled(newRenderer,false);RuntimeShapes::ApplyVisibility(newRenderer,RuntimeShapes::bound.at(newRenderer),spec);
@@ -1949,6 +2311,17 @@ void UIDelayedFrameRegression(){
   }
   attempt.reset();std::atomic_store(&requested,std::shared_ptr<const Ticket>{});
  }
+}
+void DemandUIPageReleaseRegression(){
+ using namespace DemandGenerationReload;Reset();
+ FullResourceReload::UILoad(uiLoader,StringValue(modelPath),factoryParent,nullptr);
+ auto owner=MakeUIOwner(oldRoot,FullResourceReload::liveUIModels.at(oldRoot));
+ PathReload batch;batch.path=modelPath;batch.hash=1;batch.rawCaptured=batch.poolDiscarded=batch.cacheInvalidated=true;
+ batch.owners.push_back({std::move(owner),OwnerPhase::Queued});
+ ReleasePath(batch);
+ Require(uiPageReleases==1&&uiUnloads==1&&batch.owners.front().phase==OwnerPhase::Released&&!uiOwned.count(oldRoot),"demand F10 unloaded the UI model without staging its page state");
+ Reset();
+ std::cout<<"PASS demand F10 stages UI page state before unloading the old native model\n";
 }
 void UIModelReloadRegression(){
  using namespace FullResourceReload;
@@ -2231,6 +2604,23 @@ void NativeBundleIdentityReloadRegression(){
          !NativeBundle::memoryBundles.count(first)&&!NativeBundle::memoryBundles.count(second)&&
          NativeBundle::memoryBundles.count(unrelated),
           "generation-specific routes did not retire only the prior containers for their stable source CAB");
+  // Removal returns through the ordinary native VFS route, not an EFF path.
+  auto enabled=DemandLoadingProbe::sharedInputsEnabled.exchange(true);
+  oldGeneration.versionedRoot=true;DemandLoadingProbe::RememberNativeCabAliases(oldGeneration);
+  NativeBundle::RetainMemory(bodyRequest,{}, {}, {}, {},"CAB-body");NativeBundle::CompleteMemory(bodyRequest,first);
+  void* result=(void*)1;
+  Require(!DemandLoadingProbe::SharedVfsLoad(DemandLoadingProbe::SharedVfsHash("CAB-body"),0,false,result)&&!result&&
+          !NativeBundle::memoryBundles.count(first)&&NativeBundle::memoryBundles.count(unrelated),
+    "1-to-0 native VFS return retained the old synthetic CAB or retired an unrelated Bundle");
+  NativeBundle::RetainMemory(bodyRequest,{}, {}, {}, {},"CAB-body");
+  Require(DemandLoadingProbe::SharedVfsLoad(DemandLoadingProbe::SharedVfsHash("CAB-body"),0,false,result)&&!result&&
+          NativeBundle::memoryRequests.count(bodyRequest),
+    "native VFS return fell through while the same CAB was still loading");
+  NativeBundle::memoryRequests.erase(bodyRequest);
+  NativeBundle::RetainMemory(secondBodyRequest,{}, {}, {}, {},"CAB-body");NativeBundle::CompleteMemory(secondBodyRequest,second);
+  Require(DemandLoadingProbe::RetirePreviousSharedInput(newGeneration)==1&&!NativeBundle::memoryBundles.count(second),
+    "1-to-0-to-1 did not retire the preceding generation container");
+  DemandLoadingProbe::sharedInputsEnabled=enabled;
 }
 void StreamLifetimeReentryRegression(){
  Reset();auto object=(void*)0xB020;NativeBundle::memoryBundles.emplace(object,NativeBundle::MemoryBundle{RuntimeShapes::Ref::Make(object,false),RuntimeShapes::Ref::Make(source,false)});
@@ -2628,7 +3018,7 @@ void StartupDependencyListBindingRegression(){
  }catch(...){rows[3].parameter="System.Object";restore();throw;}
  restore();
 }
-void EmbeddedMaterialVfsRegression(const char* game,const char* logicalBundle,const char* path,const char* asset,const char* mod,const char* dependencies){
+void EmbeddedMaterialVfsRegression(const char* game,const char* logicalBundle,const char* path,const char* asset,const char* mod,const char* dependencies,const char* sourcePrefab=nullptr){
  using namespace Test;namespace D=DemandLoadingProbe;namespace R=EiemNativeRandomAccess;
  auto previous=D::api;struct Restore{decltype(previous) api;~Restore(){D::api=api;}}restore{previous};
  materialVfsBundle=0x4B86D68ADEB4C039ULL;materialVfsAsset=0;
@@ -2656,10 +3046,21 @@ void EmbeddedMaterialVfsRegression(const char* game,const char* logicalBundle,co
   std::cout<<"MATERIAL-VFS source="<<logicalBundle<<" containerAssets="<<indexed.size()<<" directMatches="<<direct<<" namedMaterialObjects="<<embedded<<std::endl;
  }
  D::api.packSize=16;D::api.bundleOffset=0;D::api.assetOffset=8;D::api.lookup=(void*)183;
+ if(sourcePrefab){FullResourceReload::Path(sourcePrefab);materialVfsOnlyPath=Test::pathHashValue;D::api.subLookup=(void*)181;}
  EiemRuntimeAuthorDirectory::NativeDependency declaration;declaration.logical={path,asset};declaration.classId=21;
- auto resolved=group.ResolveLogicalDependency(declaration);
- Require(resolved.bundle==materialVfsBundle&&resolved.classId==21&&resolved.reference.second,"embedded material did not retain exact source identity");
+ auto resolved=group.ResolveLogicalDependency(declaration,sourcePrefab?sourcePrefab:"");
+ Require(resolved.bundle&&resolved.classId==21&&resolved.reference.second,"embedded material did not retain exact source identity");
  auto catalog=std::make_shared<EiemDemandAuthorResources::Catalog>(std::filesystem::u8path(mod));
+ if(sourcePrefab){
+  group.shared->logicalDependencies.clear();
+  for(const auto& row:catalog->Directory().materials)if(row.source.path==declaration.logical.path&&row.source.asset==declaration.logical.asset){
+   auto material=catalog->GetMaterial(row.id);auto input=group.MaterialInput(*material);
+   Require(input.view&&input.view->Size(),"container-only game Material produced no native input");
+   Require(!Test::memoryCalls&&!leaseRequests&&!sceneQueries,"container-only Material instantiated or loaded a donor Prefab");
+   std::cout<<"PASS container-only effect Material uses exact logical source Prefab without loading it, bytes="<<input.view->Size()<<std::endl;return;
+  }
+  throw std::runtime_error("container-only Material fixture absent");
+ }
  auto author=std::make_shared<D::N::Author>(catalog);size_t variants=0;
  for(const auto& row:author->package.materials){if(row.second.source.path!=declaration.logical.path||row.second.source.asset!=declaration.logical.asset)continue;
   auto material=catalog->GetMaterial(row.first);auto input=group.MaterialInput(*material,{});
@@ -2851,9 +3252,17 @@ int main(int argc,char** argv){
  try{
   if(argc==2&&std::string(argv[1])=="--profile-load-misses"){ProfileLoadMisses();return 0;}
   Setup();Reset();
+  struct UIWeaponApiFixtureLifetime {~UIWeaponApiFixtureLifetime(){FullResourceReload::uiWeaponDependenciesApi={};}} uiWeaponApiLifetime;
+  if(argc==2&&std::string(argv[1])=="--shared-world-ui-weapon"){Entry::logFile=stdout;SharedWorldUIWeaponGenerationRegression();Entry::logFile=nullptr;return 0;}
+  if(argc==2&&std::string(argv[1])=="--installed-controls"){StandaloneControlPublicationRegression();return 0;}
+  if(argc==2&&std::string(argv[1])=="--issue6-selection"){VanillaGenerationSelectionRegression();std::cout<<"PASS issue6 vanilla selection\n";return 0;}
+  if(argc==2&&std::string(argv[1])=="--issue6-handoff"){NativeSourceHandoffRegression();std::cout<<"PASS issue6 native handoff\n";return 0;}
   if(argc==2&&std::string(argv[1])=="--cross-group-root"){CrossGroupRootDeclarationRegression();return 0;}
   if(argc==2&&std::string(argv[1])=="--synthetic-unload"){SyntheticUnloadDependencyRegression();return 0;}
+  if(argc==2&&std::string(argv[1])=="--effect-resource-lifetime"){EffectSharedResourceLifetimeRegression();CachedResourceLogicalUsageRegression();return 0;}
+  if(argc==3&&std::string(argv[1])=="--effect-shared-inputs"){RealEffectSharedInputRegression(std::filesystem::u8path(argv[2]));return 0;}
   if(argc==8&&std::string(argv[1])=="--material-vfs"){EmbeddedMaterialVfsRegression(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7]);return 0;}
+  if(argc==9&&std::string(argv[1])=="--material-vfs-source"){EmbeddedMaterialVfsRegression(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8]);return 0;}
   ReloadDispatchRegression();
   AssemblyAddressRegression();
   SerializedBoneAddressRegression();
@@ -2865,13 +3274,17 @@ int main(int argc,char** argv){
   auto check=[](const char* name,auto action){try{action();}catch(const std::exception& e){throw std::runtime_error(std::string(name)+": "+e.what());}};
   check("idle stream lifetime",IdleStreamLifetimeRegression);
   check("same-CAB Bundle reload",NativeBundleIdentityReloadRegression);
+  check("same-CAB native source handoff",NativeSourceHandoffRegression);
   check("game prefab proxy cache invalidation",PrefabProxyInvalidationRegression);
   check("partially unloaded prefab proxies",PrefabProxyPartialInvalidationRegression);
   check("demand F10 throttles and quickly defers retained prefab proxies",PrefabProxyRetainedWaitRegression);
   check("raw asset startup binds addressless abstract interface",RawAssetApiBindingRegression);
   check("demand F10 routes retained Bundles by generation and restores deleted targets",VersionedGenerationRouteRegression);
   check("demand F10 reuses cached source views across dependency groups",PreparedRootViewCacheRegression);
+  check("failed target inspection does not stall repeated character/UI roots",FailedTargetInspectionRegression);
   check("cross-scene cached root retains authored dependencies",CrossGroupRootDeclarationRegression);
+  check("effect author Resource shared lifetime",EffectSharedResourceLifetimeRegression);
+  check("cached Resource logical source lifetime",CachedResourceLogicalUsageRegression);
   check("synthetic unload releases native and authored dependencies",SyntheticUnloadDependencyRegression);
   check("generation Prefab retains native dependencies",VersionedRootNativeDependenciesRegression);
   check("synthetic resource dependency ownership",SyntheticInputDirectOwnershipRegression);
@@ -2880,7 +3293,9 @@ int main(int argc,char** argv){
   std::cout<<"PASS demand synthetic dependencies and sync game-proxy lifecycle: matched lazy view, out-of-tree dependency polls, direct fast path, existing async promotion, terminal failure/unload, no unmatched loads\n";
   check("matched Prefab routes past old proxy cache and unrelated lookup stays lazy",PrefabProxyLookupGenerationRegression);
   check("demand F10 invalidates cached prefab without active owner",OwnerlessCachedPrefabGenerationRegression);
+  check("demand F10 vanilla logical owners and same-name isolation",VanillaGenerationSelectionRegression);
   check("demand F10 direct Prefab weapon without instantiate proxy",DirectPrefabGenerationRegression);
+  check("demand F10 world/UI share a hidden weapon Prefab",SharedWorldUIWeaponGenerationRegression);
   check("demand F10 respects direct Prefab leases and retries unchanged bytes",DirectPrefabLeaseAndRetryRegression);
   check("demand F10 unchanged retry captures new holders",DirectPrefabNewHolderRetryRegression);
   check("demand F10 still requires pooled Prefab cache evidence",PooledPrefabEvidenceRegression);
@@ -2909,6 +3324,7 @@ int main(int argc,char** argv){
   check("UI wait retains newly cached prefab aliases",UIWaitCachedAliasRegression);
   check("UI wait rejects a newly cached unprepared root",UIWaitNewCachedRootRegression);
   check("UI delayed completion through Frame",UIDelayedFrameRegression);
+  check("UI page state before demand release",DemandUIPageReleaseRegression);
   check("UI model lifecycle reload",UIModelReloadRegression);
   check("synchronous world owner",SynchronousOwnerRegression);
   check("unrelated prefab allocation",UnrelatedPrefabAllocationRegression);
@@ -2925,6 +3341,7 @@ int main(int argc,char** argv){
   check("background candidate readiness",BackgroundReadyRegression);check("compiled same-content snapshot",CompiledSnapshotRegression);
   check("enum",EnumRegression);check("bones",BonePathRegression);check("root paths",RootPathRegression);check("managers",ManagerContractRegression);
   check("production capture completion",ProductionCaptureCompletionRegression);
+  check("lazy animation owners",LazyAnimationOwnerLifetimeRegression);
   check("Material property bindings",MaterialBindingRegression);check("standby prop lifecycle",PerformLifecycleRegression);check("native performance preloads",PerformPreloadRegression);
 #if defined(EIEM_DIAGNOSTICS)
   check("animation attachment probe contract",AnimationAttachmentProbeRegression);check("unmodified skin probe contract",UnmodifiedSkinProbeRegression);check("actual performance attachment probe",PerformanceProbeRegression);check("native resource release probe",PerformanceReleaseProbeRegression);
@@ -2974,7 +3391,7 @@ int main(int argc,char** argv){
   Reset();
   {Attempt a;a.phase=Phase::Reject;a.exposed=true;Lease l;l.handle=RuntimeShapes::Ref::Make(leaseHandle,false);l.done=true;a.leases.push_back(l);Drain(a);Require(!disposeCalls&&a.phase==Phase::Drained,"exposed generation lost game dependency lease");}
   {Attempt a;a.phase=Phase::Reject;a.bundles.emplace(0,Bundle{});Drain(a);Require(a.phase==Phase::Drained,"pre-native load failure polled null request or stuck");}
-  std::atomic_store(&routes,std::shared_ptr<const Routes>(std::make_shared<Routes>()));Require(handles.empty(),"fixture GC handles leaked");
+  uiWeaponDependenciesApi={};std::atomic_store(&routes,std::shared_ptr<const Routes>(std::make_shared<Routes>()));Require(handles.empty(),"fixture GC handles leaked");
   std::cout<<"PASS full resource transaction (mock native APIs): rule archive stream ABI and async/lazy roots; stripped stream methods via engine icalls; failed/unmatched rule preserves original load; six native prefab factories preserve arguments; native animation resume/weapons/audio lifecycle; stale animation reproduced; old Mesh/Texture identity rejection with animated rollback; exact typed static/instance manager getters; startup zero extra native requests; full Frame world/display -> commit; delayed UI completion retains displayed models; mixed UI/world frames, cancellation and supersession; eight consecutive world reloads without resetting state; asynchronous/display/retired callback owners; structural callback binding; full bone paths; enum ABI; superseded tickets; rollback; native retirement\n";
  }catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
 }

@@ -68,7 +68,12 @@ inline void Validate(const State& s){
       " declared="+std::to_string(s.defaults.count(b.variable))+" unique="+std::to_string(unique)+
       " vk="+std::to_string(b.key.vk)+" modifiers="+std::to_string(b.key.modifiers)+
       " speed="+std::to_string(b.speed)+" values="+std::to_string(b.values.size())+" type="+b.type);
-    for(auto value:b.values)Require(std::isfinite(value),"author key value nonfinite");}
+    for(auto value:b.values)Require(std::isfinite(value),"author key value nonfinite");
+    if(s.program){auto parameter=s.program->parameters.find(b.variable);if(parameter!=s.program->parameters.end()){
+      const auto& d=parameter->second;Require(!d.computed,"author key cannot write computed parameter: "+b.variable);
+      Require(b.type!="hold"||d.type==EiemControlProgram::Type::Float,"author hold key requires a float parameter: "+b.variable);
+      for(auto value:b.values)d.Validate(value);
+    }}}
   for(const auto& row:s.parts){std::string error;Require(!row.first.empty()&&row.second.visible,"author Part visibility absent");
     std::map<const EiemExpression*,unsigned char> seen;std::vector<std::pair<const EiemExpression*,bool>> pending{{row.second.visible.get(),false}};
     while(!pending.empty()){auto next=pending.back();pending.pop_back();auto node=next.first;if(next.second){seen[node]=2;continue;}Require(seen[node]!=1,"author visibility expression cycle");if(seen[node]==2)continue;seen[node]=1;
@@ -76,8 +81,8 @@ inline void Validate(const State& s){
       if(op==EiemExpression::Variable)Require(s.defaults.count(node->variable),"author visibility variable absent");pending.push_back({node,true});if(node->right)pending.push_back({node->right.get(),false});if(node->left)pending.push_back({node->left.get(),false});}
     for(const auto& shape:row.second.shapes)Require(!shape.first.empty()&&s.controls.count(shape.second),"author Part shape variable absent");}
   Package p;p.defaults=s.defaults;p.persistent=s.persistent;p.controls=s.controls;p.shapeAnimations=s.animations;
-  for(const auto& row:s.animations){const auto& a=row.second;Require(row.first==a.id&&!a.id.empty()&&std::isfinite(a.duration)&&a.duration>0&&std::isfinite(a.speed)&&a.speed>0&&(!a.tracks.empty()||!a.boneTracks.empty())&&a.key.vk<=255&&!(a.key.modifiers&~(MOD_SHIFT|MOD_ALT|MOD_CONTROL)),"author sampled animation differs");
-    for(const auto& track:a.tracks){Require(track.second.size()>=2,"author sampled animation lacks samples");for(auto value:track.second)Require(std::isfinite(value),"author sampled animation value nonfinite");}}
+  for(const auto& row:s.animations){const auto& a=row.second;Require(row.first==a.id&&!a.id.empty()&&std::isfinite(a.duration)&&a.duration>0&&std::isfinite(a.speed)&&a.speed>0&&(!a.tracks.empty()||!a.boneTracks.empty()||!a.nativeOutputs.empty())&&a.key.vk<=255&&!(a.key.modifiers&~(MOD_SHIFT|MOD_ALT|MOD_CONTROL)),"author sampled animation differs");
+    for(const auto& track:a.tracks){Require(a.sampleSource||track.second.size()>=2,"author sampled animation lacks samples");for(auto value:track.second)Require(std::isfinite(value),"author sampled animation value nonfinite");}}
   ValidateShapeAnimations(p);
   for(const auto& id:s.materialAnimations)Require(s.animations.count(id),"author material animation absent");
   std::set<std::tuple<std::string,std::string,unsigned>> channels;
@@ -93,6 +98,9 @@ inline void Validate(const State& s){
 }
 template<class W>void Write(W& w,const State& s){
   Require(!s.program,"unified control program requires controls=ini; binary controls would lose declarations");
+  for(const auto& row:s.animations)Require(!row.second.sampleSource&&row.second.nativeOutputs.empty(),"lazy/native animations require controls=ini");
+  for(const auto& row:s.effects)Require(!row.second.hierarchy,"author Transform hierarchies require controls=ini");
+  for(const auto& row:s.effects)Require(row.second.native->gameResources.empty(),"game resource references require controls=ini");
   Validate(s);w.N(s.keySwitchEnabled);std::map<std::string,double> defaults(s.defaults.begin(),s.defaults.end());w.N(defaults.size());for(const auto& row:defaults){w.S(row.first);w.D(row.second);}
   w.Strings({s.persistent.begin(),s.persistent.end()});w.N(s.controls.size());for(const auto& row:s.controls){w.S(row.first);w.S(row.second.label);w.D(row.second.minimum);w.D(row.second.maximum);}
   w.N(s.bindings.size());for(const auto& b:s.bindings){w.S(b.id);w.S(b.variable);w.S(b.type);w.N(b.key.vk);w.N(b.key.modifiers);w.D(b.speed);w.S(b.label);w.N(b.values.size());for(auto v:b.values)w.D(v);}

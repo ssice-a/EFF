@@ -1,7 +1,15 @@
 #pragma once
 namespace RuntimeAttachments {
 using RuntimeShapes::Ref;using FullResourceReload::Call;namespace Native=EffectDebug;
-struct Binding {std::string package,id,variable;Ref owner,parent;std::vector<Ref> renderers;EffectAttachment attachment;std::shared_ptr<Native::Generation> generation;std::shared_ptr<Native::Instance> instance;bool failed=false,changed=false;};
+struct AnchorPin {std::shared_ptr<RuntimeAuthorTransforms::Basis> basis;std::shared_ptr<RuntimeAuthorTransforms::Tree> mount;};
+struct Binding {std::shared_ptr<AnchorPin> anchor;std::shared_ptr<RuntimeAuthorTransforms::Tree> mount;std::string package,id,variable;Ref owner,parent;std::vector<Ref> renderers;EffectAttachment attachment;std::shared_ptr<Native::Generation> generation;std::shared_ptr<Native::Instance> instance;bool failed=false,changed=false;};
+bool RendererCandidateMatches(bool sourceProof,const std::string& expectedPath,const std::string& actualPath,bool emptyPathIsWildcard){
+ return sourceProof&&((expectedPath.empty()&&emptyPathIsWildcard)||expectedPath==actualPath);
+}
+bool DeclaredRendererMatches(const EffectAttachment& e,const std::string& actual,const std::set<Identity>& identities,bool provenPart){
+ if(RendererCandidateMatches(provenPart||identities.count({e.targetPath,e.targetAsset})!=0,e.rendererPath,actual,true))return true;
+ for(const auto& t:e.lodTargets)if(t.renderer==actual&&(provenPart||identities.count({t.path,t.asset})!=0))return true;return false;
+}
 // LOD renderers sharing a bone use one instance; separate skeleton copies
 // under the same model root need their own instance and visibility state.
 using BindingKey=std::tuple<void*,std::string,std::string,void*>;
@@ -19,8 +27,8 @@ std::vector<const Package*> RuntimePackages(){std::vector<const Package*> result
  if(standalone)for(const auto& package:*standalone)result.push_back(&package);return result;}
 std::shared_ptr<const std::vector<Package>> pendingStandalone;
 std::map<std::string,std::map<std::string,EffectAttachment>> pendingEffects;
-struct AttachmentStamp {std::string part,bone,variable,nativeKey,targetPrefab,rendererPath,targetPath,targetAsset;bool autoplay=true;std::array<float,3> position{0,0,0},scale{1,1,1};std::array<float,4> rotation{0,0,0,1};std::vector<std::string> targetBones;
- bool operator==(const AttachmentStamp& other)const{return part==other.part&&bone==other.bone&&variable==other.variable&&nativeKey==other.nativeKey&&targetPrefab==other.targetPrefab&&rendererPath==other.rendererPath&&targetPath==other.targetPath&&targetAsset==other.targetAsset&&autoplay==other.autoplay&&position==other.position&&scale==other.scale&&rotation==other.rotation&&targetBones==other.targetBones;}
+struct AttachmentStamp {std::string hierarchy,node,part,bone,variable,nativeKey,targetPrefab,rendererPath,targetPath,targetAsset,lodIdentity;bool autoplay=true;std::array<float,3> position{0,0,0},scale{1,1,1};std::array<float,4> rotation{0,0,0,1};std::vector<std::string> targetBones;
+ bool operator==(const AttachmentStamp& other)const{return hierarchy==other.hierarchy&&node==other.node&&part==other.part&&bone==other.bone&&variable==other.variable&&nativeKey==other.nativeKey&&targetPrefab==other.targetPrefab&&rendererPath==other.rendererPath&&targetPath==other.targetPath&&targetAsset==other.targetAsset&&autoplay==other.autoplay&&position==other.position&&scale==other.scale&&rotation==other.rotation&&targetBones==other.targetBones&&lodIdentity==other.lodIdentity;}
  bool operator!=(const AttachmentStamp& other)const{return !(*this==other);}
 };
 using AttachmentStamps=std::map<std::tuple<unsigned,std::string,std::string>,AttachmentStamp>;
@@ -29,9 +37,22 @@ std::mutex reloadMutex;std::atomic<bool> reloadPending{false};uint64_t reconcile
 std::map<void*,Ref> pendingOwners;
 std::map<void*,Ref> retryOwners;
 void QueueOwnerReady(void* root){if(root&&!pendingOwners.count(root))pendingOwners.emplace(root,Ref::Make(root,true));}
-std::string OwnerPath(void* root){for(const auto& row:FullResourceReload::liveParts)if(row.second.root.Get()==root)return row.second.path;auto ui=FullResourceReload::liveUIModels.find(root);if(ui!=FullResourceReload::liveUIModels.end())return ui->second.path;for(const auto& row:FullResourceReload::liveHelperModels)if(row.second.root.Get()==root)return "render-helper";return {};}
-void AddStamps(AttachmentStamps& result,unsigned source,const std::string& package,const std::map<std::string,EffectAttachment>& effects,bool applyOverrides){for(const auto& row:effects){const EffectAttachment* effect=&row.second;if(applyOverrides){auto replacement=overrides.find({package,row.first});if(replacement!=overrides.end())effect=&replacement->second;}if(IsGamePrefabReplacement(*effect))continue;AttachmentStamp stamp;stamp.part=effect->part;stamp.bone=effect->bone;stamp.variable=effect->variable;stamp.nativeKey=effect->native?effect->native->key:std::string();stamp.targetPrefab=effect->targetPrefab;stamp.rendererPath=effect->rendererPath;stamp.targetPath=effect->targetPath;stamp.targetAsset=effect->targetAsset;stamp.targetBones=effect->targetBones;stamp.autoplay=effect->autoplay;stamp.position=effect->position;stamp.rotation=effect->rotation;stamp.scale=effect->scale;result.emplace(std::make_tuple(source,package,row.first),std::move(stamp));}}
-AttachmentStamps CaptureStamps(){AttachmentStamps result;auto graph=RuntimeControls::controlGraph;if(graph)for(const auto& p:*graph)if(!IsStandalonePackage(p)){AddStamps(result,0,p.id,p.effects,false);AddStamps(result,1,p.id,Effects(p),true);}if(standalone)for(const auto& p:*standalone)AddStamps(result,2,p.id,Effects(p),true);return result;}
+std::map<int,Ref> ReconcileOwners(){
+ // The game lifecycle directory collapses descendants under model roots.
+ // Attachment addresses belong to the exact root that completed its callback,
+ // e.g. a weapon helper below a character. Keep those proven live contexts
+ // when refreshing definitions; matching only the ancestor changes every
+ // relative Renderer path and leaves its child's old instance untouched.
+ auto owners=Native::Owners();
+ auto include=[&](const Ref& owner){auto root=owner.Get();if(RuntimeShapes::Alive(root))owners.emplace(FullResourceReload::Id(root),owner);};
+ for(const auto& row:bindings)include(row.second.owner);
+ for(const auto& row:pendingOwners)include(row.second);
+ for(const auto& row:retryOwners)include(row.second);
+ return owners;
+}
+std::string OwnerPath(void* root){for(const auto& row:FullResourceReload::liveParts)if(row.second.root.Get()==root)return row.second.path;auto ui=FullResourceReload::liveUIModels.find(root);if(ui!=FullResourceReload::liveUIModels.end())return ui->second.path;auto clone=FullResourceReload::liveControlledClones.find(root);if(clone!=FullResourceReload::liveControlledClones.end()&&clone->second.root.Get()==root)return clone->second.path;for(const auto& row:FullResourceReload::liveHelperModels)if(row.second.root.Get()==root)return "render-helper";return {};}
+void AddStamps(AttachmentStamps& result,unsigned source,const Package& package,const std::map<std::string,EffectAttachment>& effects,bool applyOverrides){for(const auto& row:effects){const EffectAttachment* effect=&row.second;if(applyOverrides){auto replacement=overrides.find({package.id,row.first});if(replacement!=overrides.end())effect=&replacement->second;}if(IsGamePrefabReplacement(*effect))continue;AttachmentStamp stamp;stamp.hierarchy=effect->hierarchy?RuntimeAuthorTransforms::Signature(package,*effect->hierarchy):std::string();stamp.node=effect->node;stamp.part=effect->part;stamp.bone=effect->bone;stamp.variable=effect->variable;stamp.nativeKey=effect->native?effect->native->key:std::string();stamp.targetPrefab=effect->targetPrefab;stamp.rendererPath=effect->rendererPath;stamp.targetPath=effect->targetPath;stamp.targetAsset=effect->targetAsset;stamp.targetBones=effect->targetBones;stamp.lodIdentity=EffectLodIdentity(*effect);stamp.autoplay=effect->autoplay;stamp.position=effect->position;stamp.rotation=effect->rotation;stamp.scale=effect->scale;result.emplace(std::make_tuple(source,package.id,row.first),std::move(stamp));}}
+AttachmentStamps CaptureStamps(){AttachmentStamps result;auto graph=RuntimeControls::controlGraph;if(graph)for(const auto& p:*graph)if(!IsStandalonePackage(p)){AddStamps(result,0,p,p.effects,false);AddStamps(result,1,p,Effects(p),true);}if(standalone)for(const auto& p:*standalone)AddStamps(result,2,p,Effects(p),true);return result;}
 bool HasMountEffects(const std::map<std::string,EffectAttachment>& effects){return std::any_of(effects.begin(),effects.end(),[](const auto& row){return !IsGamePrefabReplacement(row.second);});}
 void PublishPrefabReplacements(){auto packages=RuntimePackages();EffectDebug::PublishReplacements(packages);}
 void PrepareDiskReload(bool force=true){try{
@@ -66,13 +87,13 @@ void CommitResourceGeneration(const std::shared_ptr<const DemandLoadingProbe::In
 #endif
 void Stop(Binding& b){if(b.instance){--b.instance->generation->externalPins;Native::Retire(b.instance);b.instance.reset();}}
 void Release(Binding& b){Stop(b);if(b.generation){--b.generation->externalPins;b.generation.reset();Native::nativeWork=true;}}
-std::shared_ptr<Native::Generation> Acquire(const std::shared_ptr<const EiemEffectNative::Manifest>& manifest){
+std::shared_ptr<Native::Generation> Acquire(const std::shared_ptr<const EiemEffectNative::Manifest>& manifest,const std::string& contextPath={}){
  for(const auto& g:Native::generations)if(!g->finished&&g->manifest->key==manifest->key){
   bool same=g->manifest->prefab==manifest->prefab&&g->manifest->rootName==manifest->rootName&&g->manifest->root==manifest->root&&g->manifest->particles==manifest->particles&&g->manifest->bundles.size()==manifest->bundles.size();
   for(size_t i=0;same&&i<manifest->bundles.size();++i)same=g->manifest->bundles[i].hash==manifest->bundles[i].hash&&g->manifest->bundles[i].dependencies==manifest->bundles[i].dependencies;
-  Require(same,"effect native namespace reused with incompatible content");Require(!g->quarantined,"effect native namespace awaits safe cleanup: "+g->failure);++g->externalPins;return g;
+  Require(same,"effect native namespace reused with incompatible content");Require(!g->quarantined,"effect native namespace awaits safe cleanup: "+g->failure);if(g->contextPath.empty())g->contextPath=contextPath;++g->externalPins;return g;
  }
- auto g=std::make_shared<Native::Generation>();g->manifest=manifest;g->clock=NativeBundle::Clock();g->bundles.resize(manifest->bundles.size());g->externalPins=1;Native::generations.push_back(g);Native::nativeWork=true;return g;
+ auto g=std::make_shared<Native::Generation>();g->manifest=manifest;g->contextPath=contextPath;g->clock=NativeBundle::Clock();g->bundles.resize(manifest->bundles.size());g->externalPins=1;Native::generations.push_back(g);Native::nativeWork=true;return g;
 }
 void* Parent(void* root,void* renderer,const Package& p,const EffectAttachment& effect){
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::EffectMount);
@@ -95,34 +116,55 @@ void ModelReadyDetails(void* root,bool audit){
  if(!RuntimeShapes::Alive(root)){retryOwners.erase(root);return;}
  auto packages=RuntimePackages();
  bool any=false;for(auto p:packages)any|=!Effects(*p).empty();if(!any){retryOwners.erase(root);return;}performance.hit=true;bool retry=false;
+ DemandLoadingProbe::ObserveNativeMeshSource(root,OwnerPath(root));
  auto renderers=FullResourceReload::Components(root);
  for(auto package:packages){const auto& p=*package;std::map<std::string,EffectAttachment> effects=Effects(p);for(const auto& replacement:overrides)if(replacement.first.first==p.id)effects[replacement.first.second]=replacement.second;
- for(const auto& row:effects){const auto& e=row.second;if(IsGamePrefabReplacement(e))continue;std::vector<Ref> matched;
+  for(const auto& row:effects){const auto& e=row.second;if(IsGamePrefabReplacement(e))continue;std::vector<Ref> matched;std::unique_ptr<FullResourceReload::BoneHierarchy> rendererHierarchy;
+   auto rendererPath=[&](const Ref& r){if(!rendererHierarchy)rendererHierarchy=std::make_unique<FullResourceReload::BoneHierarchy>(root);auto go=Ref::Make(FullResourceReload::Call(FullResourceReload::api.componentGo,r.Get()),false);auto transform=FullResourceReload::Call(FullResourceReload::api.goTransform,go.Get());return rendererHierarchy->Relative(rendererHierarchy->Chain(transform),rendererHierarchy->root.Get());};
   // A postmodel and a gameplay/display prefab can share the same source Mesh.
-  // Verify renderer path + mesh identity/name + ordered skeleton palette below;
+  // Verify renderer address + proven logical Mesh identity + skeleton palette;
   // the author prefab is provenance, not a live instance address.
   // RuntimeControls prepares this Part's proven marker for EVERY target in
   // its Replace rule, including inactive LODs. Never fall back to a sibling
   // Part or an unverified same-name Mesh when the attachment has a Part.
-  for(const auto& r:renderers){auto mesh=RuntimeShapes::SourceMesh(r.Get());auto spec=RuntimeShapes::Match(mesh);if(spec&&((spec->package==p.id&&spec->part==e.part)||(e.part.empty()&&!e.targetPrefab.empty()&&RuntimeControls::controlGraph&&[&](){for(const auto& author:*RuntimeControls::controlGraph)if(author.id==spec->package)for(const auto& rule:author.rules)for(const auto& target:rule.second.targets)if(target.second.path==e.targetPath&&target.second.asset==e.targetAsset&&std::find(rule.second.parts.begin(),rule.second.parts.end(),spec->part)!=rule.second.parts.end())return true;return false;}())))matched.push_back(r);
-   else if(e.part.empty()&&RuntimeShapes::Alive(mesh)&&String(Call(RuntimeShapes::api.name,mesh))==e.targetAsset){auto go=Ref::Make(FullResourceReload::Call(FullResourceReload::api.componentGo,r.Get()),false);auto transform=FullResourceReload::Call(FullResourceReload::api.goTransform,go.Get());FullResourceReload::BoneHierarchy hierarchy(root);if(hierarchy.Relative(hierarchy.Chain(transform),hierarchy.root.Get())==e.rendererPath)matched.push_back(r);}}
+   for(const auto& r:renderers){auto mesh=RuntimeShapes::SourceMesh(r.Get());if(!RuntimeShapes::Alive(mesh))continue;
+    auto spec=RuntimeShapes::Match(mesh);bool provenPart=spec&&spec->package==p.id&&!e.part.empty()&&spec->part==e.part;
+    if(!provenPart&&!e.part.empty())continue;
+    auto identities=DemandLoadingProbe::ProvenNativeMeshIdentities(mesh);
+    if(spec&&e.part.empty()&&RuntimeControls::controlGraph)for(const auto& author:*RuntimeControls::controlGraph)if(author.id==spec->package)
+     for(const auto& rule:author.rules)if(std::find(rule.second.parts.begin(),rule.second.parts.end(),spec->part)!=rule.second.parts.end())
+      for(const auto& target:rule.second.targets)identities.insert(target.second);
+    if(DeclaredRendererMatches(e,e.rendererPath.empty()&&e.lodTargets.empty()?std::string():rendererPath(r),identities,provenPart))matched.push_back(r);}
   if(audit&&!matched.empty()){size_t packageRenderers=0;std::string sample;
    for(const auto& r:renderers){auto mesh=RuntimeShapes::SourceMesh(r.Get());auto spec=RuntimeShapes::Match(mesh);if(spec&&spec->package==p.id){++packageRenderers;if(sample.empty())sample=spec->part;}}
    Log("[EFFECT-ATTACHMENT-MATCH] package=%s effect=%s owner=%p scope=%s path=%s renderers=%zu packageRenderers=%zu matched=%zu requiredPart=%s samplePart=%s",p.id.c_str(),e.id.c_str(),root,FullResourceReload::liveUIModels.count(root)?"ui":"model-part",OwnerPath(root).c_str(),renderers.size(),packageRenderers,matched.size(),e.part.c_str(),sample.c_str());
   }
   std::map<void*,std::vector<Ref>> groups;
-  try{for(const auto& r:matched)groups[Parent(root,r.Get(),p,e)].push_back(r);}
+  try{void* staticAnchor=nullptr;if(e.lodAnchor&&!matched.empty()){
+    auto transform=Parent(root,matched.front().Get(),p,e);if(!rendererHierarchy)rendererHierarchy=std::make_unique<FullResourceReload::BoneHierarchy>(root);
+    auto chain=rendererHierarchy->Chain(transform);
+    for(auto ancestor:chain)if(rendererHierarchy->Relative(rendererHierarchy->Chain(ancestor),rendererHierarchy->root.Get())==e.lodAnchor->path){staticAnchor=ancestor;break;}
+    Require(staticAnchor,"effect stable LOD ancestor absent");
+   }
+   for(const auto& r:matched){auto target=e;if(!e.lodTargets.empty()){auto actual=rendererPath(r);for(const auto& lod:e.lodTargets)if(lod.renderer==actual)target.targetBones=lod.bones;}
+    groups[staticAnchor?staticAnchor:Parent(root,r.Get(),p,target)].push_back(r);}}
   catch(const std::exception& error){retry=true;Log("[EFFECT-ATTACHMENT-GAP] package=%s effect=%s reason=%s previousInstanceRetained=1",p.id.c_str(),e.id.c_str(),error.what());continue;}
   for(auto it=bindings.begin();it!=bindings.end();)if(std::get<0>(it->first)==root&&std::get<1>(it->first)==p.id&&std::get<2>(it->first)==e.id&&!groups.count(std::get<3>(it->first))){Release(it->second);it=bindings.erase(it);}else ++it;
   for(auto& group:groups){auto key=std::make_tuple(root,p.id,e.id,group.first);auto& matched=group.second;auto existing=bindings.find(key);
   if(existing!=bindings.end()){auto& old=existing->second;const auto& a=old.attachment;bool same=old.generation&&old.generation->manifest->key==e.native->key&&!old.failed&&a.part==e.part&&a.bone==e.bone&&a.variable==e.variable&&a.targetPrefab==e.targetPrefab&&a.rendererPath==e.rendererPath&&a.targetPath==e.targetPath&&a.targetAsset==e.targetAsset&&a.targetBones==e.targetBones&&a.position==e.position&&a.rotation==e.rotation&&a.scale==e.scale&&a.autoplay==e.autoplay;
+   if(same){same=EffectLodIdentity(a)==EffectLodIdentity(e)&&a.node==e.node&&bool(a.hierarchy)==bool(e.hierarchy)&&(!e.hierarchy||(old.mount&&old.mount->signature==RuntimeAuthorTransforms::Signature(p,*e.hierarchy)));}
    if(same){bool sameRenderers=old.renderers.size()==matched.size();for(size_t i=0;sameRenderers&&i<matched.size();++i)sameRenderers=old.renderers[i].Get()==matched[i].Get();
     // A late/retired LOD only changes which Renderer supplies visibility and
     // layer. Keep the bone's running simulation and native resource pins.
     if(!sameRenderers){old.renderers=std::move(matched);Log("[EFFECT-ATTACHMENT-LOD] package=%s effect=%s owner=%p renderers=%zu lodCoverage=all playbackRetained=1",p.id.c_str(),e.id.c_str(),root,old.renderers.size());}continue;}}
-  try{Binding b;b.package=p.id;b.id=e.id;b.variable=e.variable;b.attachment=e;b.changed=true;b.owner=Ref::Make(root,true);b.parent=Ref::Make(group.first,false);b.renderers=std::move(matched);b.generation=Acquire(e.native);
+  try{Binding b;b.package=p.id;b.id=e.id;b.variable=e.variable;b.attachment=e;b.changed=true;b.owner=Ref::Make(root,true);b.parent=Ref::Make(group.first,false);b.renderers=std::move(matched);
+   if(e.lodAnchor||e.hierarchy)b.anchor=std::make_shared<AnchorPin>();
+   if(e.lodAnchor)b.anchor->basis=RuntimeAuthorTransforms::AcquireBasis(root,group.first,p,e);
+   if(e.hierarchy){b.mount=RuntimeAuthorTransforms::Acquire(root,b.anchor->basis?b.anchor->basis->tip.Get():group.first,p,e.hierarchy);b.anchor->mount=b.mount;}
+   auto contextPath=OwnerPath(root);if(contextPath.rfind("assets/",0)!=0&&contextPath.rfind("packages/",0)!=0)contextPath=e.targetPath;
+   b.generation=Acquire(e.native,contextPath);
    if(existing!=bindings.end()){b.instance=std::move(existing->second.instance);if(existing->second.generation)--existing->second.generation->externalPins;existing->second=std::move(b);}else bindings.emplace(key,std::move(b));
-   Log("[EFFECT-ATTACHMENT-BIND] package=%s effect=%s part=%s bone=%s owner=%p scope=%s renderers=%zu lodCoverage=all path=%s",p.id.c_str(),e.id.c_str(),e.part.c_str(),e.bone.c_str(),root,FullResourceReload::liveUIModels.count(root)?"ui":"model-part",bindings.at(key).renderers.size(),OwnerPath(root).c_str());
+    Log("[EFFECT-ATTACHMENT-BIND] package=%s effect=%s part=%s bone=%s owner=%p scope=%s renderers=%zu targetRenderer=%s path=%s",p.id.c_str(),e.id.c_str(),e.part.c_str(),e.bone.c_str(),root,FullResourceReload::liveUIModels.count(root)?"ui":"model-part",bindings.at(key).renderers.size(),e.rendererPath.c_str(),OwnerPath(root).c_str());
   }catch(const std::exception& error){Log("[EFFECT-ATTACHMENT-GAP] package=%s effect=%s reason=%s previousInstanceRetained=1",p.id.c_str(),e.id.c_str(),error.what());}
   }
  }}
@@ -133,11 +175,11 @@ void Reload(const std::string& package,const EffectAttachment& effect){
  Require(RuntimeControls::controlGraph&&RuntimeShapes::Main(),"attachment reload requires live Unity graph");const Package* owner=nullptr;for(const auto& p:*RuntimeControls::controlGraph)if(p.id==package)owner=&p;
  Require(owner&&owner->effects.count(effect.id),"attachment reload requires an exported Mod effect declaration");const auto& previous=owner->effects.at(effect.id);
  Require(previous.part==effect.part&&previous.bone==effect.bone&&previous.variable==effect.variable,"changing effect owner/bone/control requires Mod export and F10");
- overrides[{package,effect.id}]=effect;activeStamps=CaptureStamps();stampsInitialized=true;for(const auto& row:Native::Owners())ModelReady(row.second.Get());
+ overrides[{package,effect.id}]=effect;activeStamps=CaptureStamps();stampsInitialized=true;for(const auto& row:ReconcileOwners())ModelReady(row.second.Get());
  Log("[EFFECT-ATTACHMENT-RELOAD] package=%s effect=%s key=%s modelRebuilds=0",package.c_str(),effect.id.c_str(),effect.native->key.c_str());
 }
 void OwnerReleasing(void* root) noexcept {
- if(!root)return;pendingOwners.erase(root);retryOwners.erase(root);if(!RuntimeShapes::Main())return;
+ if(!root)return;pendingOwners.erase(root);retryOwners.erase(root);if(!RuntimeShapes::Main())return;FullResourceReload::ForgetControlledClone(root);
  try{for(auto it=bindings.begin();it!=bindings.end();)if(it->second.owner.Get()==root){Release(it->second);it=bindings.erase(it);}else ++it;
   if(RuntimeShapes::Alive(root)&&!RuntimeMaterials::bound.empty())for(const auto& renderer:FullResourceReload::Components(root))RuntimeMaterials::Forget(renderer.Get());
  }catch(const std::exception& e){Log("[EFFECT-ATTACHMENT-GAP] ownerRelease=%s",e.what());}
@@ -145,7 +187,7 @@ void OwnerReleasing(void* root) noexcept {
 void Frame(){
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::EffectFrame);
  bool diskReload=false,forceDiskReload=false;
- if(reloadPending.load()){std::lock_guard<std::mutex> lock(reloadMutex);if(reloadPending.exchange(false)){standalone=std::move(pendingStandalone);overrides.clear();diskEffects=std::move(pendingEffects);pendingEffects.clear();diskReload=true;forceDiskReload=pendingForceReload;pendingForceReload=false;needed=false;for(const auto& p:*standalone)needed|=HasMountEffects(Effects(p));for(const auto& p:diskEffects)needed|=HasMountEffects(p.second);if(forceDiskReload)for(auto& b:bindings){b.second.failed=false;if(b.second.generation&&b.second.generation->phase==Native::Phase::Rejected)b.second.generation->retryRequested=true;}PublishPrefabReplacements();}}
+ if(reloadPending.load()){std::lock_guard<std::mutex> lock(reloadMutex);if(reloadPending.exchange(false)){standalone=std::move(pendingStandalone);overrides.clear();diskEffects=std::move(pendingEffects);pendingEffects.clear();diskReload=true;forceDiskReload=pendingForceReload;pendingForceReload=false;needed=false;for(const auto& p:*standalone)needed|=HasMountEffects(Effects(p));for(const auto& p:diskEffects)needed|=HasMountEffects(p.second);if(forceDiskReload)for(auto& b:bindings){b.second.failed=false;if(b.second.mount)b.second.mount->failed.clear();if(b.second.generation&&b.second.generation->phase==Native::Phase::Rejected)b.second.generation->retryRequested=true;}PublishPrefabReplacements();}}
   bool controlsChanged=revision!=RuntimeControls::revision;
  if(controlsChanged){revision=RuntimeControls::revision;if(!diskReload)overrides.clear();needed=false;if(RuntimeControls::controlGraph)for(const auto& p:*RuntimeControls::controlGraph)if(!IsStandalonePackage(p))needed|=HasMountEffects(Effects(p));PublishPrefabReplacements();}
  if(standalone)for(const auto& p:*standalone)needed|=HasMountEffects(Effects(p));bool sourceChanged=controlsChanged||diskReload;bool definitionsChanged=false;
@@ -153,8 +195,11 @@ void Frame(){
  bool reconcileAll=definitionsChanged||(diskReload&&forceDiskReload);
  if(!needed&&bindings.empty()&&!sourceChanged){pendingOwners.clear();return;}if(!Native::enabled||!RuntimeShapes::Main())return;
  if(reconcileAll){
+  // Capture exact owners before removing obsolete bindings: replacing an
+  // attachment ID must still allow the new declaration to bind that root.
+  auto owners=ReconcileOwners();
   for(auto it=bindings.begin();it!=bindings.end();){bool exists=false;for(const auto& p:*standalone)exists|=p.id==it->second.package&&Effects(p).count(it->second.id);if(RuntimeControls::controlGraph)for(const auto& p:*RuntimeControls::controlGraph)if(!IsStandalonePackage(p))exists|=p.id==it->second.package&&Effects(p).count(it->second.id);if(!exists){Release(it->second);it=bindings.erase(it);}else ++it;}
-  pendingOwners.clear();retryOwners.clear();auto owners=Native::Owners();for(auto& owner:owners)ModelReadyDetails(owner.second.Get(),forceDiskReload);reconcileClock=NativeBundle::Clock();
+  pendingOwners.clear();retryOwners.clear();for(auto& owner:owners)ModelReadyDetails(owner.second.Get(),forceDiskReload);reconcileClock=NativeBundle::Clock();
   if(forceDiskReload){for(auto& row:bindings){auto& b=row.second;Log("[EFFECT-ATTACHMENT-STATE] package=%s effect=%s owner=%p parent=%p renderers=%zu instance=%p failed=%d desiredDefault=%d",b.package.c_str(),b.id.c_str(),b.owner.Get(),b.parent.Get(),b.renderers.size(),b.instance?b.instance->object.Get():nullptr,int(b.failed),int(b.attachment.autoplay));
     if(b.instance){Native::Observation::Capture(*b.instance,"after-F10");b.instance->observationClock=NativeBundle::Clock();b.instance->observationStep=0;}}}
   Log("[EFFECT-RELOAD] committed standalone=%zu owners=%zu bindings=%zu diskReload=%d definitionsChanged=%d forced=%d modelRebuilds=0",standalone->size(),owners.size(),bindings.size(),int(diskReload),int(definitionsChanged),int(forceDiskReload));}
@@ -171,7 +216,7 @@ void Frame(){
   const EiemVariables* values=RuntimeControls::variables.count(b.package)?&RuntimeControls::EffectiveValues(b.package):nullptr;bool desired=active&&(!values||!values->count(b.variable)?b.attachment.autoplay:values->at(b.variable)>=.5);bool visible=false;Ref layerSource;
   if(!desired&&!b.instance&&(uintptr_t(std::get<0>(it->first))>>4)%64!=cleanupTick%64){++it;continue;}
   auto owner=b.owner.Get();bool ownerAlive=RuntimeShapes::Alive(owner);
-  if(!ownerAlive||!RuntimeShapes::Alive(b.parent.Get())){if(ownerAlive)retryOwners[owner]=Ref::Make(owner,true);Release(b);it=bindings.erase(it);continue;}
+  if(!ownerAlive||!RuntimeShapes::Alive(b.parent.Get())){if(ownerAlive)retryOwners[owner]=Ref::Make(owner,true);else FullResourceReload::ForgetControlledClone(std::get<0>(it->first));Release(b);it=bindings.erase(it);continue;}
   // The game's scene cleanup can retire an unmanaged effect independently of
   // its model. A strong managed handle does not keep the Unity object alive.
   if(b.instance&&(!RuntimeShapes::Alive(b.instance->object.Get())||!RuntimeShapes::Scalar<unsigned char>(Native::api.activeSelf,b.instance->object.Get()))){Stop(b);b.failed=false;b.changed=true;Log("[EFFECT-ATTACHMENT-RECOVER] package=%s effect=%s owner=%p reason=clone-retired-or-disabled",b.package.c_str(),b.id.c_str(),b.owner.Get());}
@@ -182,12 +227,12 @@ void Frame(){
      // F10 may retry identical content only after all prior native requests and
      // owned containers drain. Preserve the shared generation identity/pins;
      // no clone can have been created from a rejected preparation.
-     if(!g.quarantined&&Native::Drain(g)){auto manifest=g.manifest;auto pins=g.externalPins;g=Native::Generation{};g.manifest=std::move(manifest);g.externalPins=pins;g.clock=NativeBundle::Clock();g.bundles.resize(g.manifest->bundles.size());Log("[EFFECT-ATTACHMENT-RETRY] key=%s previousRequestsDrained=1",g.manifest->key.c_str());}
+     if(!g.quarantined&&Native::Drain(g)){auto manifest=g.manifest;auto contextPath=std::move(g.contextPath);auto pins=g.externalPins;g=Native::Generation{};g.manifest=std::move(manifest);g.contextPath=std::move(contextPath);g.externalPins=pins;g.clock=NativeBundle::Clock();g.bundles.resize(g.manifest->bundles.size());Log("[EFFECT-ATTACHMENT-RETRY] key=%s previousRequestsDrained=1",g.manifest->key.c_str());}
      else if(g.quarantined)g.retryRequested=false;
     }
     while(g.phase!=Native::Phase::Rejected&&NativeBundle::Ms(clock)<1.&&Native::Step(g))if(g.phase==Native::Phase::Ready){Log("[EFFECT-ATTACHMENT-READY] key=%s prepareMs=%.3f",g.manifest->key.c_str(),NativeBundle::Ms(g.clock));break;}}
    catch(const std::exception& e){g.phase=Native::Phase::Rejected;g.retryRequested=false;g.failure=e.what();b.failed=true;Log("[EFFECT-ATTACHMENT-GAP] prepare=%s previousInstanceRetained=1",e.what());}}
-  if(!b.failed&&g.phase==Native::Phase::Ready&&(b.changed||!b.instance||b.instance->generation!=b.generation))try{auto next=Native::CreateInstance(b.generation,b.owner.Get(),b.parent.Get(),&b.attachment,layerSource.Get(),FullResourceReload::liveUIModels.count(b.owner.Get())!=0);++b.generation->externalPins;Stop(b);b.instance=std::move(next);b.changed=false;Log("[EFFECT-ATTACHMENT-PLAY] package=%s effect=%s owner=%p layer=%d particles=%zu readyToPlayMs=%.3f modelRebuilds=0",b.package.c_str(),b.id.c_str(),b.owner.Get(),b.instance->layer,b.instance->particles.size(),NativeBundle::Ms(clock));}
+  if(!b.failed&&g.phase==Native::Phase::Ready&&(b.changed||!b.instance||b.instance->generation!=b.generation))try{auto parent=b.mount?b.mount->nodes.at(b.attachment.node).Get():b.anchor&&b.anchor->basis?b.anchor->basis->tip.Get():b.parent.Get();auto next=Native::CreateInstance(b.generation,b.owner.Get(),parent,&b.attachment,layerSource.Get(),FullResourceReload::liveUIModels.count(b.owner.Get())!=0);next->anchorOwner=b.anchor;++b.generation->externalPins;Stop(b);b.instance=std::move(next);b.changed=false;Log("[EFFECT-ATTACHMENT-PLAY] package=%s effect=%s owner=%p layer=%d particles=%zu readyToPlayMs=%.3f modelRebuilds=0",b.package.c_str(),b.id.c_str(),b.owner.Get(),b.instance->layer,b.instance->particles.size(),NativeBundle::Ms(clock));}
    catch(const std::exception& e){b.failed=true;Log("[EFFECT-ATTACHMENT-GAP] play=%s previousInstanceRetained=1",e.what());}
   if(b.instance&&!b.failed)try{Native::FollowLayer(*b.instance,layerSource.Get());Native::Observation::Tick(*b.instance);}catch(const std::exception& e){b.failed=true;Log("[EFFECT-ATTACHMENT-GAP] layer=%s previousInstanceRetained=1",e.what());}
   ++it;

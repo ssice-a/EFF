@@ -27,17 +27,24 @@ struct Api {
  void *position=nullptr,*rotation=nullptr,*scale=nullptr,*layer=nullptr,*setLayer=nullptr;
  void *getComponent=nullptr,*renderInUI=nullptr,*setRenderInUI=nullptr;
  Ref particleType,particleRendererType,bundleType;
+ std::map<std::string,Ref> gameTypes;
 } api;
 std::atomic<bool> enabled{false};
 struct Bundle {Ref request,object;bool done=false,owned=false,unloadCalled=false;int id=0;};
 enum class Phase {Lease,Bundles,Asset,Ready,Rejected};
 struct Generation {
  std::shared_ptr<const Manifest> manifest;Phase phase=Phase::Lease;uint64_t ticket=0,clock=0;
+ std::string contextPath;
  FullResourceReload::Lease lease;std::vector<Bundle> bundles;Ref assetRequest,prefab;
+ std::vector<FullResourceReload::Lease> gameLeases;
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+ DemandLoadingProbe::EffectLease resources;
+#endif
  std::set<int> priorBundleIds;bool assetDone=false,quarantined=false,finished=false;
  size_t externalPins=0;bool retryRequested=false;std::string failure;
 };
 struct Instance {
+ std::shared_ptr<void> anchorOwner;
  std::shared_ptr<Generation> generation;Ref object,owner,parent,manager;int ownerId=0;
  std::vector<Ref> particles,layerObjects;int layer=-1;
  uint64_t observationClock=0;unsigned observationStep=0;
@@ -50,16 +57,84 @@ std::vector<std::shared_ptr<Generation>> generations;
 std::vector<std::shared_ptr<Instance>> retiredInstances;
 bool firstFramePending=false;uint64_t firstFrameClock=0;
 bool nativeWork=false;
+std::shared_ptr<const EiemInputSpanView::View> SourceInput(const Manifest& manifest,size_t index){
+ const auto& source=manifest.bundles.at(index);std::shared_ptr<const EiemInputSpanView::View> view;
+ if(source.open)view=source.open();
+ else {Require(source.Data()&&source.Size()&&source.Owner(),"effect native bytes absent");auto owner=source.Owner();auto data=source.Data();auto size=source.Size();
+  view=std::make_shared<const EiemInputSpanView::View>(std::vector<EiemInputSpanView::Span>{{0,0,size,{}}},std::vector<size_t>{size},
+   [owner,data,size](size_t id,size_t at,unsigned char* out,size_t n){Require(!id&&at<=size&&n<=size-at,"effect source range differs");std::memcpy(out,data+at,n);});}
+ Require(view&&view->Size()==source.Size(),"effect native view extent differs");
+ return view;
+}
+std::shared_ptr<const EiemInputSpanView::View> RuntimeInput(const Manifest& manifest,size_t index){
+ auto view=SourceInput(manifest,index);
+ return EiemEffectRelocation::Bind(view,index,manifest.gameResources,[](const auto& resource)->EiemEffectRelocation::Reference{
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+  return DemandLoadingProbe::ResolveEffectLogicalResource(resource);
+#else
+  throw std::runtime_error("effect logical resource resolution requires the production game manifest");
+#endif
+ });
+}
 struct ReplacementDefinition {std::string package,effect,target;std::shared_ptr<const Manifest> manifest;};
-struct LoadedReplacement {std::shared_ptr<const Manifest> manifest;std::vector<Ref> bundles;Ref prefab;};
+struct LoadedReplacement {std::shared_ptr<const Manifest> manifest;std::vector<Ref> bundles;Ref prefab;std::vector<FullResourceReload::Lease> gameLeases;
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+ DemandLoadingProbe::EffectLease resources;
+#endif
+};
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+DemandLoadingProbe::EffectLease PrepareAuthorResources(const Manifest& manifest,const std::string& contextPath={}){
+ std::vector<std::shared_ptr<const EiemInputSpanView::View>> inputs;
+ for(size_t i=0;i<manifest.bundles.size();++i)inputs.push_back(SourceInput(manifest,i));
+ return DemandLoadingProbe::PrepareEffectResources(manifest,inputs,contextPath);
+}
+#endif
 std::map<std::string,ReplacementDefinition> replacementDefinitions;
 std::set<std::string> replacementConflicts;
 std::map<std::string,LoadedReplacement> loadedReplacements;
+std::vector<LoadedReplacement> retiredReplacements;
 std::vector<Ref> Particles(void* root);
-void ReleaseReplacement(LoadedReplacement& loaded) noexcept{
- try{for(const auto& bundle:loaded.bundles)if(RuntimeShapes::Alive(bundle.Get())){unsigned char destroy=0;void* args[]={&destroy};Call(NativeBundle::api.unload,bundle.Get(),args);}}
+bool GameLeases(const Manifest& manifest,std::vector<FullResourceReload::Lease>& leases){
+ const auto& native=FullResourceReload::api;if(leases.empty())leases.resize(manifest.gameResources.size());
+ Require(leases.size()==manifest.gameResources.size(),"effect game dependency count differs");
+ for(size_t i=0;i<leases.size();++i){auto& lease=leases[i];const auto& resource=manifest.gameResources[i];if(lease.verified)continue;
+  // Game Material/Texture paths in an AssetBundle are not all public
+  // ResourceManager entries. Loading their source Prefab pins the game's own
+  // dependency closure, which supplies the PPtrs before our Prefab is loaded.
+  // The source is never cloned, activated, or registered as a playing effect.
+  bool fromPrefab=!resource.sourcePrefab.empty();
+  if(fromPrefab)for(size_t j=0;j<i;++j)if(manifest.gameResources[j].sourcePrefab==resource.sourcePrefab){
+    const auto& previous=manifest.gameResources[j].sourceRoot;
+    Require(previous.empty()||resource.sourceRoot.empty()||previous==resource.sourceRoot,"effect game source Prefab identity differs");
+    if(!leases[j].verified)return false;
+    if(!resource.sourceRoot.empty())Require(String(Call(RuntimeShapes::api.name,leases[j].source.Get()))==resource.sourceRoot,"effect game source Prefab name differs");
+    lease=leases[j];lease.shared=true;break;
+  }
+  if(lease.verified)continue;
+  const auto& path=fromPrefab?resource.sourcePrefab:resource.path;
+  if(!lease.handle.Get()){auto type=api.gameTypes.find(resource.type);Require(type!=api.gameTypes.end(),"unsupported effect game resource type: "+resource.type);FullResourceReload::SourceReadScope scope;lease.pathHash=FullResourceReload::Path(path);void* args[]={FullResourceReload::Self(lease.pathHash,native.pathClass),fromPrefab?FullResourceReload::prefabType.Get():type->second.Get(),FullResourceReload::api.rootCategory.Data(),FullResourceReload::api.priority.Data()};lease.handle=Ref::Make(Call(native.load,nullptr,args),false);Require(lease.handle.Get(),"effect game resource request returned null: "+path);}
+  auto self=FullResourceReload::Self(lease.handle,native.handleClass);if(!RuntimeShapes::Scalar<unsigned char>(native.done,self))return false;lease.done=true;
+  Require(!RuntimeShapes::Scalar<unsigned char>(native.error,self),"effect game resource load failed: "+path);FullResourceReload::SourceReadScope scope;lease.source=Ref::Make(Call(native.get,self),false);Require(RuntimeShapes::Alive(lease.source.Get()),"effect game resource missing: "+path);
+  auto expectedName=fromPrefab?resource.sourceRoot:resource.asset;
+  if(!expectedName.empty())Require(String(Call(RuntimeShapes::api.name,lease.source.Get()))==expectedName,"effect game resource asset name differs: "+path);
+  lease.verified=true;
+  Log("[EFFECT-GAME-RESOURCE] path=%s type=%s asset=%s sourcePrefab=%s owner=game payloadCopied=0 sourceInstantiated=0",resource.path.c_str(),resource.type.c_str(),resource.asset.c_str(),resource.sourcePrefab.c_str());
+ }return true;
+}
+bool DrainGameLeases(std::vector<FullResourceReload::Lease>& leases){
+ const auto& native=FullResourceReload::api;for(auto& lease:leases){if(lease.handle.Get()&&!lease.done){if(!RuntimeShapes::Scalar<unsigned char>(native.done,FullResourceReload::Self(lease.handle,native.handleClass)))return false;lease.done=true;}}
+ for(auto& lease:leases)FullResourceReload::Dispose(lease);return true;
+}
+bool ReleaseReplacement(LoadedReplacement& loaded) noexcept{
+ try{
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+  if(loaded.resources){loaded.prefab={};loaded.bundles.clear();loaded.resources->Release();loaded.resources.reset();}
+  else
+#endif
+  for(const auto& bundle:loaded.bundles)if(RuntimeShapes::Alive(bundle.Get())){unsigned char destroy=0;void* args[]={&destroy};Call(NativeBundle::api.unload,bundle.Get(),args);}}
  catch(const std::exception& e){Log("[EFFECT-PREFAB-RELEASE-GAP] reason=%s loadedObjectRetained=0",e.what());}
- loaded.prefab={};loaded.bundles.clear();loaded.manifest.reset();
+ try{if(!DrainGameLeases(loaded.gameLeases))return false;}catch(const std::exception& e){Log("[EFFECT-GAME-RESOURCE-RELEASE-GAP] reason=%s",e.what());return false;}
+ loaded.gameLeases.clear();loaded.prefab={};loaded.bundles.clear();loaded.manifest.reset();return true;
 }
 void PublishReplacements(const std::vector<const Package*>& packages){
  std::map<std::string,ReplacementDefinition> next;std::set<std::string> conflicts;
@@ -69,7 +144,7 @@ void PublishReplacements(const std::vector<const Package*>& packages){
   else if(!found->second.manifest||!effect.native||found->second.manifest->key!=effect.native->key||found->second.manifest->prefab!=effect.native->prefab||found->second.manifest->rootName!=effect.native->rootName)conflicts.insert(path);
  }
  for(auto it=loadedReplacements.begin();it!=loadedReplacements.end();){auto desired=next.find(it->first);
-  if(conflicts.count(it->first)||desired==next.end()||!desired->second.manifest||!it->second.manifest||desired->second.manifest->key!=it->second.manifest->key){ReleaseReplacement(it->second);it=loadedReplacements.erase(it);}else ++it;
+  if(conflicts.count(it->first)||desired==next.end()||!desired->second.manifest||!it->second.manifest||desired->second.manifest->key!=it->second.manifest->key){if(!ReleaseReplacement(it->second))retiredReplacements.push_back(std::move(it->second));it=loadedReplacements.erase(it);}else ++it;
  }
  replacementDefinitions=std::move(next);replacementConflicts=std::move(conflicts);
  for(const auto& path:replacementConflicts)Log("[EFFECT-PREFAB-CONFLICT] path=%s mode=replace_game_prefab mods=multiple gameResourcePreserved=1",path.c_str());
@@ -86,6 +161,14 @@ void* LoadReplacement(const ReplacementDefinition& definition){
  Require(!loaded.manifest||loaded.manifest->key==manifest->key,"replacement generation changed without retirement");
  if(!loaded.manifest){loaded.manifest=manifest;loaded.bundles.resize(manifest->bundles.size());}
  Require(loaded.bundles.size()==manifest->bundles.size(),"replacement cached Bundle count differs");
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+ if((manifest->unifiedResources||!manifest->authorResources.empty())&&!loaded.resources)loaded.resources=PrepareAuthorResources(*manifest,definition.target);
+ if(loaded.resources)for(size_t i=0;i<loaded.bundles.size();++i)loaded.bundles[i]=Ref::Make(DemandLoadingProbe::EffectResourceBundle(loaded.resources,i),false);
+ else
+#else
+ Require(!manifest->unifiedResources&&manifest->authorResources.empty(),"effect author Resources require the production shared graph");
+#endif
+ Require(GameLeases(*manifest,loaded.gameLeases),"effect game resources still loading; original prefab retained until ready");
  loaded.prefab={}; // Only a newly validated asset may enter the fast-path cache.
  auto clock=NativeBundle::Clock();size_t reused=0,submitted=0;
  {
@@ -96,7 +179,7 @@ void* LoadReplacement(const ReplacementDefinition& definition){
   for(size_t i=0;i<manifest->bundles.size();++i){
    if(RuntimeShapes::Alive(loaded.bundles[i].Get())){++reused;continue;}
    const auto& source=manifest->bundles[i];Ref bundle;
-   if(source.open){auto view=source.open();Require(view&&view->Size()==source.Size(),"replacement effect native view extent differs");bundle=Ref::Make(NativeBundle::LoadView(view,0,false),false);}
+   if(source.open||std::any_of(manifest->gameResources.begin(),manifest->gameResources.end(),[](const auto& r){return !r.patches.empty();})){auto view=RuntimeInput(*manifest,i);bundle=Ref::Make(NativeBundle::LoadView(view,0,false),false);}
    else{Require(source.Data()&&source.Size()&&source.Owner(),"replacement effect native bytes absent");bundle=Ref::Make(NativeBundle::LoadBytes(source.Data(),source.Size(),source.Owner(),0,false),false);}
    Require(RuntimeShapes::Alive(bundle.Get()),"replacement effect Bundle load returned null: bundle="+std::to_string(i));auto id=FullResourceReload::Id(bundle.Get());
    Require(!prior.count(id)&&created.insert(id).second,"replacement effect Bundle aliases a live container");loaded.bundles[i]=std::move(bundle);++submitted;
@@ -159,6 +242,20 @@ std::map<int,Ref> Owners(){
   for(const auto& known:roots)if(FullResourceReload::RootContains(known.second.Get(),candidate.second.Get())){covered=true;break;}
   if(!covered)for(const auto& known:helperRoots)if(known.first!=candidate.first&&FullResourceReload::RootContains(known.second.Get(),candidate.second.Get())){covered=true;break;}
   if(!covered)roots.emplace(candidate);
+ }
+ // These instances came through a verified native clone completion. Sources
+ // remain templates; only completed live clones enter the owner directory.
+ std::map<int,Ref> cloneRoots;
+ for(auto it=FullResourceReload::liveControlledClones.begin();it!=FullResourceReload::liveControlledClones.end();){
+  auto root=it->second.root.Get();if(!RuntimeShapes::Alive(root)){
+   auto retired=it++->first;FullResourceReload::ForgetControlledClone(retired);++FullResourceReload::ownerRevision;continue;
+  }
+  cloneRoots.emplace(FullResourceReload::Id(root),it->second.root);++it;
+ }
+ for(const auto& candidate:cloneRoots){bool covered=false;
+  for(const auto& known:roots)if(FullResourceReload::RootContains(known.second.Get(),candidate.second.Get())){covered=true;break;}
+  if(!covered)for(const auto& known:cloneRoots)if(known.first!=candidate.first&&FullResourceReload::RootContains(known.second.Get(),candidate.second.Get())){covered=true;break;}
+  if(!covered)roots.emplace(candidate);
  }return roots;
 }
 Ref Owner(int id){auto owners=Owners();auto it=owners.find(id);Require(it!=owners.end(),"effect target model instance is no longer owned by the game");return it->second;}
@@ -203,6 +300,13 @@ bool Step(Generation& g){
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::EffectLoad);performance.hit=true;
  const auto& native=FullResourceReload::api;
  if(g.phase==Phase::Lease){
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+  if((g.manifest->unifiedResources||!g.manifest->authorResources.empty())&&!g.resources)g.resources=PrepareAuthorResources(*g.manifest,g.contextPath);
+  if(g.resources){for(size_t i=0;i<g.bundles.size();++i){auto& b=g.bundles[i];b.object=Ref::Make(DemandLoadingProbe::EffectResourceBundle(g.resources,i),false);b.id=FullResourceReload::Id(b.object.Get());b.done=true;}
+    g.phase=Phase::Asset;return true;}
+#else
+  Require(!g.manifest->unifiedResources&&g.manifest->authorResources.empty(),"effect author Resources require the production shared graph");
+#endif
   if(!g.lease.handle.Get()){
    g.lease.pathHash=FullResourceReload::Path(g.manifest->prefab);void* args[]={FullResourceReload::Self(g.lease.pathHash,native.pathClass),FullResourceReload::prefabType.Get(),FullResourceReload::api.rootCategory.Data(),FullResourceReload::api.priority.Data()};
    g.lease.handle=Ref::Make(Call(native.load,nullptr,args),false);Require(g.lease.handle.Get(),"effect source lease returned null");return true;
@@ -211,6 +315,7 @@ bool Step(Generation& g){
   Require(!RuntimeShapes::Scalar<unsigned char>(native.error,self),"effect original source lease failed");
   struct SourceRead {bool old=FullResourceReload::readingSource;SourceRead(){FullResourceReload::readingSource=true;}~SourceRead(){FullResourceReload::readingSource=old;}} sourceRead;
   g.lease.source=Ref::Make(Call(native.get,self),false);Require(RuntimeShapes::Alive(g.lease.source.Get()),"effect original prefab unavailable");
+  if(!GameLeases(*g.manifest,g.gameLeases))return false;
   // Public type-limited Bundle inventory once per preparation, no scene query.
   void* args[]={api.bundleType.Get()};auto array=Ref::Make(Call(api.allBundles,nullptr,args),false);
   for(auto bundle:FullResourceReload::ReferenceArray(array.Get()))if(RuntimeShapes::Alive(bundle))g.priorBundleIds.insert(FullResourceReload::Id(bundle));
@@ -219,7 +324,7 @@ bool Step(Generation& g){
  if(g.phase==Phase::Bundles){
   for(size_t i=0;i<g.bundles.size();++i){auto& b=g.bundles[i];if(b.done)continue;
    if(!b.request.Get()){const auto& source=g.manifest->bundles[i];
-    if(source.open){auto view=source.open();Require(view&&view->Size()==source.Size(),"effect lazy native view extent differs");b.request=Ref::Make(NativeBundle::LoadView(view,0,true),false);}
+    if(source.open||std::any_of(g.manifest->gameResources.begin(),g.manifest->gameResources.end(),[](const auto& r){return !r.patches.empty();})){auto view=RuntimeInput(*g.manifest,i);b.request=Ref::Make(NativeBundle::LoadView(view,0,true),false);}
     else{Require(EiemEffectNative::Archive(source.Data(),source.Size()),"effect requires the game native archive envelope; rebuild with the updated AnimeStudio");b.request=Ref::Make(NativeBundle::LoadBytes(source.Data(),source.Size(),source.Owner(),0,true),false);}
     Require(b.request.Get(),"effect async Bundle submission returned null");return true;}
    if(!RuntimeShapes::Scalar<unsigned char>(NativeBundle::api.done,b.request.Get()))continue;
@@ -302,11 +407,16 @@ bool Drain(Generation& g){
  for(auto& b:g.bundles)if(b.request.Get()&&!b.done){if(!RuntimeShapes::Scalar<unsigned char>(NativeBundle::api.done,b.request.Get()))return false;b.object=Ref::Make(Call(NativeBundle::api.bundle,b.request.Get()),false);b.done=true;
   if(RuntimeShapes::Alive(b.object.Get())){b.id=FullResourceReload::Id(b.object.Get());b.owned=!g.priorBundleIds.count(b.id);for(const auto& other:g.bundles)if(&other!=&b&&other.done&&other.object.Get()&&other.id==b.id)b.owned=false;}}
  if(g.assetRequest.Get()&&!g.assetDone){if(!RuntimeShapes::Scalar<unsigned char>(NativeBundle::api.done,g.assetRequest.Get()))return false;g.assetDone=true;}
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+ if(g.resources){g.prefab={};g.assetRequest={};g.bundles.clear();g.resources->Release();g.resources.reset();}
+#endif
  for(auto& b:g.bundles)if(b.object.Get()&&!b.owned){g.quarantined=true;Log("[EFFECT-NATIVE-QUARANTINE] ownershipUnproven=1 sourceLeaseRetained=1");return false;}
  for(auto& b:g.bundles)if(b.owned&&!b.unloadCalled){b.unloadCalled=true;if(RuntimeShapes::Alive(b.object.Get())){unsigned char destroy=0;void* args[]={&destroy};Call(NativeBundle::api.unload,b.object.Get(),args);}}
+ if(!DrainGameLeases(g.gameLeases))return false;
  FullResourceReload::Dispose(g.lease);g.finished=true;return true;
 }
 void Collect(){
+ for(auto it=retiredReplacements.begin();it!=retiredReplacements.end();)if(ReleaseReplacement(*it))it=retiredReplacements.erase(it);else ++it;
  EiemLoadPerformance::Scope performance(EiemLoadPerformance::EffectCollect);performance.hit=!retiredInstances.empty();
  for(auto it=retiredInstances.begin();it!=retiredInstances.end();){auto& i=**it;if(!i.quarantined&&!RuntimeShapes::Alive(i.object.Get()))it=retiredInstances.erase(it);else ++it;}
  for(auto it=generations.begin();it!=generations.end();){auto& g=**it;bool used=g.externalPins||candidate.get()==&g||ready.get()==&g||(playing&&playing->generation.get()==&g);
@@ -390,6 +500,7 @@ void Install(void** assemblies,size_t count){
   api.renderInUI=Exact(particleRenderer,"get_renderInUI",{},"System.Boolean",false);api.setRenderInUI=Exact(particleRenderer,"set_renderInUI",{"System.Boolean"},"System.Void",false);
   api.particleRendererType=FullResourceReload::Type(particleRenderer);
   api.particleType=FullResourceReload::Type(ps);api.bundleType=FullResourceReload::Type(FindClass("UnityEngine","AssetBundle",assemblies,count));
+  for(const char* name:{"Material","Mesh","Texture2D","Texture3D","Texture2DArray","Cubemap","CubemapArray","Sprite","Shader","AnimationClip"}){auto klass=FindClass("UnityEngine",name,assemblies,count);if(klass)api.gameTypes.emplace(name,FullResourceReload::Type(klass));}
   api.allBundles=method(FindClass("UnityEngine","Resources",assemblies,count),"FindObjectsOfTypeAll",{"System.Type"},"UnityEngine.Object[]",true);
     Observation::Install(ps,transform,assemblies,count);
     enabled=true;Status();Log("[EFFECT-NATIVE-READY] ownerLifecycle=model-part+ui-loader renderLayerFollow=1 uiRendererBinding=%d",int(api.getComponent&&api.renderInUI&&api.setRenderInUI));

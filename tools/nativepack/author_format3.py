@@ -85,7 +85,7 @@ def encode_physics_resource(resource_id, resource_file, native_data,
     return encode_resource_file(4, writer.finish(), native_data + author_data)
 
 
-def encode_effect_resource(resource_id, resource_file, native_data):
+def encode_effect_resource(resource_id, resource_file, native_data, layout=None):
     native_data = bytes(native_data)
     require(native_data, "format-3 Effect resource is empty")
     writer = _MetadataWriter()
@@ -95,7 +95,27 @@ def encode_effect_resource(resource_id, resource_file, native_data):
     writer.string(resource_file)
     writer.string(hashlib.sha256(native_data).hexdigest().upper())
     writer.integer(len(native_data))
+    if layout is not None:
+        from .effect_assembly import write_layout
+        write_layout(writer, layout)
     return encode_resource_file(5, writer.finish(), native_data)
+
+
+def read_effect_metadata(root, relative):
+    metadata, payload_bytes = _validate_effres(Path(root) / relative, 5)
+    reader = _MetadataReader(metadata)
+    require((reader.string(), reader.integer()) == (METADATA_STRUCTURE, 5),
+            'effect resource metadata structure differs: ' + relative)
+    result = dict(id=reader.string(), file=reader.string(), hash=reader.string(),
+                  bytes=reader.integer())
+    require(result['bytes'] == payload_bytes and len(result['hash']) == 64 and
+            all(c in '0123456789abcdefABCDEF' for c in result['hash']),
+            'effect resource extent/checksum declaration differs: ' + relative)
+    if reader.offset < len(metadata):
+        from .effect_assembly import read_layout
+        result['layout'] = read_layout(reader)
+    reader.end()
+    return result
 
 
 def encode_effect_author_resource(resource_id, resource_file, author_data):
@@ -109,6 +129,30 @@ def encode_effect_author_resource(resource_id, resource_file, author_data):
     writer.integer(len(author_data))
     writer.string(hashlib.sha256(author_data).hexdigest().upper())
     return encode_resource_file(7, writer.finish(), author_data)
+
+
+def encode_standalone_mesh(resource, relative):
+    """Use the ordinary Mesh envelope for an independently reusable FX Mesh."""
+    native = resource['native']
+    data, author = bytes(native['data']), bytes(resource['authorData'])
+    writer = _MetadataWriter()
+    writer.string(METADATA_STRUCTURE); writer.integer(1)
+    for value in (resource['id'], relative, native['path'], native['asset'],
+                  hashlib.sha256(data).hexdigest().upper(), ''):
+        writer.string(value)
+    writer.integer(resource['vertices']); writer.integer(resource['indices'])
+    for rows in (resource.get('bonePaths', ()), resource.get('shapeNames', ())):
+        writer.integer(len(rows))
+        for row in rows: writer.string(row)
+    # Particle meshes are static snapshots; no skeleton binding is invented.
+    require(not resource.get('bonePaths'), 'particle Mesh snapshot must be static')
+    writer.integer(0); writer.integer(0)
+    fields = sorted(resource['fieldData'])
+    writer.integer(len(fields))
+    for field in fields: writer.string(field)
+    writer.integer(len(data)); writer.integer(len(author))
+    writer.string(hashlib.sha256(author).hexdigest().upper())
+    return encode_resource_file(1, writer.finish(), data + author)
 
 
 def encode_skeleton_resource(resource_id, resource_file, skeleton_data):
@@ -292,7 +336,7 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
             default(variable, speed)
             animation = dict(id=identity, label=label, speedVariable=variable,
                 key=key or "", duration=duration, speed=speed, loop=loop,
-                autoplay=autoplay, tracks={}, boneTracks=[], sampleCount=sample_count,
+                autoplay=autoplay, tracks={}, boneTracks=[], nativeOutputs=[], sampleCount=sample_count,
                 sampleRate=sample_rate)
             animations[identity] = animation
             if key:
@@ -458,6 +502,23 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
         require(all(len(values) == sample_count for values in animation["tracks"].values()),
                 "mixed Animation tracks must share one sample timeline: " + identity)
 
+    native_mounts = {}
+    for effect in effects:
+        graph = effect.get('authorHierarchy')
+        if graph:
+            validate_author_hierarchy(graph)
+        for source in effect.get('_mount_native', ()):
+            require(graph and source['hierarchy'] == graph['id'], 'native mount hierarchy unresolved')
+            key = (source['id'], source['hierarchy'])
+            if key in native_mounts:
+                require(native_mounts[key] == source, 'shared native mount animation differs')
+                continue
+            native_mounts[key] = source
+            clip = merge_animation(source['id'], source['label'], source.get('key', ''),
+                source['duration'], source['speed'], source['loop'], source['autoplay'],
+                source['sample_count'], source.get('speedVariable'), source['sample_rate'])
+            clip['nativeOutputs'].append(source)
+
     effect_state = {}
     effect_bundle_labels = {}
     for effect in effects:
@@ -506,9 +567,11 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
                    targetPrefab=effect.get("targetPrefab", ""),
                    rendererPath=effect.get("rendererPath", ""),
                    targetPath=effect.get("targetPath", ""), targetAsset=effect.get("targetAsset", ""),
-                   targetBones=target_bones,
+                   targetBones=target_bones, authorHierarchy=effect.get("authorHierarchy"), mountNode=effect.get("mountNode", ""),
+                   lodTargets=effect.get('lodTargets', []),lodCoverage=effect.get('lodCoverage','all'),lodAnchor=effect.get('lodAnchor'),
                    native=dict(key=native["key"], prefab=native["prefab"], rootName=native["rootName"],
-                       root=native["root"], particles=native["particles"], bundles=[]))
+                       root=native["root"], particles=native["particles"], bundles=[],
+                       gameResources=native.get('gameResources', []), authorResources=native.get('authorResources', [])))
         for index, bundle in enumerate(native["bundles"]):
             file = effect_bundle_paths[native["key"] + "_" + str(index)]
             row["native"]["bundles"].append(dict(file=file, hash=bundle["hash"],
@@ -546,6 +609,7 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
                     effects=effect_state, authored_defaults=authored_defaults,
                     authored_controls=authored_controls)
 
+    require(not any(c.get('nativeOutputs') for c in animations.values()) and not any(e.get('authorHierarchy') for e in effect_state.values()), 'author Transform/native animations require controls=ini')
     writer = _ControlWriter()
     writer.string(CONTROLS_METADATA_STRUCTURE)
     writer.integer(6)
@@ -641,7 +705,10 @@ def _resource_stem(label, identity):
     label = str(label or "").strip()
     if not label:
         label = re.sub(r"_[0-9a-fA-F]{12,}$", "", str(identity))
-    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip(" ._-")
+    label = re.sub(r'(?:_[0-9a-fA-F]{12,})+$', '', label)
+    # Keep author names, including CJK, readable on disk. Only characters that
+    # Windows paths cannot represent are replaced; IDs have a separate grammar.
+    stem = re.sub(r'[<>:"/\\|?*\s\x00-\x1f]+', "_", label).strip(" ._-")
     if not stem:
         stem = "Resource"
     reserved = {"CON", "PRN", "AUX", "NUL"}
@@ -667,6 +734,66 @@ def named_resource_paths(rows, directory, extension):
         used.add(candidate.casefold())
         allocated[identity] = directory + "/" + candidate + extension
     return allocated
+
+
+def named_resource_ids(rows, prefix):
+    """Allocate short public IDs without leaking internal UUIDs or hashes."""
+    result, used = {}, set()
+    for number, (identity, label) in enumerate(rows, 1):
+        stem = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(label)).strip('._-')
+        stem = re.sub(r'(?:^|_)[0-9a-fA-F]{12,}$', '', stem).strip('._-')
+        candidate = (prefix + '_' if prefix and stem else prefix) + (stem or str(number))
+        base, suffix = candidate[:96], 2
+        candidate = base
+        while candidate.casefold() in used:
+            candidate = base + '_' + str(suffix)
+            suffix += 1
+        used.add(candidate.casefold())
+        result[str(identity)] = candidate
+    return result
+
+
+def _readable_public_ini(root, ini):
+    """Hide generated identity suffixes without changing logical game paths."""
+    aliases, occupied = {}, set(ini.sections())
+    for section in ini.sections():
+        if not re.search(r'[0-9a-fA-F]{12,}', section):
+            continue
+        base = re.sub(r'(?:_?[0-9a-fA-F]{12,})+', '', section).rstrip('_.-') or 'Resource'
+        candidate, suffix = base, 2
+        while candidate in occupied:
+            candidate = base + '_' + str(suffix);suffix += 1
+        aliases[section] = candidate;occupied.add(candidate)
+    variables = {token for section in ini.sections() for key, value in ini[section].items()
+                 for token in re.findall(r'\$[A-Za-z_][A-Za-z0-9_]*', key + ' ' + value)}
+    used = set(variables)
+    for variable in sorted(variables):
+        if not re.search(r'[0-9a-fA-F]{12,}', variable):continue
+        base = re.sub(r'(?:_?[0-9a-fA-F]{12,})+', '', variable).rstrip('_')
+        if base in ('', '$'):base = '$value'
+        candidate, suffix = base, 2
+        while candidate in used:
+            candidate = base + '_' + str(suffix);suffix += 1
+        aliases[variable] = candidate;used.add(candidate)
+    def variables_in(value):
+        return re.sub(r'\$[A-Za-z_][A-Za-z0-9_]*', lambda m: aliases.get(m[0], m[0]), value)
+    def reference(value):
+        # Exact scalar/list references only; never rewrite file paths or labels.
+        if value in aliases:return aliases[value]
+        return ','.join(aliases.get(v, v) for v in value.split(',')) if ',' in value else variables_in(value)
+    rows = [(aliases.get(section, section), {variables_in(k): reference(v) for k, v in ini[section].items()})
+            for section in ini.sections()]
+    for old, new in list(aliases.items()):
+        if old not in ini or not old.startswith('Material') or old.startswith(('MaterialTrack', 'MaterialAnimation')):continue
+        declaration = ini[old];path = root / declaration['path'];data = path.read_bytes()
+        header = HEADER.unpack_from(data);payload = data[HEADER.size + header[3]:]
+        path.write_bytes(encode_material_resource(new, declaration['path'], declaration['source.path'],
+                                                  declaration['source.asset'], payload))
+    ini.clear()
+    for section, values in rows:ini[section] = values
+    def text_references(text):
+        return re.sub(r'\$?[A-Za-z0-9_.-]+', lambda m: aliases.get(m[0], m[0]), text)
+    return text_references, aliases
 
 
 def _dds_header(width, height, mips, format_id, linear):
@@ -768,6 +895,8 @@ def decode_animation_samples(data):
 def read_controls_ini(root, ini, native_library=None):
     """Read editable assembly independently of immutable resource payloads."""
     root = Path(root).resolve()
+    from .effect_assembly import expand
+    ini = expand(root, ini)
     def file(relative):
         require(relative and not any(c in relative for c in '\\:\0') and
                 all(p not in ('', '.', '..') for p in relative.split('/')), 'unsafe INI resource path')
@@ -783,6 +912,7 @@ def read_controls_ini(root, ini, native_library=None):
         return str(value).lower() in ('1', 'true')
     defaults, persistent, controls, bindings = {}, set(), {}, []
     animations, material_tracks, effects, parts = {}, {}, {}, {}
+    hierarchies=read_hierarchies(ini)
     program = None
     for name, value in ini['Constants'].items() if 'Constants' in ini else ():
         persist = name.startswith('persist ')
@@ -845,9 +975,19 @@ def read_controls_ini(root, ini, native_library=None):
                     require(key[6:] and variable in controls, 'INI shape control is unresolved: ' + section)
                     parts[section]['shapes'][key[6:]] = variable
         elif section.startswith('Animation'):
-            source = row['samples']
-            require(source in ini and ini[source].get('type') == 'animation-samples', 'animation sample resource is unresolved')
-            scalar, bone = decode_animation_samples(file(ini[source]['path']).read_bytes())
+            source=row.get('samples')
+            if source:
+                require(source in ini and ini[source].get('type') == 'animation-samples', 'animation sample resource is unresolved')
+                scalar,bone=decode_animation_samples(file(ini[source]['path']).read_bytes())
+            else:scalar,bone=[],[]
+            outputs=[]
+            indices={int(k.split('.')[1]) for k in row if k.startswith('native.')}
+            require(indices==set(range(len(indices))), 'native Animation indices differ')
+            for i in range(len(indices)):
+                prefix='native.'+str(i)+'.';h=row[prefix+'hierarchy'];r=row[prefix+'resource'];a=row[prefix+'asset']
+                require(h in hierarchies and r in ini and ini[r].get('type')=='animation-clip' and _logical_source_path(a), 'native Animation output unresolved')
+                file(ini[r]['path']);outputs.append(dict(hierarchy=h,resource=r,asset=a))
+            require(scalar or bone or outputs,'Animation has no outputs')
             duration, speed = number(row['duration']), number(row['speed'])
             variable = row['speed_variable']
             require(duration > 0 and speed > 0 and variable not in controls and variable in persistent and
@@ -877,14 +1017,14 @@ def read_controls_ini(root, ini, native_library=None):
                     {'bone.' + str(i) + '.' + field for i in range(len(bone)) for field in ('skeleton', 'path')},
                     'INI animation bone index is absent')
             counts = {len(v) for v in scalar + bone}
-            require(len(counts) == 1 and bool(scalar or bone), 'animation channels do not share a timeline')
-            sample_count = next(iter(counts))
+            require(len(counts)<=1 and bool(scalar or bone or outputs), 'animation channels do not share a timeline')
+            sample_count = next(iter(counts)) if counts else 2
             sample_rate = int(row.get('sample_rate', max(1, round((sample_count - 1) / duration))))
             require(sample_rate > 0, 'INI animation sample rate differs')
             animations[section[len('Animation'):]] = dict(id=section[len('Animation'):], label=row.get('label', section),
                 duration=duration, speed=speed, speedVariable=variable, loop=boolean(row['loop']),
                 autoplay=boolean(row['autoplay']), key=row.get('key', ''), sampleRate=sample_rate,
-                tracks=tracks, boneTracks=bones)
+                tracks=tracks, boneTracks=bones,nativeOutputs=outputs)
         elif section.startswith('EffectAttachment') and not row.get('path'):
             variable = row['variable']
             require(variable in controls and controls[variable]['minimum'] == 0 and
@@ -917,12 +1057,63 @@ def read_controls_ini(root, ini, native_library=None):
                 active.remove(resource); visit.add(resource)
             for resource in bundles:
                 walk(resource)
+            for prefix in ('game.', 'author.'):
+                indices = {int(k.split('.')[1]) for k in row if k.startswith(prefix)}
+                require(indices == set(range(len(indices))), 'effect resource binding indices differ')
+                for i in sorted(indices):
+                    key = prefix + str(i) + '.'
+                    if prefix == 'author.':
+                        target, kind = row[key+'resource'], row[key+'type']
+                        require(target in ini and kind in ('Material', 'Mesh', 'Texture2D') and
+                                target.startswith({'Material':'Material','Mesh':'Mesh','Texture2D':'Texture'}[kind]),
+                                'effect author resource/type is unresolved')
+                    else:
+                        require(_logical_source_path(row[key+'path']) and row[key+'type'],
+                                'effect game resource identity is invalid')
+                    sites = {int(k[len(key+'patch.'):].split('.')[0]) for k in row if k.startswith(key+'patch.')}
+                    require(sites == set(range(len(sites))), 'effect relocation indices differ')
+                    if row.get(key+'relocation_cab'):
+                        require(sites, 'effect relocation sites absent')
+                    for j in sites:
+                        at = key+'patch.'+str(j)+'.'
+                        bundle, offset, kind = (int(row[at+field]) for field in ('bundle','offset','kind'))
+                        require(0<=bundle<len(bundles) and offset>=0 and kind in (0,1), 'effect relocation target differs')
+                        metadata = read_effect_metadata(root, ini[bundles[bundle]]['path'])
+                        require(offset+(8 if kind else 36)<=metadata['bytes'], 'effect relocation exceeds native bundle')
             transform = {}
             for key, default, size in (('position', '0,0,0', 3), ('rotation', '0,0,0,1', 4), ('scale', '1,1,1', 3)):
                 values = [number(v.strip()) for v in row.get(key, default).split(',')]
                 require(len(values) == size, 'INI effect transform dimension differs')
                 transform[key] = values
             require(abs(sum(v*v for v in transform['rotation'])-1) < 1e-3, 'INI effect quaternion differs')
+            if row.get('hierarchy'):
+                require(mode=='attach_mesh' and row['hierarchy'] in hierarchies and row.get('node') in {n['path'] for n in hierarchies[row['hierarchy']]['nodes']},'effect author hierarchy/node unresolved')
+            lod_indices={int(k.split('.')[1]) for k in row if k.startswith('lod.')}
+            require(lod_indices==set(range(1,len(lod_indices)+1)), 'effect LOD indices differ')
+            require(row.get('lod_coverage','all') in ('all','source') and
+                    (row.get('lod_coverage','all')=='all' or not lod_indices), 'effect LOD coverage differs')
+            seen_renderers={row.get('renderer','')}
+            for i in sorted(lod_indices):
+                prefix='lod.'+str(i)+'.'; renderer=row[prefix+'renderer']
+                require(mode=='attach_mesh' and renderer and renderer not in seen_renderers and
+                        not renderer.startswith('/') and '\\' not in renderer and '..' not in renderer and
+                        _logical_source_path(row[prefix+'path']) and row[prefix+'asset'], 'effect LOD target differs')
+                seen_renderers.add(renderer)
+            anchor_indices={int(k.split('.')[1]) for k in row if k.startswith('lod_anchor.')}
+            require(not lod_indices or row.get('bone') or 'lod_anchor' in row,
+                    'static effect LOD targets require a stable LOD anchor')
+            if anchor_indices or 'lod_anchor' in row:
+                parent='' if row['lod_anchor']=='.' else row['lod_anchor']
+                require(mode=='attach_mesh' and not row.get('bone') and
+                        anchor_indices==set(range(len(anchor_indices))) and 0<len(anchor_indices)<=64 and
+                        '\\' not in parent and not parent.startswith('/') and '..' not in parent and
+                        all(not parent or r.startswith(parent+'/') for r in seen_renderers), 'effect LOD anchor path differs')
+                for i in sorted(anchor_indices):
+                    for field,size in (('position',3),('rotation',4),('scale',3)):
+                        data=[float(v) for v in row['lod_anchor.'+str(i)+'.'+field].split(',')]
+                        require(len(data)==size and all(math.isfinite(v) for v in data), 'effect LOD anchor transform differs')
+                        if field=='rotation':require(abs(sum(v*v for v in data)-1)<1e-3, 'effect LOD anchor quaternion differs')
+                        if field=='scale':require(all(v!=0 for v in data), 'effect LOD anchor scale differs')
             effects[section[len('EffectAttachment'):]] = dict(row, **transform)
     if program:
         for binding in program['bindings']:
@@ -938,7 +1129,7 @@ def read_controls_ini(root, ini, native_library=None):
     speeds = [clip['speedVariable'] for clip in animations.values()]
     require(len(set(speeds)) == len(speeds), 'INI animation speed variables alias another group')
     return dict(defaults=defaults, persistent=persistent, controls=controls, bindings=bindings,
-                parts=parts, animations=animations, material_tracks=material_tracks, effects=effects,
+                parts=parts, animations=animations, material_tracks=material_tracks, effects=effects,hierarchies=hierarchies,
                 program_source=program['source'] if program else {},
                 program_parameters=[p['variable'] for p in program['parameters']] if program else [],
                 program_bindings=[b['variable'] for b in program['bindings']] if program else [])
@@ -964,7 +1155,56 @@ def _chord_text(vk, modifiers):
                      if modifiers & bit] + [key])
 
 
-def _write_controls_ini(root, ini, state, effect_resources):
+def validate_author_hierarchy(graph):
+    require(identifier(graph['id']) == graph['id'] and 0 < len(graph['nodes']) <= 1024,
+            'invalid author hierarchy identity or size')
+    paths = set()
+    for node in graph['nodes']:
+        path = node['path']
+        require(path and not any(c in path for c in '\\:\0') and
+                all(p not in ('', '.', '..') for p in path.split('/')) and path not in paths and
+                ('/' not in path or path.rsplit('/', 1)[0] in paths), 'invalid author hierarchy path/order')
+        paths.add(path)
+        for field, size in (('position', 3), ('rotation', 4), ('scale', 3)):
+            require(len(node[field]) == size and all(math.isfinite(v) for v in node[field]),
+                    'invalid author hierarchy transform')
+        require(abs(sum(v*v for v in node['rotation'])-1) < .001,
+                'invalid author hierarchy quaternion')
+
+
+def read_hierarchies(ini):
+    result = {}
+    for section in ini.sections():
+        if not section.startswith('Hierarchy'): continue
+        row = ini[section]; nodes = []
+        fields = {int(k.split('.')[1]) for k in row if k.startswith('node.')}
+        require(fields == set(range(len(fields))), 'author hierarchy node indices differ')
+        for i in range(len(fields)):
+            prefix = 'node.' + str(i) + '.'
+            node = dict(path=row[prefix+'path'], label=row.get(prefix+'label', row[prefix+'path']))
+            for field, fallback in (('position', '0,0,0'), ('rotation', '0,0,0,1'), ('scale', '1,1,1')):
+                node[field] = list(map(float, row.get(prefix+field, fallback).split(',')))
+            nodes.append(node)
+        graph = dict(id=section[9:], nodes=nodes)
+        validate_author_hierarchy(graph); result[graph['id']] = graph
+    return result
+
+
+def _write_controls_ini(root, ini, state, effect_resources, effect_ids=None):
+    # UUIDs stay author provenance. Public switches use the same readable
+    # relationship name as the attachment rather than the internal scene ID.
+    aliases = {effect['variable']: '$fx_' + (effect_ids or {}).get(identity, identity)
+               for identity, effect in state['effects'].items()}
+    if any(key != value for key, value in aliases.items()):
+        import copy
+        state = copy.deepcopy(state)
+        for field in ('defaults', 'controls'):
+            state[field] = {aliases.get(k, k): v for k, v in state[field].items()}
+        state['persistent'] = {aliases.get(k, k) for k in state['persistent']}
+        state['bindings'] = [tuple(aliases.get(v, v) if i == 1 else v
+                                   for i, v in enumerate(row)) for row in state['bindings']]
+        for effect in state['effects'].values():
+            effect['variable'] = aliases.get(effect['variable'], effect['variable'])
     ini['Constants'] = {('persist ' if key in state['persistent'] else '') + key: _number(value)
                         for key, value in sorted(state['defaults'].items())}
     for index, (variable, (label, low, high)) in enumerate(sorted(state['controls'].items()), 1):
@@ -986,6 +1226,13 @@ def _write_controls_ini(root, ini, state, effect_resources):
     paths = named_resource_paths([(identity, clip['label'] or identity)
                                  for identity, clip in state['animations'].items()],
                                 'animations', '.effanim')
+    hierarchy_labels={e['authorHierarchy']['id']:e['authorHierarchy']['nodes'][0]['label']
+                      for e in state['effects'].values() if e.get('authorHierarchy')}
+    native_paths=named_resource_paths([
+        ('ResourceNativeAnimation_'+_identifier(identity)+'_'+_identifier(output['hierarchy']),
+         (clip['label'] or identity)+'_'+hierarchy_labels[output['hierarchy']])
+        for identity,clip in state['animations'].items() for output in clip.get('nativeOutputs',())],
+        'animations','.ab')
     for identity, clip in sorted(state['animations'].items()):
         writer = _ControlWriter()
         writer.string('EFF_ANIMATION_SAMPLES/1')
@@ -1009,6 +1256,16 @@ def _write_controls_ini(root, ini, state, effect_resources):
             writer.integer(len(track['samples']))
             for sample in track['samples']:
                 writer.data.extend(struct.pack('<10d', *sample))
+        for index, output in enumerate(clip.get('nativeOutputs', ())):
+            prefix='native.'+str(index)+'.'
+            resource='ResourceNativeAnimation_'+_identifier(identity)+'_'+_identifier(output['hierarchy'])
+            relative=native_paths[resource]
+            target=Path(root)/relative;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(output['data'])
+            ini[resource]={'type':'animation-clip','path':relative}
+            values.update({prefix+'hierarchy':output['hierarchy'],prefix+'resource':resource,prefix+'asset':output['asset']})
+        if not clip['tracks'] and not clip['boneTracks']:
+            ini['Animation'+_identifier(identity)]=values
+            continue
         relative = paths[identity]
         sample_id = 'ResourceSamples_' + _identifier(identity)
         path = Path(root) / relative
@@ -1018,23 +1275,58 @@ def _write_controls_ini(root, ini, state, effect_resources):
         values['samples'] = sample_id
         ini['Animation' + _identifier(identity)] = values
     for identity, effect in sorted(state['effects'].items()):
-        values = ini['EffectAttachment' + _identifier(identity)]
-        values.update(mode='replace_game_prefab' if not effect['targetPath'] else 'attach_mesh',
-                      label=effect['label'] or identity, variable=effect['variable'],
+        public_id = (effect_ids or {}).get(identity, _identifier(identity))
+        section = ('ReplaceEffect' if not effect['targetPath'] else 'AttachEffect') + public_id
+        values = ini[section]
+        values.update(label=effect['label'] or identity, variable=effect['variable'],
                       autoplay=str(int(effect['autoplay'])))
         for key, value in (('target.prefab', effect['targetPrefab']), ('renderer', effect['rendererPath']),
                            ('target.path', effect['targetPath']), ('target.asset', effect['targetAsset']),
                            ('part', effect['part']), ('bone', effect['bone'])):
             if value:
                 values[key] = value
+        if not effect['targetPath']:
+            values['target.path'] = values.pop('target.prefab')
         for key in ('position', 'rotation', 'scale'):
             values[key] = ','.join(_number(v) for v in effect[key])
         if effect['targetBones']:
             values['target_bones'] = ','.join(effect['targetBones'])
+        values['lod_coverage'] = effect.get('lodCoverage', 'all')
+        for i, target in enumerate(effect.get('lodTargets', []), 1):
+            for field in ('renderer', 'path', 'asset'):
+                values['lod.'+str(i)+'.'+field] = target[field]
+            if target.get('bones'):
+                values['lod.'+str(i)+'.bones'] = ','.join(target['bones'])
+        anchor=effect.get('lodAnchor')
+        if anchor:
+            values['lod_anchor']=anchor['path'] or '.'
+            for i,node in enumerate(anchor['nodes']):
+                for field in ('position','rotation','scale'):
+                    values['lod_anchor.'+str(i)+'.'+field]=','.join(_number(v) for v in node[field])
+        graph=effect.get('authorHierarchy')
+        if graph:
+            section='Hierarchy'+graph['id'];declared={}
+            for index,node in enumerate(graph['nodes']):
+                prefix='node.'+str(index)+'.'
+                declared[prefix+'path']=node['path'];declared[prefix+'label']=node['label']
+                for field in ('position','rotation','scale'):declared[prefix+field]=','.join(_number(v) for v in node[field])
+            require(section not in ini or dict(ini[section])==declared, 'shared author hierarchy differs')
+            ini[section]=declared;values['hierarchy']=graph['id'];values['node']=effect['mountNode']
         native = effect['native']
-        values.update(prefab=native['prefab'], root_name=native['rootName'],
-                      root=str(native['root']), particles=str(native['particles']),
-                      bundles=','.join(effect_resources[b['file']] for b in native['bundles']))
+        resource = effect_resources[native['bundles'][native['root']]['file']]
+        values['effect'] = resource
+        declared = ini[resource]
+        declared['bundles'] = ','.join(effect_resources[b['file']] for b in native['bundles'])
+        for index, resource in enumerate(native.get('gameResources', [])):
+            for key in ('path', 'type', 'asset'):
+                if resource[key]:declared['game.' + str(index) + '.' + key] = resource[key]
+            if resource.get('sourcePrefab'):
+                declared['game.' + str(index) + '.source_prefab'] = resource['sourcePrefab']
+                if resource.get('sourceRoot'):
+                    declared['game.' + str(index) + '.source_root'] = resource['sourceRoot']
+        for index, resource in enumerate(native.get('authorResources', ())):
+            for key in ('resource', 'type'):
+                declared['author.' + str(index) + '.' + key] = resource[key]
         for bundle in native['bundles']:
             resource_id = effect_resources[bundle['file']]
             dependencies = ','.join(effect_resources[native['bundles'][i]['file']]
@@ -1053,7 +1345,7 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
                             key_switch_enabled=True, target_bundles=None,
                             preserved_controls=None, preserved_bindings=None,
                             skeletons=(), bone_animations=(), mod_type="", texture_template=None,
-                            control_program_source=None):
+                            control_program_source=None, extra_resources=None):
     """Write one final Format 3 author directory from typed Blender records."""
     import hashlib
     import os
@@ -1066,6 +1358,12 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
     mod_id = _identifier(mod_id)
     author_files = dict(author_files or {})
     target_bundles = dict(target_bundles or {})
+    extra_resources = extra_resources or {}
+    materials = dict(materials)
+    for identity, row in extra_resources.get('materials', {}).items():
+        require(identity not in materials, 'duplicate public Material: ' + identity)
+        materials[identity] = row
+    textures = list(textures) + list(extra_resources.get('textures', ()))
     ini = configparser.ConfigParser(interpolation=None, delimiters=("=",), strict=True)
     ini.optionxform = str
     ini["Mod"] = {"format": "3", "id": mod_id, "controls": "ini",
@@ -1084,6 +1382,10 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         dds = path[:-len(".effres")] + ".dds"
         texture_ids[identity] = identity
         template = dict(path=texture.get("sourcePath", ""), asset=texture.get("sourceAsset", ""))
+        if texture.get('gameOnly') or not any(k in texture for k in ('pixels', 'ddsSourcePath')):
+            require(_logical_source_path(template['path']), 'game Texture needs a logical path')
+            ini[identity] = {'source.path': template['path'], 'source.asset': template['asset']}
+            continue
         if not template["path"] or not template["asset"]:
             template = texture_template or template
         require(template.get("path") and template.get("asset"),
@@ -1119,6 +1421,8 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         bindings = {row["property"]: row["texture"] for row in material["textureEdits"]}
         ini[identity] = {"path": file, "source.path": material["sourcePath"],
                          "source.asset": material["sourceAsset"]}
+        if material.get("sourcePrefab"):
+            ini[identity]["source.prefab"] = material["sourcePrefab"]
         for prop, texture in bindings.items():
             require(texture in texture_ids, "Format 3 Material references missing Texture: " + texture)
             ini[identity]["texture." + prop] = texture
@@ -1187,6 +1491,22 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         for shape, variable in shape_variables[section].items(): values["shape." + shape] = variable
         ini[section] = values
 
+    independent_meshes = list(extra_resources.get('meshes', ()))
+    independent_paths = named_resource_paths([(m['id'], m['label']) for m in independent_meshes],
+                                             'meshes', '.effres')
+    used_mesh_paths = {v['path'].casefold() for k, v in ini.items() if k.startswith('Mesh')}
+    for mesh in independent_meshes:
+        identity = _identifier(mesh['id'])
+        require(identity not in ini, 'duplicate public Mesh: ' + identity)
+        relative = independent_paths[identity]
+        base, suffix = relative, 2
+        while relative.casefold() in used_mesh_paths:
+            relative = base[:-len('.effres')] + '_' + str(suffix) + '.effres'; suffix += 1
+        used_mesh_paths.add(relative.casefold())
+        target = root / relative;target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(encode_standalone_mesh(mesh, relative))
+        ini[identity] = {'path': relative}
+
     rule_base_ids = {}
     base_counts = {}
     target_identities = set()
@@ -1207,7 +1527,7 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         section = preferred
         if base_counts[preferred] > 1 or section in used_sections:
             seed = (base["sourcePath"] + "\n" + base["sourceAsset"]).encode("utf-8")
-            section = preferred + "_" + hashlib.sha256(seed).hexdigest()[:12].upper()
+            section = preferred
         suffix = 2
         candidate = section
         while candidate in used_sections:
@@ -1317,15 +1637,20 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         [(key + "_" + str(index), sorted(labels, key=str.casefold)[0] + "_" + str(index))
          for (key, index), labels in effect_bundle_labels.items()], "effects", ".effres")
     effect_resources, effect_authors, effect_rules = {}, {}, {}
+    effect_ids = named_resource_ids([(e['id'], e['id'] if not re.fullmatch(r'[0-9a-fA-F]{12,}', e['id'])
+                                     else e.get('label') or 'Effect') for e in effects], '')
+    bundle_ids = named_resource_ids([(relative, Path(relative).stem)
+        for relative in effect_bundle_paths.values()], 'ResourceEffect')
     for effect in effects:
         source = effect["native"]
         for index, bundle in enumerate(source["bundles"]):
             relative = effect_bundle_paths[source["key"] + "_" + str(index)]
-            file_id = "ResourceEffect_" + hashlib.sha256(relative.encode("utf-8")).digest()[:8].hex().upper()
+            file_id = bundle_ids[relative]
             if relative not in effect_resources:
                 data = bytes(bundle["data"]); digest = hashlib.sha256(data).hexdigest().upper()
                 (root / relative).parent.mkdir(parents=True, exist_ok=True)
-                (root / relative).write_bytes(encode_effect_resource(file_id, relative, data))
+                (root / relative).write_bytes(encode_effect_resource(file_id, relative, data,
+                    layout=source if index == source['root'] else None))
                 effect_resources[relative] = file_id
             if effect.get("mode") == "replace_game_prefab":
                 pass
@@ -1354,16 +1679,22 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
     effect_author_paths = named_resource_paths(
         [(effect["id"], effect.get("label") or effect["id"]) for effect in effects],
         "effects/author", ".effres")
+    author_ids = named_resource_ids([(e['id'], e.get('label') or 'Effect') for e in effects],
+                                    'ResourceEffectAuthor')
     for effect in effects:
         payload = bytes(author_files[_identifier(effect["id"]) + ".effeffect"])
         relative = effect_author_paths[effect["id"]]
-        identity = "ResourceEffectAuthor_" + hashlib.sha256(relative.encode("utf-8")).hexdigest()[:16].upper()
+        identity = author_ids[effect['id']]
         if identity not in effect_authors:
             (root / relative).parent.mkdir(parents=True, exist_ok=True)
             (root / relative).write_bytes(encode_effect_author_resource(identity, relative, payload))
             effect_authors[identity] = relative
             ini[identity] = {"type": "effect-author", "path": relative}
-        ini["EffectAttachment" + _identifier(effect["id"])] = {"author": identity}
+        source = effect['native']
+        relative = effect_bundle_paths[source['key'] + '_' + str(source['root'])]
+        ini[effect_resources[relative]]['author'] = identity
+        prefix = 'ReplaceEffect' if effect.get('mode') == 'replace_game_prefab' else 'AttachEffect'
+        ini[prefix + effect_ids[effect['id']]] = {}
     text = ''
     if control_program_source:
         text = ''.join(v if v.endswith('\n') else v + '\n' for v in control_program_source.values()) if isinstance(control_program_source, dict) else str(control_program_source)
@@ -1382,7 +1713,7 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
             state['persistent'].discard(variable)
         # These channels are recreated by the shared compiler, never serialized
         # as a second source of author declarations.
-    _write_controls_ini(root, ini, state, effect_resources)
+    _write_controls_ini(root, ini, state, effect_resources, effect_ids)
     if text:
         for key in list(ini['Constants']):
             if (key[8:] if key.startswith('persist ') else key) in owned:
@@ -1390,12 +1721,17 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         for section in list(ini.sections()):
             if section.startswith(('Control', 'ShapeControl')) and ini[section].get('variable') in owned:
                 del ini[section]
+    resource_locations = {s: {'id': s, 'path': v.get('dds') or v.get('path', '')}
+                          for s, v in ini.items() if s.startswith(('Mesh', 'Material', 'Texture'))
+                          and not s.startswith(('MaterialTrack', 'MaterialAnimation'))}
+    translate, aliases = _readable_public_ini(root, ini)
+    for old, row in resource_locations.items():row['id'] = aliases.get(old, old)
     _write_ini(root, ini)
     if text:
         with (root / 'mod.ini').open('a', encoding='utf-8', newline='\n') as stream:
-            stream.write('\n' + text.rstrip('\r\n') + '\n')
+            stream.write('\n' + translate(text).rstrip('\r\n') + '\n')
         ini.read_string(text)
-    return dict(format=3, modId=mod_id, _ini=ini)
+    return dict(format=3, modId=mod_id, _ini=ini, _resourceLocations=resource_locations)
 
 
 def _controls_animation_ids(parts, material_clips, bone_animations=()):
@@ -1946,7 +2282,7 @@ def read_format3_directory(root):
     resources = {}
     dds_rows = {}
     for section in ini.sections():
-        if section in ("Mod", "Constants") or section.startswith(("Part", "Replace", "Key", "Control", "ShapeControl", "Animation", "MaterialTrack", "Parameter", "Action", "Event", "Binding", "UI")):
+        if section in ("Mod", "Constants") or section.startswith(("Part", "Replace", "AttachEffect", "Key", "Control", "ShapeControl", "Animation", "MaterialTrack", "Parameter", "Action", "Event", "Binding", "UI", "Hierarchy")):
             continue
         expected_kind = None
         if section.startswith("Mesh"):
@@ -1964,15 +2300,17 @@ def read_format3_directory(root):
         elif section.startswith("Resource"):
             resource_type = ini[section].get("type", "")
             expected_kind = {"physics": 4, "effect": 5, "controls": 6,
-                             "effect-author": 7, "skeleton": 8, "animation-samples": 9}.get(resource_type)
+                             "effect-author": 7, "skeleton": 8, "animation-samples": 9,"animation-clip": 10}.get(resource_type)
             require(expected_kind is not None, "format-3 Resource type is invalid: " + section)
         require(expected_kind is not None, "unknown format-3 resource section: " + section)
         path = ini[section].get("path")
         if expected_kind == 3 and not path:
             values = ini[section]
-            require(_logical_source_path(values.get("source.path", "")) and values.get("source.asset"),
+            require(_logical_source_path(values.get("source.path", "")),
                     "DDS Texture requires a logical source template: " + section)
             dds = values.get("dds", "")
+            if not dds:
+                continue
             candidate = (root / dds).resolve()
             require(dds and root in candidate.parents and candidate.is_file(),
                     "format-3 DDS is missing or escapes Mod: " + dds)
@@ -1996,6 +2334,9 @@ def read_format3_directory(root):
     resource_metadata = {}
     texture_semantics = {}
     for relative, kind in resources.items():
+        if kind == 10:
+            require((root/relative).stat().st_size>=48, "native Animation resource truncated")
+            continue
         if kind == 9:
             decode_animation_samples((root / relative).read_bytes())
             continue
@@ -2011,6 +2352,8 @@ def read_format3_directory(root):
         if not section.startswith("Texture"):
             continue
         values = ini[section]
+        if not values.get('path') and not values.get('dds'):
+            continue  # Pure logical game references have no author pixel input.
         relative = values.get("path", section)
         linear = values.get("linear", "false").lower()
         require(linear in ("true", "false", "1", "0"),
@@ -2049,8 +2392,13 @@ def read_format3_directory(root):
             skeleton_paths[skeleton_id] = _validate_skeleton_resource(
                 root, ini[section]["path"], section,
                 resource_metadata[ini[section]["path"]][1])
-        elif section.startswith("EffectAttachment"):
+        elif section.startswith(("EffectAttachment", "AttachEffect", "ReplaceEffect")):
             author_id = ini[section].get("author", "")
+            if ini[section].get('effect'):
+                resource = ini[section]['effect']
+                require(resource in ini and ini[resource].get('type') == 'effect',
+                        'effect resource is unresolved: ' + section)
+                author_id = ini[resource].get('author', '')
             require(author_id in ini and ini[author_id].get("type") == "effect-author",
                     "format-3 EffectAttachment author resource is unresolved: " + section)
 
@@ -2062,15 +2410,14 @@ def read_format3_directory(root):
     files = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
     if mod_type == "effect":
         effect_sections = [section for section in ini.sections()
-                           if section.startswith("EffectAttachment")]
+                           if section.startswith(("EffectAttachment", "AttachEffect", "ReplaceEffect"))]
         forbidden = [section for section in ini.sections()
-                     if section.startswith(("Part", "Replace", "Mesh", "Material",
-                                            "Texture", "ShapeAnimation", "MaterialAnimation",
-                                            "Skeleton"))]
+                     if section.startswith(("Part", "Replace", "ShapeAnimation", "MaterialAnimation", "Skeleton"))
+                     and not section.startswith('ReplaceEffect')]
         forbidden.extend(section for section in ini.sections()
                          if section.startswith("Resource") and
                          ini[section].get("type", "") not in
-                         {"controls", "effect", "effect-author"})
+                         {"controls", "effect", "effect-author", "animation-clip"})
         require(effect_sections and not forbidden,
                 "standalone Format 3 Effect Mod contains character resources or no effects")
     return dict(format=3, modId=ini["Mod"]["id"], modType=mod_type, _files=files)

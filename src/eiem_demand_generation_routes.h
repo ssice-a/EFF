@@ -10,9 +10,21 @@
 #include <utility>
 
 namespace EiemDemandGenerationRoutes {
+inline bool NameEquals(const std::string& left, const std::string& right) noexcept {
+  if (left.size() != right.size()) return false;
+  for (size_t i = 0; i < left.size(); ++i) {
+    auto a = static_cast<unsigned char>(left[i]);
+    auto b = static_cast<unsigned char>(right[i]);
+    if (a >= 'A' && a <= 'Z') a = static_cast<unsigned char>(a + ('a' - 'A'));
+    if (b >= 'A' && b <= 'Z') b = static_cast<unsigned char>(b + ('a' - 'A'));
+    if (a != b) return false;
+  }
+  return true;
+}
+
 inline std::string RootName(uint64_t generationScope, uint64_t sourceBundle) {
   std::ostringstream name;
-  name << "eff/" << generationScope << "/root/" << std::uppercase << std::hex
+  name << "eff/" << generationScope << "/root/" << std::hex
        << std::setw(16) << std::setfill('0') << sourceBundle << ".ab";
   return name.str();
 }

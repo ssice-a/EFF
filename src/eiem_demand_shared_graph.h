@@ -36,6 +36,10 @@ struct Input {
   std::shared_ptr<const EiemInputSpanView::View> view;
   std::vector<uint64_t> dependencies;
   bool versionedRoot=false;
+  // Original range view stays available for same-generation preparation cache
+  // validation. The submitted view has independent SerializedFile identities.
+  std::shared_ptr<const EiemInputSpanView::View> sourceView;
+  bool generationIsolated=false;
 };
 class Graph {
   mutable std::mutex mutex_;
@@ -58,6 +62,14 @@ class Graph {
     for(const auto& row:stagedNative)visit(row.first);
   }
 public:
+  std::vector<Input> InputsForCab(const std::string& cab)const {
+    std::lock_guard<std::mutex> lock(mutex_);std::vector<Input> result;
+    for(const auto& row:inputs_)if(row.second.cab==cab)result.push_back(row.second);return result;
+  }
+  std::vector<Input> InputsForSources(const std::set<uint64_t>& sources)const {
+    std::lock_guard<std::mutex> lock(mutex_);std::vector<Input> result;
+    for(const auto& row:inputs_)if(sources.count(row.second.categorySource))result.push_back(row.second);return result;
+  }
   struct Eviction {size_t inputs=0,viewBytes=0,dependencyNodes=0;};
   void Commit(const std::vector<Input>& inputs,const EiemBundleDependencies::Keys& edges,
       const EiemBundleDependencies::Keys& native) {
@@ -71,7 +83,8 @@ public:
       const bool viewSame=left.view==right.view||EiemInputSpanView::SameBytes(*left.view,*right.view);
       if(contentSame)*contentSame=viewSame;
       return left.name==right.name&&left.cab==right.cab&&viewSame&&
-        left.dependencies==right.dependencies&&left.versionedRoot==right.versionedRoot;};
+        left.dependencies==right.dependencies&&left.versionedRoot==right.versionedRoot&&
+        left.generationIsolated==right.generationIsolated;};
     for(const auto& input:inputs){Require(input.key&&input.categorySource&&!input.name.empty()&&!input.cab.empty()&&input.view,
         "shared native input declaration incomplete");
       auto prior=inputs_.find(input.key);if(prior!=inputs_.end()){bool contentSame=false;if(!same(prior->second,input,&contentSame))Require(false,

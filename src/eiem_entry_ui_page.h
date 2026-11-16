@@ -20,69 +20,81 @@ return function(loader, oldGo)
         end
     end
     if not item then return nil end
-    return function(newGo)
-        if phase.m_destroyed or not phase.m_phaseItems[item] or item.go ~= oldGo or not NotNull(oldGo) then return false end
-        if newGo == nil then return true end
-        local newMono = newGo:GetComponent("CharUIModelMono")
-        local newAnimator = newGo:GetComponent("Animator")
-        assert(NotNull(newMono) and NotNull(newAnimator), "candidate lost UI page components")
-        local transform = oldGo.transform
-        local parent, pos, rot, scale = transform.parent, transform.localPosition, transform.localRotation, transform.localScale
-        local sibling, layer, visible, name = transform:GetSiblingIndex(), oldGo.layer, oldGo.activeSelf, oldGo.name
-        local animator = item.animator
-        local speed, controller = animator.speed, animator.runtimeAnimatorController
-        local params, states = {}, {}
-        for i = 0, animator.parameterCount - 1 do
-            local p = animator:GetParameter(i)
-            if p.type == CS.UnityEngine.AnimatorControllerParameterType.Float then
-                params[#params + 1] = {"SetFloat", p.nameHash, animator:GetFloat(p.nameHash)}
-            elseif p.type == CS.UnityEngine.AnimatorControllerParameterType.Int then
-                params[#params + 1] = {"SetInteger", p.nameHash, animator:GetInteger(p.nameHash)}
-            elseif p.type == CS.UnityEngine.AnimatorControllerParameterType.Bool then
-                params[#params + 1] = {"SetBool", p.nameHash, animator:GetBool(p.nameHash)}
+    local stagedBind
+    return function(newGo, operation)
+        if phase.m_destroyed or not phase.m_phaseItems[item] or item.go ~= oldGo then return false end
+        if not stagedBind and not NotNull(oldGo) then return false end
+        if newGo == nil and operation ~= "release" then return true end
+        local bind = stagedBind
+        if not bind then
+            local transform = oldGo.transform
+            local parent, pos, rot, scale = transform.parent, transform.localPosition, transform.localRotation, transform.localScale
+            local sibling, layer, visible, name = transform:GetSiblingIndex(), oldGo.layer, oldGo.activeSelf, oldGo.name
+            local animator = item.animator
+            local speed, controller = animator.speed, animator.runtimeAnimatorController
+            local params, states = {}, {}
+            for i = 0, animator.parameterCount - 1 do
+                local p = animator:GetParameter(i)
+                if p.type == CS.UnityEngine.AnimatorControllerParameterType.Float then
+                    params[#params + 1] = {"SetFloat", p.nameHash, animator:GetFloat(p.nameHash)}
+                elseif p.type == CS.UnityEngine.AnimatorControllerParameterType.Int then
+                    params[#params + 1] = {"SetInteger", p.nameHash, animator:GetInteger(p.nameHash)}
+                elseif p.type == CS.UnityEngine.AnimatorControllerParameterType.Bool then
+                    params[#params + 1] = {"SetBool", p.nameHash, animator:GetBool(p.nameHash)}
+                end
+            end
+            for i = 0, animator.layerCount - 1 do
+                local state = animator:GetCurrentAnimatorStateInfo(i)
+                states[#states + 1] = {i, state.fullPathHash, state.normalizedTime, animator:GetLayerWeight(i)}
+            end
+            local view = item.m_tmpViewData
+            local lightGroups = HL.TryGet(phase, "m_templateId2LightGroup")
+            local lightGroup = lightGroups and lightGroups[item.charId]
+            bind = function(go)
+                local newMono = go:GetComponent("CharUIModelMono")
+                local newAnimator = go:GetComponent("Animator")
+                assert(NotNull(newMono) and NotNull(newAnimator), "candidate lost UI page components")
+                item:BindGameObject(go)
+                item.uiModelMono:ChangeLayer(layer)
+                item.uiModelMono:LoadDecoItems()
+                item:ReloadWeapon(true)
+                if lightGroup then item.uiModelMono:InitLightFollower(lightGroup.go.transform) end
+                if view then
+                    if view.weaponState then item:SwitchWeaponState(view.weaponState, view.ignoreStatic) end
+                    if view.integerName then item:SetInteger(view.integerName, view.integer) end
+                    if view.boolName then item:SetBool(view.boolName, view.bool) end
+                end
+                local target = item.animator
+                target.runtimeAnimatorController = controller
+                for _, p in ipairs(params) do target[p[1]](target, p[2], p[3]) end
+                for _, s in ipairs(states) do
+                    target:SetLayerWeight(s[1], s[4])
+                    if s[2] ~= 0 and target:HasState(s[1], s[2]) then target:Play(s[2], s[1], s[3]) end
+                end
+                target.speed = speed
+                target:Update(0)
+                go.transform:SetParent(parent, false)
+                go.transform.localPosition, go.transform.localRotation, go.transform.localScale = pos, rot, scale
+                go.transform:SetSiblingIndex(sibling)
+                go.name = name
+                item:SetVisible(visible)
+                assert(item.go == go and item.uiModelMono == go:GetComponent("CharUIModelMono") and item.animator == go:GetComponent("Animator"), "UI page binding did not transfer")
             end
         end
-        for i = 0, animator.layerCount - 1 do
-            local state = animator:GetCurrentAnimatorStateInfo(i)
-            states[#states + 1] = {i, state.fullPathHash, state.normalizedTime, animator:GetLayerWeight(i)}
-        end
-        local view = item.m_tmpViewData
-        local lightGroups = HL.TryGet(phase, "m_templateId2LightGroup")
-        local lightGroup = lightGroups and lightGroups[item.charId]
-        local function bind(go)
-            item:BindGameObject(go)
-            item.uiModelMono:ChangeLayer(layer)
-            item.uiModelMono:LoadDecoItems()
-            item:ReloadWeapon(true)
-            if lightGroup then item.uiModelMono:InitLightFollower(lightGroup.go.transform) end
-            if view then
-                if view.weaponState then item:SwitchWeaponState(view.weaponState, view.ignoreStatic) end
-                if view.integerName then item:SetInteger(view.integerName, view.integer) end
-                if view.boolName then item:SetBool(view.boolName, view.bool) end
-            end
-            local target = item.animator
-            target.runtimeAnimatorController = controller
-            for _, p in ipairs(params) do target[p[1]](target, p[2], p[3]) end
-            for _, s in ipairs(states) do
-                target:SetLayerWeight(s[1], s[4])
-                if s[2] ~= 0 and target:HasState(s[1], s[2]) then target:Play(s[2], s[1], s[3]) end
-            end
-            target.speed = speed
-            target:Update(0)
-            go.transform:SetParent(parent, false)
-            go.transform.localPosition, go.transform.localRotation, go.transform.localScale = pos, rot, scale
-            go.transform:SetSiblingIndex(sibling)
-            go.name = name
-            item:SetVisible(visible)
-            assert(item.go == go and item.uiModelMono == go:GetComponent("CharUIModelMono") and item.animator == go:GetComponent("Animator"), "UI page binding did not transfer")
-        end
+        -- Demand F10 releases the old native loader handle before requesting
+        -- the new generation. Capture page state while that model is alive;
+        -- completion must not dereference the unloaded old GameObject.
+        if operation == "release" then stagedBind = bind; return true end
         local ok, reason = pcall(bind, newGo)
         if not ok then
-            local restored, restoreReason = pcall(bind, oldGo)
-            assert(restored, "UI page rollback failed: " .. tostring(restoreReason))
+            if NotNull(oldGo) then
+                local restored, restoreReason = pcall(bind, oldGo)
+                assert(restored, "UI page rollback failed: " .. tostring(restoreReason))
+            end
             error(reason)
         end
         oldGo = newGo
+        stagedBind = nil
         return true
     end
 end
@@ -135,8 +147,10 @@ Ref CaptureUIPage(void* loader,void* root){
  auto output=CallUILua(uiPageFactory,{loader,root});Require(output.Get(),"UI page lookup returned no values");auto result=ReferenceArray(output.Get());Require(result.size()==1&&result.front(),"UI loader instance has no game page item binding");
  return Ref::Make(result.front(),false);
 }
-bool BindUIPage(const Ref& binding,void* root=nullptr){
- auto output=CallUILua(binding,{root});Require(output.Get(),"UI page binding returned no values");auto result=ReferenceArray(output.Get());Require(result.size()==1&&result.front(),"UI page binding returned no result");
+bool BindUIPage(const Ref& binding,void* root=nullptr,bool releasing=false){
+ std::vector<void*> arguments{root};Ref operation;
+ if(releasing){operation=Ref::Make(il2cpp_string_new("release"),false);arguments.push_back(operation.Get());}
+ auto output=CallUILua(binding,arguments);Require(output.Get(),"UI page binding returned no values");auto result=ReferenceArray(output.Get());Require(result.size()==1&&result.front(),"UI page binding returned no result");
  auto klass=il2cpp_object_get_class(result.front());Require(klass&&strcmp(il2cpp_class_get_name(klass),"Boolean")==0&&strcmp(il2cpp_class_get_namespace(klass),"System")==0,"UI page binding returned a different type");
  unsigned char accepted=0;Require(CopyRaw(il2cpp_object_unbox(result.front()),&accepted,sizeof(accepted)),"UI page binding result unavailable");return accepted!=0;
 }
