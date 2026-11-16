@@ -1,5 +1,5 @@
 // Offline single-feature control. Keeps the validated floating vertex layout.
-#include "../../src/eiem_renderer_input_builder.h"
+#include "../../../src/eiem_renderer_input_builder.h"
 #include <fstream>
 #include <iostream>
 using namespace EiemNativeInput;

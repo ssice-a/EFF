@@ -1,10 +1,12 @@
+> 历史文档：2026-11-12 归档。本文描述已替代的路线或开发通道；当前规范见 [文档索引](../../README.md)、ADR 和对应作者操作说明。
+
 # 历史开发调试通道
 
-当前作者流程已移除 PID、实例选择和试播管道。特效包含在普通 eff.dll，由 Mod 声明和游戏 F9 驱动；effects-debug 仅为内部诊断开关。本页保留历史实现记录，操作以[空物体编辑说明](../tools/Blender/docs/effects-editor.md)为准。
+当前作者流程已移除 PID、实例选择和试播管道。特效包含在普通 eff.dll，由 Mod 声明和游戏 F9 驱动；effects-debug 仅为内部诊断开关。本页保留历史实现记录，操作以[空物体编辑说明](../../../tools/Blender/docs/effects-editor.md)为准。
 
 2026-10-19 开发候选。默认生产 DLL 不包含此通道；需 `build.bat v35 effects-debug`，输出到独立的 `bin/resource-directory-entry-v35-effects-debug`。此文不表示安装或游戏验收完成。
 
-同日后续：原生准备/实例生命周期已复用于正式 Mod 挂载声明，普通构建包含挂载执行器但不启动本地管道。Blender 已加入试播与 `RELOAD_ATTACHMENT` 独立更新入口。以下为最初调试阶段记录；最新作者流程、支持范围和验证见[动态材质与特效测试](dynamic-material-effects-testing.md)。
+同日后续：原生准备/实例生命周期已复用于正式 Mod 挂载声明，普通构建包含挂载执行器但不启动本地管道。Blender 已加入试播与 `RELOAD_ATTACHMENT` 独立更新入口。以下为最初调试阶段记录；最新作者流程、支持范围和验证见[动态材质与特效测试](../../dynamic-material-effects-testing.md)。
 
 ## 当前闭环
 

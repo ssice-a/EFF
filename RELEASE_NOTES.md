@@ -1,3 +1,14 @@
+# Unreleased
+
+- Unifies effect resources, material changes and animation targets under Format 3 INI assembly, including selected-emitter export, author Empty mounts and one animation group for Shape, Bone and Material channels.
+- Repairs F10 generation routing, shared weapon/UI dependencies, effect attachment lifetime and native Mesh provenance without introducing a separate reload path.
+- Removes repeated native target inspection within a request and preserves typed preparation failures; a real game Bundle now completes 325 target queries within the existing 8 MiB budget.
+- Adds compatible Ins panel presentation backends, graphics-stage diagnostics and recovery from handled D3D11 failures. AMD with RTSS and Proton still require platform-specific acceptance.
+- Updates Blender authoring/preview performance, INI/DDS round trips, independent material Action ownership and software-update handling; updates Manager installation, offline index acquisition and integrated validation.
+- Archives superseded pipeline designs and investigation tools while retaining current contract and deployment documentation.
+
+These changes are source submissions and locally deployed builds, not a published Release. Validation and remaining limits are recorded in `docs/architecture-repairs-20261116.md`.
+
 # EFF v2.0.12
 
 Coordinated with EFF Blender 0.50.7, AnimeStudio 1.9.5, and EFF Mod Manager 0.2.3. This release adds explicit game-Prefab replacement by logical path and completes the standalone effect authoring route.

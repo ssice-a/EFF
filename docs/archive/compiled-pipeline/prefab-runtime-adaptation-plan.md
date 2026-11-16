@@ -1,6 +1,8 @@
+> 历史文档：2026-11-12 归档。本文描述已替代的路线或开发通道；当前规范见 [文档索引](../../README.md)、ADR 和对应作者操作说明。
+
 # 历史方案：动态对象装配路线已取消
 
-2026-10-13 用户选择继续离线编译输入视图。本文后续内容保留历史讨论与探针证据，不再作为实施顺序。当前分别执行[离线导出提速](offline-export-performance-plan.md)和[游戏更新自动适配](game-update-prefab-adaptation-plan.md)。
+2026-10-13 用户选择继续离线编译输入视图。本文后续内容保留历史讨论与探针证据，不再作为实施顺序。当前分别执行[离线导出提速](../../offline-export-performance-plan.md)和[游戏更新自动适配](game-update-prefab-adaptation-plan.md)。
 
 # Prefab 加载后适配与缓存改造计划
 

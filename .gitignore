@@ -41,6 +41,9 @@ bin/
 # fixtures/probes, not source-controlled assets.
 /_blender_*/
 /_test_output/
+/_diag_*/
+/multi-debug/
+/single*-verify-*/
 /release/
 
 # Pre-deploy plugin binaries kept for quick rollback. These are build outputs,

@@ -30,7 +30,10 @@ share this compiler; controls do not require a parallel persisted program.
 3. Each referenced resource file is self-describing and independently
    addressable. Its file identity is its resource ID and relative path in
    `mod.ini`; runtime-native data and the author metadata required by Blender
-   live in that same resource file. No `assets.bin`, compiled catalog, side
+   live in that same resource file. The Part ID persisted in an old Mesh
+   snapshot is author provenance; the current INI Part name and material slot
+   are assembly identities. Different Parts may reference the same Mesh file
+   without rewriting that snapshot. No `assets.bin`, compiled catalog, side
    index, or cache is required for correctness.
    Mesh target selection and Material replacement are independent. A Part
    may omit `material`; in that case `material_slot` (zero-based, default
@@ -88,8 +91,13 @@ share this compiler; controls do not require a parallel persisted program.
    no Skeleton sidecar is needed for Blender round-trip. New packages put
    defaults, persistence, key bindings, part visibility, material tracks,
    animation playback and effect attachments directly in INI. Sampled numeric
-   animation channels remain in independently addressable sample resources;
-   effect native bundles remain independent resources. New packages declare
+   animation channels remain in independently addressable sample resources.
+   Current INI clips register channel bindings without reading samples at
+   startup/F10. Real matched game owners activate a shared immutable payload;
+   clips referencing the same sample file share its decoded channels. Final
+   owner retirement releases the player's sample lease, including paused clips.
+   Control-only reloads retain existing owner activity; changed resource
+   generations await their new owners. Native effect bundles remain independent resources. New packages declare
    `controls=ini` and do not emit `controls.effres`. Existing packages that
    declare `controls=resource`, or omit the mode while retaining
    `ResourceControls`, continue to use that legacy control resource. The DLL

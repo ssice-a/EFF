@@ -1,10 +1,10 @@
 // Differential proof of single-consumer compilation. Reads the author's
 // known source selection; never publishes a game Mod or changes its files.
-#include "../../src/eiem_source_adaptation_compiler.h"
-#include "../../src/eiem_prepared_prefab_compiler.h"
-#include "../../src/eiem_compiled_artifact_append.h"
-#include "../../src/eiem_compiled_mod_store.h"
-#include "../../src/eiem_compiled_prefab_update.h"
+#include "../../../src/eiem_source_adaptation_compiler.h"
+#include "../../../src/eiem_prepared_prefab_compiler.h"
+#include "../../../src/eiem_compiled_artifact_append.h"
+#include "../../../src/eiem_compiled_mod_store.h"
+#include "../../../src/eiem_compiled_prefab_update.h"
 #include <iostream>
 using namespace EiemCompiledMod;
 int wmain(int argc,wchar_t** argv){try{

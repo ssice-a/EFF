@@ -1,4 +1,4 @@
-#include "../../src/eiem_prefab_resource_rules.h"
+#include "../../../src/eiem_prefab_resource_rules.h"
 #include <iostream>
 #include <chrono>
 using namespace EiemOfflinePackage;

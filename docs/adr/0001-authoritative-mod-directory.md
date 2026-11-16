@@ -113,8 +113,8 @@ The following documents remain as historical implementation contracts and
 evidence. Their current-format statements are superseded by this ADR and the
 [demand-driven runtime design](../demand-driven-native-resource-loading.md):
 
-- [Offline resource package format](../offline-resource-package-format.md)
-- [Mod INI/resource format v2](../mod-ini-resource-format-v2.md)
-- [Compiled resource graph](../compiled-resource-graph.md)
-- [DLL code architecture](../code-architecture.md)
+- [Offline resource package format](../archive/compiled-pipeline/offline-resource-package-format.md)
+- [Mod INI/resource format v2](../archive/compiled-pipeline/mod-ini-resource-format-v2.md)
+- [Compiled resource graph](../archive/compiled-pipeline/compiled-resource-graph.md)
+- [Historical DLL code architecture](../archive/snapshots/code-architecture-before-20261112.md)
 

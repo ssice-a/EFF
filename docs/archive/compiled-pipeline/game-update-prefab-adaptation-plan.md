@@ -1,6 +1,8 @@
+> 历史文档：2026-11-12 归档。本文描述已替代的路线或开发通道；当前规范见 [文档索引](../../README.md)、ADR 和对应作者操作说明。
+
 # 游戏更新后自动适配 PFB
 
-> 2026-10-28：用户重新确认创建前、跟随实际请求的逻辑 Mesh 命中，新开发以[按需原生资源设计](demand-driven-native-resource-loading.md)为准。它不采用下文的全游戏反查或后台补编译方案；旧包由 Mod Manager 转换，新 DLL 只读新格式。该新设计尚未实现。
+> 2026-10-28：用户重新确认创建前、跟随实际请求的逻辑 Mesh 命中，新开发以[按需原生资源设计](../../demand-driven-native-resource-loading.md)为准。它不采用下文的全游戏反查或后台补编译方案；旧包由 Mod Manager 转换，新 DLL 只读新格式。该新设计尚未实现。
 >
 > 2026-10-15 历史路线调整：用户当时选择更新适配全部离线，[EFF 修复工具](eff-repair-tool-design.md)只修已有 Mod；解包资源由 AnimeStudio 重新解包时更新，Blender 接受更新后的来源。游戏资源检查、资产重新定位、候选发现和补编译在游戏外完成，复用当前两层 VFS、资产索引及 Mod 编译器；停止推进下文的游戏内自动发现、后台补编译及首次依赖组门控。DLL 保留正常资源读取/校验、替换和控制职责。公共索引导入与修复工具已实现并做本地隔离验证，公开索引尚未发布，详见[本轮实现](update-workflows-20261015.md)。下文关于运行时自动适配的设计与实验作为历史记录，不能当作当前实施方向。
 
@@ -81,7 +83,7 @@ Typhoea 追赶 CLI 总墙钟约 554 ms，其中新 PFB 编译约 90 ms；Allure 
 
 Windows 的文件整理采用 `ReplaceFileW`：旧代际 reader 持有 delete-shared 文件句柄时，`MoveFileEx(REPLACE_EXISTING)` 返回 ERROR_ACCESS_DENIED；ReplaceFile 可保留旧快照并原子发布新文件。固定旧快照整理后仍能按需读证明，整理/撕裂提交/过期写者与并发回归通过。
 
-`tools/diagnostics/compile_consumer_delta.cpp` 为可复现入口，只有临时编译输出，不写游戏 Mod。
+`tools/archive/compiled-pipeline/compile_consumer_delta.cpp` 为可复现入口，只有临时编译输出，不写游戏 Mod。
 
 ### 2026-10-13 后续局部编译与退休回归
 

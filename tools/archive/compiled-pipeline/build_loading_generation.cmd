@@ -1,6 +1,6 @@
 @echo off
 setlocal
-pushd "%~dp0..\.."
+pushd "%~dp0..\..\.."
 set "entry_vswhere=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "entry_vs_install="
 if exist "%entry_vswhere%" (
@@ -10,7 +10,7 @@ if defined entry_vs_install call "%entry_vs_install%\VC\Auxiliary\Build\vcvars64
 where cl >nul 2>nul
 if errorlevel 1 exit /b 1
 if not exist bin\resource-directory-entry mkdir bin\resource-directory-entry
-cl /nologo /utf-8 /O2 /MD /EHsc /std:c++17 /Isrc /Fo"bin\resource-directory-entry\prepare_loading_generation.obj" tools\diagnostics\prepare_loading_generation.cpp /Fe"bin\resource-directory-entry\prepare_loading_generation.exe" /link bcrypt.lib
+cl /nologo /utf-8 /O2 /MD /EHsc /std:c++17 /Isrc /Fo"bin\resource-directory-entry\prepare_loading_generation.obj" tools\archive\compiled-pipeline\prepare_loading_generation.cpp /Fe"bin\resource-directory-entry\prepare_loading_generation.exe" /link bcrypt.lib
 set "entry_result=%errorlevel%"
 popd
 exit /b %entry_result%

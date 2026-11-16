@@ -4,9 +4,9 @@
 
 ## 2026-10-15：重新解包更新已有资源与 Blender 接入
 
-本节契约已接入，具体实现、旧庄方宜工程和源包验证边界见[本轮实现](update-workflows-20261015.md)。
+本节契约已接入，具体实现、旧庄方宜工程和源包验证边界见[本轮实现](archive/compiled-pipeline/update-workflows-20261015.md)。
 
-用户最新确定职责：解包资源的更新由 AnimeStudio 负责；对新游戏资源重新解包时，自动更新已有解包输出。Blender 接受来源文件更新并继续使用旧工程；[EFF 修复工具](eff-repair-tool-design.md)只修 Mod，不处理解包资源或工程迁移。
+用户最新确定职责：解包资源的更新由 AnimeStudio 负责；对新游戏资源重新解包时，自动更新已有解包输出。Blender 接受来源文件更新并继续使用旧工程；[EFF 修复工具](archive/compiled-pipeline/eff-repair-tool-design.md)只修 Mod，不处理解包资源或工程迁移。
 
 ### AnimeStudio
 

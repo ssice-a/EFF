@@ -65,24 +65,24 @@ gui=INSERT
 disable_camera_fade=true
 ```
 
-## 制作与三端职责
+## 制作与四端职责
 
 1. 使用 [AnimeStudio](https://github.com/ssice-a/AnimeStudio) 打开 VFS，选择 Prefab 并导出 EFF 源包。保留源包的字段模板、manifest 和作者索引。
 2. 安装 [EFF Blender 插件](https://github.com/ssice-a/EFF-blender)，导入源包 `mod.ini`，编辑并导出所选网格。导出事务验证全部声明，发布时仅替换内容变化的文件。
-3. Blender 从 EFF Release 获取共享作者工具，按 INI 源 Mesh 离线找到全部 Prefab/Renderer 消费者，编译当前这一个 Mod。工具按 SHA256 缓存到用户选择的资源根目录；暂存结果完整验证后才发布，失败保留此前输出。
+3. Blender 从 EFF Release 获取共享作者工具，写出 Format 3 的 INI、作者几何/物理/动画/特效资源及 DDS。工具按 SHA256 缓存到用户选择的资源根目录；暂存结果完整验证后才发布，失败保留此前输出。
 4. DLL 按当前请求读取 Format 3 资源，合并共用资源上的修改并提交原生输入；F10 使用同一规则并调用游戏模型生命周期。DLL 不编译作者资源，不查询全游戏索引，不全场景扫描 Renderer。
 
 四端共享工具、AnimeStudio 索引位置、用户可选存储路径与构建发布流程见[共享工具与索引](docs/shared-tools-and-indexes.md)。Blender 5.2 插件在 **N → EFF → AnimeStudio 解包索引**中选择索引位置；无需在插件安装时选择索引，也无需指定解包输出目录。
 
 导出到游戏 `plugin/mods/` 会自动识别安装路径；导出到其他目录请设置 `EFF_RELOAD_GAME`。玩家不需要作者索引、原游戏包快照或 Blender 工具。`mod.ini` 是规则入口，各 .effres 和 DDS 为独立资源；DLL 只读取 Format 3。
 
-完整原包不会写入 Mod。Mod 保存作者资源和声明，DLL 在游戏实际请求时准备输入并复用原生反序列化。规则文件大小与 Unity 加载时的内存占用不同。详见[命中与加载流程](docs/runtime-resource-discovery.md)、[输出契约](docs/offline-resource-package-format.md)。
+完整原包不会写入 Mod。Mod 保存作者资源和声明，DLL 在游戏实际请求时准备输入并复用原生反序列化。规则文件大小与 Unity 加载时的内存占用不同。详见[命中与加载流程](docs/runtime-resource-discovery.md)、[输出契约](docs/adr/0002-runtime-resource-files.md)。
 
 ## 验证边界
 
-本次更新的 BLC v5、公共索引、来源事务更新、旧工程隔离导出及旧 Mod 修复回归已通过。DLL 不承担游戏更新后的后台发现、编译或自动回写；更新适配在游戏外完成。全部角色画面、活跃动画性能和骨架实质变化仍需独立验收，见[本轮实现与验证](docs/update-workflows-20261015.md)。
+当前实现、自动回归、本机部署和游戏验收分别记录在[实现状态](docs/format3-transition-status.md)与[架构修复](docs/architecture-repairs-20261112.md)。Manager 已包含安装与迁移链路；玩家无需另装 Blender 或解包器，旧格式迁移仍需兼容工具集。
 
-离线回归覆盖同 PFB 多 Mod、增删恢复、流偏移、静态网格、连续世界/展示重载、动画消费者与回滚。最新两角色实机 F10 请求到提交约 107 ms，待机附件已获视觉确认；这是已准备候选的样本，不能代表所有场景的耗时。独立人群 NPC/场景物件的原地 F10、完整多代资源退休和 20–30 个 Mod 的压力尚未验证；数量不等于同时渲染数量。全 LOD 导出不会自动减面。新增 BoneCloth 骨链及球/胶囊碰撞体已接入离线编译；不同动作的混合、完整物理退出和 F10 仍需实机验收。当前发布构建通过自动回归，尚无本轮新二进制的实机验收。详细边界见[热重载验收](docs/hot-reload-testing.md)。
+游戏 F10、软件更新下载和退出后安装是不同链路。当前回归入口与实机场景矩阵见[热重载测试](docs/hot-reload-testing.md)，软件检查/安装故障见[更新诊断](docs/software-update-audit-20261112.md)。实机跨场景、长时资源退休、GPU/活跃动画成本及全部特效组合仍需分别验收，历史单次耗时不代表当前所有场景。
 
 ## 致谢与许可
 

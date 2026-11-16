@@ -53,20 +53,20 @@ DLL updates require a game restart. Wait for active model loads to finish before
 
 1. Export an EFF source package using [AnimeStudio](https://github.com/ssice-a/AnimeStudio). Keep source templates, manifest and author index.
 2. Import its `mod.ini` with [EFF Blender](https://github.com/ssice-a/EFF-blender), edit and export selected Meshes. A complete export validates all declarations and only replaces files whose contents changed.
-3. Blender obtains shared authoring tools from EFF Releases, resolves all consumers of the declared source Mesh offline and compiles this one staged Mod. Verified tools are cached under the user-selected resource root before publishing.
+3. Blender obtains shared authoring tools from EFF Releases and writes Format 3 declarations, authored geometry/physics/animation/effect resources and DDS files. Verified tools are cached under the user-selected resource root before publishing.
 4. EFF reads Format 3 resources on demand, combines edits on shared inputs and submits native inputs before deserialization. It does not compile geometry/materials/textures, query the global asset index or scan scene Renderers.
 
 The four-endpoint ownership, user-selected resource root, AnimeStudio index location and build/release flow are described in [Shared Tools and Indexes](docs/shared-tools-and-indexes.md). Blender 5.2 users select the AnimeStudio unpack-index location in the add-on UI after installation; they do not select an extraction output directory.
 
 Exports under the game's `plugin/mods/` locate the installation automatically; other output directories require `EFF_RELOAD_GAME`. Players need neither author tools nor source snapshots. `mod.ini` remains the author rule entry; Format 3 stores independent resource files.
 
-Complete original bundles are not saved in the Mod. Format 3 stores authored resources and declarations; native inputs are prepared when the game requests them. Package size is not an estimate of Unity memory usage. See the [loading flow](docs/runtime-resource-discovery.md) and [output contract](docs/offline-resource-package-format.md).
+Complete original bundles are not saved in the Mod. Format 3 stores authored resources and declarations; native inputs are prepared when the game requests them. Package size is not an estimate of Unity memory usage. See the [loading flow](docs/runtime-resource-discovery.md) and [output contract](docs/adr/0002-runtime-resource-files.md).
 
 ## Validation limits
 
-The current update has regression coverage for BLC v5, portable full indexes, transactional extracted-source refresh, an existing Blender project and old-Mod repair. Update adaptation runs outside the game. The DLL performs no background discovery, compilation or Mod writes. Broad in-game visual coverage, active-animation performance and substantial skeleton changes still require separate validation.
+Current implementation, automated regressions, local installation and in-game acceptance are tracked separately in [implementation status](docs/format3-transition-status.md) and [architecture repairs](docs/architecture-repairs-20261112.md). Manager ships its installation and migration dependencies; users do not need to install Blender or an unpacker. Legacy migration still needs its compatible toolset.
 
-Regression checks cover shared-PFB composition, removals, stream relocation, static Meshes, sequential world/display reloads, animation consumers and rollback. The latest in-game two-character F10 took about 107 ms from request to commit, with idle attachments visually confirmed. This measured an already prepared candidate, not every scene's latency. Independent crowd NPC/scene-object refresh, complete generation retirement and 20–30 Mod pressure remain unverified. Exporting all LOD targets does not generate reduced geometry. New BoneCloth chains and sphere/capsule colliders are connected to offline compilation. Animation blending, complete physics teardown and F10 still require in-game acceptance. This release build passed automated regressions; new in-game acceptance has not been performed for these binaries.
+Game F10 reload, software update lookup/download and installation after exit are separate paths. See [game reload testing](docs/hot-reload-testing.md) and [software update diagnosis](docs/software-update-audit-20261112.md). Cross-scene behavior, long-lived resource retirement, GPU/active-animation costs and effect combinations require separate in-game validation; historical timing samples do not describe every current scene.
 
 ## Credits and license
 

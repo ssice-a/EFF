@@ -209,7 +209,7 @@ With a full-resource package configured, reload selects the complete compiled
 candidate, prepares controls/settings off-thread and commits them together
 with the verified native generation on the Unity thread. Mesh, Material and
 Texture edits use that same resource transaction. Current limitations and
-game evidence are in [the package contract](offline-resource-package-format.md)
+game evidence are in [the package contract](archive/compiled-pipeline/offline-resource-package-format.md)
 and [hot reload testing](hot-reload-testing.md).
 
 Without a configured full-resource package, `eiem_entry_reload.h` accepts only

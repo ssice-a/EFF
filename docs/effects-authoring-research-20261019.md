@@ -215,4 +215,4 @@ AnimeStudio 新增 `--build-eff-effects`：核对来源快照/编辑摘要，严
 
 DLL 的本地命名管道只传递命令和纯数据。后台核验离线文件；原生 ResourceManager 来源租约、Bundle/Prefab 异步加载、精确已登记模型实例/Transform 地址、unmanaged 登记与粒子播放均由 Unity 主线程执行。准备和播放分开，新候选失败保留旧实例；取消等待真实请求结束，owner 释放前清理，延迟 Destroy 后才退休资源，未知所有权保留隔离。当前是独立测试实例，未接管技能/动画事件或战斗池。
 
-真实生产代码隔离状态机和 Windows named pipe/Python 客户端均已回归，包括 Unicode 路径、命令 ticket、损坏包拒绝、失败保持、重播、停止、清理、旧容器缓存碰撞与 idle 零 Unity 调用；调试 DLL 使用静态 CRT 并完成 PE/旧宿主运行库隔离加载验证。这些不是游戏调用签名、显示效果或性能验收。安装 DLL 与生产 Mod 未修改，没有发布。具体协议、测点和未实现范围见 [DLL 特效调试](effects-runtime-debug.md)。
+真实生产代码隔离状态机和 Windows named pipe/Python 客户端均已回归，包括 Unicode 路径、命令 ticket、损坏包拒绝、失败保持、重播、停止、清理、旧容器缓存碰撞与 idle 零 Unity 调用；调试 DLL 使用静态 CRT 并完成 PE/旧宿主运行库隔离加载验证。这些不是游戏调用签名、显示效果或性能验收。安装 DLL 与生产 Mod 未修改，没有发布。具体协议、测点和未实现范围见 [DLL 特效调试](archive/effects/effects-runtime-debug.md)。

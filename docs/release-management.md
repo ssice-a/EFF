@@ -37,6 +37,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File tools/release/build_deploy_local.p
 
 Blender 部署同时构建 `eff_author_assets_format3.dll`，并更新共享工具目录当前选中的作者 DLL，避免 Python 插件已更新、实际使用的原生作者工具仍旧的情况。`deploy_shared_author_assets.py` 复制完整已安装共享工具包，保留其余文件，验证新 DLL 的控制编译入口后生成新 ZIP 与 SHA256 代际目录，最后原子更新 `tools/current.json`；旧代不覆盖，回执包含原选择与所有文件摘要。此本地步骤不发布或下载远程 Release。
 
+AnimeStudio 部署完成后，在现有共享资源设置中注册已部署的 `AnimeStudio.GUI.exe`。Blender 特效创建、导出和挂点动画共用该工具选择；场景显式指定的构建器路径仍优先。源码目录的 Release/Debug 仅作未配置安装时的开发回退，不能让安装版硬编码调用开发目录。更新共享资源根目录或索引工作区时须保留已注册工具位置。
+
 若 AnimeStudio 回归已对同一源码提交通过、但随后的构建或部署失败，可用 `-Component AnimeStudio -SkipAnimeStudioTests` 只重试构建与部署；正常构建不要跳过测试。
 
 | 组件 | 本机安装目标 | 部署前要求 |

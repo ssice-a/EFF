@@ -1,52 +1,30 @@
-# EFF 三仓库边界
+# EFF 四仓库边界
 
-EFF 的运行时、Blender 作者工具和资源解包器是三个独立产品，分别发布、回滚和迭代。
-它们通过明确字段结构的文件格式通信，兼容性由实际结构决定，不共享进程、Unity 对象或生命周期状态。
+EFF、Blender、AnimeStudio、Mod Manager 是四个独立源码仓库，通过文件格式和共享工具接口协作。它们不共享运行时 Unity 对象或进程生命周期。
 
-| 仓库 | 唯一职责 | 当前输出 |
-|---|---|---|
-| [ssice-a/EFF](https://github.com/ssice-a/EFF) | 游戏内资源入口、离线编译器、格式规范、跨端契约测试 | 配套 DLL/编译器；格式 2 原生输入与 v35/v36 清单 |
-| [ssice-a/EFF-blender](https://github.com/ssice-a/EFF-blender) | Blender 导入、编辑、LOD/材质/切换作者数据和 Mod 导出 | 源交换 reader；`mod.ini format=2` 与独立 `.mesh/.mat/.tex` |
-| [ssice-a/AnimeStudio](https://github.com/ssice-a/AnimeStudio) | Endfield VFS 索引、原始资源与 PFB 关系提取、源作者数据导出 | EFFMESH v6、EFFSKEL v2、Material、Texture、Physics 源图 |
+| 工作树 | 职责 | 当前交付 |
+| --- | --- | --- |
+| EFF 根仓库 | 游戏运行时、格式契约、原生作者工具及跨端回归 | `eff.dll`、协议、共享工具包 |
+| `tools/Blender` | 导入、作者可视编辑、资源导出与往返 | Format 3 Mod、插件 continuous 更新包 |
+| `tools/AnimeStudio` | 游戏 VFS/索引、资源及原生关系导出 | 源作者目录、索引和特效来源 |
+| `EFF-Mod-Manager` | 安装、启停、修复/迁移与软件更新 | 独立 Windows 程序，附带所需读取/校验依赖 |
 
-## 依赖方向
+## 数据方向
 
 ```text
-游戏 VFS
-  -> AnimeStudio 源包（Mesh v6、Skeleton v2）
-      -> Blender 编辑与格式 2 作者包
-          -> EFF 配套离线编译器 + pristine 游戏基线
-              -> 原生加载输入与完整清单
-                  -> EFF DLL 加载、核验并迁移已适配实例
+游戏 VFS → AnimeStudio 来源/索引 → Blender 编辑 → mod.ini + 独立资源
+                                                  ↓
+游戏真实请求 → EFF 按逻辑目标命中 → 准备原生输入 → 游戏反序列化/实例生命周期
+
+Mod Manager → 安装与管理 Mod；按需校验 Format 3、迁移旧 Format 2
 ```
 
-AnimeStudio 不生成运行时指针或控制 Renderer 生命周期。Blender 不解包游戏 VFS，也不猜测
-PFB 实例。基础资源在外部编译，DLL 消费完整候选及控制图，不在帧内重建作者几何/贴图。Lua UI 与 Skeleton/Physics 作者 reader 保留，但尚未接入当前生产宿主完整运行链。
+新输出不要求 `compiled.bin` 或离线消费者缓存。DDS 保存像素，INI 声明位置、逻辑来源、装配与控制；Mesh/物理/动画样本/原生特效保持各自的数据职责。具体以 [ADR-0002](adr/0002-runtime-resource-files.md) 为准。
 
-## 协议所有权
+Manager 在构建时链接固定 AnimeStudio 核心并打包原生依赖，玩家无需安装 AnimeStudio 或 Blender。旧格式迁移仍需要兼容迁移工具集；索引可来自本地、手动包、下载或本地构建，不等于任何缺失作者资源都可修复。
 
-规范和兼容矩阵放在 EFF 的 `docs/`，C++ reader 与跨端集成测试也由 EFF 维护。
-生产端实现分别留在各自仓库。格式变更按以下顺序完成：
+## 版本与部署
 
-1. 在 EFF 文档和 reader 测试中定义字段结构、编码和不兼容结构的拒绝条件，版本标签不作为门槛。
-2. 在 AnimeStudio 或 EFF-blender 实现对应 writer，并用真实 reader 回归。
-3. 先在工具仓库分别提交和验证，再更新 EFF 中的 submodule 固定提交；需要发布时三仓库各自发布。
+三个子目录是 Git submodule，提交分别属于自己的仓库；主仓库 gitlink 只固定提交，不能代表子仓库未提交改动。所有开发留在各自 `main`；先验证受影响源码并部署固定本机目标，再按授权提交/推送。发布只上传本机已核验产物，见 [发布管理](release-management.md)。
 
-当前无需建立第四个“格式仓库”。协议仍同时依赖游戏内 C++ reader 和两个生产端，过早再拆一层
-只会增加版本协调成本。如果未来出现第三方独立消费者，再把纯格式 fixture/schema 抽为独立包。
-
-## Submodule 的含义
-
-两个目录都是独立 Git 仓库的 submodule，不会把源码历史并入 EFF。三个开发工作树都位于同一个文件树：
-
-- `tools/Blender` 直接作为 Blender 的日常开发工作树，修改后先在该目录提交到 EFF-blender，再更新 EFF 的 gitlink。
-- `tools/AnimeStudio` 直接作为 AnimeStudio 的日常开发工作树，修改后先在该目录提交到 AnimeStudio，再更新 EFF 的 gitlink。原先单独放在 `E:\vscode\AnimeStudio` 的源码已同步到此处。
-- `E:\vscode\blender` 是另一套 Blender 插件，不是 EFF-blender；EFF 的 Blender 代码只维护 `tools/Blender`。
-
-克隆后执行：
-
-```powershell
-git submodule update --init --recursive
-```
-
-提交顺序：AnimeStudio 和 EFF-blender 各自提交；EFF 更新两个 gitlink 并提交。任何一端仍有未提交修改时，父仓库的 gitlink 不能表达完整源码版本。三仓库的 Release 独立创建；EFF 的 workflow 打包配套 DLL、编译器、协议、代理与配置，不混入 Blender/AnimeStudio 产品包。本轮清理仍在本地验证，没有新增发布；当前入口及检查见[代码架构](code-architecture.md)。
+旧三仓库/Format 2 说明保存在 [历史快照](archive/snapshots/repository-architecture-before-20261112.md)。
