@@ -1,13 +1,16 @@
-# Unreleased
+# EFF v2.0.13
 
 - Unifies effect resources, material changes and animation targets under Format 3 INI assembly, including selected-emitter export, author Empty mounts and one animation group for Shape, Bone and Material channels.
-- Repairs F10 generation routing, shared weapon/UI dependencies, effect attachment lifetime and native Mesh provenance without introducing a separate reload path.
+- Keeps existing native resources on an unchanged F10 and still retries failed refreshes. In-game tests confirmed that disabling and re-enabling a Mod refreshes both the world and the display page in place.
+- Fixes F10 routing for shared world and display weapons, restores original resources when a Mod changes target, and evicts dependency-readiness state with the shared graph input that owns it.
 - Removes repeated native target inspection within a request and preserves typed preparation failures; a real game Bundle now completes 325 target queries within the existing 8 MiB budget.
 - Adds compatible Ins panel presentation backends, graphics-stage diagnostics and recovery from handled D3D11 failures. AMD with RTSS and Proton still require platform-specific acceptance.
-- Updates Blender authoring/preview performance, INI/DDS round trips, independent material Action ownership and software-update handling; updates Manager installation, offline index acquisition and integrated validation.
-- Archives superseded pipeline designs and investigation tools while retaining current contract and deployment documentation.
+- Uses buffered runtime logging and leaves detailed particle sampling opt-in through `[Diagnostics] detailed=true`.
+- Updates Blender authoring, preview performance, INI/DDS round trips and Action handling. Manager adds weapon retargeting, character target information and offline index diagnostics.
 
-These changes are source submissions and locally deployed builds, not a published Release. Validation and remaining limits are recorded in `docs/architecture-repairs-20261116.md`.
+The reload regression suite verifies shared input reclamation after the last holder retires. The short in-game session verified owner refresh and native dependency release. Long-session memory and GPU residency remain unmeasured.
+
+Windows x64. Runtime input remains Format 3. The release includes the game DLL package, `EFF_Shared_Native_Tools_v2.0.13.zip`, and the shared-tools manifest.
 
 # EFF v2.0.12
 

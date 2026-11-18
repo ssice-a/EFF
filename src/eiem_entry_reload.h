@@ -5,8 +5,9 @@ void CommitPendingReload() {
   DemandGenerationReload::Frame();
   NativeBundle::CollectMemory();
   ::Entry::EffectDebug::Frame();
-  ::Entry::RuntimeAttachments::Frame();
-  ::Entry::RuntimeAuthorTransforms::Frame();
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+  DemandLoadingProbe::PumpSharedRetirements();
+#endif
 #if defined(EIEM_NATIVE_ANIMATION_PROBE)
   ::Entry::NativeAnimationProbe::Frame();
 #endif

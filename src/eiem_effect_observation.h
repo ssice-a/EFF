@@ -73,7 +73,7 @@ std::string Curve(void* getter,void* self){
  if(api.multiplier)out<<RuntimeShapes::Scalar<float>(api.multiplier,raw);else out<<"unavailable";return out.str();
 }
 void Capture(Instance& instance,const char* phase) noexcept {
- if(!api.ready)return;
+ if(!api.ready||!settings.Get().detailedDiagnostics)return;
  try{for(const auto& particle:instance.particles){
   if(!RuntimeShapes::Alive(particle.Get()))continue;
   RenderState(instance,particle.Get(),phase);
@@ -93,7 +93,7 @@ void Capture(Instance& instance,const char* phase) noexcept {
  }}catch(const std::exception& e){instance.observationStep=2;Log("[EFFECT-PARAMETERS-GAP] reason=%s playbackPreserved=1",e.what());}
 }
 void Tick(Instance& instance){
- if(!api.ready||instance.observationStep>=2)return;
+ if(!api.ready||instance.observationStep>=2||!settings.Get().detailedDiagnostics)return;
  if(NativeBundle::Ms(instance.observationClock)<(instance.observationStep?3000.:1000.))return;
  auto phase=instance.observationStep?"after-3s":"after-1s";++instance.observationStep;Capture(instance,phase);
 }
@@ -122,7 +122,7 @@ void Install(void* ps,void* transform,void** assemblies,size_t count) noexcept {
   api.particleLife=Exact(particle,"get_startLifetime",{},"System.Single",false);api.remainingLife=Exact(particle,"get_remainingLifetime",{},"System.Single",false);api.velocity=Exact(particle,"get_velocity",{},"UnityEngine.Vector3",false);
   auto arrayType=type(particle)+"[]";api.getParticles=api.particleLife&&api.remainingLife&&api.velocity?Exact(ps,"GetParticles",{arrayType.c_str()},"System.Int32",false):nullptr;
   if(api.getParticles){Require(api.particleSize>=12&&api.particleSize<=4096,"particle observation value size");api.particleClass=particle;}
-  api.ready=true;Log("[EFFECT-PARAMETERS-READY] snapshots=after-play,after-1s,after-3s readOnly=1");
+  api.ready=true;Log("[EFFECT-PARAMETERS-READY] detailed=%d snapshots=after-play,after-1s,after-3s readOnly=1",int(settings.Get().detailedDiagnostics));
  }catch(const std::exception& e){api.ready=false;Log("[EFFECT-PARAMETERS-GAP] install=%s playbackPreserved=1",e.what());}
 }
 }

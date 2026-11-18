@@ -4,6 +4,7 @@
 #include "eiem_entry_controls.h"
 namespace RuntimeMaterials {void Register(void*,void*,const RuntimeControls::Spec&);void Frame();void Forget(void*);void Install(void**,size_t);}
 namespace RuntimeAttachments {void ModelReady(void*);void QueueOwnerReady(void*);void OwnerReleasing(void*) noexcept;void Frame();}
+namespace RuntimeAnimations {void Frame(double,int);}
 namespace FullResourceReload {void HelperReady(void*);}
 #if defined(EIEM_MOD_ANIMATION_PROBE)
 namespace ModAnimationProbe {
@@ -775,6 +776,9 @@ size_t RegisterRendererList(void* renderers,bool modelReady) {
   performance.hit=ready!=0;return ready;
 }
 bool GetEnabled(void* renderer) {
+  // Capture selects a visible LOD before reading its meshes. Author-hidden
+  // renderers must be excluded from that selection.
+  if(scope)return originalEnabledGetter(renderer);
   // Game code can snapshot/replay visibility at any lifecycle boundary. Its
   // read must match its last request, not our author-filtered render output.
   // Bindings are main-thread-owned; other threads never inspect these maps.
@@ -840,8 +844,9 @@ void Update() {
   auto window = GetForegroundWindow(); DWORD pid=0; GetWindowThreadProcessId(window,&pid);
   bool focused = active.load() && pid == GetCurrentProcessId();
   {EiemLoadPerformance::Scope input(EiemLoadPerformance::ControlInput);PanelCommands(focused);PollControls(focused,elapsed);}
-  {EiemLoadPerformance::Scope animation(EiemLoadPerformance::ShapeAnimation);AdvanceAnimations(elapsed);}
-  RuntimeMaterials::Frame();
+  RuntimeAnimations::Frame(elapsed,frame);
+}
+void ApplyOutputs(int frame) {
 #if defined(EIEM_MOD_ANIMATION_PROBE)
   ModAnimationProbe::BeginFrame();
 #endif
@@ -1023,8 +1028,8 @@ void InstallOptional(void** assemblies,size_t count) {
     Require(Install(loop,"LateUpdate",{},"System.Void",false,(void*)FrameTick,(void**)&originalFrameTick),"runtime shape regular frame hook absent");
     Log("[SHAPE-RUNTIME-FRAME-API] entry=Beyond.TailGameLoop.LateUpdate perUnityFrame=1 captureIndependent=1");
     Require(Install(material,"Init",{"System.Collections.Generic.List<UnityEngine.Renderer>","System.Collections.Generic.List<Beyond.Rendering.EntityRendererTypeConfig>","Beyond.Rendering.EntityCustomizeRendererPropertyConfig","System.Boolean"},"System.Void",false,(void*)Init,(void**)&originalInit),"runtime shape registration hook absent");
-    // Capture's native code calls the resolved icall directly, rather than the
-    // managed getter wrapper. Only this getter is adapted inside a TLS scope.
+    // Capture's managed getter wrapper dispatches to this public icall.
+    // Only capture consumers receive an adapted Mesh inside a TLS scope.
     auto getter=il2cpp_resolve_icall("UnityEngine.SkinnedMeshRenderer::get_sharedMesh()");
     Require(getter && !installed.count(getter),"runtime capture shared Mesh getter unavailable");
     Require(Entry::InstallAddress(getter,"SkinnedMeshRenderer.get_sharedMesh",(void*)GetMesh,(void**)&originalMeshGetter),"runtime capture getter hook failed");

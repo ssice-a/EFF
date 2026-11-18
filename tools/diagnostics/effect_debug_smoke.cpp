@@ -92,12 +92,17 @@ void Setup(){Test::Setup();Test::Reset();unityThread=GetCurrentThreadId();il2cpp
 }
 void ObservationChecks(){
  auto saved=D::Observation::api;auto& a=D::Observation::api;
+ auto savedSettings=Entry::settings.Get();auto config=savedSettings;config.detailedDiagnostics=false;Entry::settings.Publish(config);
  auto savedEnabled=RuntimeShapes::api.getEnabled;RuntimeShapes::api.getEnabled=(void*)943;
  a.ready=true;a.mainModule=a.emission=(void*)930;a.life=a.start=a.rate=(void*)931;
  a.low=(void*)932;a.high=(void*)933;a.mode=a.max=a.space=(void*)934;a.count=(void*)935;
  a.time=a.speed=a.timeScale=a.duration=a.multiplier=(void*)936;a.lossyScale=(void*)937;a.loop=a.playing=(void*)938;
  D::Instance instance;instance.owner=RuntimeShapes::Ref::Make(Test::oldRoot,false);instance.object=instance.owner;instance.particles={RuntimeShapes::Ref::Make((void*)0xE000,false)};
  instance.parent=instance.owner;particleSystems.insert((void*)0xE000);particleRenderers[(void*)0xE000]=(void*)0xF000;particleGameObjects[(void*)0xE000]=(void*)0xE001;layers[(void*)0xE001]=11;
+ auto beforeDisabled=calls;instance.observationClock=0;
+ D::Observation::Capture(instance,"production-default");D::Observation::Tick(instance);
+ Check(calls==beforeDisabled&&instance.observationStep==0,"disabled detailed diagnostics read particle data or advanced its sample state");
+ config.detailedDiagnostics=true;Entry::settings.Publish(config);
  a.worldPosition=(void*)942;a.bounds=(void*)941;a.forceOff=(void*)943;a.visible=(void*)944;a.renderMode=(void*)945;a.mainCamera=(void*)946;a.cameraMask=(void*)947;
  FILE* capture=nullptr;Check(tmpfile_s(&capture)==0&&capture,"visibility observation capture unavailable");auto oldLog=Entry::logFile;Entry::logFile=capture;
  D::Observation::RenderState(instance,(void*)0xE000,"test-visibility");fflush(capture);rewind(capture);std::string captured;char chunk[4096];while(auto n=fread(chunk,1,sizeof(chunk),capture))captured.append(chunk,n);Entry::logFile=oldLog;fclose(capture);
@@ -119,7 +124,7 @@ void ObservationChecks(){
  Check(instance.observationStep==2&&observationCalls==before,"observation did not stop after bounded snapshots");
  a.life=(void*)940;D::Observation::Capture(instance,"test-reject");Check(instance.observationStep==2,"observation rejection kept retrying");
  Check(layerWrites==transformWrites&&adds==registrations&&destroys==destroyedCount&&clears==clearCount,"observation changed playback lifecycle");
- D::Observation::api=saved;RuntimeShapes::api.getEnabled=savedEnabled;std::cout<<"PASS read-only native effect observations: renderer/material/camera state, curve ranges, delayed samples, bounded idle, failure isolation\n";
+ D::Observation::api=saved;RuntimeShapes::api.getEnabled=savedEnabled;Entry::settings.Publish(savedSettings);std::cout<<"PASS read-only native effect observations: zero native reads by default, opt-in renderer/material/camera state, curve ranges, delayed samples, bounded idle, failure isolation\n";
 }
 std::shared_ptr<const D::Manifest> Manifest(char key){auto m=std::make_shared<D::Manifest>();m->key=std::string(64,key);m->prefab="assets/effect.prefab";m->rootName="effect";m->particles=1;
  EiemEffectDebugPacket::Bundle b;b.file="runtime/bundles/test.ab";b.hash=std::string(64,key);b.bytes=std::make_shared<const Bytes>(EiemNativeInput::EndfieldInput::Encode(EiemAuthorMeshBundle::EnvelopeHeader(),{{"CAB-test",4,Bytes{1,2,3,4}}}));m->bundles.push_back(b);return m;}
@@ -196,6 +201,7 @@ void Teardown(){
  D::playing.reset();D::ready.reset();D::candidate.reset();D::retiredInstances.clear();D::generations.clear();D::api={};
  NativeBundle::memoryRequests.clear();NativeBundle::memoryBundles.clear();NativeBundle::memoryUnloads.clear();FullResourceReload::liveParts.clear();FullResourceReload::observedPrefabs.clear();
  FullResourceReload::controlledPrefabSources.clear();FullResourceReload::controlledPrefabPaths.clear();FullResourceReload::pendingControlledClones.clear();FullResourceReload::pendingControlledClonePaths.clear();FullResourceReload::liveControlledClones.clear();
+ FullResourceReload::uiWeaponDependenciesApi={};
  Check(failedInstance.expired(),"failed native registration retained an orphaned instance");
  Check(Test::handles.empty(),"effect debugger leaked managed handles after all generations retired");RuntimeShapes::managedAlive=false;
 }

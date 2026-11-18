@@ -6,7 +6,7 @@ namespace D=DemandLoadingProbe;namespace S=StartupDependencies;namespace A=Runti
 std::map<void*,std::vector<void*>> consumers;
 std::map<void*,void*> rendererMeshes,owners;
 std::string physical;
-uint64_t extent=0;unsigned vfsQueries=0,logicalQueries=0;
+uint64_t extent=0;unsigned vfsQueries=0,logicalQueries=0,dependencyQueries=0;
 constexpr uint64_t bundleKey=0xB180;
 MInfo encrypted{},backing{};
 void* Physical(void*,void*){return Test::StringValue(physical);}
@@ -14,7 +14,7 @@ unsigned char Encrypted(void*,void*){return 0;}
 void* Invoke(void* method,void* self,void** args,void** error){
  *error=nullptr;auto m=uintptr_t(method);
  if(m==1700){++logicalQueries;auto hash=*(uint64_t*)args[0];bool found=false;
-  for(const auto& path:{"assets/a.prefab","assets/b.prefab","assets/shared.prefab","assets/static.mesh"})found|=hash==std::hash<std::string>{}(path);
+  for(const auto& path:{"assets/a.prefab","assets/b.prefab","assets/shared.prefab","assets/static.mesh","assets/empty.prefab","assets/other.prefab"})found|=hash==std::hash<std::string>{}(path);
   if(!found)return &Test::no;memcpy(args[1],&bundleKey,8);uint64_t asset=hash==std::hash<std::string>{}("assets/static.mesh")?42:0;memcpy((char*)args[1]+8,&asset,8);return &Test::yes;
  }
  if(m==1701)return &Test::no;
@@ -47,12 +47,23 @@ void Checks(){
   auto& container=ArrayValue(fixture.T(300),Child(fixture.T(300),fixture.V(300),"m_Container"));auto row=ArrayElement(fixture.T(300),container);
   SetString(fixture.T(300),Child(fixture.T(300),row,"first"),"assets/shared.prefab");
   SetReference(fixture.T(300),Child(fixture.T(300),Child(fixture.T(300),row,"second"),"asset"),{fixture.cab,10},fixture.refs,fixture.cab);container.children.push_back(row);container.count=container.children.size();
+  fixture.Add(102,5);SetString(fixture.T(102),Child(fixture.T(102),fixture.V(102),"m_Name"),"Other");
+  fixture.Add(40,0);fixture.Add(41,1);fixture.Add(42,2);fixture.Add(43,3);
+  fixture.Pointer(41,"m_GameObject",40);fixture.Pointer(42,"m_GameObject",40);fixture.Pointer(42,"m_Mesh",102);
+  fixture.Pointer(43,"m_GameObject",40);fixture.List(40,"m_Component",{41,42,43},"component");
+  for(const auto& entry:std::map<std::string,int64_t>{{"assets/empty.prefab",30},{"assets/other.prefab",40}}){
+   auto added=ArrayElement(fixture.T(300),container);
+   SetString(fixture.T(300),Child(fixture.T(300),added,"first"),entry.first);
+   SetReference(fixture.T(300),Child(fixture.T(300),Child(fixture.T(300),added,"second"),"asset"),{fixture.cab,entry.second},fixture.refs,fixture.cab);
+   container.children.push_back(std::move(added));container.count=container.children.size();
+  }
   auto& hashed=ArrayValue(fixture.T(300),Child(fixture.T(300),fixture.V(300),"m_HashContainer"));auto hashRow=ArrayElement(fixture.T(300),hashed);
   SetInteger(fixture.T(300),Child(fixture.T(300),hashRow,"first"),42);SetReference(fixture.T(300),Child(fixture.T(300),Child(fixture.T(300),hashRow,"second"),"asset"),{fixture.cab,100},fixture.refs,fixture.cab);hashed.children.push_back(hashRow);hashed.count=1;
   auto bytes=EndfieldInput::Encode(EiemAuthorMeshBundle::EnvelopeHeader(),{{fixture.cab,4,fixture.BytesOf()}});
-  auto file=directory/"proof.vfs";EiemResourceReloadPlan::Save(file,bytes);physical=file.u8string();extent=bytes.size();vfsQueries=logicalQueries=0;
+  auto file=directory/"proof.vfs";EiemResourceReloadPlan::Save(file,bytes);physical=file.u8string();extent=bytes.size();vfsQueries=logicalQueries=dependencyQueries=0;
   D::api.packSize=16;D::api.bundleOffset=0;D::api.assetOffset=8;D::api.lookup=(void*)1700;D::api.subLookup=(void*)1701;
-  S::api={};S::api.bundleName=(void*)1702;S::api.listCtor=(void*)140;S::api.listAdd=(void*)141;S::api.listClass=(void*)700;S::api.listItems=(void*)18;S::api.listSize=(void*)19;S::originalAll=NativeDependencyQuery;
+  S::api={};S::api.bundleName=(void*)1702;S::api.listCtor=(void*)140;S::api.listAdd=(void*)141;S::api.listClass=(void*)700;S::api.listItems=(void*)18;S::api.listSize=(void*)19;
+  S::originalAll=[](void* self,uint64_t key,void* list,void* info){++dependencyQueries;return NativeDependencyQuery(self,key,list,info);};
   Test::nativeDependencyLists[bundleKey]={};Test::propertyElementWidth=8;
   auto& api=D::sharedApi;api.infoSize=16;api.offset=0;api.offsetWidth=8;api.length=8;api.lengthWidth=8;api.vfsInstance=(void*)1703;api.vfsQuery=(void*)1704;
   encrypted.mp=(void*)Encrypted;backing.mp=(void*)Physical;api.vfsEncrypted=&encrypted;api.vfsPhysical=&backing;
@@ -68,6 +79,14 @@ void Checks(){
   auto scope=std::make_unique<EffectNativeMeshFixture::Scope>();scope->generation->observedMeshTargets.insert({"assets/static.mesh","Static"});scope->generation->observedMeshTargets.insert({"assets/static.mesh","WrongStatic"});
   scope->manifest->unresolvedObservedMeshes=true;
   const auto loads=Test::memoryCalls,leases=Test::leaseRequests,scans=Test::sceneQueries,opened=Test::opened,clones=Test::cloneCalls;
+  D::ObserveNativeMeshSource(Test::unrelatedRoot,"assets/empty.prefab");
+  Require(!dependencyQueries,"attach-only lookup expanded dependencies for a prefab without Renderer Mesh references");
+  D::ObserveNativeMeshSource(Test::unrelatedRoot,"assets/other.prefab");
+  Require(!dependencyQueries,"attach-only lookup expanded dependencies despite every local Renderer Mesh excluding the declared target names");
+  auto negativeReads=vfsQueries;
+  D::ObserveNativeMeshSource(Test::unrelatedRoot,"assets/empty.prefab");
+  D::ObserveNativeMeshSource(Test::unrelatedRoot,"assets/other.prefab");
+  Require(vfsQueries==negativeReads,"conclusive prefab misses reopened the source within the same generation");
   D::ObserveNativeMeshSource(Test::source,"ASSETS/A.PREFAB");
   Require(D::ProvenNativeMeshIdentities(Test::oldMesh).count({"assets/static.mesh","Static"}),"exact native source callback did not prove an untouched Mesh");
   Require(scope->generation->authors.empty()&&D::nativeProofs==128,"native proof accidentally depended on authored markers or diagnostic budget");

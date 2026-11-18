@@ -9,6 +9,7 @@ bool matrixResult=false;
 void *lastSelf=nullptr,*lastRoot=nullptr,*lastInfo=nullptr;
 int lastMask=0;
 bool observeScope=false;
+std::function<void()> captureWork;
 unsigned char mainThread=1;
 struct ArrayHeader {void *klass=nullptr,*monitor=nullptr,*bounds=nullptr;uint64_t count=2;};
 template<class T> struct PaletteArray {ArrayHeader header;T values[2]{};};
@@ -80,6 +81,7 @@ void FreeHandle(uint32_t handle) {handles.erase(handle);}
 void* Unbox(void* object) { return object; }
 void* Capture(void* self,void* root,int mask,void* info) {
   ++captures;lastSelf=self;lastRoot=root;lastMask=mask;lastInfo=info;
+  if(captureWork)captureWork();
   if(observeScope) {
     Require(RuntimeShapes::scope!=nullptr,"capture TLS scope absent");
     RuntimeShapes::Finished(self,false);
@@ -409,6 +411,37 @@ int main(int argc,char** argv) {
       Require(!Test::renderEnabled.at(renderers[0][0])&&!RuntimeShapes::GetEnabled(renderers[0][0]),"author switch overrode a genuine native disable");
       RuntimeShapes::SetEnabled(renderers[0][0],true);state(1,0);
       Require(!Test::renderEnabled.at(renderers[0][0])&&RuntimeShapes::GetEnabled(renderers[0][0]),"native enable bypassed the author's hidden state or lost its own intent");
+      // Native Capture selects a complete LOD only when every enabled,
+      // active Renderer is visible and its skin matrices are ready. Reproduce
+      // that caller sequence (GameAssembly Capture, 0x55a331e..0x55a339e): an
+      // author-hidden garment must not reject the visible body in that LOD.
+      stage="native LOD afterimage selection with author-hidden garments";
+      state(1,1);
+      for(int instance=0;instance<2;++instance) {
+        std::vector<void*> selected;
+        auto collect=[&](void* culled=nullptr) {
+          selected.clear();
+          for(auto renderer:renderers[instance])if(RuntimeShapes::GetEnabled(renderer)) {
+            bool visible=Test::renderEnabled.at(renderer)!=0&&renderer!=culled;
+            if(!visible)return;
+            RuntimeShapes::Finished(renderer,true);
+          }
+          for(auto renderer:renderers[instance])if(RuntimeShapes::GetEnabled(renderer))selected.push_back(renderer);
+        };
+        Test::captureWork=[&]{collect();};
+        auto beforeCaptures=Test::captures;
+        Require(RuntimeShapes::Capture(self,root,-1,info)==(void*)0x1040&&Test::captures==beforeCaptures+1,
+                "LOD capture changed native arguments/result or invocation count");
+        Require(selected==std::vector<void*>{renderers[instance][1]},
+                "author-hidden garment rejected the whole visible afterimage LOD");
+        Require(RuntimeShapes::scope==nullptr&&RuntimeShapes::GetEnabled(renderers[instance][0]),
+                "capture's actual visibility escaped into native model snapshot/replay");
+        Test::captureWork=[&]{collect(renderers[instance][1]);};
+        RuntimeShapes::Capture(self,root,-1,info);
+        Require(selected.empty(),"capture forced a genuinely culled Renderer visible");
+        Test::captureWork={};
+      }
+      stage="three-state switch across game snapshot and model reuse";
       auto hidden=renderers[0][0],mesh=Test::renderMeshes.at(hidden);
       RuntimeShapes::RetireRenderer(hidden);
       Require(RuntimeShapes::GetEnabled(hidden)&&!RuntimeShapes::ActualEnabled(hidden),"pooled author-hidden Renderer lost its native intent view");
@@ -435,11 +468,14 @@ int main(int argc,char** argv) {
     // native enable arbitration, physical edges and preference round-trip.
     stage="real Mod fixture";
     if (argc==2) {
-      auto package=EiemDirectory::Load(std::filesystem::u8path(argv[1]));
+      // Use the production Format 3 author reader. EiemDirectory::Load is the
+      // old EFFRES-container reader and cannot open current author files.
+      auto authorCatalog=std::make_shared<EiemDemandAuthorResources::Catalog>(std::filesystem::u8path(argv[1]));
+      auto package=EiemDemandNativeAssembly::Author(authorCatalog).package;
+      const auto fixtureFiles=authorCatalog->FileFingerprints();
       auto temp=std::filesystem::absolute("diagnostics/resource-directory-entry-20261003/v25-part-key-controls/state-fixture-"+std::to_string(GetCurrentProcessId()));
       std::filesystem::create_directories(temp);auto authorRoot=package.root;
-      std::filesystem::copy_file(authorRoot/"mod.ini",temp/"mod.ini",std::filesystem::copy_options::overwrite_existing);
-      for(const auto& resource:package.resources) {
+      for(const auto& resource:fixtureFiles) {
         auto path=temp/std::filesystem::u8path(resource.first);std::filesystem::create_directories(path.parent_path());
         std::filesystem::copy_file(authorRoot/std::filesystem::u8path(resource.first),path,std::filesystem::copy_options::overwrite_existing);
       }
@@ -449,6 +485,17 @@ int main(int argc,char** argv) {
       package.keySwitchEnabled=true;
       package.defaults["$press_test"]=0;
       package.bindings.push_back({"pressFixture","$press_test","press",{'K',MOD_CONTROL},{7},1});
+      // Some author packages show every garment by default. Select a declared
+      // cycle state in this isolated fixture so helper completion really tests
+      // author hiding as well as a genuine native disable; never edit the Mod.
+      auto initialValues=package.defaults;size_t hiddenCount=0;
+      for(const auto& key:package.bindings)if(key.type=="cycle")for(auto value:key.values) {
+        auto values=package.defaults;values[key.variable]=value;size_t hidden=0;
+        for(const auto& part:package.parts)if(part.second.visible&&part.second.visible->Evaluate(values)==0)++hidden;
+        if(hidden>hiddenCount){initialValues=std::move(values);hiddenCount=hidden;}
+      }
+      Require(hiddenCount>1,"author fixture needs two switchable hidden parts alongside a native disable");
+      package.defaults=std::move(initialValues);
       auto graph=std::make_shared<const std::vector<Package>>(std::vector<Package>{package});
       const auto savedApi=RuntimeShapes::api;const auto savedSpecs=RuntimeShapes::specs;
       const auto savedVariables=RuntimeShapes::variables;const auto savedKeys=RuntimeShapes::keys;
@@ -705,7 +752,7 @@ int main(int argc,char** argv) {
       Require(Test::renderEnabled.at(unrelated),"unrelated native Renderer modified");
       RuntimeShapes::preferences.Flush(Log,true);
       EiemEntryPreferences disk;auto restored=disk.Load(package);
-      auto reloaded=EiemDirectory::Load(temp);
+      auto reloaded=EiemDemandNativeAssembly::Author(std::make_shared<EiemDemandAuthorResources::Catalog>(temp)).package;
       Require(EiemNativeInput::PackageDigest(reloaded)==EiemNativeInput::PackageDigest(package),"state.ini changes/rejects author package digest");
       // A refresh of the unchanged package retains live key state and bindings.
       auto oldPublished=std::atomic_load(&published);auto oldGeneration=generation.load();
@@ -727,10 +774,11 @@ int main(int argc,char** argv) {
       Require(Test::handles.empty(),"controlled Renderer lifecycle leaks managed handles");
       std::filesystem::remove(temp/"state.ini");std::filesystem::remove(temp/"mod.ini");
       std::set<std::filesystem::path> folders;
-      for(const auto& resource:package.resources) {auto path=temp/std::filesystem::u8path(resource.first);std::filesystem::remove(path);folders.insert(path.parent_path());}
-      for(const auto& folder:folders) std::filesystem::remove(folder);
+      for(const auto& resource:fixtureFiles) {auto path=temp/std::filesystem::u8path(resource.first);std::filesystem::remove(path);
+        for(auto folder=path.parent_path();folder!=temp;folder=folder.parent_path())folders.insert(folder);}
+      for(auto folder=folders.rbegin();folder!=folders.rend();++folder) std::filesystem::remove(*folder);
       std::filesystem::remove(temp);
-      std::cout<<"PASS actual package key integration: material Init/frame/controls reload preserve native baseline until model completion; native-disable/repeated-init preserved; 9 garments, 18 initial instances, all NUMPAD cycles including 3 states, no held repeat, modifier/press, public visibility readback, native enabled intent, late-instance state, unrelated Renderer, persistent restart round-trip/domain rejection\n";
+      std::cout<<"PASS actual package key integration: material Init/frame/controls reload preserve native baseline until model completion; native-disable/repeated-init preserved; "<<parts.size()<<" controlled parts, "<<parts.size()*2<<" initial instances, all declared cycles, no held repeat, modifier/press, public visibility readback, native enabled intent, late-instance state, unrelated Renderer, persistent restart round-trip/domain rejection\n";
     }
 #if defined(EIEM_DIAGNOSTICS)
     RENDERDOC_API_1_6_0 gpu{};

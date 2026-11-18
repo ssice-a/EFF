@@ -62,6 +62,8 @@ for marker in (
     b"resource-input-diagnostics", b"snapshot-ranges.tsv", b"[ADAPT-PROBE-", b"[CATALOG-SURVEY-", b"[MESH-TARGET-", b"[MESH-NATIVE-",
     b"[NATIVE-ANIMATION-PROBE]",
     b"[MOD-ANIMATION-PROBE]",
+    b"[SERIALIZATION-CRASH-SNAPSHOT",
+    b"script-binding-diagnostics", b"diagnostic-script-binding",
 ):
     assert marker not in checked, f"Production DLL contains diagnostic marker: {marker!r}"
 if not format3_runtime:

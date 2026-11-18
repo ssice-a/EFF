@@ -327,9 +327,14 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
     authored_defaults = set()
     authored_controls = set()
 
+    animation_groups = {}
     def merge_animation(identity, label, key, duration, speed, loop, autoplay,
-                        sample_count=None, speed_variable=None, sample_rate=None):
+                        sample_count=None, speed_variable=None, sample_rate=None, group_identity=None):
         """Return one typed-track clip, enforcing one shared playback clock."""
+        if group_identity is not None:
+            require(identity not in animation_groups or animation_groups[identity] == group_identity,
+                    "independent Animation groups share one export ID: " + identity)
+            animation_groups[identity] = group_identity
         animation = animations.get(identity)
         if animation is None:
             variable = speed_variable or ("$anim_speed_" + _identifier(identity))
@@ -437,7 +442,7 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
                     "Animation tracks must share one sample timeline: " + identity)
             animation = merge_animation(identity, clip["label"], clip.get("key", ""),
                 clip["duration"], clip["speed"], clip["loop"], clip["autoplay"],
-                next(iter(sample_counts), None), variable, clip.get("sample_rate"))
+                next(iter(sample_counts), None), variable, clip.get("sample_rate"), clip.get('_groupIdentity'))
             for shape, samples in clip["channels"].items():
                 state = runtime_parts[part_id]["shapes"].get(shape)
                 require(state is not None, "animated shape lacks a Format 3 control: " + shape)
@@ -457,7 +462,7 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
         animation = merge_animation(identity, clip["label"], clip.get("key", ""),
             clip["duration"], clip["speed"], clip["loop"], clip["autoplay"],
             next(iter(sample_counts), None), speed if identity not in animations else clip.get("speedVariable"),
-            clip.get("sample_rate"))
+            clip.get("sample_rate"), clip.get('_groupIdentity'))
         for target in clip["targets"]:
             variable = target["variable"]
             samples = target["samples"]
@@ -486,7 +491,7 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
         animation = merge_animation(identity, source.get("label", identity), key,
             decoded["duration"], speed, decoded["loop"], autoplay,
             sample_count, source.get("speedVariable") if identity not in animations else None,
-            decoded["sample_rate"])
+            decoded["sample_rate"], source.get('_groupIdentity'))
         require(all(len(values) == len(decoded["tracks"][0]["samples"])
                     for values in animation["tracks"].values()) and
                 all(len(track["samples"]) == len(decoded["tracks"][0]["samples"])
@@ -516,7 +521,7 @@ def _controls_resource(mod_id, parts, switches, material_clips, effects,
             native_mounts[key] = source
             clip = merge_animation(source['id'], source['label'], source.get('key', ''),
                 source['duration'], source['speed'], source['loop'], source['autoplay'],
-                source['sample_count'], source.get('speedVariable'), source['sample_rate'])
+                source['sample_count'], source.get('speedVariable'), source['sample_rate'], source.get('_groupIdentity'))
             clip['nativeOutputs'].append(source)
 
     effect_state = {}

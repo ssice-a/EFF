@@ -1,6 +1,8 @@
 #pragma once
 #include <atomic>
 #include <algorithm>
+#include <cstdint>
+#include <cstring>
 #include <psapi.h>
 #include <string>
 void Log(const char*,...);
@@ -13,7 +15,10 @@ enum Stage { File, DependencyAll, DependencyDirect, Prefab, Controls, StreamLife
  UpdateEntry, MaterialFrame, MaterialRegister, MaterialSlot, MaterialGlobal, MaterialRead,
  EffectFrame, EffectDisk, EffectBind, EffectMount, EffectOwners, EffectLoad, EffectCreate, EffectRetire, EffectCollect,
  ReloadOwners, ReloadRebuild, ReloadRetire, UIRegister, WorldRegister, InstantiationRoute, DiagnosticLogging,
- DemandLookup, DemandProxyIdentity, DemandPrepare, DemandDependencies, DemandProxySelect, DemandReady, DemandOperation, DemandAssetTree, Count };
+ DemandLookup, DemandProxyIdentity, DemandPrepare, DemandDependencies, DemandProxySelect, DemandReady, DemandOperation, DemandAssetTree,
+ DemandSharedWait, DemandScopeWait, DemandDiscovery, DemandOpen, NativeRead, NativeDecode, NativeStreamDecode, NativeDirectory, NativeMetadata, AuthorSnapshot,
+ DemandCompose, DemandCarrier, DemandMaterialUses, DemandMaterials, DemandConsumer, DemandEditCommit, DemandView, DemandRoots, DemandIsolate, DemandPublish,
+ DemandPrefabProof, DemandPrefabProofWalk, Count };
 enum class Operation { ManagedInvoke, HandleCreate, HandleFree, ShapeRead, ShapeWrite, MaterialValueWrite, EffectVisibility, EffectCreate, EffectRetire, Count };
 enum class Workload { Mods, Parts, UIModels, PendingUI, ShapeBindings, ShapeCache, CaptureGroups, CaptureSnapshots,
  MaterialBindings, ActiveAnimations, AnimationChannels, EffectBindings, EffectInstances, EffectGenerations, EffectRetired,
@@ -42,12 +47,34 @@ inline void MainFrame(unsigned frame){
  ObserveMainThread();frameNumber.store(frame,std::memory_order_relaxed);
  static thread_local uint64_t previous=0;auto now=Clock();if(previous){auto ticks=now-previous;double ms=double(ticks)*1000/Frequency();unsigned bucket=ms<=8.34?0:ms<=16.67?1:ms<=33.34?2:ms<=50?3:ms<=100?4:5;wallFrames[bucket].fetch_add(1,std::memory_order_relaxed);Maximum(wallFrameLongest,ticks);}previous=now;
 }
+// Thread-local request attribution complements the five-second aggregates.
+// Nested stage timings are inclusive and must never be added together.
+struct DemandSample;
+inline thread_local DemandSample* demandSample=nullptr;
+struct DemandSample {
+ struct Value {uint64_t calls=0,ticks=0,bytes=0;};
+ Value values[Count]{};DemandSample* previous;uint64_t scope,root,start;const char* outcome="cached-or-unrelated";
+ DemandSample(uint64_t generation,uint64_t bundle):previous(demandSample),scope(generation),root(bundle),start(Clock()){demandSample=this;}
+ DemandSample(const DemandSample&)=delete;
+ void Outcome(const char* value){outcome=value;}
+ ~DemandSample(){
+  demandSample=previous;auto elapsed=Clock()-start;const double scale=1000.0/double(Frequency());
+  if(double(elapsed)*scale<10&&strcmp(outcome,"prepared")&&strcmp(outcome,"failed"))return;
+  auto ms=[&](Stage stage){return double(values[stage].ticks)*scale;};
+  Log("[DEBUG-loadperf] demandBreakdown=1 scope=%llu bundle=%016llX outcome=%s wallMs=%.6f sharedWaitMs=%.6f scopeWaitMs=%.6f discoveryMs=%.6f openMs=%.6f readMs=%.6f readCalls=%llu readBytes=%llu decodeMs=%.6f decodeCalls=%llu decodedBytes=%llu streamDecodeMs=%.6f directoryMs=%.6f metadataMs=%.6f layoutCalls=%llu snapshotMs=%.6f snapshotBytes=%llu composeMs=%.6f carrierMs=%.6f usesMs=%.6f materialsMs=%.6f consumerMs=%.6f editCommitMs=%.6f viewMs=%.6f rootsMs=%.6f isolateMs=%.6f publishMs=%.6f inclusive=1",
+   (unsigned long long)scope,(unsigned long long)root,outcome,double(elapsed)*scale,ms(DemandSharedWait),ms(DemandScopeWait),ms(DemandDiscovery),ms(DemandOpen),ms(NativeRead),
+   (unsigned long long)values[NativeRead].calls,(unsigned long long)values[NativeRead].bytes,ms(NativeDecode),(unsigned long long)values[NativeDecode].calls,(unsigned long long)values[NativeDecode].bytes,
+   ms(NativeStreamDecode),ms(NativeDirectory),ms(NativeMetadata),(unsigned long long)values[NativeMetadata].calls,ms(AuthorSnapshot),(unsigned long long)values[AuthorSnapshot].bytes,
+   ms(DemandCompose),ms(DemandCarrier),ms(DemandMaterialUses),ms(DemandMaterials),ms(DemandConsumer),ms(DemandEditCommit),ms(DemandView),ms(DemandRoots),ms(DemandIsolate),ms(DemandPublish));
+ }
+};
 inline void Record(Stage stage,bool hit,uint64_t ticks){
+ for(auto sample=demandSample;sample;sample=sample->previous){++sample->values[stage].calls;sample->values[stage].ticks+=ticks;}
  auto& value=counters[stage][hit];value.calls.fetch_add(1,std::memory_order_relaxed);value.ticks.fetch_add(ticks,std::memory_order_relaxed);
  Maximum(value.longest,ticks);double us=double(ticks)*1000000/Frequency();size_t bucket=0;while(bucket+1<histogramBuckets&&us>histogramUs[bucket])++bucket;value.histogram[bucket].fetch_add(1,std::memory_order_relaxed);
  if(GetCurrentThreadId()==mainThread.load(std::memory_order_relaxed)){value.mainCalls.fetch_add(1,std::memory_order_relaxed);value.mainTicks.fetch_add(ticks,std::memory_order_relaxed);Maximum(value.mainLongest,ticks);value.mainHistogram[bucket].fetch_add(1,std::memory_order_relaxed);}
 }
-inline void Bytes(Stage stage,uint64_t bytes,bool hit=true){counters[stage][hit].bytes.fetch_add(bytes,std::memory_order_relaxed);}
+inline void Bytes(Stage stage,uint64_t bytes,bool hit=true){for(auto sample=demandSample;sample;sample=sample->previous)sample->values[stage].bytes+=bytes;counters[stage][hit].bytes.fetch_add(bytes,std::memory_order_relaxed);}
 struct Scope {
  Stage stage;uint64_t start,elapsed=0;bool hit=false,running=true;
  explicit Scope(Stage value):stage(value),start(Clock()){}
@@ -68,7 +95,10 @@ inline void Flush(bool force=false){
  "update-entry","material-frame","material-register","material-slot-hook","material-global-hook","material-read-hook",
  "effect-frame","effect-disk-prepare","effect-bind","effect-mount","effect-owners","effect-load-step","effect-create","effect-retire","effect-collect",
  "reload-owners","reload-rebuild","reload-retire","ui-register","world-register","instantiate-route","diagnostic-logging",
- "demand-lookup","demand-proxy-identity","demand-prepare","demand-dependencies","demand-proxy-select","demand-ready-observe","demand-operation-observe","demand-asset-tree"};
+ "demand-lookup","demand-proxy-identity","demand-prepare","demand-dependencies","demand-proxy-select","demand-ready-observe","demand-operation-observe","demand-asset-tree",
+ "demand-shared-wait","demand-scope-wait","demand-discovery","demand-open","native-read","native-decode","native-stream-decode","native-directory","native-metadata","author-snapshot",
+ "demand-compose","demand-carrier","demand-material-uses","demand-materials","demand-consumer","demand-edit-commit","demand-view","demand-roots","demand-isolate","demand-publish",
+ "demand-prefab-proof","demand-prefab-proof-walk"};
  static_assert(sizeof(names)/sizeof(names[0])==Count,"load performance stage names differ");
  for(unsigned stage=0;stage<Count;++stage)for(unsigned hit=0;hit<2;++hit){auto& value=counters[stage][hit];auto count=value.calls.exchange(0,std::memory_order_relaxed);if(!count)continue;
   auto total=value.ticks.exchange(0,std::memory_order_relaxed),longest=value.longest.exchange(0,std::memory_order_relaxed);
@@ -94,6 +124,7 @@ inline void Flush(bool force=false){
  }
 }
 #else
+struct DemandSample {DemandSample(uint64_t,uint64_t){}void Outcome(const char*){}};
 struct Scope {bool hit=false;explicit Scope(Stage) {}void Pause(){}void Resume(){}};
 inline void ObserveMainThread(){}
 inline void Add(Operation,uint64_t=1){}

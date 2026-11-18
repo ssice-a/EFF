@@ -20,6 +20,10 @@ std::map<std::pair<std::string,std::string>,EffectAttachment> overrides;
 // Presence of a package is authoritative, including an intentionally empty map.
 std::map<std::string,std::map<std::string,EffectAttachment>> diskEffects;
 const std::map<std::string,EffectAttachment>& Effects(const Package& p){auto found=diskEffects.find(p.id);return found==diskEffects.end()?p.effects:found->second;}
+bool DeclaresMount(const Package& package,const std::string& id){
+ const auto& effects=Effects(package);auto found=effects.find(id);
+ return found!=effects.end()&&!IsGamePrefabReplacement(found->second);
+}
 std::shared_ptr<const std::vector<Package>> standalone=std::make_shared<const std::vector<Package>>();
 bool IsStandalonePackage(const Package& package){return standalone&&std::any_of(standalone->begin(),standalone->end(),[&](const Package& row){return row.id==package.id&&row.root==package.root;});}
 std::vector<const Package*> RuntimePackages(){std::vector<const Package*> result;auto graph=RuntimeControls::controlGraph;
@@ -128,8 +132,11 @@ void ModelReadyDetails(void* root,bool audit){
   // its Replace rule, including inactive LODs. Never fall back to a sibling
   // Part or an unverified same-name Mesh when the attachment has a Part.
    for(const auto& r:renderers){auto mesh=RuntimeShapes::SourceMesh(r.Get());if(!RuntimeShapes::Alive(mesh))continue;
-    auto spec=RuntimeShapes::Match(mesh);bool provenPart=spec&&spec->package==p.id&&!e.part.empty()&&spec->part==e.part;
+    auto spec=RuntimeShapes::Match(r.Get(),mesh);bool provenPart=spec&&spec->package==p.id&&!e.part.empty()&&spec->part==e.part;
     if(!provenPart&&!e.part.empty())continue;
+    // A Part binds all of its generated renderers unless explicit LOD routes
+    // were authored. The source path can name their original parent only.
+    if(provenPart&&e.lodTargets.empty()){matched.push_back(r);continue;}
     auto identities=DemandLoadingProbe::ProvenNativeMeshIdentities(mesh);
     if(spec&&e.part.empty()&&RuntimeControls::controlGraph)for(const auto& author:*RuntimeControls::controlGraph)if(author.id==spec->package)
      for(const auto& rule:author.rules)if(std::find(rule.second.parts.begin(),rule.second.parts.end(),spec->part)!=rule.second.parts.end())
@@ -198,7 +205,7 @@ void Frame(){
   // Capture exact owners before removing obsolete bindings: replacing an
   // attachment ID must still allow the new declaration to bind that root.
   auto owners=ReconcileOwners();
-  for(auto it=bindings.begin();it!=bindings.end();){bool exists=false;for(const auto& p:*standalone)exists|=p.id==it->second.package&&Effects(p).count(it->second.id);if(RuntimeControls::controlGraph)for(const auto& p:*RuntimeControls::controlGraph)if(!IsStandalonePackage(p))exists|=p.id==it->second.package&&Effects(p).count(it->second.id);if(!exists){Release(it->second);it=bindings.erase(it);}else ++it;}
+  for(auto it=bindings.begin();it!=bindings.end();){bool exists=false;for(const auto& p:*standalone)exists|=p.id==it->second.package&&DeclaresMount(p,it->second.id);if(RuntimeControls::controlGraph)for(const auto& p:*RuntimeControls::controlGraph)if(!IsStandalonePackage(p))exists|=p.id==it->second.package&&DeclaresMount(p,it->second.id);if(!exists){Release(it->second);it=bindings.erase(it);}else ++it;}
   pendingOwners.clear();retryOwners.clear();for(auto& owner:owners)ModelReadyDetails(owner.second.Get(),forceDiskReload);reconcileClock=NativeBundle::Clock();
   if(forceDiskReload){for(auto& row:bindings){auto& b=row.second;Log("[EFFECT-ATTACHMENT-STATE] package=%s effect=%s owner=%p parent=%p renderers=%zu instance=%p failed=%d desiredDefault=%d",b.package.c_str(),b.id.c_str(),b.owner.Get(),b.parent.Get(),b.renderers.size(),b.instance?b.instance->object.Get():nullptr,int(b.failed),int(b.attachment.autoplay));
     if(b.instance){Native::Observation::Capture(*b.instance,"after-F10");b.instance->observationClock=NativeBundle::Clock();b.instance->observationStep=0;}}}

@@ -22,6 +22,25 @@ private:
  std::map<std::string,SampleLease> sampleLeases;
  void StopId(const std::string& id){auto& state=clips.at(id);if(!state.playing)return;state.playing=state.paused=false;state.time=0;active.erase(id);sampleLeases.erase(id);for(const auto& track:ownedTracks.at(id))output.erase(track);for(const auto& bone:ownedBones.at(id))boneOutput.erase(bone);}
 public:
+ static bool Compatible(const EiemDirectory::ShapeAnimation& x,const EiemDirectory::ShapeAnimation& y){
+  if(x.duration!=y.duration||x.loop!=y.loop||x.speedVariable!=y.speedVariable||x.tracks!=y.tracks||x.boneTracks.size()!=y.boneTracks.size()||x.scalarChannels!=y.scalarChannels||x.nativeOutputs.size()!=y.nativeOutputs.size())return false;
+  for(size_t i=0;i<x.nativeOutputs.size();++i){const auto& u=x.nativeOutputs[i];const auto& v=y.nativeOutputs[i];if(u.hierarchy!=v.hierarchy||u.file!=v.file||u.asset!=v.asset||u.revision!=v.revision)return false;}
+  if(bool(x.sampleSource)!=bool(y.sampleSource)||(x.sampleSource&&x.sampleSource->identity!=y.sampleSource->identity))return false;
+  for(size_t i=0;i<x.boneTracks.size();++i){const auto& u=x.boneTracks[i];const auto& v=y.boneTracks[i];if(u.skeleton!=v.skeleton||u.path!=v.path||u.samples!=v.samples||u.channel!=v.channel)return false;}
+  return true;
+ }
+ // The candidate has already built its new ownership/conflict indexes. Retain
+ // only compatible playback, never copy the previous generation's topology or
+ // sample leases. Retained user playback takes priority over new autoplay.
+ void RetainCompatible(const EiemDirectory::Package& next,const EiemDirectory::Package& previous,const Player& old){
+  std::map<std::string,Playback> retained;
+  for(const auto& row:next.shapeAnimations){auto before=previous.shapeAnimations.find(row.first);auto state=old.clips.find(row.first);
+   if(before!=previous.shapeAnimations.end()&&state!=old.clips.end()&&Compatible(before->second,row.second)){retained.emplace(row.first,state->second);StopId(row.first);}}
+  for(const auto& row:retained){const auto& clip=next.shapeAnimations.at(row.first);
+   if(row.second.playing){Play(clip);clips.at(row.first)=row.second;if(row.second.paused)active.erase(row.first);Evaluate(clip);}
+   else clips.at(row.first)=row.second;
+  }
+ }
  size_t ActiveCount()const noexcept{return active.size();}
  size_t LastVisited()const noexcept{return lastVisited;}
  void Stop(const EiemDirectory::ShapeAnimation& clip){StopId(clip.id);}
@@ -41,7 +60,10 @@ public:
   EiemDirectory::Require(std::isfinite(elapsed)&&elapsed>=0,"animation frame delta invalid");bool changed=false;
   for(auto it=sampleLeases.begin();it!=sampleLeases.end();){const auto id=it->first;++it;if(!p.shapeAnimations.at(id).SamplesActive()){Evaluate(p.shapeAnimations.at(id));changed=true;}}
   if(elapsed==0||active.empty())return changed;
-  for(auto it=active.begin();it!=active.end();){const auto& clip=p.shapeAnimations.at(*it++);if(!clip.SamplesActive()){bool held=sampleLeases.count(clip.id)!=0;Evaluate(clip);changed|=held;continue;}++lastVisited;auto& state=clips.at(clip.id);
+  for(auto it=active.begin();it!=active.end();){const auto& clip=p.shapeAnimations.at(*it++);
+   // Numeric sample residency cannot stop another adapter's native output.
+   // Evaluate still drops inactive samples without opening their resource.
+   if(!clip.SamplesActive()&&clip.nativeOutputs.empty()){bool held=sampleLeases.count(clip.id)!=0;Evaluate(clip);changed|=held;continue;}++lastVisited;auto& state=clips.at(clip.id);
    auto step=EiemSampledAnimation::Advance(state,clip.duration,clip.loop,values.at(clip.speedVariable),elapsed);
    if(step==EiemSampledAnimation::Step::Finished){Stop(clip);changed=true;}else if(step==EiemSampledAnimation::Step::Advanced)Evaluate(clip);
   }return changed;}

@@ -10,6 +10,7 @@ struct EiemGlobalConfig {
   EiemKeyChord reload{VK_F10, 0};
   EiemKeyChord gui{VK_INSERT, 0};
   bool disableCameraFade = true;
+  bool detailedDiagnostics = false;
 };
 
 static constexpr const char *kEiemGlobalConfigPath = "plugin\\eff.ini";
@@ -21,7 +22,10 @@ static constexpr const char *kEiemDefaultGlobalConfig =
     "gui=INSERT\n"
     "\n[Graphics]\n"
     "; Disable CameraMono camera fade; Mod mesh/skip state is unchanged.\n"
-    "disable_camera_fade=true\n";
+    "disable_camera_fade=true\n"
+    "\n[Diagnostics]\n"
+    "; Detailed particle snapshots and loading traces; normally leave disabled.\n"
+    "detailed=false\n";
 
 // Parse separately from publication/registration so the same API is testable.
 static bool EiemParseGlobalConfig(std::istream &input, EiemGlobalConfig *out,
@@ -43,6 +47,7 @@ static bool EiemParseGlobalConfig(std::istream &input, EiemGlobalConfig *out,
     if (line.front() == '[' && line.back() == ']') {
       if (!_stricmp(line.c_str(), "[Hotkeys]")) section = "hotkeys";
       else if (!_stricmp(line.c_str(), "[Graphics]")) section = "graphics";
+      else if (!_stricmp(line.c_str(), "[Diagnostics]")) section = "diagnostics";
       else return fail("Unknown section: " + line);
       if (!sections.insert(section).second) return fail("Duplicate section: " + line);
       continue;
@@ -53,6 +58,13 @@ static bool EiemParseGlobalConfig(std::istream &input, EiemGlobalConfig *out,
     EiemKeyTrim(key); EiemKeyTrim(value);
     std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return (char)std::tolower(c); });
     if (!seen.insert(section + "." + key).second) return fail("Duplicate key: " + key);
+    if (section == "diagnostics") {
+      if (key != "detailed") return fail("Unknown setting: " + key);
+      if (!_stricmp(value.c_str(), "true")) next.detailedDiagnostics = true;
+      else if (!_stricmp(value.c_str(), "false")) next.detailedDiagnostics = false;
+      else return fail("detailed expects true or false");
+      continue;
+    }
     if (section == "graphics") {
       if (key != "disable_camera_fade") return fail("Unknown setting: " + key);
       if (!_stricmp(value.c_str(), "true")) next.disableCameraFade = true;

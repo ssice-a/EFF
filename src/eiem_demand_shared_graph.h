@@ -2,6 +2,7 @@
 #include "eiem_bundle_dependency_graph.h"
 #include "eiem_input_span_view.h"
 #include <mutex>
+#include <optional>
 
 // Declarations for additional native inputs, not a second object loader. The
 // game's dependency lists, BundleProxy and unload machinery own live objects.
@@ -40,6 +41,7 @@ struct Input {
   // validation. The submitted view has independent SerializedFile identities.
   std::shared_ptr<const EiemInputSpanView::View> sourceView;
   bool generationIsolated=false;
+  std::optional<bool> observedDependencyReady;
 };
 class Graph {
   mutable std::mutex mutex_;
@@ -138,6 +140,14 @@ public:
   }
   bool Find(uint64_t key,Input& output)const {
     std::lock_guard<std::mutex> lock(mutex_);auto found=inputs_.find(key);if(found==inputs_.end())return false;output=found->second;return true;
+  }
+  bool FindAndObserveReadiness(uint64_t key,bool ready,Input& output,bool& changed) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto found=inputs_.find(key);if(found==inputs_.end())return false;
+    output=found->second;
+    changed=found->second.observedDependencyReady!=ready;
+    found->second.observedDependencyReady=ready;
+    return true;
   }
   bool FindName(const std::string& name,Input& output)const {
     std::lock_guard<std::mutex> lock(mutex_);auto found=names_.find(name);if(found==names_.end())return false;output=inputs_.at(found->second);return true;

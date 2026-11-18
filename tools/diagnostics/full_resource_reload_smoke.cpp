@@ -87,6 +87,7 @@ void* byteClass=(void*)0xAA10;unsigned memoryCalls=0,fileFallbackCalls=0;
 std::set<void*> unloadedStreamBundles;
 std::vector<void*>* identityUnloaded=nullptr;
 unsigned prefabProxyUnloadCalls=0;bool prefabProxyUnloadAllowed=true;
+std::set<void*> unloadedPrefabProxies;
 std::map<void*,std::vector<unsigned char>> prefabProxyUnloadPlan;
 std::map<void*,size_t> prefabProxyUnloadIndex;
 std::function<void(void*)> nativeAliveCallback;
@@ -110,11 +111,12 @@ uint32_t Root(void* p,bool){handles[++sequence]=p;return sequence;}
 void* Target(uint32_t h){return handles.at(h);}
 void Free(uint32_t h){Require(handles.erase(h)==1,"fixture handle double free");}
 void* GetClass(void* p){if(p==weaponPart)return weaponPartClass;if(p==weaponConfig)return configClass;if(p==oldWeaponRoot||p==newWeaponRoot)return gameObjectClass;if(fixturePathHashes.count(p))return pathClass;if(p==animation&&characterAnimation)return characterAnimationClass;if(p==&yes||p==&no)return uiBooleanClass;if(p==uiProxy)return uiUntrackedClass;if(p==oldRenderer||p==newRenderer||p==unrelatedRenderer||p==auxiliaryRenderer)return staticRenderers?staticClass:skinClass;return propertyArrays.count(p)?propertyArrayClass:p==assetProxyObject?assetProxyClass:(p==source||p==candidate||p==lazyCandidate||p==unrelatedRoot||p==oldRoot||p==newRoot||p==restoredRoot||p==lazyRoot)?gameObjectClass:p==audio?audioClass:(p==model||p==unrelatedModel)?modelClass:p==loadCallback?delegateClass:p==leaseHandle?handleClass:p==pathValue?pathClass:(p==configBox||p==unrelatedConfig)?configClass:instanceClass;}
-void* Fields(void*,void** it){auto n=uintptr_t(*it);if(n==21)return nullptr;*it=(void*)(n+1);return (void*)(n+1);}
-const char* FieldName(void* f){const char* names[]={"","modelManager","effectManager","m_entity","m_mainPart","m_cfg","usePersistentPool","modelPath","m_model","m_loadFinishCb","hash","m_untrackedHandle","m_instance2AssetHandle","<>4__this","parent","callback","requestId","m_disposed","items","size","usePool","m_assetHandle"};return names[uintptr_t(f)];}
-const char* TypeName(void* t){const char* names[]={"","Beyond.Gameplay.View.ModelManager","Beyond.Gameplay.EffectManager","Beyond.Gameplay.Core.Entity","Beyond.Gameplay.View.ComplexModelViewPart","Beyond.Gameplay.View.BaseModelViewPartData","System.Boolean","System.String","UnityEngine.GameObject","System.Action<System.Boolean,Beyond.Gameplay.View.BaseModelViewPart>","System.UInt64","Beyond.Resource.FAssetProxyUntrackedHandle","Dictionary","Beyond.UI.UIModelLoader","UnityEngine.Transform","System.Action<UnityEngine.GameObject>","System.Int32","System.Boolean","Array","System.Int32","System.Boolean","Beyond.Resource.FAssetProxyHandle"};return names[uintptr_t(t)];}
+void* Fields(void*,void** it){auto n=uintptr_t(*it);if(n==22)return nullptr;*it=(void*)(n+1);return (void*)(n+1);}
+const char* FieldName(void* f){const char* names[]={"","modelManager","effectManager","m_entity","m_mainPart","m_cfg","usePersistentPool","modelPath","m_model","m_loadFinishCb","hash","m_untrackedHandle","m_instance2AssetHandle","<>4__this","parent","callback","requestId","m_disposed","items","size","usePool","m_assetHandle","m_modelComponent"};return names[uintptr_t(f)];}
+const char* TypeName(void* t){const char* names[]={"","Beyond.Gameplay.View.ModelManager","Beyond.Gameplay.EffectManager","Beyond.Gameplay.Core.Entity","Beyond.Gameplay.View.ComplexModelViewPart","Beyond.Gameplay.View.BaseModelViewPartData","System.Boolean","System.String","UnityEngine.GameObject","System.Action<System.Boolean,Beyond.Gameplay.View.BaseModelViewPart>","System.UInt64","Beyond.Resource.FAssetProxyUntrackedHandle","Dictionary","Beyond.UI.UIModelLoader","UnityEngine.Transform","System.Action<UnityEngine.GameObject>","System.Int32","System.Boolean","Array","System.Int32","System.Boolean","Beyond.Resource.FAssetProxyHandle","Beyond.Gameplay.View.IModelComponent"};return names[uintptr_t(t)];}
 int FieldFlags(void* f){return (f==(void*)1||f==(void*)2)&&managersStatic?0x16:0x6;}
 void FieldValue(void* self,void* f,void* out){++profiledFields;Require(!(FieldFlags(f)&0x10)&&self,"instance getter used for a static field");
+ if(f==(void*)22){Require(self==weaponPart,"weapon model ownership read from another part");*(void**)out=parentWeaponFixture?model:nullptr;return;}
  if(f==(void*)188){Require(self==uiWeaponOwner,"UI weapon list read from another owner");*(void**)out=uiWeaponHeld?uiWeaponList:nullptr;return;}
  if(f==(void*)189){Require(self==uiWeaponBundle,"UI weapon path read from another bundle");*(void**)out=StringValue(modelPath);return;}
  if(f==(void*)20){*(unsigned char*)out=self==weaponConfig?false:partUsesPool;return;}
@@ -284,6 +286,7 @@ void* Invoke(void* method,void* self,void** args,void** exception){
  if(m==98){Require(!self&&args&&args[0],"prefab proxy cache invalidation used the wrong ABI");++prefabProxyUnloadCalls;
   auto proxy=args[0];auto plan=prefabProxyUnloadPlan.find(proxy);if(plan==prefabProxyUnloadPlan.end())return prefabProxyUnloadAllowed?&yes:&no;
   auto& index=prefabProxyUnloadIndex[proxy];return index<plan->second.size()&&plan->second[index++]?&yes:&no;}
+ if(m==190){Require(self,"prefab unload state queried without a proxy");return unloadedPrefabProxies.count(self)?&yes:&no;}
  if(m==86){Require(self&&args&&args[0]==(void*)81&&*(unsigned char*)args[1]==1,"controls queried scene objects instead of inactive model children");
   auto found=controlRenderers.find(self);return found==controlRenderers.end()?Array(self==newRoot||self==uiResultRoot?newRenderer:oldRenderer):Array(found->second);}
  throw std::runtime_error("unexpected fixture managed call: "+std::to_string(m));
@@ -324,6 +327,7 @@ void Setup(){
  a.handlePath=(void*)89;a.assetSync=(void*)90;FullResourceReload::originalResourceGet=[](void*,void*){return resourceSource;};
  a.pathHashField=(void*)10;a.proxyAsset=(void*)92;a.proxyHash=(void*)93;a.proxyGet=(void*)94;a.proxyPath=(void*)99;
  a.proxyTryUnloadImmediately=(void*)98;
+ a.proxyUnloaded=(void*)190;
  a.rawAssetUnloaded=(void*)184;a.rawAssetRefCount=(void*)185;
  a.handleUntrackedField=(void*)11;a.handleUntrackedClass=configClass;a.untrackedAssetGet=(void*)95;
  FullResourceReload::originalProxyPreload=[](void*,bool asynchronous,void*){proxyCloneResult=asynchronous?FullResourceReload::InstantiateAsync(resourceSource,1,factoryParent,factoryPosition,factoryRotation):FullResourceReload::Clone(resourceSource);};
@@ -388,6 +392,7 @@ FullResourceReload::Attempt MakeAttempt(){
  owner.pathHash=RuntimeShapes::Ref::Make(pathValue,false);owner.path="assets/model.prefab";owner.oldRootId=int(uintptr_t(oldRoot));owner.originalMeshes=FullResourceReload::MeshProfile(oldRoot);a.owners.push_back(owner);return a;
 }
 void Reset(){
+ unloadedPrefabProxies.clear();
  uiWeaponHeld=false;FullResourceReload::uiWeaponDependenciesApi.collections.clear();
  directPartFixture=false;partUsesPool=true;partHandleLive=true;rawProxyUnloaded=rawUnloadDelayed=false;rawProxyRefs=1;rawReloads=0;
  parentWeaponFixture=false;weaponRoot=oldWeaponRoot;fixturePathHashes.clear();
@@ -437,6 +442,22 @@ void PrefabProxyPartialInvalidationRegression(){
    "partially unloaded proxies were not retired individually");
  Require(InvalidatePrefabProxyCache(hash,modelPath)==1&&prefabProxyUnloadCalls==3&&!prefabProxiesByPath.count(hash),
    "retry called an already-unloaded proxy again or failed to release the remaining proxy");Reset();
+}
+void PrefabProxyAlreadyUnloadedRegression(){
+ using namespace FullResourceReload;Reset();constexpr uint64_t hash=0x91A02B3C4D5E6F72ULL;
+ // Clear has already removed this proxy from the native unload queue, but
+ // the managed object can survive until a later GC. TryUnload returns false.
+ prefabProxyUnloadAllowed=false;unloadedPrefabProxies.insert(instance);
+ RememberPrefabProxy(hash,instance,source);RememberPrefabProxy(hash,candidate);
+ bool retained=false;try{InvalidatePrefabProxyCache(hash,modelPath);}catch(const PrefabProxyRetainedError&){retained=true;}
+ auto found=prefabProxiesByPath.find(hash);
+ Require(retained&&prefabProxyUnloadCalls==1&&found!=prefabProxiesByPath.end()&&
+         found->second.size()==1&&found->second.front().Get()==candidate,
+   "historical unloaded proxy blocked F10 or a still-retained live proxy bypassed the cache barrier");
+ unloadedPrefabProxies.insert(candidate);
+ InvalidatePrefabProxyCache(hash,modelPath);
+ Require(prefabProxyUnloadCalls==1&&!prefabProxiesByPath.count(hash)&&!prefabProxySourcesByPath.count(hash),
+   "already-unloaded native proxies were retried forever instead of retiring their observations");Reset();
 }
 void PrefabProxyRetainedWaitRegression(){
  using namespace DemandGenerationReload;Reset();reloads.clear();pendingUIPaths.clear();DemandGenerationReload::active=false;
@@ -890,7 +911,27 @@ void FailedTargetInspectionRegression(){
   D::sharedInputsEnabled=enabled;D::sharedScopes.erase(manifest->serial);
  }
 
- std::cout<<"PASS target inspection budget failure shared across root callers; no false miss; new generation and transient retries preserved\n";
+ {
+  auto owner=std::make_shared<D::SharedScope>(manifest);
+  D::DependencyGroup group;group.manifest=manifest;group.shared=owner;group.root=1;group.keys={7,2,4,1};
+  group.native={{1,{7,2}},{2,{3}},{3,{1}},{4,{}}};
+  owner->cabKeys={{"CAB-two",2},{"CAB-three",3},{"CAB-root",1}};
+  owner->meshSourceLinks={{1,{"CAB-two"}},{2,{"CAB-three"}},{3,{"CAB-root"}},{4,{}}};
+  std::vector<uint64_t> visited;
+  auto visit=[&](uint64_t key){visited.push_back(key);return true;};
+  Require(group.WalkMeshSources(group.MeshDiscoverySeeds(std::set<uint64_t>{}),visit)&&visited==std::vector<uint64_t>{1,2,3}&&group.headerReads==0,
+    "structural source walk lost transitive/cyclic references, visited unrelated native dependency or reopened cached source");
+  // A missing inspection result is retryable; links already read from another
+  // owner remain available but do not falsely certify a complete negative.
+  visited.clear();Require(!group.WalkMeshSources({1},[&](uint64_t key){visit(key);return key!=2;}),"partial source walk certified a complete negative");
+  owner->meshSourceLinks.erase(2);visited.clear();
+  Require(!group.WalkMeshSources({1},visit)&&visited==std::vector<uint64_t>{1,2},"missing intrinsic links became a permanent negative");
+  owner->meshSourceLinks[2]={"CAB-three"};visited.clear();
+  Require(group.WalkMeshSources({1},visit)&&visited==std::vector<uint64_t>{1,2,3},"transient source walk did not recover");
+  visited.clear();Require(group.WalkMeshSources(group.MeshDiscoverySeeds(std::set<uint64_t>{4}),visit)&&visited==std::vector<uint64_t>{1,4,2,3},
+    "known target seeding expanded unrelated native inputs");
+ }
+ std::cout<<"PASS target inspection budget failure shared across root callers; no false miss; structural/cyclic links, no unrelated metadata reads, new generation and transient retries preserved\n";
 }
 void CrossGroupRootDeclarationRegression(){
  namespace D=DemandLoadingProbe;namespace G=EiemDemandSharedGraph;
@@ -948,6 +989,33 @@ void LazyAnimationOwnerLifetimeRegression(){
  D::RetireSharedLocked(shared,2);player.Advance(author->package,author->package.defaults,.1);
  Require(catalog->OpenAnimationSamples()==0&&player.output.empty()&&!refreshed->Directory().runtime.animations.at("Loop").SamplesActive(),"final owner retirement retained sampled payload/output");
  std::cout<<"PASS lazy animation owners: unhit autoplay, shared payload, partial/final retirement and control-only F10 activity\n";
+}
+void PreparedGenerationRootLifetimeRegression(){
+ namespace D=DemandLoadingProbe;namespace G=EiemDemandSharedGraph;
+ auto state=std::make_shared<D::Manifest>();state->serial=0xEF301;
+ auto shared=std::make_shared<D::SharedScope>(state);
+ auto bytes=std::make_shared<const Bytes>(Bytes{1});
+ auto view=std::make_shared<const EiemInputSpanView::View>(std::vector<EiemInputSpanView::Span>{{EiemInputSpanView::literalSource,0,1,bytes}},std::vector<size_t>{},EiemInputSpanView::ReadRange{});
+ auto input=[&](uint64_t key,std::vector<uint64_t> deps){G::Input value;value.key=key;value.categorySource=10;
+  value.name="eff/root-lifetime-"+std::to_string(key);value.cab="CAB-root-lifetime-"+std::to_string(key);value.view=view;value.dependencies=std::move(deps);return value;};
+ auto root=input(100,{30});root.versionedRoot=true;
+ shared->graph.Commit({root,input(20,{}),input(30,{40}),input(40,{})},{{10,{30}}},{});
+ shared->bundleNamespace.BindRoot(10,100);
+ shared->preparedGroups[10]=10;shared->preparedGroups[20]=20;
+ shared->rootUsage[10].materials.insert("weapon");
+ shared->materialVariants.emplace("weapon",EiemNativeStandaloneInput::Input{});
+ // The game can reuse an already-loaded proxy without another load callback.
+ // Retiring an unrelated resource must preserve the prepared Prefab's alias,
+ // not just its native key and authored Material/Texture dependencies.
+ D::RetireSharedLocked(shared,20);
+ G::Input retained;
+ Require(shared->preparedGroups.count(10)&&shared->graph.Find(100,retained)&&
+         retained.view==view&&shared->graph.Size()==3,
+  "unrelated proxy retirement discarded a still-prepared generation Prefab, leaving its cached alias unreadable");
+ D::RetireSharedLocked(shared,100);
+ Require(shared->preparedGroups.empty()&&!shared->graph.Size()&&shared->rootUsage.empty()&&shared->materialVariants.empty(),
+  "final generation Prefab retirement retained its native root, input views or Material cache");
+ std::cout<<"PASS prepared generation Prefab survives unrelated retirement and releases all inputs with its final owner\n";
 }
 void EffectSharedResourceLifetimeRegression(){
  namespace D=DemandLoadingProbe;namespace G=EiemDemandSharedGraph;
@@ -1326,15 +1394,23 @@ void DirectPrefabNewHolderRetryRegression(){
    }),"unchanged retry ignored a new live holder of the previously failed logical path");
  reloads.clear();Reset();
 }
-void ParentWeaponGenerationRegression(){
+void ParentWeaponGenerationRegression(bool weaponOnly=false,bool parentRecorded=true){
  using namespace DemandGenerationReload;Reset();reloads.clear();pendingUIPaths.clear();
  parentWeaponFixture=true;rawUnloadDelayed=true;
  RuntimeControls::specs.at("marker").package="changed";
  FullResourceReload::LivePart parent;parent.part=Ref::Make(mainPart,true);parent.model=Ref::Make(model,true);
- parent.root=Ref::Make(oldRoot,true);parent.path=modelPath;FullResourceReload::liveParts[mainPart]=parent;
+ parent.root=Ref::Make(oldRoot,true);parent.path=modelPath;if(parentRecorded)FullResourceReload::liveParts[mainPart]=parent;
  FullResourceReload::LivePart child;child.part=Ref::Make(weaponPart,true);child.root=Ref::Make(oldWeaponRoot,true);
  child.path="assets/weapon.prefab";FullResourceReload::liveParts[weaponPart]=child;
- transformParents[weaponTransform]=prefabTransform;
+ if(weaponOnly){
+  // Only the weapon changed. It can be detached from the skeleton during a
+  // basic attack, so hierarchy membership cannot establish its game owner.
+  controlRenderers[oldRoot]={};controlRenderers[unrelatedRoot]={};
+  transformParents[weaponTransform]=nullptr;
+  FullResourceReload::LivePart other;other.part=Ref::Make(unrelatedPart,true);other.model=Ref::Make(unrelatedModel,true);
+  other.root=Ref::Make(unrelatedRoot,true);other.path="assets/unmodified-character.prefab";
+  FullResourceReload::liveParts[unrelatedPart]=other;
+ }else transformParents[weaponTransform]=prefabTransform;
  DemandLoadingProbe::InstalledGeneration next;next.delta.changed=true;next.delta.packages.insert("changed");
  AddAffectedOwners(next);
  Require(reloads.size()==2,"parent and direct weapon were not captured as distinct logical paths");
@@ -1412,7 +1488,13 @@ void StandaloneControlPublicationRegression(){
  auto candidate=std::make_shared<DemandGenerationReload::Prepared>();candidate->generation=installed;candidate->config=settings.Get();
  DemandGenerationReload::Commit(candidate);
  Require(RuntimeControls::controlGraph->size()==2&&RuntimeControls::variables.at(effect.id).at("$on")==0&&std::atomic_load(&published)==models&&RuntimeAttachments::standalone==installed->standalone,"production F10 lost standalone state or published effects as model packages");
- auto removed=std::make_shared<DemandLoadingProbe::InstalledGeneration>(*installed);removed->standalone=empty;candidate->generation=removed;DemandGenerationReload::Commit(candidate);
+ auto unchanged=std::make_shared<DemandLoadingProbe::InstalledGeneration>(*installed);unchanged->serial=installed->serial+1;
+ candidate->generation=unchanged;DemandGenerationReload::Commit(candidate);
+ Require(DemandLoadingProbe::CurrentInstalledGeneration()==installed&&DemandGenerationReload::committedGeneration==installed->serial,
+   "unchanged F10 replaced the installed native resource generation");
+ Require(RuntimeControls::variables.at(effect.id).at("$on")==0,"unchanged F10 lost the live control value");
+ auto removed=std::make_shared<DemandLoadingProbe::InstalledGeneration>(*installed);removed->standalone=empty;removed->delta.changed=true;candidate->generation=removed;DemandGenerationReload::Commit(candidate);
+ Require(DemandLoadingProbe::CurrentInstalledGeneration()==removed,"changed F10 did not publish its resource generation");
  Require(RuntimeControls::controlGraph->size()==1&&!RuntimeControls::animations.count(effect.id),"F10 retained removed standalone controls");
  auto duplicate=std::make_shared<std::vector<Package>>(std::vector<Package>{model});bool rejected=false;try{RuntimeControls::PrepareInstalled(models,duplicate,settings.Get());}catch(const std::exception&){rejected=true;}Require(rejected,"duplicate installed controls accepted");
  DemandLoadingProbe::PublishInstalledGeneration(previous);RuntimeControls::controlGraph.reset();RuntimeControls::variables.clear();RuntimeControls::animations.clear();RuntimeAttachments::standalone=empty;
@@ -3247,19 +3329,28 @@ void ReloadDispatchRegression(){
          DemandGenerationReload::pending&&DemandGenerationReload::pending->generation,
          "F10 did not prepare a Format 3 candidate before the Unity-frame commit");
 }
+#include "retarget_generation_checks.h"
 int main(int argc,char** argv){
  using namespace Test;using namespace FullResourceReload;
+ using FullResourceReload::Bundle;
  try{
   if(argc==2&&std::string(argv[1])=="--profile-load-misses"){ProfileLoadMisses();return 0;}
   Setup();Reset();
   struct UIWeaponApiFixtureLifetime {~UIWeaponApiFixtureLifetime(){FullResourceReload::uiWeaponDependenciesApi={};}} uiWeaponApiLifetime;
   if(argc==2&&std::string(argv[1])=="--shared-world-ui-weapon"){Entry::logFile=stdout;SharedWorldUIWeaponGenerationRegression();Entry::logFile=nullptr;return 0;}
+  if(argc==2&&std::string(argv[1])=="--weapon-owner-closure"){Entry::logFile=stdout;ParentWeaponGenerationRegression(true);ParentWeaponGenerationRegression(true,false);Entry::logFile=nullptr;std::cout<<"PASS weapon-only F10 uses native owner, detached weapon, absent observation, unrelated character isolation and retry\n";return 0;}
+  if(argc==2&&std::string(argv[1])=="--unloaded-prefab-proxy"){PrefabProxyAlreadyUnloadedRegression();std::cout<<"PASS historical unloaded prefab proxy retirement preserves the active-holder barrier\n";return 0;}
   if(argc==2&&std::string(argv[1])=="--installed-controls"){StandaloneControlPublicationRegression();return 0;}
   if(argc==2&&std::string(argv[1])=="--issue6-selection"){VanillaGenerationSelectionRegression();std::cout<<"PASS issue6 vanilla selection\n";return 0;}
   if(argc==2&&std::string(argv[1])=="--issue6-handoff"){NativeSourceHandoffRegression();std::cout<<"PASS issue6 native handoff\n";return 0;}
   if(argc==2&&std::string(argv[1])=="--cross-group-root"){CrossGroupRootDeclarationRegression();return 0;}
   if(argc==2&&std::string(argv[1])=="--synthetic-unload"){SyntheticUnloadDependencyRegression();return 0;}
   if(argc==2&&std::string(argv[1])=="--effect-resource-lifetime"){EffectSharedResourceLifetimeRegression();CachedResourceLogicalUsageRegression();return 0;}
+  if(argc==2&&std::string(argv[1])=="--generation-root-lifetime"){PreparedGenerationRootLifetimeRegression();return 0;}
+  if(argc==2&&std::string(argv[1])=="--retarget-native-routes"){NativeSourceRouteIsolationRegression();return 0;}
+  if(argc==2&&std::string(argv[1])=="--retired-generation-index"){RetiredGenerationRouteIndexRegression();return 0;}
+  if(argc==2&&std::string(argv[1])=="--deferred-shared-retirement"){DeferredSharedRetirementRegression();return 0;}
+  if(argc==2&&std::string(argv[1])=="--removed-dependency-mesh"){Entry::logFile=stdout;RemovedDependencyMeshGenerationRegression();RemovedDependencyMeshGenerationRegression(true);RemovedDependencyMeshGenerationRegression(true,true);Entry::logFile=nullptr;return 0;}
   if(argc==3&&std::string(argv[1])=="--effect-shared-inputs"){RealEffectSharedInputRegression(std::filesystem::u8path(argv[2]));return 0;}
   if(argc==8&&std::string(argv[1])=="--material-vfs"){EmbeddedMaterialVfsRegression(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7]);return 0;}
   if(argc==9&&std::string(argv[1])=="--material-vfs-source"){EmbeddedMaterialVfsRegression(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8]);return 0;}
@@ -3277,6 +3368,7 @@ int main(int argc,char** argv){
   check("same-CAB native source handoff",NativeSourceHandoffRegression);
   check("game prefab proxy cache invalidation",PrefabProxyInvalidationRegression);
   check("partially unloaded prefab proxies",PrefabProxyPartialInvalidationRegression);
+  check("historical unloaded prefab proxies",PrefabProxyAlreadyUnloadedRegression);
   check("demand F10 throttles and quickly defers retained prefab proxies",PrefabProxyRetainedWaitRegression);
   check("raw asset startup binds addressless abstract interface",RawAssetApiBindingRegression);
   check("demand F10 routes retained Bundles by generation and restores deleted targets",VersionedGenerationRouteRegression);
@@ -3284,6 +3376,11 @@ int main(int argc,char** argv){
   check("failed target inspection does not stall repeated character/UI roots",FailedTargetInspectionRegression);
   check("cross-scene cached root retains authored dependencies",CrossGroupRootDeclarationRegression);
   check("effect author Resource shared lifetime",EffectSharedResourceLifetimeRegression);
+  check("prepared generation Prefab lifetime",PreparedGenerationRootLifetimeRegression);
+  check("native source routes cannot bypass the generation graph",NativeSourceRouteIsolationRegression);
+  check("retired generation reclaims native and VFS routes",RetiredGenerationRouteIndexRegression);
+  check("queued shared retirement progresses without another request",DeferredSharedRetirementRegression);
+  check("removed dependency-only Mesh restores native resources",[]{RemovedDependencyMeshGenerationRegression();RemovedDependencyMeshGenerationRegression(true);RemovedDependencyMeshGenerationRegression(true,true);});
   check("cached Resource logical source lifetime",CachedResourceLogicalUsageRegression);
   check("synthetic unload releases native and authored dependencies",SyntheticUnloadDependencyRegression);
   check("generation Prefab retains native dependencies",VersionedRootNativeDependenciesRegression);
@@ -3299,7 +3396,8 @@ int main(int argc,char** argv){
   check("demand F10 respects direct Prefab leases and retries unchanged bytes",DirectPrefabLeaseAndRetryRegression);
   check("demand F10 unchanged retry captures new holders",DirectPrefabNewHolderRetryRegression);
   check("demand F10 still requires pooled Prefab cache evidence",PooledPrefabEvidenceRegression);
-  check("demand F10 parent lifecycle recreates its direct weapon",ParentWeaponGenerationRegression);
+  check("demand F10 parent lifecycle recreates its direct weapon",[]{ParentWeaponGenerationRegression();});
+  check("demand F10 weapon-only native ownership closure",[]{ParentWeaponGenerationRegression(true);ParentWeaponGenerationRegression(true,false);});
   std::cout<<"PASS direct Prefab F10: no instantiate proxy, native deferred unload/shared handles, unchanged retry, parent weapon retirement and rebuild, pooled provenance guard\n";
   check("demand F10 Mod failure isolation",DemandGenerationModIsolationRegression);
   check("unified INI installed generation retention",ControlProgramGenerationRegression);

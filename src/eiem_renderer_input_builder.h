@@ -2,6 +2,7 @@
 #include "eiem_mesh_input_builder.h"
 #include "eiem_texture_input_builder.h"
 #include "eiem_mesh_binding_metadata.h"
+#include "eiem_native_preload_closure.h"
 #include <cfloat>
 #include <functional>
 #include <chrono>
@@ -372,7 +373,7 @@ class RendererMemberBuilder {
   std::map<int64_t, std::string> paths;
   std::map<int64_t, std::map<std::string, int64_t>> hierarchy;
   std::map<int64_t, std::vector<int64_t>> rendererExpansion;
-  std::map<int64_t, std::vector<NativeReference>> preloadExpansion;
+  NativePreloadExpansion preloadExpansion;
   const MaterialPreloadIndex* materialPreloads = nullptr;
   bool retainSourceMaterials = false;
   const std::map<std::string,EiemMeshBindingMetadata::Mesh>* authorMetadata = nullptr;
@@ -537,40 +538,13 @@ class RendererMemberBuilder {
     }
   }
   bool Preloads(const Type& type, Value& bundle) {
-    auto& preloads = ArrayValue(type, Child(type, bundle, "m_PreloadTable"));
-    std::vector<Value> output;
-    std::vector<size_t> offsets{0};
-    std::set<int64_t> referenced;
-    for (const auto& pointer : preloads.children) {
-      output.push_back(pointer);
-      auto reference = NullableReference(type, pointer, layout, cab);
-      auto extras = preloadExpansion.find(reference.second);
-      if (reference.first == cab && extras != preloadExpansion.end()) {
-        referenced.insert(reference.second);
-        for (const auto& item : extras->second) {
-          auto value = ArrayElement(type, preloads);
-          SetReference(type, value, item, layout, cab);
-          output.push_back(std::move(value));
-          ++result.preloadReferences;
-        }
-      }
-      offsets.push_back(output.size());
-    }
-    for (const auto& row : preloadExpansion)
-      Require(referenced.count(row.first), "Renderer expansion absent from AssetBundle preload closure");
-    if (output.size() == preloads.count) return false;
-    auto update = [&](Value& info) {
-      auto& start = Child(type, info, "preloadIndex"); auto& size = Child(type, info, "preloadSize");
-      auto first = Integer(start), count = Integer(size);
-      Require(first < offsets.size() && count <= offsets.size() - 1 - first, "Renderer source preload interval");
-      SetInteger(type, start, offsets[(size_t)first]);
-      SetInteger(type, size, offsets[(size_t)(first + count)] - offsets[(size_t)first]);
-    };
-    for (const char* name : {"m_Container", "m_HashContainer"})
-      for (auto& pair : ArrayValue(type, Child(type, bundle, name)).children) update(Child(type, pair, "second"));
-    update(Child(type, bundle, "m_MainAsset"));
-    preloads.children = std::move(output); preloads.count = preloads.children.size();
-    return true;
+    const auto& preloads = ConstArray(type, Child(type, bundle, "m_PreloadTable"));
+    const auto originalCount = preloads.count;
+    std::set<NativeReference> referenced;
+    const bool expanded = ExpandNativePreloads(type, bundle, layout, cab, preloadExpansion, referenced);
+    Require(referenced.size() == preloadExpansion.size(), "Renderer expansion absent from AssetBundle preload closure");
+    result.preloadReferences += preloads.count - originalCount;
+    return expanded;
   }
 public:
   RendererMemberBuilder(const Bytes& bytes, const std::string& name, const Package& mod,
@@ -806,7 +780,7 @@ public:
         result.parts.push_back({cab, ruleId, pid, nativeMesh->cab, materialReference.first,
             rid, newRid, gid, newTid, tid, nativeMesh->id, materialId, std::move(bones)});
       }
-      preloadExpansion[rid] = {dependencies.begin(), dependencies.end()};
+      preloadExpansion[{cab, rid}] = {dependencies.begin(), dependencies.end()};
     }
     Cost("renderer-parts",start);start=std::chrono::steady_clock::now();
     for (auto id : layout.order) {

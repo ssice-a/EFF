@@ -101,7 +101,7 @@ struct Api {
  void *uiLuaInstance=nullptr,*uiLuaDo=nullptr,*uiLuaCall=nullptr,*uiArraySet=nullptr,*uiObjectClass=nullptr;
  void *uiLuaKey=nullptr,*uiLuaEncode=nullptr,*uiLuaDecode=nullptr,*uiLuaCodeEquals=nullptr;
  void *uiLuaExceptionMessage=nullptr;
- void *proxyAsset=nullptr,*proxyHash=nullptr,*proxyGet=nullptr,*proxyPath=nullptr,*proxyInfoClass=nullptr,*proxyInfo=nullptr,*proxyAssetPath=nullptr,*proxyTryUnloadImmediately=nullptr,*pathHashField=nullptr;
+ void *proxyAsset=nullptr,*proxyHash=nullptr,*proxyGet=nullptr,*proxyPath=nullptr,*proxyInfoClass=nullptr,*proxyInfo=nullptr,*proxyAssetPath=nullptr,*proxyTryUnloadImmediately=nullptr,*proxyUnloaded=nullptr,*pathHashField=nullptr;
  void *handleUntrackedField=nullptr,*handleUntrackedClass=nullptr,*untrackedAssetGet=nullptr;
  void *rawAssetUnloaded=nullptr,*rawAssetRefCount=nullptr;
 } api;
@@ -285,7 +285,18 @@ void PollControlledClones() noexcept {
 void* Clone(void* source){auto routed=Routed(source);auto controlled=ControlledCloneSource(routed);auto path=controlled?ControlledSourcePath(routed):std::string();return CompleteControlledClone(originalClone(routed),controlled,path);}
 void* CloneParent(void* source,void* parent,bool world){auto routed=Routed(source);auto controlled=ControlledCloneSource(routed);auto path=controlled?ControlledSourcePath(routed):std::string();return CompleteControlledClone(originalCloneParent(routed,parent,world),controlled,path);}
 void* Instantiate(void* source,void* position,void* rotation){auto routed=Routed(source,"position");auto controlled=ControlledCloneSource(routed);auto path=controlled?ControlledSourcePath(routed):std::string();return CompleteControlledClone(originalInstantiate(routed,position,rotation),controlled,path);}
-void* InstantiateParent(void* source,void* parent,void* position,void* rotation){auto routed=Routed(source,"parent-position");auto controlled=ControlledCloneSource(routed);auto path=controlled?ControlledSourcePath(routed):std::string();return CompleteControlledClone(originalInstantiateParent(routed,parent,position,rotation),controlled,path);}
+void* InstantiateParent(void* source,void* parent,void* position,void* rotation){auto routed=Routed(source,"parent-position");
+#if defined(EIEM_PREFAB_ROUTE_PROBE)
+ if(proxyContext&&(routed!=source||proxyLogicalPath.find("chr_0028_wulfa_postmodel.prefab")!=std::string::npos)){
+  static std::atomic<unsigned> probeCount{0};if(probeCount.fetch_add(1,std::memory_order_relaxed)<32){
+   auto current=std::atomic_load(&activeNative);bool rootMatched=false;void* candidate=nullptr;
+   if(current&&current->prepared){auto root=current->prepared->rootHashes.find(proxyPathHash);if(root!=current->prepared->rootHashes.end()&&root->second<current->assets.size()){rootMatched=true;candidate=current->assets[root->second].prefab.Get();}}
+   Log("[DIAG-PREFAB-ROUTE] path=%s hash=%016llX source=%p routed=%p proxySource=%p originalSource=%p rootMatched=%d candidate=%p changed=%d",
+    proxyLogicalPath.c_str(),(unsigned long long)proxyPathHash,source,routed,proxySource,proxyOriginalSource,int(rootMatched),candidate,int(source!=routed));
+  }
+ }
+#endif
+ auto controlled=ControlledCloneSource(routed);auto path=controlled?ControlledSourcePath(routed):std::string();return CompleteControlledClone(originalInstantiateParent(routed,parent,position,rotation),controlled,path);}
 void* InstantiateImmediate(void* source,void* parent,bool world){auto routed=Routed(source,"immediate-parent");auto controlled=ControlledCloneSource(routed);auto path=controlled?ControlledSourcePath(routed):std::string();return CompleteControlledClone(originalInstantiateImmediate(routed,parent,world),controlled,path);}
 void* InstantiateAsync(void* source,int count,void* parent,void* position,void* rotation){
  auto routed=Routed(source,"async-parent");auto controlled=ControlledCloneSource(routed);auto operation=originalInstantiateAsync(routed,count,parent,position,rotation);
@@ -302,17 +313,24 @@ void RememberPrefabProxy(uint64_t hash,void* proxy,void* source){
   if(!known)sources.push_back(Ref::Make(source,true));}
 }
 size_t InvalidatePrefabProxyCache(uint64_t hash,const std::string& path,bool requireObserved,bool logAttempt){
- Require(api.proxyTryUnloadImmediately,"game prefab proxy unload API unavailable");auto found=prefabProxiesByPath.find(hash);
+ Require(api.proxyTryUnloadImmediately&&api.proxyUnloaded,"game prefab proxy unload/state API unavailable");auto found=prefabProxiesByPath.find(hash);
  if(found==prefabProxiesByPath.end()){
   Require(!requireObserved,"affected prefab proxy was not observed before reload: "+path);
   if(logAttempt)Log("[FULL-RELOAD-PREFAB-CACHE] path=%s hash=%016llX proxies=0 unloaded=0 remaining=0 noCachedProxyObserved=1",
     path.c_str(),(unsigned long long)hash);prefabProxySourcesByPath.erase(hash);return 0;
  }
- size_t live=0,unloaded=0;auto& proxies=found->second;
- for(auto it=proxies.begin();it!=proxies.end();){auto proxy=it->Get();if(!proxy){it=proxies.erase(it);continue;}++live;void* args[]={proxy};
+ size_t live=0,unloaded=0,alreadyUnloaded=0;auto& proxies=found->second;
+ for(auto it=proxies.begin();it!=proxies.end();){auto proxy=it->Get();if(!proxy){it=proxies.erase(it);continue;}++live;
+  // TryUnloadImmediately only succeeds for a proxy still in the game's
+  // waiting-unload queue. Clear removes it from that queue before managed GC,
+  // so false does not mean that a historical weak observation still owns it.
+  if(RuntimeShapes::Scalar<unsigned char>(api.proxyUnloaded,proxy)){
+   ++alreadyUnloaded;it=proxies.erase(it);continue;
+  }
+  void* args[]={proxy};
   if(RuntimeShapes::Scalar<unsigned char>(api.proxyTryUnloadImmediately,nullptr,args)){++unloaded;it=proxies.erase(it);}else ++it;}
- if(logAttempt)Log("[FULL-RELOAD-PREFAB-CACHE] path=%s hash=%016llX proxies=%zu unloaded=%zu remaining=%zu",
-   path.c_str(),(unsigned long long)hash,live,unloaded,proxies.size());
+ if(logAttempt)Log("[FULL-RELOAD-PREFAB-CACHE] path=%s hash=%016llX proxies=%zu unloaded=%zu alreadyUnloaded=%zu remaining=%zu",
+   path.c_str(),(unsigned long long)hash,live,unloaded,alreadyUnloaded,proxies.size());
  if(proxies.empty()){prefabProxiesByPath.erase(found);prefabProxySourcesByPath.erase(hash);return unloaded;}
  throw PrefabProxyRetainedError("game retained an affected prefab proxy; refusing stale-resource reload: "+path);
 }
@@ -1139,7 +1157,8 @@ void Install(void** assemblies,size_t count){
   auto resultType=il2cpp_type_get_name(il2cpp_method_get_return_type(api.proxyTryUnloadImmediately));
   bool returnsBoolean=resultType&&!strcmp(resultType,"System.Boolean");if(resultType)il2cpp_free((void*)resultType);
   Require(returnsBoolean,"game TryUnloadImmediately return type differs from Boolean");
-  Log("[FULL-RELOAD-PREFAB-CACHE-API] method=PrefabInstantiateProxyManager.TryUnloadImmediately static=1 parameter=PrefabInstantiateProxy return=Boolean");
+  api.proxyUnloaded=Method(proxy,"get_isUnloaded",{},"System.Boolean",false);
+  Log("[FULL-RELOAD-PREFAB-CACHE-API] method=PrefabInstantiateProxyManager.TryUnloadImmediately static=1 parameter=PrefabInstantiateProxy return=Boolean state=PrefabInstantiateProxy.get_isUnloaded");
   Require(Entry::Install(proxy,"_PreloadPrefab",{"System.Boolean"},"System.Void",false,(void*)ProxyPreload,(void**)&originalProxyPreload),"game prefab instantiate lifecycle hook unavailable");
   api.rootCategory=Enum(FindClass("Beyond.Resource","RootCategory",assemblies,count),"Main");api.priority=Enum(FindClass("Beyond.Resource","EResourceRequestPriority",assemblies,count),"Default");
   auto go=FindClass("UnityEngine","GameObject",assemblies,count),renderer=FindClass("UnityEngine","Renderer",assemblies,count);

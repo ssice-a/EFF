@@ -74,7 +74,13 @@ void SplitOwnerChecks(){
  p.meshes["MeshPetals"].resource="petals.mesh";auto provenance=std::make_shared<Resource>();provenance->bytes={1,2,3,4};p.resources["petals.mesh"]=provenance;
  for(unsigned level=1;level<=3;++level)rule.targets[level]={"assets/cloth-lods.mesh","ClothLOD"+std::to_string(level)};
  meshNames[Test::newMesh]=RuntimePartName(p,"PartPetals",rule.targets.at(0));
- EffectAttachment effect;effect.id="petals";effect.part="PartPetals";effect.bone="Right";effect.variable="$fx_petals";effect.targetPrefab="assets/author-postmodel.prefab";effect.targetPath="assets/cloth.mesh";effect.targetAsset="Cloth";effect.native=EffectTest::Manifest('5');p.effects={{effect.id,effect}};p.defaults[effect.variable]=1;
+ auto meshGroup=(void*)0xEA10,lodRoot=(void*)0xEA11,sourceRenderer=(void*)0xEA12;
+ Test::transformParents[meshGroup]=Test::oldRoot;nodeNames[meshGroup]="Mesh_all";
+ Test::transformParents[lodRoot]=meshGroup;nodeNames[lodRoot]="lod0";
+ Test::transformParents[sourceRenderer]=lodRoot;nodeNames[sourceRenderer]="Cloth";
+ Test::transformParents[Test::newRenderer]=sourceRenderer;
+ nodeNames[Test::newRenderer]=RendererPartTag("Cloth",meshNames.at(Test::newMesh));
+ EffectAttachment effect;effect.id="petals";effect.part="PartPetals";effect.bone="Right";effect.variable="$fx_petals";effect.targetPrefab="assets/author-postmodel.prefab";effect.targetPath="assets/cloth.mesh";effect.targetAsset="Cloth";effect.rendererPath="Mesh_all/lod0/Cloth";effect.native=EffectTest::Manifest('5');p.effects={{effect.id,effect}};p.defaults[effect.variable]=1;
  RuntimeControls::controlGraph=std::make_shared<const std::vector<Package>>(std::vector<Package>{p});RuntimeControls::variables[p.id]=p.defaults;RuntimeControls::specs.clear();
  RuntimeControls::Spec wrong;wrong.package=p.id;wrong.part="PartOther";wrong.marker="wrong";wrong.vertices=2;RuntimeControls::specs[wrong.marker]=wrong;auto exact=wrong;exact.part="PartPetals";exact.marker=meshNames.at(Test::newMesh);RuntimeControls::specs[exact.marker]=exact;
  A::standalone=std::make_shared<const std::vector<Package>>();A::diskEffects.clear();A::overrides.clear();A::activeStamps=A::CaptureStamps();A::stampsInitialized=true;A::needed=true;A::revision=RuntimeControls::revision;
@@ -297,6 +303,13 @@ void Checks(){
  auto independent=effect;independent.part="";independent.bone="Right";independent.targetPrefab=Test::modelPath;independent.rendererPath="marker";independent.targetAsset="marker";independent.targetPath="assets/body.mesh";independent.targetBones={"Bone"};p.effects={{effect.id,independent}};
  auto proofScope=std::make_unique<EffectNativeMeshFixture::Scope>();proofScope->Add(Test::modelPath,{{{EiemRenderAssemblyDescription::Segment("marker",0),0},{{independent.targetPath,independent.targetAsset}}}});originalSourceProof=true;
  Test::transformParents[Test::oldRenderer]=Test::oldRoot;A::standalone=std::make_shared<const std::vector<Package>>(std::vector<Package>{p});A::needed=true;A::ModelReady(Test::oldRoot);tick();Require(A::bindings.size()==1&&A::bindings.begin()->second.instance,"standalone effect required character Mod registration");
+ auto beforeModeChange=A::bindings.begin()->second.instance;auto prefabReplacement=independent;
+ prefabReplacement.targetPath.clear();prefabReplacement.targetAsset.clear();prefabReplacement.rendererPath.clear();prefabReplacement.bone.clear();prefabReplacement.targetBones.clear();
+ auto replacementPackage=p;replacementPackage.effects={{prefabReplacement.id,prefabReplacement}};
+ A::pendingStandalone=std::make_shared<const std::vector<Package>>(std::vector<Package>{replacementPackage});A::pendingEffects[p.id]=replacementPackage.effects;A::pendingForceReload=true;A::reloadPending=true;A::Frame();
+ Require(A::bindings.empty()&&beforeModeChange->destroyAttempted,"same effect ID changed from attachment to Prefab replacement but retained its old mounted instance");
+ A::pendingStandalone=std::make_shared<const std::vector<Package>>(std::vector<Package>{p});A::pendingEffects[p.id]=p.effects;A::pendingForceReload=true;A::reloadPending=true;tick();
+ Require(A::bindings.size()==1&&A::bindings.begin()->second.instance,"changing Prefab replacement back to attachment failed to bind the current owner");
  A::pendingStandalone=std::make_shared<const std::vector<Package>>();A::pendingEffects.clear();A::pendingForceReload=true;A::reloadPending=true;A::Frame();Require(A::bindings.empty(),"removed standalone Mod retained its instance");
  A::OwnerReleasing(Test::oldRoot);Require(A::bindings.empty(),"effect retained instance after owner entered game pool");
  originalSourceProof=false;proofScope.reset();

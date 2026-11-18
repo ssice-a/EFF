@@ -6,6 +6,43 @@
 #include <functional>
 
 using namespace Entry;
+void LoggingChecks(const std::filesystem::path& root) {
+  std::filesystem::create_directories(root);
+  auto main=OpenLog(root/"session.log",true),mirror=OpenLog(root/"mirror.log",true);
+  Require(main&&mirror,"buffered log fixture open failed");
+  auto oldLog=logFile,oldMirror=logMirror;logFile=main;logMirror=mirror;
+  auto bytes=[](FILE* file){LARGE_INTEGER size{};Require(GetFileSizeEx((HANDLE)_get_osfhandle(_fileno(file)),&size)!=FALSE,"log file size unavailable");return size.QuadPart;};
+  auto cleanup=[&]{logFile=oldLog;logMirror=oldMirror;fclose(main);fclose(mirror);};
+  try {
+    Log("[ENTRY-FIXTURE] ordinary message mentions ERROR without an error tag");
+    Require(bytes(main)==0&&bytes(mirror)==0,"ordinary event forced synchronous writes instead of bounded buffering");
+    Log("[DEMAND-LIFETIME-GAP] critical fixture evidence");
+    Require(bytes(main)>0&&bytes(main)==bytes(mirror),"critical log did not immediately flush both outputs");
+    auto flushed=bytes(main);
+    Log("[ENTRY-FIXTURE] another ordinary event");
+    Require(bytes(main)==flushed&&bytes(mirror)==flushed,"normal logging stopped buffering after a critical flush");
+    FlushLog();
+    Require(bytes(main)==flushed,"periodic logger flushed before its interval");
+    {std::lock_guard<std::mutex> lock(logMutex);logFlushClock=GetTickCount64()-logFlushIntervalMs;}
+    FlushLog();
+    Require(bytes(main)>flushed&&bytes(main)==bytes(mirror)&&!logDirty.load(),"periodic logger did not flush its pending batch");
+    flushed=bytes(main);
+    Log("[ENTRY-FIXTURE] pending before build identity");
+    Require(bytes(main)==flushed,"ordinary event wrote through before startup evidence");
+    Log("[BUILD] fixture identity");
+    Require(bytes(main)>flushed&&bytes(main)==bytes(mirror),"startup build identity was left buffered");
+    std::string bounded(2048,'x');
+    for(size_t i=0;i<1000;++i)Log("[ENTRY-FIXTURE] %zu %s",i,bounded.c_str());
+    Require(bytes(main)>1000000,"bounded log buffering grew without flushing full buffers");
+    FlushLog(true);
+    Require(!logDirty.load()&&bytes(main)==bytes(mirror),"explicit flush lost a buffered output");
+  } catch(...) {cleanup();throw;}
+  cleanup();
+  auto read=[](const std::filesystem::path& path){std::ifstream file(path,std::ios::binary);return std::string(std::istreambuf_iterator<char>(file),{});};
+  auto contents=read(root/"session.log");
+  Require(contents==read(root/"mirror.log")&&contents.find("critical fixture evidence")!=std::string::npos&&contents.find("[pid=")!=std::string::npos,
+          "session/mirror logging lost lines or process identity");
+}
 void Rejects(const std::function<void()>& action, const std::string& expected) {
   try { action(); }
   catch (const std::exception& error) {
@@ -21,6 +58,7 @@ int main() {
   try {
     Require(!std::filesystem::exists(root), "fixture directory already exists");
     gameDirectory = root;
+    LoggingChecks(root/"logging");
     Require(EiemGlobalConfig{}.reload.vk == VK_F10, "default reload shortcut regressed");
     EiemGlobalConfig defaultConfig;std::istringstream defaultText(kEiemDefaultGlobalConfig);std::string configError;
     Require(EiemParseGlobalConfig(defaultText, &defaultConfig, configError) && defaultConfig.reload.vk == VK_F10,
@@ -31,6 +69,25 @@ int main() {
     EiemGlobalConfig legacyConfig;
     Require(EiemParseGlobalConfig(legacyText,&legacyConfig,configError)&&legacyConfig.reload.vk==VK_F10,
             "legacy effects_reload setting changed or invalidated the unified F10 binding");
+    Require(!defaultConfig.detailedDiagnostics&&!legacyConfig.detailedDiagnostics,
+            "detailed native diagnostics enabled without an explicit opt-in");
+    std::ifstream distributionText("config/eff.ini");EiemGlobalConfig distributionConfig;
+    Require(distributionText&&EiemParseGlobalConfig(distributionText,&distributionConfig,configError)&&
+            !distributionConfig.detailedDiagnostics&&distributionConfig.reload.vk==defaultConfig.reload.vk&&
+            distributionConfig.gui.vk==defaultConfig.gui.vk&&distributionConfig.disableCameraFade==defaultConfig.disableCameraFade,
+            "distributed eff.ini disagrees with generated defaults");
+    for(bool enabled : {true,false}) {
+      std::istringstream text(std::string("[Diagnostics]\ndetailed=")+(enabled?"true\n":"false\n"));
+      EiemGlobalConfig parsed;
+      Require(EiemParseGlobalConfig(text,&parsed,configError)&&parsed.detailedDiagnostics==enabled,
+              "explicit detailed diagnostics setting was not respected");
+      settings.Publish(parsed);
+      Require(settings.Get().detailedDiagnostics==enabled,"diagnostics publication lost the new configuration");
+    }
+    for(const char* text : {"[Diagnostics]\ndetailed=1\n","[Diagnostics]\nunknown=true\n","[Diagnostics]\ndetailed=false\ndetailed=true\n"}) {
+      std::istringstream input(text);EiemGlobalConfig parsed;
+      Require(!EiemParseGlobalConfig(input,&parsed,configError),"invalid diagnostics setting accepted");
+    }
     AP_HotkeyInfo hotkeys[3]{};
     Require(AP_GetHotkeys(hotkeys,3)==2&&std::string(hotkeys[0].configKey)=="reload"&&
             std::string(hotkeys[1].configKey)=="gui",

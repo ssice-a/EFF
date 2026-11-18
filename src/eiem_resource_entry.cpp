@@ -17,6 +17,7 @@
 #include <deque>
 #include <mutex>
 #include <set>
+#include <string_view>
 
 #include "eiem_mesh_input_builder.h"
 #include "eiem_resource_reload_plan.h"
@@ -72,6 +73,9 @@
 #endif
 #define APPLEPIE_PLUGIN_IMPL
 #include "applepie_mgr.h"
+#if defined(EIEM_SCRIPT_BINDING_PROBE)
+#include "../tools/diagnostics/script_binding_probe.h"
+#endif
 
 // Production base resources are replaced through serialized loading inputs. The
 // separate Mesh-target acceptance build measures an uncompiled matching route.
@@ -99,6 +103,7 @@ bool SharedDependencies(void*,uint64_t,void*,bool,bool&) noexcept;
 bool AppendSharedDependencies(void*,uint64_t,void*,bool,bool) noexcept;
 bool SharedVfsLoad(uint64_t,uint32_t,bool,void*&) noexcept;
 void Watchdog() noexcept;
+void PumpSharedRetirements() noexcept;
 void ObserveNativeMeshSource(void*,const std::string&) noexcept;
 std::set<EiemDirectory::Identity> ProvenNativeMeshIdentities(void*);
 #endif
@@ -151,6 +156,8 @@ FILE *OpenLog(const std::filesystem::path &path, bool exclusive = false) {
   auto file = _fdopen(descriptor, "wb");
   if (!file)
     _close(descriptor);
+  else
+    setvbuf(file, nullptr, _IOFBF, 64 * 1024);
   return file;
 }
 struct ManagedAttachment {
@@ -178,6 +185,34 @@ struct ManagedAttachment {
 std::mutex logMutex;
 FILE *logFile = nullptr;
 FILE *logMirror = nullptr;
+std::atomic<bool> logDirty{false};
+ULONGLONG logFlushClock = 0; // Protected by logMutex.
+constexpr ULONGLONG logFlushIntervalMs = 250;
+bool ImmediateLog(std::string_view line) {
+  if (line.empty() || line.front() != '[') return false;
+  auto end=line.find(']');if(end==std::string_view::npos)return false;
+  auto tag=line.substr(1,end-1);
+  if(tag=="BUILD")return true;
+  while(!tag.empty()) {
+    auto separator=tag.find('-');auto part=tag.substr(0,separator);
+    if(part=="FATAL"||part=="GAP"||part=="ERROR"||part=="FAIL"||part=="FAILED"||
+       part=="FAILURE"||part=="REJECT"||part=="REJECTED"||part=="QUARANTINE"||
+       part=="CRASH"||part=="WATCHDOG"||part=="TIMEOUT")return true;
+    if(separator==std::string_view::npos)break;
+    tag.remove_prefix(separator+1);
+  }
+  return false;
+}
+void FlushLog(bool force = false) {
+  if(!logDirty.load(std::memory_order_acquire))return;
+  std::lock_guard<std::mutex> lock(logMutex);
+  if(!logDirty.load(std::memory_order_relaxed))return;
+  const auto now=GetTickCount64();
+  if(!force&&now-logFlushClock<logFlushIntervalMs)return;
+  if(logFile)fflush(logFile);
+  if(logMirror)fflush(logMirror);
+  logFlushClock=now;logDirty.store(false,std::memory_order_release);
+}
 std::filesystem::path gameDirectory, sessionDirectory;
 std::atomic_bool active{true}, reload{false};
 std::atomic<uint64_t> reloadClock{0};
@@ -1225,6 +1260,7 @@ void CompleteRuleInput(void* request,void* bundle){NativeBundle::CompleteMemory(
 #include "eiem_standalone_effect_mods.h"
 #include "eiem_entry_author_transforms.h"
 #include "eiem_entry_effect_attachments.h"
+#include "eiem_entry_animation_frame.h"
 #include "eiem_entry_demand_generation_reload.h"
 #if defined(EIEM_NATIVE_ANIMATION_PROBE) || defined(EIEM_MOD_ANIMATION_PROBE)
 #include "../tools/diagnostics/native_animation_probe.h"
@@ -1244,6 +1280,20 @@ void ProcessReloadRequests() {
 }
 
 void InstallHooks(void **assemblies, size_t count) {
+#if defined(EIEM_SCRIPT_BINDING_PROBE)
+  Observe([&]{
+    auto module=GetModuleHandleW(L"UnityPlayer.dll");wchar_t path[32768]{};
+    Require(module&&GetModuleFileNameW(module,path,32768)&&EiemScriptBindingProbe::Compatible(module),"script-binding probe Unity image signature differs");
+    auto image=EiemDirectory::Read(std::filesystem::path(path));auto digest=EiemDirectory::Sha(image.data(),image.size());
+    Require(EiemDirectory::Hex(digest.data(),digest.size())=="9AA9397A6C5EE4FA083EA379B81FF14019EEBA26A76D15446318D5947FB3D2D0","script-binding probe Unity SHA256 differs");
+    auto output=gameDirectory/"plugin/script-binding-diagnostics"/("pid-"+std::to_string(GetCurrentProcessId())+".jsonl");
+    Require(EiemScriptBindingProbe::Start(output,uintptr_t(module)),"script-binding probe output unavailable");
+    if(!InstallAddress((char*)module+EiemScriptBindingProbe::bindingRva,"diagnostic-script-binding",(void*)EiemScriptBindingProbe::Binding,(void**)&EiemScriptBindingProbe::original)){
+      EiemScriptBindingProbe::Stop();throw std::runtime_error("script-binding probe hook failed");
+    }
+    Log("[DEBUG-scriptbind-READY] output=%s targets=SphereCollider,EmotionShaderSyncMono eventLimit=512 nativeCallsAdded=0 mutations=0",output.u8string().c_str());
+  });
+#endif
   RuntimeShapes::InstallOptional(assemblies,count);
   // Arm depends on the capture completion trampoline. Finish that binding
   // before enabling controls, memory submission, or file interception.
@@ -1700,6 +1750,7 @@ DWORD StartImpl() {
     RuntimeControls::preferences.Flush(Log);
     EiemLoadPerformance::Flush();
     RuntimeControls::keySettings.Flush(Log);
+    FlushLog();
     Sleep(25);
   }
 }
@@ -1738,7 +1789,13 @@ void Log(const char *format, ...) {
       fprintf(output, "[%02u:%02u:%02u.%03u] [pid=%lu tid=%lu] %s\n", now.wHour,
               now.wMinute, now.wSecond, now.wMilliseconds,
               GetCurrentProcessId(), GetCurrentThreadId(), line);
-      fflush(output);
+    }
+    if(Entry::ImmediateLog(line)) {
+      fflush(Entry::logFile);
+      if(Entry::logMirror)fflush(Entry::logMirror);
+      Entry::logDirty.store(false,std::memory_order_release);
+    } else if(!Entry::logDirty.exchange(true,std::memory_order_acq_rel)) {
+      Entry::logFlushClock=GetTickCount64();
     }
   }
 }

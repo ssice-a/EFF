@@ -16,6 +16,18 @@ def stage(name='plugin-frame', calls=100, main=1, **extra):
 
 
 class PerformanceAnalysis(unittest.TestCase):
+    def test_request_breakdowns_preserve_bundle_identity_and_do_not_inherit_window(self):
+        text='\n'.join([line('[BUILD] resource-directory-entry'),
+            line('[DEBUG-loadperf] window=1 windowId=1 startTickMs=1000 endTickMs=6000 spanMs=5000'),
+            stage(),line('[DEBUG-loadperf] demandBreakdown=1 scope=3 bundle=0000000000000123 outcome=prepared wallMs=473.380 readMs=2.5 metadataMs=100.0 inclusive=1')])
+        result=analyze(text)
+        self.assertEqual(len(result['stages']),1)
+        row=result['demandBreakdowns'][0]
+        self.assertEqual(row['bundle'],'0000000000000123')
+        self.assertEqual(row['wallMs'],473.380)
+        self.assertNotIn('windowId',row)
+        self.assertIn('3:0000000000000123',markdown(result))
+
     def test_main_percentiles_and_overflow_are_not_session_percentiles(self):
         text='\n'.join([line('[BUILD] resource-directory-entry'),stage(),
             stage('material-frame',mainP99UpperMs=-1),stage('material-frame')])

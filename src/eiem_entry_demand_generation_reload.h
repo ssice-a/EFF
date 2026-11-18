@@ -177,6 +177,7 @@ std::shared_ptr<const DemandLoadingProbe::InstalledGeneration> ExcludeMods(
   next->standalone=standalone;
   auto previous=DemandLoadingProbe::CurrentInstalledGeneration();
   next->delta=EiemDemandGenerationDiff::Compare(previous?previous->snapshot:EiemDemandGenerationDiff::Snapshot{},next->snapshot);
+  DemandLoadingProbe::RetainRestorationTargets(*next,previous.get());
   return next;
 }
 
@@ -207,6 +208,43 @@ Owner MakePartOwner(void* part,const FullResourceReload::LivePart& live) {
   }
   EnsureOwnerPathHash(owner);
   return owner;
+}
+
+Ref WeaponModelOwner(const Owner& owner) {
+  if(!owner.viewPart||owner.uiModel||!FullResourceReload::Inherits(
+      owner.component.Get(),"Beyond.Gameplay.View","WeaponModelViewPart"))return {};
+  auto model=Ref::Make(FullResourceReload::ReadObject(owner.component.Get(),
+    "m_modelComponent","Beyond.Gameplay.View.IModelComponent"),false);
+  if(!model.Get())return {}; // Standalone display part, not a world weapon.
+  Require(FullResourceReload::Inherits(model.Get(),"Beyond.Gameplay.View","BaseModelComponent"),
+    "weapon model owner is not a reloadable BaseModelComponent: "+owner.path);
+  return model;
+}
+
+void CaptureWeaponParents(std::vector<OwnerReload>& owners) {
+  // WeaponModelViewPart keeps its IModelComponent even while an attack moves
+  // the weapon away from the skeleton. Renderer ancestry is not ownership.
+  // Recover the main part directly when its load preceded our observation.
+  for(size_t i=0;i<owners.size();++i){
+    if(!owners[i].rebuildParent.Get())continue;
+    const auto model=owners[i].rebuildParent;
+    if(std::any_of(owners.begin(),owners.end(),[&](const auto& item){
+        return !item.owner.viewPart&&item.owner.component.Get()==model.Get();}))continue;
+    try{
+      auto part=FullResourceReload::ReadObject(model.Get(),"m_mainPart","Beyond.Gameplay.View.ComplexModelViewPart");
+      Require(part,"weapon owner has no main part");
+      FullResourceReload::LivePart live;live.part=Ref::Make(part,false);live.model=model;
+      live.root=Ref::Make(FullResourceReload::Call(FullResourceReload::api.getModel,model.Get()),false);
+      auto parent=MakePartOwner(part,live);
+      Require(parent.weapons.Get(),"weapon owner has no WeaponComponent");
+      const auto phase=RuntimeShapes::Alive(parent.root.Get())?OwnerPhase::Queued:OwnerPhase::AwaitExisting;
+      owners.push_back({std::move(parent),phase});
+    }catch(const std::exception& error){
+      // Preserve the relationship: ReleasePath must not release/reanimate the
+      // part independently when its authoritative owner cannot be captured.
+      Log("[DEMAND-F10-OWNER-GAP] kind=weapon-parent reason=%s independentWeaponReloadRejected=1",error.what());
+    }
+  }
 }
 
 Owner MakeUIOwner(void* root,const FullResourceReload::LiveUIModel& live) {
@@ -294,12 +332,14 @@ void AddAffectedOwners(const DemandLoadingProbe::InstalledGeneration& candidate)
   }
   for(auto it=FullResourceReload::liveParts.begin();it!=FullResourceReload::liveParts.end();) {
     auto part=it->second.part.Get();if(!part){it=FullResourceReload::liveParts.erase(it);continue;}
+    auto live=it->second;++it;
     try{
-      auto owner=MakePartOwner(part,it->second);++it;
+      auto owner=MakePartOwner(part,live);
       auto phase=RuntimeShapes::Alive(owner.root.Get())?OwnerPhase::Queued:OwnerPhase::AwaitExisting;
       if(Affected(owner.root.Get(),candidate,owner.path,&selection))affectedPaths.insert(FullResourceReload::NormalizeAssetPath(owner.path));
-      foundOwners.push_back({std::move(owner),phase});
-    }catch(const std::exception& error){Log("[DEMAND-F10-OWNER-GAP] kind=world-part reason=%s otherOwnersContinue=1",error.what());++it;}
+      OwnerReload item;item.rebuildParent=WeaponModelOwner(owner);
+      item.owner=std::move(owner);item.phase=phase;foundOwners.push_back(std::move(item));
+    }catch(const std::exception& error){Log("[DEMAND-F10-OWNER-GAP] kind=world-part reason=%s otherOwnersContinue=1",error.what());}
   }
   for(const auto& row:FullResourceReload::liveUIModels) {
     auto root=row.first;try{
@@ -310,10 +350,22 @@ void AddAffectedOwners(const DemandLoadingProbe::InstalledGeneration& candidate)
   }
   for(const auto& row:FullResourceReload::pendingUIModels)
     if(candidate.delta.changed){pendingUIPaths.insert(row.second);affectedPaths.insert(FullResourceReload::NormalizeAssetPath(row.second));}
+  CaptureWeaponParents(foundOwners);
   // A page may own the same raw weapon as the world without that weapon's
   // Renderer being parented to the page yet. Use the native owner's dependency
   // list, not visible geometry, to close the set of holders before releasing.
   bool expanded=true;while(expanded){expanded=false;
+    for(const auto& child:foundOwners)if(child.rebuildParent.Get()&&
+        affectedPaths.count(FullResourceReload::NormalizeAssetPath(child.owner.path))){
+      for(const auto& parent:foundOwners)if(!parent.owner.viewPart&&parent.owner.weapons.Get()&&
+          parent.owner.component.Get()==child.rebuildParent.Get()){
+        if(affectedPaths.insert(FullResourceReload::NormalizeAssetPath(parent.owner.path)).second){
+          expanded=true;
+          Log("[DEMAND-F10-OWNER-DEPENDENCY] path=%s dependency=%s kind=world-weapon nativeModelOwner=1",
+            parent.owner.path.c_str(),child.owner.path.c_str());
+        }
+      }
+    }
     for(const auto& item:foundOwners){const auto path=FullResourceReload::NormalizeAssetPath(item.owner.path);
       if(affectedPaths.count(path))continue;
       for(const auto& dependency:item.owner.prefabDependencies)if(affectedPaths.count(dependency.path)){
@@ -359,15 +411,6 @@ void AddAffectedOwners(const DemandLoadingProbe::InstalledGeneration& candidate)
     }
     Log("[DEMAND-F10-PATH-RETRY] path=%s previousCacheFailure=1 diskDeltaRequired=0",batch.path.c_str());
   }
-  for(auto& batch:reloads)for(auto& child:batch.owners){
-    if(!child.owner.viewPart||child.owner.uiModel||!FullResourceReload::Inherits(
-       child.owner.component.Get(),"Beyond.Gameplay.View","WeaponModelViewPart"))continue;
-    for(const auto& parentBatch:reloads)for(const auto& parent:parentBatch.owners){
-      if(parent.owner.viewPart||parent.owner.uiModel||!parent.owner.weapons.Get())continue;
-      if(FullResourceReload::RootContains(parent.owner.root.Get(),child.owner.root.Get()))
-        child.rebuildParent=parent.owner.component;
-    }
-  }
   for(const auto& row:FullResourceReload::liveHelperModels){
     auto helperRoot=row.second.root.Get();if(!RuntimeShapes::Alive(helperRoot)||!Affected(helperRoot,candidate))continue;
     bool covered=false;for(const auto& batch:reloads)for(const auto& item:batch.owners){auto root=item.owner.root.Get();
@@ -379,19 +422,23 @@ void AddAffectedOwners(const DemandLoadingProbe::InstalledGeneration& candidate)
 void Commit(std::shared_ptr<Prepared> candidate) {
   Require(DemandLoadingProbe::InstalledGenerationFilesUnchanged(*candidate->generation),
     "Format 3 Mod files changed before F10 publication");
+  auto installed=DemandLoadingProbe::CurrentInstalledGeneration();
+  const bool reuseResources=installed&&!candidate->generation->delta.changed&&
+    installed->snapshot==candidate->generation->snapshot;
+  const auto& resources=reuseResources?installed:candidate->generation;
   RuntimeControls::State controls=RuntimeControls::PrepareInstalled(candidate->generation->packages,candidate->generation->standalone,candidate->config);
   RuntimeControls::MergeLive(controls);
   AddAffectedOwners(*candidate->generation);
   auto graph=candidate->generation->packages;RuntimeControls::Swap(controls);
   std::atomic_store(&published,graph);settings.Publish(candidate->config);
-  RuntimeAttachments::CommitResourceGeneration(candidate->generation);
+  RuntimeAttachments::CommitResourceGeneration(resources);
   auto next=generation.load()+1;
   RuntimeShapes::packageGeneration=next;RuntimeShapes::checkedGeneration=next;generation.store(next);
-  committedGeneration=candidate->generation->serial;active=true;
+  committedGeneration=resources->serial;active=true;
   size_t ownerCount=0;for(const auto& batch:reloads)ownerCount+=batch.owners.size();
-  Log("[DEMAND-F10-COMMIT] generation=%llu mods=%zu targets=%zu changed=%d paths=%zu owners=%zu pendingUIPaths=%zu uncoveredHelpers=%zu payloadsPreloaded=0 ownerReload=game-lifecycle generationProxyNamespace=1 nativeGenerationIdentity=1 nativeGameBundlesRetained=1 oldBundleLeaseBarrier=0",
-    (unsigned long long)candidate->generation->serial,candidate->generation->packages->size(),
-    candidate->generation->targets.size(),int(candidate->generation->delta.changed),reloads.size(),ownerCount,pendingUIPaths.size(),uncoveredHelpers);
+  Log("[DEMAND-F10-COMMIT] generation=%llu mods=%zu targets=%zu changed=%d paths=%zu owners=%zu pendingUIPaths=%zu uncoveredHelpers=%zu payloadsPreloaded=0 ownerReload=game-lifecycle generationProxyNamespace=1 nativeGenerationIdentity=1 nativeGameBundlesRetained=1 oldBundleLeaseBarrier=0 resourceGenerationReused=%d",
+    (unsigned long long)committedGeneration,candidate->generation->packages->size(),
+    candidate->generation->targets.size(),int(candidate->generation->delta.changed),reloads.size(),ownerCount,pendingUIPaths.size(),uncoveredHelpers,int(reuseResources));
 }
 
 void CompleteModel(OwnerReload& item,void* root) {

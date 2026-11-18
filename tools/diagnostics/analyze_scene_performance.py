@@ -71,7 +71,7 @@ def analyze(text, pid=None, markers=()):
         if not sessions:
             raise ValueError('No DLL build/session record in the log')
         pid=sessions[-1]
-    stage_windows=[];frames=[];memory=[];lifetime=[];events=[];windows=[];operations=[];workloads=[];unity_frames=[];window={}
+    stage_windows=[];frames=[];memory=[];lifetime=[];events=[];windows=[];operations=[];workloads=[];unity_frames=[];demand=[];window={}
     for stamp,process,thread,message in rows:
         if process!=pid:
             continue
@@ -79,13 +79,17 @@ def analyze(text, pid=None, markers=()):
         if '[DEBUG-loadperf]' in message:
             fields.update(time=stamp,thread=thread)
             for key,value in list(fields.items()):
-                if key in ('stage','operation','time'):
+                if key in ('stage','operation','time','bundle'):
                     continue
                 try:fields[key]=float(value) if '.' in str(value) else int(value)
                 except (TypeError,ValueError):pass
             if fields.get('window'):
                 window={key:fields[key] for key in ('windowId','startTickMs','endTickMs','spanMs')}
                 windows.append(fields);continue
+            # These synchronous request samples occur between aggregate
+            # flushes, so they do not belong to the preceding window.
+            if fields.get('demandBreakdown'):
+                demand.append(fields);continue
             fields.update(window)
             if 'stage' in fields:
                 stage_windows.append(fields)
@@ -105,7 +109,7 @@ def analyze(text, pid=None, markers=()):
     if markers and not windows:warnings.append('Legacy log has no uptime windows; scenario attribution is unavailable.')
     if any(s.get('sampleAgeMs',0)>10000 for s in workloads):warnings.append('Some runtime workload samples are older than 10 seconds; model hooks may have paused.')
     return dict(pid=pid,stages=aggregate_stages(stage_windows),stageWindows=stage_windows,measurementWindows=windows,
-                frameWindows=frames,unityDeltaWindows=unity_frames,operationWindows=operations,runtimeWorkloadSamples=workloads,
+                frameWindows=frames,unityDeltaWindows=unity_frames,operationWindows=operations,runtimeWorkloadSamples=workloads,demandBreakdowns=demand,
                 scenarios=scenario_reports(markers,pid,windows,stage_windows,operations,frames,workloads,memory),warnings=warnings,
                 slowFrameWindows=sorted(frames,key=lambda s:s.get('maxMs',0),reverse=True)[:12],processSamples=memory,nativeLifetimeSamples=lifetime,events=events,
                 scope='DLL measured wall time; inclusive/nested stages must not be added; async Unity work and GPU work are not measured; process memory is the whole game')
@@ -122,6 +126,13 @@ def markdown(result):
         for s in stages[:20]:rows.append(f"| {s['stage']} | {s['changed']} | {s['calls']} | {s['mainTotalMs']:.3f} | {s['mainMaxMs']:.3f} | {number(s['mainMsPerPluginFrame'])} | {number(s['largestWindowMainP99UpperMs'])} |")
         return rows
     lines.extend(['## 整个会话','',*table(result['stages']),''])
+    if result.get('demandBreakdowns'):
+        lines.extend(['## 首次资源准备','', '各列包含嵌套阶段，不能相加；等待时间包含在总耗时中。','',
+            '| 资源组 | 结果 | 总 ms | 等待 ms | 发现 ms | 读取 ms | 解压 ms | 元数据 ms | 材质 ms | 消费者 ms | 隔离发布 ms |',
+            '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |'])
+        for row in sorted(result['demandBreakdowns'],key=lambda r:r.get('wallMs',0),reverse=True)[:20]:
+            lines.append(f"| {row['scope']}:{row['bundle']} | {row['outcome']} | {row['wallMs']:.3f} | {row.get('sharedWaitMs',0)+row.get('scopeWaitMs',0):.3f} | {row.get('discoveryMs',0):.3f} | {row.get('readMs',0):.3f} | {row.get('decodeMs',0):.3f} | {row.get('metadataMs',0):.3f} | {row.get('materialsMs',0):.3f} | {row.get('consumerMs',0):.3f} | {row.get('isolateMs',0)+row.get('publishMs',0):.3f} |")
+        lines.append('')
     for case in result['scenarios']:
         name=str(case['name'] or case['caseId']).replace('\n',' ')
         lines.extend([f'## {name}', '', f"状态：{case['status']}；完整窗口 {case['fullWindows']}，边界窗口排除 {case['boundaryWindowsExcluded']}；测量覆盖 {case['measuredMs']/1000:.1f} 秒。",''])

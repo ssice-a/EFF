@@ -6,8 +6,10 @@
 // SerializedFile and must never be copied from a different CAB.
 namespace EiemNativeInput {
 using NativePreloadExpansion=std::map<NativeReference,std::vector<NativeReference>>;
+enum class NativePreloadPlacement { AfterAnchor, BeforeAnchor };
 inline bool ExpandNativePreloads(const Type& type,Value& bundle,SerializedLayout& layout,
-    const std::string& cab,const NativePreloadExpansion& expansion,std::set<NativeReference>& referenced) {
+    const std::string& cab,const NativePreloadExpansion& expansion,std::set<NativeReference>& referenced,
+    NativePreloadPlacement placement=NativePreloadPlacement::AfterAnchor) {
   auto& preloads=ArrayValue(type,Child(type,bundle,"m_PreloadTable"));
   Require(preloads.count==preloads.children.size(),"native preload table extent differs");
   auto reference=[&](const Value& pointer){auto path=int64_t(Integer(Child(type,pointer,"m_PathID")));
@@ -27,8 +29,10 @@ inline bool ExpandNativePreloads(const Type& type,Value& bundle,SerializedLayout
     for(auto& entry:ArrayValue(type,Child(type,bundle,name)).children)interval(Child(type,entry,"second"));
   interval(Child(type,bundle,"m_MainAsset"));
   std::vector<Value> output;std::vector<size_t> offsets{0};
+  const bool beforeAnchor=placement==NativePreloadPlacement::BeforeAnchor;
   for(size_t i=0;i<preloads.children.size();++i){const auto& pointer=preloads.children[i];
-    output.push_back(pointer);auto original=reference(pointer);
+    if(!beforeAnchor)output.push_back(pointer);
+    auto original=reference(pointer);
     if(original.second){auto found=expansion.find(original);
       if(found!=expansion.end()){
         referenced.insert(original);std::set<NativeReference> inserted{original};
@@ -37,13 +41,14 @@ inline bool ExpandNativePreloads(const Type& type,Value& bundle,SerializedLayout
           if(!inserted.insert(dependency).second)continue;
           const auto& locations=positions.at(dependency);bool present=true;
           for(auto* range:covering){auto at=std::lower_bound(locations.begin(),locations.end(),range->first);
-            present&=range->inserted.count(dependency)||(at!=locations.end()&&*at-range->first<range->count);}
+            present&=range->inserted.count(dependency)||(at!=locations.end()&&*at-range->first<range->count&&(!beforeAnchor||*at<i));}
           if(present)continue;
           auto value=ArrayElement(type,preloads);SetReference(type,value,dependency,layout,cab);output.push_back(std::move(value));
           for(auto* range:covering)range->inserted.insert(dependency);
         }
       }
     }
+    if(beforeAnchor)output.push_back(pointer);
     offsets.push_back(output.size());
   }
   if(output.size()==preloads.count)return false;

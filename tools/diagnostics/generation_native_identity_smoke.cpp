@@ -15,15 +15,51 @@ G::View NativeView(const Bytes& serialized,const std::string& cab,const Bytes& p
   bytes->insert(bytes->end(),serialized.begin(),serialized.end());bytes->insert(bytes->end(),pixels.begin(),pixels.end());
   return std::make_shared<const EiemInputSpanView::View>(std::vector<EiemInputSpanView::Span>{{EiemInputSpanView::literalSource,0,bytes->size(),bytes}},std::vector<size_t>{},EiemInputSpanView::ReadRange{});
 }
+void ScriptBindingRegression(){
+  Fixture f;f.cab="CAB-44444444444444444444444444444444";
+  const std::string scripts="CAB-55555555555555555555555555555555";
+  auto externalType=f.types.size();f.types.push_back(Schema(114,{Ref("m_GameObject"),Ref("m_Script"),{"float","radius",{}}}));
+  auto localType=f.types.size();f.types.push_back(f.types.back());
+  f.Add(400,externalType);f.Add(401,localType);
+  SetReference(f.T(400),Child(f.T(400),f.V(400),"m_Script"),{scripts,777},f.refs,f.cab);
+  SetReference(f.T(401),Child(f.T(401),f.V(401),"m_Script"),{f.cab,500},f.refs,f.cab);
+  f.types.push_back(Schema(115,{{"string","m_Name",{}}}));f.Add(500,f.types.size()-1);
+  auto serialized=f.BytesOf();auto layout=ParseSerialized(serialized);Bytes externalScript,localScript;
+  N(externalScript,1,4);N(externalScript,777,8);N(localScript,0,4);N(localScript,500,8);
+  serialized=BuildSerialized(serialized,layout,{}, {},{}, {},{externalScript,localScript});layout=ParseSerialized(serialized);
+  size_t typeAt=layout.typeCountOffset+4;
+  for(size_t i=0;i<layout.types.size();++i){
+    if(i==externalType||i==localType)WriteInteger(serialized,typeAt+5,i==externalType?0:1,2);
+    typeAt+=layout.types[i].nativeRecord.size();
+  }
+  auto source=NativeView(serialized,f.cab);auto isolated=G::Isolate(source,G::Collect(91,{source}),"eff/91/script-fixture.ab");
+  R::Reader after(isolated->Size(),[isolated](size_t at,unsigned char* out,size_t n){Require(isolated->ReadAt(at,out,n)==n,"script fixture read truncated");});
+  const auto& member=after.directory.members.at(0);auto actual=after.Layout(member);auto expected=ParseSerialized(serialized);
+  for(size_t i=0;i<expected.types.size();++i)
+    Require(expected.types[i].nativeRecord==actual.types[i].nativeRecord,
+      "generation isolation changed script binding metadata; m_Script fallback can recurse during native deserialization");
+  auto prefix=after.ReadAt(member.offset,actual.dataOffset,after.limits.metadataBytes);
+  Require(expected.scriptCount==actual.scriptCount&&std::equal(serialized.begin()+expected.tableEnd,
+    serialized.begin()+expected.tableEnd+4+expected.scriptCount*12,prefix.begin()+actual.tableEnd),"script binding adaptation changed script identities");
+  for(auto id:{int64_t(400),int64_t(401)}){const auto& old=expected.objects.at(id);const auto& current=actual.objects.at(id);
+    Require(old.type==current.type&&old.size==current.size&&after.ReadAt(member.offset+current.offset,current.size,current.size)==Bytes(serialized.begin()+old.offset,serialized.begin()+old.offset+old.size),
+      "script binding adaptation changed component fields or m_Script PPtr");}
+  std::cout<<"PASS external/local/unslotted script binding metadata, script table and component payloads preserved\n";
+}
 void InstalledGame(const char* game){
   const std::set<std::string> selected{
     "bundles/windows/main/2699e699f63135f3465693b7.ab",
     "bundles/windows/main/2e2c42f7f19ba91ee0a5a97d.ab",
     "bundles/windows/main/3a3f434f355f7ee2e5194686.ab",
     "bundles/windows/main/a3e567a75a3baa146889b321.ab",
-    "bundles/windows/main/497656735db1ec8ba0245517.ab"};
+    "bundles/windows/main/497656735db1ec8ba0245517.ab",
+    "bundles/windows/main/0b44582beca1783c9a8f9732.ab",
+    "bundles/windows/main/e83deff7cef5afdcbe9d4bfc.ab",
+    "bundles/windows/main/d488f249918df568084b0250.ab"};
   const auto entries=EiemVfsCatalog::ReadEffectiveVfs(std::filesystem::u8path(game),selected);
-  std::vector<G::View> sources;size_t bytesRead=0,totalBytes=0,externalRemaps=0,streamFields=0,objects=0;
+  std::vector<G::View> sources;
+  std::vector<std::string> sourcePaths;
+  size_t bytesRead=0,totalBytes=0,externalRemaps=0,streamFields=0,objects=0;
   for(const auto& entry:entries){
     Require(!entry.second.encrypted,"installed fixture has encrypted VFS input");
     auto file=std::make_shared<R::File>(entry.second.physical,entry.second.offset);auto size=size_t(entry.second.size);
@@ -31,10 +67,13 @@ void InstalledGame(const char* game){
     sources.push_back(std::make_shared<const EiemInputSpanView::View>(
       std::vector<EiemInputSpanView::Span>{{0,0,size,{}}},std::vector<size_t>{size},
       [file,&bytesRead](size_t,size_t at,unsigned char* out,size_t n){bytesRead+=n;file->ReadAt(at,out,n);}));
+    sourcePaths.push_back(entry.first);
   }
   auto names=G::Collect(17,sources);
+  const auto scriptPreloads=G::CollectScriptPreloads(sources);
+  bool checkedAvatarPreloads=false;
   for(size_t index=0;index<sources.size();++index){
-    auto source=sources[index],isolated=G::Isolate(source,names,"eff/17/fixture/"+std::to_string(index)+".ab");
+    auto source=sources[index],isolated=G::Isolate(source,names,"eff/17/fixture/"+std::to_string(index)+".ab",scriptPreloads);
     auto read=[](G::View view){return [view](size_t at,unsigned char* out,size_t n){Require(view->ReadAt(at,out,n)==n,"fixture read truncated");};};
     R::Reader before(source->Size(),read(source)),after(isolated->Size(),read(isolated));
     Require(before.directory.members.size()==after.directory.members.size(),"installed input lost a member");
@@ -44,11 +83,32 @@ void InstalledGame(const char* game){
       if(!(original.flags&4))continue;
       auto oldLayout=before.Layout(original),newLayout=after.Layout(current);objects+=oldLayout.objects.size();
       Require(oldLayout.types.size()==newLayout.types.size()&&oldLayout.order==newLayout.order&&oldLayout.externals.size()==newLayout.externals.size(),"installed schema/object/external table changed");
-      for(size_t ti=0;ti<oldLayout.types.size();++ti)Require(oldLayout.types[ti].nativeRecord==newLayout.types[ti].nativeRecord,"installed native type record changed");
+      for(size_t ti=0;ti<oldLayout.types.size();++ti)
+        Require(oldLayout.types[ti].nativeRecord==newLayout.types[ti].nativeRecord,"installed native type record changed");
       for(size_t ei=0;ei<oldLayout.externals.size();++ei){auto expected=G::Path(oldLayout.externals[ei],names);
         Require(newLayout.externals[ei]==expected,"installed native external did not follow its generation");externalRemaps+=expected!=oldLayout.externals[ei];}
       for(auto id:oldLayout.order){const auto& type=oldLayout.types.at(oldLayout.objects.at(id).type);
         Require(newLayout.objects.at(id).type==oldLayout.objects.at(id).type,"installed object type changed");
+        if(type.classId==142&&sourcePaths[index]=="bundles/windows/main/e83deff7cef5afdcbe9d4bfc.ab"){
+          const auto assetBundle=after.Object(current,newLayout,id);
+          const auto& preloads=ConstArray(type,Child(type,assetBundle,"m_PreloadTable"));
+          auto position=[&](const NativeReference& ref){return std::find_if(preloads.children.begin(),preloads.children.end(),[&](const Value& value){
+            return NullableReference(type,value,newLayout,current.name)==ref;
+          });};
+          const auto firstCollider=position({names.at("CAB-008ae281445b4a7f65f0699ea244dc8d"),-8764822797772454224LL});
+          Require(firstCollider!=preloads.children.end(),"avatar fixture lost its cross-Bundle collider");
+          const std::string scripts="CAB-5f527d7b7706baccdad9f794cf46420c";
+          Require(position({scripts,-7738307689003339598LL})<firstCollider&&position({scripts,3790854814103413254LL})<firstCollider,
+            "avatar can preload the generation collider before the world MonoScripts");
+          for(const char* container:{"m_Container","m_HashContainer"}){
+            const auto& assetEntries=ConstArray(type,Child(type,assetBundle,container));
+            Require(assetEntries.children.size()==1,"avatar fixture container count differs");
+            const auto& info=Child(type,assetEntries.children.front(),"second");
+            Require(Integer(Child(type,info,"preloadIndex"))==0&&Integer(Child(type,info,"preloadSize"))==preloads.count,
+              "avatar native and hash asset intervals do not both include script prerequisites");
+          }
+          checkedAvatarPreloads=true;
+        }
         std::set<std::string> wanted;for(auto node:type.nodes.at(0).children)if(G::StreamSchema(type,node))wanted.insert(type.nodes.at(node).name);
         if(wanted.empty())continue;
         auto fields=before.Fields(original,oldLayout,id,wanted),actual=after.Fields(current,newLayout,id,wanted);
@@ -59,9 +119,11 @@ void InstalledGame(const char* game){
     }
   }
   Require(externalRemaps>0,"installed fixture did not exercise cross-Bundle native references");
-  std::cout<<"PASS installed chen world/UI native inputs="<<sources.size()<<" objects="<<objects<<" crossCabRemaps="<<externalRemaps<<" streamFields="<<streamFields<<" sourceBytes="<<totalBytes<<" bytesRead="<<bytesRead<<'\n';
+  Require(checkedAvatarPreloads,"installed fixture did not exercise the wulfa avatar preloads");
+  std::cout<<"PASS installed chen/wulfa world/UI/NPC native inputs="<<sources.size()<<" objects="<<objects<<" crossCabRemaps="<<externalRemaps<<" streamFields="<<streamFields<<" sourceBytes="<<totalBytes<<" bytesRead="<<bytesRead<<'\n';
 }
 int main(int argc,char** argv){try{
+  ScriptBindingRegression();
   Fixture consumer,carrier;consumer.cab="CAB-11111111111111111111111111111111";carrier.cab="CAB-22222222222222222222222222222222";
   SetReference(consumer.T(12),Child(consumer.T(12),consumer.V(12),"m_Mesh"),{carrier.cab,100},consumer.refs,consumer.cab);
   const std::string vanillaTexture="CAB-33333333333333333333333333333333";

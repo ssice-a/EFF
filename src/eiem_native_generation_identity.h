@@ -1,4 +1,5 @@
 #pragma once
+#include "eiem_native_preload_closure.h"
 #include "eiem_native_serialized_splice.h"
 
 // Generation identity belongs to native loading inputs, not live Unity objects.
@@ -6,6 +7,7 @@ namespace EiemNativeGenerationIdentity {
 using namespace EiemNativeInput;
 using View=std::shared_ptr<const EiemInputSpanView::View>;
 using Names=std::map<std::string,std::string>;
+using ScriptPreloads=std::map<std::string,std::vector<NativeReference>>;
 inline std::string Lower(std::string value){for(auto& c:value)c=char(std::tolower(static_cast<unsigned char>(c)));return value;}
 inline std::string Scoped(uint64_t scope,const std::string& name){
   auto dot=name.find('.');auto base=name.substr(0,dot),suffix=dot==name.npos?std::string{}:name.substr(dot);
@@ -45,13 +47,69 @@ inline bool RemapStream(const Type& type,Value& value,const Names& names,bool st
     if(before!=after){SetString(type,value,after);changed=true;}}
   for(auto& child:value.children)changed=RemapStream(type,child,names,stream)||changed;return changed;
 }
-inline View Isolate(const View& input,const Names& names,const std::string& bundleName={}){
+inline ScriptPreloads CollectScriptPreloads(const std::vector<View>& inputs){
+  ScriptPreloads result;
+  for(const auto& input:inputs){
+    EiemNativeRandomAccess::Reader reader(input->Size(),[input](size_t at,unsigned char* out,size_t n){
+      Require(input->ReadAt(at,out,n)==n,"native script preload input truncated");});
+    for(const auto& member:reader.directory.members){
+      if(!(member.flags&4))continue;
+      const auto layout=reader.Layout(member);
+      if(!layout.scriptCount)continue;
+      const auto size=MultiplySize(layout.scriptCount,12);
+      const auto bytes=reader.ReadAt(member.offset+layout.tableEnd+4,size,reader.limits.metadataBytes);
+      Reader scripts(bytes,0,false,bytes.size());
+      std::vector<NativeReference> references;
+      std::set<NativeReference> seen;
+      for(size_t i=0;i<layout.scriptCount;++i){
+        const auto file=scripts.Get(4);
+        const auto id=static_cast<int64_t>(scripts.Get(8));
+        if(!id)continue;
+        Require(file<=layout.externals.size(),"native script preload external index differs");
+        NativeReference reference{file?layout.externals[file-1]:member.name,id};
+        if(seen.insert(reference).second)references.push_back(std::move(reference));
+      }
+      auto entry=result.try_emplace(Lower(member.name),std::move(references));
+      Require(entry.second||entry.first->second==references,"native generation script preload table changed");
+    }
+  }
+  return result;
+}
+inline bool IncludeScriptPreloads(const Type& type,Value& bundle,SerializedLayout& layout,
+    const std::string& cab,const ScriptPreloads& scripts){
+  const auto& preloads=ConstArray(type,Child(type,bundle,"m_PreloadTable"));
+  NativePreloadExpansion expansion;
+  for(const auto& pointer:preloads.children){
+    auto reference=NullableReference(type,pointer,layout,cab);
+    if(!reference.second||reference.first==cab||expansion.count(reference))continue;
+    auto provider=scripts.find(Lower(reference.first));
+    if(provider!=scripts.end())expansion.emplace(std::move(reference),provider->second);
+  }
+  if(expansion.empty())return false;
+  std::set<NativeReference> referenced;
+  return ExpandNativePreloads(type,bundle,layout,cab,expansion,referenced,NativePreloadPlacement::BeforeAnchor);
+}
+inline View Isolate(const View& input,const Names& names,const std::string& bundleName={},const ScriptPreloads& scriptPreloads={}){
   namespace R=EiemNativeRandomAccess;namespace P=EiemNativeSerializedSplice;namespace S=EiemNativeSpliceView;
   auto read=[input](size_t at,unsigned char* out,size_t n){Require(input->ReadAt(at,out,n)==n,"native generation source truncated");};
   R::Reader reader(input->Size(),read);std::vector<S::Rewrite> rewrites;
   for(size_t mi=0;mi<reader.directory.members.size();++mi){const auto& member=reader.directory.members[mi];if(!(member.flags&4))continue;
     auto layout=reader.Layout(member);std::map<int64_t,P::RangePayload> changed;
+    // A dependent AssetBundle can preload components of a versioned Prefab
+    // before the Prefab's own asset request. Bring its MonoScripts forward.
+    const bool crossBundleScripts=std::any_of(layout.externals.begin(),layout.externals.end(),
+      [&](const auto& cab){return scriptPreloads.count(Lower(cab))!=0;});
     for(auto id:layout.order){const auto& object=layout.objects.at(id);const auto& type=layout.types.at(object.type);std::set<std::string> wanted;
+      if(type.classId==142&&crossBundleScripts){
+        auto bundle=reader.Object(member,layout,id);
+        if(IncludeScriptPreloads(type,bundle,layout,member.name,scriptPreloads)){
+          if(!bundleName.empty())for(const char* field:{"m_Name","m_AssetBundleName"})
+            SetString(type,Child(type,bundle,field),bundleName);
+          auto bytes=std::make_shared<const Bytes>(EncodeValue(type,bundle));
+          changed[id].pieces.push_back({0,bytes->size(),bytes,{}});
+          continue;
+        }
+      }
       for(auto node:type.nodes.at(0).children)if(StreamSchema(type,node)||(type.classId==142&&!bundleName.empty()&&(type.nodes.at(node).name=="m_Name"||type.nodes.at(node).name=="m_AssetBundleName")))wanted.insert(type.nodes.at(node).name);
       if(wanted.empty())continue;auto fields=reader.Fields(member,layout,id,wanted);std::map<std::string,Value> edits;
       for(auto& field:fields){bool edited=RemapStream(type,field.second,names);

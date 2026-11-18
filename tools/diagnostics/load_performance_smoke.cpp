@@ -28,6 +28,21 @@ int main(){using namespace EiemLoadPerformance;
   sample.Resume();if(!sample.running)return 9;sample.Pause();sample.elapsed=5*ms;}
  logs.clear();Flush(true);auto selection=find("stage=demand-proxy-select changed=1");
  if(selection.find("calls=1 ")==std::string::npos||selection.find("totalMs=5.000000")==std::string::npos||selection.find("mainCalls=1 ")==std::string::npos)return 10;
+ // A cold request gets its own inclusive breakdown, including nested work,
+ // without charging a different thread or leaking into the next request.
+ logs.clear();
+ {DemandSample outer(7,0xABCD);outer.Outcome("prepared");Record(NativeMetadata,false,2*ms);
+  {DemandSample inner(8,0xDCBA);inner.Outcome("prepared");Record(NativeRead,true,3*ms);Bytes(NativeRead,512);}
+  Record(NativeRead,true,5*ms);Bytes(NativeRead,256);
+  std::thread unrelated([&]{Record(NativeRead,true,40*ms);Bytes(NativeRead,4096);});unrelated.join();
+  if(demandSample!=&outer||outer.values[NativeRead].calls!=2||outer.values[NativeRead].bytes!=768)return 11;
+ }
+ if(demandSample)return 12;
+ auto outer=find("demandBreakdown=1 scope=7 "),inner=find("demandBreakdown=1 scope=8 ");
+ if(outer.find("readMs=8.000000")==std::string::npos||outer.find("readBytes=768 ")==std::string::npos||outer.find("metadataMs=2.000000")==std::string::npos||inner.find("readMs=3.000000")==std::string::npos)return 13;
+ logs.clear();try{DemandSample failed(9,1);failed.Outcome("failed");throw 1;}catch(int){}
+ if(demandSample||find("demandBreakdown=1 scope=9 ").find("outcome=failed ")==std::string::npos)return 14;
+ Flush(true);if(find("stage=native-read changed=1").find("bytes=4864 ")==std::string::npos)return 15;
  auto started=Clock();for(unsigned i=0;i<100000;++i){Scope sample(File);}double overheadUs=double(Clock()-started)*1000000/Frequency()/100000;
  printf("PASS performance aggregation: mainAndWorkerPartitioned=1 backingKindSplit=1 readBytes=7168 mainP95P99=1 overflowHistogram=1 resetWindow=1 operationsAndWorkload=1 uptimeWindows=1 wholeProcessMemoryLabelled=1 diagnosticScopeAverageUs=%.6f\n",overheadUs);return 0;
 }

@@ -129,7 +129,6 @@ inline std::shared_ptr<const EiemInputSpanView::View> OpenEffectInput(
 inline std::shared_ptr<const Mesh> OpenMesh(const std::filesystem::path& root,const D::MeshAsset& declaration,
                                             const MeshSnapshot* snapshot=nullptr) {
   auto file=snapshot?snapshot->file:std::make_shared<R::File>(AssetPath(root,declaration.file),0);
-  file->Freeze();
   Bytes metadata;
   auto envelope=EiemAuthorResourceFile::Parse(file->Size(),
     [file](size_t at,unsigned char* out,size_t n){file->ReadAt(at,out,n);},&metadata);
@@ -141,10 +140,12 @@ inline std::shared_ptr<const Mesh> OpenMesh(const std::filesystem::path& root,co
   Require(!described.part.empty()&&described.nativeBytes>0&&described.authorBytes>0&&
     AddSize(described.nativeBytes,described.authorBytes)==envelope.payloadBytes,
     "native/editable author Mesh payload extents differ");
+  // The published Mesh only reads the native Bundle. The Blender payload
+  // stays with the editable resource file and is never part of the snapshot.
+  std::shared_ptr<R::File> nativeFile=file->SnapshotRange(envelope.payloadOffset,described.nativeBytes);
   described.part=declaration.part;described.file=declaration.file;described.material=declaration.material;
   described.materialSlot=declaration.materialSlot;described.skeleton=declaration.skeleton;
-  auto read=[file,base=envelope.payloadOffset,extent=described.nativeBytes](size_t at,unsigned char* out,size_t n){
-    Require(at<=extent&&n<=extent-at,"native Mesh read exceeds its payload range");file->ReadAt(base+at,out,n);};
+  auto read=[nativeFile](size_t at,unsigned char* out,size_t n){nativeFile->ReadAt(at,out,n);};
   R::Reader reader(described.nativeBytes,read);
   Require(reader.header.bytes==described.nativeBytes&&reader.directory.members.size()==1,"native author Mesh input extent/members differ");
   const auto& member=reader.directory.members[0];auto layout=reader.Layout(member);
@@ -155,10 +156,10 @@ inline std::shared_ptr<const Mesh> OpenMesh(const std::filesystem::path& root,co
     " actual="+asset.path+"#"+asset.asset);
   auto result=std::make_shared<Mesh>();result->declaration=std::move(described);result->object=G::Describe(reader,0,layout,asset.pathId,read);
   result->native={member.name,asset.pathId};
-  result->input=std::make_shared<const V::View>(std::vector<V::Span>{{0,envelope.payloadOffset,result->declaration.nativeBytes,{}}},
-    std::vector<size_t>{file->Size()},[file](size_t,size_t at,unsigned char* out,size_t n){file->ReadAt(at,out,n);});
+  result->input=std::make_shared<const V::View>(std::vector<V::Span>{{0,0,nativeFile->Size(),{}}},
+    std::vector<size_t>{nativeFile->Size()},[read](size_t,size_t at,unsigned char* out,size_t n){read(at,out,n);});
   for(const auto& field:result->declaration.fields)Require(result->object.fields.count(field),"native author Mesh selected field absent: "+field);
-  file->VerifyStable();result->metadataReadBytes=reader.stats.encodedBytes;return result;
+  result->metadataReadBytes=reader.stats.encodedBytes;return result;
 }
 inline std::shared_ptr<const Texture> OpenTexture(const std::filesystem::path& root,
     const D::TextureAsset& declaration,

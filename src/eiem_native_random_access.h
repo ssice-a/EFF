@@ -2,6 +2,7 @@
 #include "eiem_native_view_writer.h"
 #include "eiem_serialized_writer.h"
 #include "eiem_input_span_view.h"
+#include "eiem_load_performance.h"
 #include <array>
 #include <atomic>
 #include <list>
@@ -37,6 +38,7 @@ class File {
   BY_HANDLE_FILE_INFORMATION stamp_{};
   std::mutex mutex_;
   bool frozen_ = false;
+  File() = default;
 public:
   File(const std::filesystem::path& path, uint64_t offset, bool immutableAuthor = false) : offset_(offset) {
     handle_ = CreateFileW(path.c_str(), GENERIC_READ,
@@ -62,49 +64,67 @@ public:
   void Freeze() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (frozen_) return;
-    struct Handles {
-      HANDLE source = INVALID_HANDLE_VALUE, snapshot = INVALID_HANDLE_VALUE;
-      ~Handles() { if (source != INVALID_HANDLE_VALUE) CloseHandle(source);
-                   if (snapshot != INVALID_HANDLE_VALUE) CloseHandle(snapshot); }
-    } held;
+    auto snapshot = CopyRange(0, available_);
+    std::swap(handle_, snapshot->handle_);
+    offset_ = 0;
+    stamp_ = snapshot->stamp_;
+    frozen_ = true;
+  }
+  std::unique_ptr<File> SnapshotRange(size_t start, size_t length) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Require(start <= available_ && length <= available_ - start, "author snapshot range exceeds source");
+    return CopyRange(start, length);
+  }
+private:
+  std::unique_ptr<File> CopyRange(size_t start, size_t length) {
+    EiemLoadPerformance::Scope performance(EiemLoadPerformance::AuthorSnapshot);
+    performance.hit=true;
+    struct SourceHandle {
+      HANDLE value;
+      ~SourceHandle() { if (value != INVALID_HANDLE_VALUE) CloseHandle(value); }
+    };
     // Reopen the same file object, not its possibly replaced pathname. Deny
     // concurrent writers while copying, while allowing atomic replacement.
-    held.source = ReOpenFile(handle_, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
-                             FILE_FLAG_SEQUENTIAL_SCAN);
-    Require(held.source != INVALID_HANDLE_VALUE, "author resource is being written; retry loading after replacement completes");
+    SourceHandle held{ReOpenFile(handle_, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
+                                 FILE_FLAG_SEQUENTIAL_SCAN)};
+    Require(held.value != INVALID_HANDLE_VALUE, "author resource is being written; retry loading after replacement completes");
     VerifyStable();
     wchar_t temporary[MAX_PATH + 1]{};
-    auto length = GetTempPathW(MAX_PATH + 1, temporary);
-    Require(length && length <= MAX_PATH, "author snapshot temporary path unavailable");
+    auto pathLength = GetTempPathW(MAX_PATH + 1, temporary);
+    Require(pathLength && pathLength <= MAX_PATH, "author snapshot temporary path unavailable");
     auto directory = std::filesystem::path(temporary) / L"EFF-demand-snapshots";
     std::error_code error; std::filesystem::create_directories(directory, error);
     Require(!error, "author snapshot temporary directory unavailable");
     static std::atomic<uint64_t> serial{0};
     auto path = directory / (std::to_wstring(GetCurrentProcessId()) + L"-" +
         std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(serial.fetch_add(1)) + L".snapshot");
-    held.snapshot = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+    std::unique_ptr<File> snapshot(new File);
+    snapshot->handle_ = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-    Require(held.snapshot != INVALID_HANDLE_VALUE, "author resource snapshot creation failed");
-    LARGE_INTEGER position{}; position.QuadPart = LONGLONG(offset_);
-    Require(SetFilePointerEx(held.source, position, nullptr, FILE_BEGIN), "author snapshot source seek failed");
+    Require(snapshot->handle_ != INVALID_HANDLE_VALUE, "author resource snapshot creation failed");
+    LARGE_INTEGER position{}; position.QuadPart = LONGLONG(offset_ + start);
+    Require(SetFilePointerEx(held.value, position, nullptr, FILE_BEGIN), "author snapshot source seek failed");
     std::array<unsigned char, 64 * 1024> scratch{};
-    for (size_t at = 0; at < available_;) {
-      auto count = DWORD(std::min(available_ - at, scratch.size())); DWORD read = 0, written = 0;
-      Require(ReadFile(held.source, scratch.data(), count, &read, nullptr) && read == count,
+    for (size_t at = 0; at < length;) {
+      auto count = DWORD(std::min(length - at, scratch.size())); DWORD read = 0, written = 0;
+      Require(ReadFile(held.value, scratch.data(), count, &read, nullptr) && read == count,
               "author snapshot source read truncated");
-      Require(WriteFile(held.snapshot, scratch.data(), count, &written, nullptr) && written == count,
+      Require(WriteFile(snapshot->handle_, scratch.data(), count, &written, nullptr) && written == count,
               "author resource snapshot write failed");
       at += count;
     }
     VerifyStable();
-    BY_HANDLE_FILE_INFORMATION snapshotStamp{};
-    Require(GetFileInformationByHandle(held.snapshot, &snapshotStamp), "author snapshot stamp unavailable");
-    CloseHandle(handle_); handle_ = held.snapshot; held.snapshot = INVALID_HANDLE_VALUE;
-    offset_ = 0; stamp_ = snapshotStamp; frozen_ = true;
+    Require(GetFileInformationByHandle(snapshot->handle_, &snapshot->stamp_), "author snapshot stamp unavailable");
+    snapshot->available_ = length;
+    snapshot->frozen_ = true;
+    EiemLoadPerformance::Bytes(EiemLoadPerformance::AuthorSnapshot,length);
+    return snapshot;
   }
+public:
   size_t SnapshotBytes() const { return frozen_ ? available_ : 0; }
   void ReadAt(size_t at, unsigned char* output, size_t size) {
+    EiemLoadPerformance::Scope performance(EiemLoadPerformance::NativeRead);performance.hit=true;
     Require(at <= available_ && size <= available_ - at, "native file read exceeds observed range");
     std::lock_guard<std::mutex> lock(mutex_);
     LARGE_INTEGER position{}; position.QuadPart = LONGLONG(offset_ + at);
@@ -114,6 +134,7 @@ public:
       Require(ReadFile(handle_, output + p, count, &read, nullptr) && read == count,
               "native range source truncated"); p += read;
     }
+    EiemLoadPerformance::Bytes(EiemLoadPerformance::NativeRead,size);
   }
   void VerifyStable() const {
     BY_HANDLE_FILE_INFORMATION now{};
@@ -144,8 +165,10 @@ class DecodedViewSource {
     const auto& block = blocks_.at(index).block;
     if(!(block.encoded <= blockLimit_ && block.decoded <= blockLimit_))throw InspectionBudgetExceeded{"native streamed block budget exhausted"};
     Bytes encoded(block.encoded); source_(blocks_[index].offset, encoded.data(), encoded.size());
+    EiemLoadPerformance::Scope performance(EiemLoadPerformance::NativeStreamDecode);performance.hit=true;
     EndfieldInput::CryptBlock(encoded);
     auto decoded = std::make_shared<const Bytes>(Lz4(encoded.data(), encoded.size(), block.decoded, true));
+    EiemLoadPerformance::Bytes(EiemLoadPerformance::NativeStreamDecode,decoded->size());
     pinned_.reset(); pinnedIndex_ = SIZE_MAX;
     if (decoded->size() <= cacheLimit_) {
       while (!cache_.empty() && decoded->size() > cacheLimit_ - cacheResident_) {
@@ -211,8 +234,10 @@ class Reader {
     if(!(block.block.encoded <= limits.blockBytes && block.block.decoded <= limits.blockBytes))throw InspectionBudgetExceeded{"native inspection block budget exhausted"};
     pinned_.reset(); pinnedIndex_=SIZE_MAX; stats.pinnedBytes=0;
     Bytes encoded(block.block.encoded); Source(block.offset, encoded.data(), encoded.size());
+    EiemLoadPerformance::Scope performance(EiemLoadPerformance::NativeDecode);performance.hit=true;
     EndfieldInput::CryptBlock(encoded);
     auto decoded = std::make_shared<const Bytes>(Lz4(encoded.data(), encoded.size(), block.block.decoded, true));
+    EiemLoadPerformance::Bytes(EiemLoadPerformance::NativeDecode,decoded->size());
     ++stats.inflatedBlocks; stats.inflatedBytes += decoded->size();
     stats.largestBlock = std::max(stats.largestBlock, decoded->size());
     if (decoded->size() <= limits.cacheBytes) {
@@ -232,6 +257,7 @@ public:
   EiemNativeViewWriter::Directory directory;
   Reader(size_t sourceSize, ReadRange source, Limits settings = {})
       : source_(std::move(source)), sourceSize_(sourceSize), limits(settings) {
+    EiemLoadPerformance::Scope performance(EiemLoadPerformance::NativeDirectory);
     Require(bool(source_) && sourceSize >= 48, "native range source/header absent");
     headerBytes.resize(48); Source(0, headerBytes.data(), 48);
     header = EndfieldInput::ReadHeader(headerBytes);
@@ -265,6 +291,7 @@ public:
     cache_.clear();pinned_.reset();pinnedIndex_=SIZE_MAX;stats.cacheResident=0;stats.pinnedBytes=0;
   }
   SerializedLayout Layout(const EiemNativeViewWriter::Member& member) {
+    EiemLoadPerformance::Scope performance(EiemLoadPerformance::NativeMetadata);
     Require(member.size >= 48, "native member has no serialized header");
     auto prefix = ReadAt(member.offset, 48, 48);
     EiemNativeInput::Reader h(prefix, 20, true);

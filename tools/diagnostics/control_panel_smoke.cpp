@@ -83,6 +83,26 @@ void AnimationDefaultReloadChecks(){
  Install({});panel.open=false;
  std::cout<<"PASS animation F10 applies changed untouched defaults, retains runtime overrides and preserves phase\n";
 }
+void AnimationGroupReloadChecks(){
+ auto p=Make("ActionReload");p.bindings.clear();p.defaults["$speed"]=1;p.persistent.insert("$speed");
+ ShapeAnimation spin;spin.id="Spin";spin.duration=4;spin.speedVariable="$speed";spin.loop=spin.autoplay=true;spin.tracks["$shape"]={0,1};p.shapeAnimations.emplace(spin.id,spin);
+ physical=0;panel.open=false;Install({p});AdvanceAnimations(1);animations.at(p.id).Pause(spin);
+ auto expanded=p;auto extra=spin;extra.id="Extra";extra.autoplay=false;extra.speedVariable="$extra_speed";extra.tracks.clear();extra.tracks["$extra"]={1,0};expanded.defaults["$extra_speed"]=1;expanded.defaults["$extra"]=0;expanded.shapeAnimations.emplace(extra.id,extra);
+ Install({expanded},true);
+ auto state=animations.at(p.id).clips.at(spin.id);
+ Require(state.playing&&state.paused&&state.time==1&&ShapeValue(p.id,"$shape")==.25,
+   "adding another Action reset a retained paused Action and its evaluated output");
+ animations.at(p.id).Play(expanded.shapeAnimations.at(spin.id));animations.at(p.id).Play(extra);AdvanceAnimations(.5);
+ auto changed=expanded;changed.shapeAnimations.at(extra.id).tracks.at("$extra")={0,2};Install({changed},true);
+ Require(animations.at(p.id).clips.at(spin.id).time==1.5&&!animations.at(p.id).clips.at(extra.id).playing,
+   "editing one Action reset an unrelated timeline or retained stale changed samples");
+ auto removed=p;Install({removed},true);Require(animations.at(p.id).clips.size()==1&&animations.at(p.id).clips.at(spin.id).time==1.5,
+   "deleting an Action reset retained playback or copied obsolete group topology");
+ animations.at(p.id).Stop(spin);Install({expanded},true);Require(!animations.at(p.id).clips.at(spin.id).playing,
+   "F10 restarted a compatible Action explicitly stopped by the user");
+ Install({});panel.open=false;
+ std::cout<<"PASS per-Action F10: add/edit/delete preserve unrelated time/pause/output, changed samples reset, stopped remains stopped\n";
+}
 void InstalledAnimationKeyChecks(){
  auto p=Make("ZFY-test");p.authorId="ZFY";EiemComposedPackage::AssignInstalledIdentity(p);
  ShapeAnimation clip;clip.id="legacy-shape";clip.label="Existing shape animation";
@@ -333,6 +353,7 @@ void Checks() {
   AnimationChecks();
   CompiledAnimationChecks();
   AnimationDefaultReloadChecks();
+  AnimationGroupReloadChecks();
   SharedChannelAnimationChecks();
   AnimationSchedulingChecks();
   ProgramChecks();

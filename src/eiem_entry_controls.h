@@ -183,16 +183,6 @@ void LoadControls(const std::shared_ptr<const std::vector<Package>>& graph) {
   auto next=PrepareInstalled(graph,DemandLoadingProbe::StandalonePackages(DemandLoadingProbe::CurrentInstalledGeneration()),settings.Get());
   Swap(next);
 }
-bool CompatibleAnimations(const Package& a,const Package& b){
-  if(a.shapeAnimations.size()!=b.shapeAnimations.size())return false;
-  for(const auto& row:a.shapeAnimations){auto found=b.shapeAnimations.find(row.first);if(found==b.shapeAnimations.end())return false;
-    const auto& x=row.second;const auto& y=found->second;
-    if(x.duration!=y.duration||x.loop!=y.loop||x.speedVariable!=y.speedVariable||x.tracks!=y.tracks||x.boneTracks.size()!=y.boneTracks.size()||x.scalarChannels!=y.scalarChannels||x.nativeOutputs.size()!=y.nativeOutputs.size())return false;
-    for(size_t i=0;i<x.nativeOutputs.size();++i){const auto& u=x.nativeOutputs[i];const auto& v=y.nativeOutputs[i];if(u.hierarchy!=v.hierarchy||u.file!=v.file||u.asset!=v.asset||u.revision!=v.revision)return false;}
-    if(bool(x.sampleSource)!=bool(y.sampleSource)||(x.sampleSource&&x.sampleSource->identity!=y.sampleSource->identity))return false;
-    for(size_t i=0;i<x.boneTracks.size();++i){const auto& u=x.boneTracks[i];const auto& v=y.boneTracks[i];if(u.skeleton!=v.skeleton||u.path!=v.path||u.samples!=v.samples||u.channel!=v.channel)return false;}
-  }return true;
-}
 void MergeLive(State& next,bool (*sample)(const EiemKeyChord&)=Down) {
   Require(bool(next.graph) && sample,"reload controls candidate missing");
   for(const auto& p:*next.graph) {
@@ -223,7 +213,7 @@ void MergeLive(State& next,bool (*sample)(const EiemKeyChord&)=Down) {
       try{auto value=retained(row.first,oldValues->second.at(row.first));d.Validate(value);next.variables.at(p.id).at(row.first)=value;}catch(const std::exception&){}
     }
     for(const auto& key:p.bindings) next.held[p.id+"/"+key.id]=sample(key.key);
-    if(previous&&CompatibleAnimations(*previous,p)&&animations.count(p.id))next.animations.at(p.id)=animations.at(p.id);
+    if(previous&&animations.count(p.id))next.animations.at(p.id).RetainCompatible(p,*previous,animations.at(p.id));
     for(const auto& clip:p.shapeAnimations)next.animations.at(p.id).clips.at(clip.first).held=clip.second.key.vk&&sample(clip.second.key);
     if(p.program)for(const auto& event:p.program->events)next.held[p.id+"/"+event.id]=sample(event.key);
   }

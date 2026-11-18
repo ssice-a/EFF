@@ -74,6 +74,14 @@ node=Pivot/Tip
  Package p;p.id="Mounts";p.defaults=state.defaults;p.persistent=state.persistent;p.controls=state.controls;p.shapeAnimations=state.animations;
  EiemShapeAnimation::Player player;player.Prepare(p);const auto& clip=p.shapeAnimations.at("Spin");player.Advance(p,p.defaults,.25);Require(player.clips.at("Spin").time==.25,"native-only shared clock stopped");
  player.Pause(clip);player.Advance(p,p.defaults,.5);Require(player.clips.at("Spin").time==.25,"pause changed mount clock");player.Play(clip);player.Advance(p,p.defaults,1);Require(player.clips.at("Spin").time==.25,"native looping phase differs");
+ {auto mixed=p;auto& m=mixed.shapeAnimations.at("Spin");auto source=std::make_shared<EiemAnimationSamples::Source>();
+  source->activity=std::make_shared<EiemAnimationSamples::Activity>();unsigned reads=0;source->read=[&](){++reads;EiemAnimationSamples::Data data;data.scalar={{0,1}};return data;};
+  m.sampleSource=source;m.tracks["$shape"]={};m.scalarChannels["$shape"]=0;
+  EiemShapeAnimation::Player timeline;timeline.Prepare(mixed);timeline.Advance(mixed,mixed.defaults,.25);
+  Require(timeline.clips.at("Spin").time==.25&&reads==0&&timeline.output.empty(),"inactive numeric targets froze a mixed native Action or loaded their samples");
+  {EiemAnimationSamples::Owner owner(source->activity);timeline.Advance(mixed,mixed.defaults,.25);
+   Require(timeline.clips.at("Spin").time==.5&&reads==1&&timeline.output.at("$shape")==.5,"late numeric target did not join the shared native phase");}
+  timeline.Advance(mixed,mixed.defaults,.25);Require(timeline.clips.at("Spin").time==.75&&timeline.output.empty(),"numeric retirement froze the native output or retained samples");}
  auto other=clip;other.id="Other";other.speedVariable="$other";other.autoplay=false;p.defaults["$other"]=1;p.persistent.insert("$other");p.shapeAnimations["Other"]=other;player.Prepare(p);player.Play(other);Require(!player.clips.at("Spin").playing,"same hierarchy retained conflicting clip");
  auto rejected=[&](std::vector<Section> bad){bool fail=false;try{read(bad);}catch(const std::exception&){fail=true;}Require(fail,"invalid mount declaration accepted");};
  auto change=[&](const char* section,const char* key,const char* value){auto bad=sections;for(auto& s:bad)if(s.id==section)s.values[key]=value;return bad;};
