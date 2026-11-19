@@ -1,6 +1,6 @@
 ﻿# 物理骨骼与碰撞体：三端设计契约
 
-状态：目标设计。当前实现范围以[文档索引](README.md)、[代码架构](code-architecture.md)、[Physics 作者 v5](physics-authoring-v5.md)及[源作者 v2](physics-authoring-v2.md)为准。Physics 编解码保留为作者支持，尚未接入当前生产宿主的游戏模拟链。
+本文描述目标设计。Format 3 已按需装配 Physics 资源，组件由游戏负责模拟。当前实现见 [Physics 作者 v5](physics-authoring-v5.md)。
 本文描述完整链路要求，不把设计目标、源码草稿或宿主测试当作游戏能力。
 资源、实例骨骼及玩家数值边界沿用[领域模型](../CONTEXT.md)和[完整装配契约](full-render-assembly-reload.md)。
 

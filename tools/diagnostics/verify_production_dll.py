@@ -62,6 +62,7 @@ for marker in (
     b"resource-input-diagnostics", b"snapshot-ranges.tsv", b"[ADAPT-PROBE-", b"[CATALOG-SURVEY-", b"[MESH-TARGET-", b"[MESH-NATIVE-",
     b"[NATIVE-ANIMATION-PROBE]",
     b"[MOD-ANIMATION-PROBE]",
+    b"[PHYSICS-WEIGHT-PROBE-",
     b"[SERIALIZATION-CRASH-SNAPSHOT",
     b"script-binding-diagnostics", b"diagnostic-script-binding",
 ):
@@ -77,6 +78,7 @@ if format3_runtime:
         b"compiledBinRead=0", b"payloadsPreloaded=0",
         b"_FinishWithBundle", b"[DEMAND-PROXY-SYNC-COMPLETE]",
         b"[DEMAND-SHARED-DEPENDENCIES-RELEASED]",
+        b"[PHYSICS-RUNTIME-READY]", b"SetClothSimulateWeight", b"SetClothSimulateWeightIgnorePlaying",
     ))
 else:
     functional_markers.append(b"[FULL-RELOAD-COMMIT]")

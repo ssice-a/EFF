@@ -1,4 +1,5 @@
 #pragma once
+#include "eiem_physics_component_identity.h"
 #include "eiem_renderer_input_builder.h"
 
 // Assemble authored bones and cloth as native serialized input. Both the author
@@ -116,11 +117,11 @@ class MemberBuilder {
  Vector3 TransformPoint(int64_t id,Vector3 point,int64_t stop){for(auto current=id;current&&current!=stop;current=parents.at(current)){const auto& t=Schema(current);auto& tree=Tree(current);auto s=ReadVector(t,Child(t,tree,"m_LocalScale"));for(size_t i=0;i<3;++i)point[i]*=s[i];auto& q=Child(t,tree,"m_LocalRotation");double x=FloatValue(t,Child(t,q,"x")),y=FloatValue(t,Child(t,q,"y")),z=FloatValue(t,Child(t,q,"z")),w=FloatValue(t,Child(t,q,"w"));auto tx=2*(y*point[2]-z*point[1]),ty=2*(z*point[0]-x*point[2]),tz=2*(x*point[1]-y*point[0]);Vector3 next{point[0]+w*tx+y*tz-z*ty,point[1]+w*ty+z*tx-x*tz,point[2]+w*tz+x*ty-y*tx};auto p=ReadVector(t,Child(t,tree,"m_LocalPosition"));for(size_t i=0;i<3;++i)point[i]=next[i]+p[i];}return point;}
  void Populate(int64_t anchor,int64_t preloadRenderer,const Document& d,const std::vector<const Group*>& groups){
   const auto addedStart=added.size();std::map<std::string,int64_t> colliders;std::vector<NativeReference> refs;
-  for(const auto* group:groups)for(const auto& id:group->colliders)if(!colliders.count(id)){const auto& c=d.colliders.at(id);auto parent=Bone(anchor,d,c.bone);auto owner=NewObject(anchor,parent,d.id+":collider:"+id,"__EFF_"+package.id+"_"+id,c.position,c.rotation,{1,1,1});
+  for(const auto* group:groups)for(const auto& id:group->colliders)if(!colliders.count(id)){const auto& c=d.colliders.at(id);auto parent=Bone(anchor,d,c.bone);auto owner=NewObject(anchor,parent,d.id+":collider:"+id,EiemPhysicsComponentIdentity::Name(package.id,id),c.position,c.rotation,{1,1,1});
    auto component=Component(anchor,d.id+":collider:"+id,owner.first,d.templates.at(c.cab),c.object);colliders[id]=component;refs.emplace_back(cab,owner.first);refs.emplace_back(cab,owner.second);refs.emplace_back(cab,component);
   }
   for(const auto* group:groups){std::map<std::string,int64_t> nodes;for(const auto& node:group->nodes){if(node.second)Require(movingBones.emplace(anchor,node.first).second,"two authored Physics groups drive the same bone: "+node.first);nodes[node.first]=Bone(anchor,d,node.first);}
-   auto owner=NewObject(anchor,anchor,d.id+":group:"+group->id,"__EFF_"+package.id+"_"+group->id,{0,0,0},{0,0,0,1},{1,1,1});auto component=Component(anchor,d.id+":group:"+group->id,owner.first,d.templates.at(group->cab),group->object);const auto& t=Schema(component);auto& v=Tree(component);
+   auto owner=NewObject(anchor,anchor,d.id+":group:"+group->id,EiemPhysicsComponentIdentity::Name(package.id,group->id),{0,0,0},{0,0,0,1},{1,1,1});auto component=Component(anchor,d.id+":group:"+group->id,owner.first,d.templates.at(group->cab),group->object);const auto& t=Schema(component);auto& v=Tree(component);
    auto& roots=ArrayValue(t,FieldPath(t,v,{"serializeData","rootBones"}));std::set<std::string> nodePaths;for(const auto& node:group->nodes)nodePaths.insert(node.first);
    for(const auto& node:group->nodes)if(!nodePaths.count(d.nodes.at(node.first).parent)){auto p=ArrayElement(t,roots);SetReference(t,p,{cab,nodes.at(node.first)},layout,cab);roots.children.push_back(std::move(p));}roots.count=roots.children.size();Require(roots.count,"Physics chain has no root");
    auto& list=ArrayValue(t,FieldPath(t,v,{"serializeData","colliderCollisionConstraint","colliderList"}));for(const auto& id:group->colliders){auto p=ArrayElement(t,list);SetReference(t,p,{cab,colliders.at(id)},layout,cab);list.children.push_back(std::move(p));}list.count=list.children.size();

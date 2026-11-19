@@ -1243,6 +1243,7 @@ void *__fastcall StreamAsync(void *input, uint32_t crc, uint32_t bufferSize,
 #include "eiem_entry_bundle_dependencies.h"
 void CompleteRuleInput(void* request,void* bundle){NativeBundle::CompleteMemory(request,bundle);}
 #include "eiem_entry_full_resource_reload.h"
+#include "eiem_entry_physics_runtime.h"
 #if defined(EIEM_DEMAND_LOADING_PROBE)
 #include "eiem_entry_demand_loading_probe.h"
 #endif
@@ -1295,6 +1296,7 @@ void InstallHooks(void **assemblies, size_t count) {
   });
 #endif
   RuntimeShapes::InstallOptional(assemblies,count);
+  PhysicsRuntime::Install(assemblies,count);
   // Arm depends on the capture completion trampoline. Finish that binding
   // before enabling controls, memory submission, or file interception.
   CaptureObservation::InstallOptional(assemblies, count);

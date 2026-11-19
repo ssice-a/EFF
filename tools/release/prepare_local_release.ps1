@@ -157,6 +157,7 @@ try {
     Invoke-Checked 'python' @('tools/diagnostics/author_assets_abi_smoke.py', 'bin/author-assets/eff_author_assets_format3.dll') 'Format 3 author-assets ABI check'
 
     Invoke-Checked 'python' @('tools/diagnostics/verify_production_dll.py', 'bin/resource-directory-entry-format3/eff.dll') 'Production DLL isolation check'
+    Invoke-Checked 'cmd.exe' @('/d', '/c', 'tools\diagnostics\build_physics_runtime_policy_smoke.cmd') 'Native Physics component identity regression'
     Invoke-BuiltSmoke 'tools\diagnostics\build_model_pool_discard_smoke.cmd' 'bin/model-pool-discard/smoke.exe'
     Invoke-Checked 'dotnet' @('run', '--project', 'tools/AnimeStudio/AnimeStudio.IndexTests/AnimeStudio.IndexTests.csproj', '-c', 'Release', '-p:TargetFrameworks=net9.0-windows') 'Public index and BLC regression suite'
     Invoke-Checked 'dotnet' @('run', '--project', 'tools/AnimeStudio/AnimeStudio.UpdateTests/AnimeStudio.UpdateTests.csproj', '-c', 'Release', '-p:TargetFrameworks=net9.0-windows') 'AnimeStudio source update regression suite'
