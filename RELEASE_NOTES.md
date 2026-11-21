@@ -1,3 +1,11 @@
+# EFF v2.0.14
+
+- Preserves the authored simulation weights of custom cloth groups during gameplay. Stock physics groups keep the game's animation-driven weights.
+- Checks Format 3 character packages with game-owned textures, DDS-only replacements and Parts that inherit the game's material in the runtime catalog smoke test.
+- Updates the pinned shared tools to AnimeStudio 1.9.6 and Mod Manager 0.2.7.
+
+Windows x64. Existing Format 3 Mods can use the runtime update without re-exporting. The release includes the game DLL package, `EFF_Shared_Native_Tools_v2.0.14.zip` and the shared-tools manifest.
+
 # EFF v2.0.13
 
 - Unifies effect resources, material changes and animation targets under Format 3 INI assembly, including selected-emitter export, author Empty mounts and one animation group for Shape, Bone and Material channels.

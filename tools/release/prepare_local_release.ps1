@@ -164,6 +164,7 @@ try {
     Invoke-Checked 'python' @('-m', 'unittest', 'discover', '-s', 'tools/release', '-v') 'Release packaging regression suite'
     Invoke-BuiltSmoke 'tools\diagnostics\build_full_resource_reload_smoke.cmd' 'bin/resource-directory-entry-v35/full_resource_reload_smoke.exe'
     Invoke-BuiltSmoke 'tools\diagnostics\build_runtime_author_manifest_smoke.cmd' 'bin/runtime-author-manifest/runtime_author_manifest_smoke.exe'
+    Invoke-Checked 'cmd.exe' @('/d', '/c', 'tools\diagnostics\build_runtime_author_catalog_smoke.cmd') 'Runtime author catalog regression build and run'
     Invoke-Checked 'python' @('tools/Blender/test_author_format3.py') 'Logical Mesh route export and publication regressions'
     Invoke-Checked 'cmd.exe' @('/d', '/c', 'tools\diagnostics\build_demand_generation_diff_smoke.cmd') 'Demand generation diff regression build and run'
     Invoke-Checked 'cmd.exe' @('/d', '/c', 'tools\diagnostics\build_demand_resource_regressions.cmd') 'Demand resource regression build'

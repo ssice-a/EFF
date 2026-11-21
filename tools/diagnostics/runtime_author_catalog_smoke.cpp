@@ -110,12 +110,26 @@ static int SmokeRealMod(const std::filesystem::path& root){
   std::map<std::string,std::shared_ptr<const A::Texture>> texturesById;
   for(const auto& declaration:directory.textures){try{auto texture=catalog->GetTexture(declaration.id);
     texturesById.emplace(declaration.id,texture);
-    Require(texture->input&&texture->input->Size()>0,"real Texture native view is empty");
+    const bool keepsLogicalSource=!declaration.source.path.empty()&&
+      texture->source.path==declaration.source.path&&texture->source.asset==declaration.source.asset;
+    if(declaration.ddsFile.empty()){
+      Require(texture->GameOwned()&&!texture->input&&!texture->dds&&keepsLogicalSource,
+        "game-owned Texture lost its logical source or opened an author payload");
+      continue;
+    }
     auto dds=std::make_shared<R::File>(A::AssetPath(root,declaration.ddsFile),0);Bytes header(std::min(dds->Size(),size_t(148)));
     dds->ReadAt(0,header.data(),header.size());auto layout=EiemDdsTexture::Parse(header,dds->Size());
     Require(texture->replacement.width==layout.width&&texture->replacement.height==layout.height&&
       texture->replacement.mips==layout.mips&&texture->replacement.format==layout.format,
       "runtime Texture layout did not come from the DDS header");
+    textureBytes+=texture->metadataReadBytes;
+    if(declaration.file.empty()){
+      Require(!texture->input&&texture->dds&&texture->dds->Size()==dds->Size()&&
+        keepsLogicalSource,
+        "DDS-only Texture lost its snapshot or logical game template");
+      continue;
+    }
+    Require(texture->input&&texture->input->Size()>0,"scaffolded Texture native view is empty");
     R::Reader native(texture->input->Size(),[view=texture->input](size_t at,unsigned char* out,size_t n){
       Require(view->ReadAt(at,out,n)==n,"runtime Texture view read was truncated");});
     const auto& member=native.directory.members.front();auto nativeLayout=native.Layout(member);
@@ -136,7 +150,6 @@ static int SmokeRealMod(const std::filesystem::path& root){
     Require(mismatch.first==expected.end(),"real DDS pixel differs from native game view at byte "+
       std::to_string(size_t(mismatch.first-expected.begin()))+" (expected="+
       std::to_string(*mismatch.first)+", actual="+std::to_string(*mismatch.second)+")");
-    textureBytes+=texture->metadataReadBytes;
   }catch(const std::exception& error){throw std::runtime_error("real Texture "+declaration.id+" ("+declaration.file+"): "+error.what());}}
   for(const auto& declaration:directory.materials){try{auto material=catalog->GetMaterial(declaration.id);
     Require(material->authored.source==declaration.source.path,"real sparse Material source identity differs");
@@ -151,7 +164,9 @@ static int SmokeRealMod(const std::filesystem::path& root){
     for(const auto& native:physics->document.templates)physicsBytes+=native.second.bytes.size();
   SmokeStagedMeshMetadata(root);
   Native::Author author(catalog);std::vector<MatAsm::Use> uses;size_t renderer=1;
-  for(const auto& mesh:directory.meshes)uses.push_back({{int64_t(renderer++),mesh.part},mesh.material});
+  for(const auto& row:author.package.parts){
+    if(!row.second.material.empty())uses.push_back({{int64_t(renderer++),row.first},row.second.material});
+  }
   if(!uses.empty())uses.push_back({{int64_t(renderer++),uses.front().key.second},uses.front().material});
   size_t prepareCalls=0;auto shared=MatAsm::PrepareShared(author,uses,[&](const auto& material,const auto&){
     ++prepareCalls;return DummyMaterialInput(material);});
