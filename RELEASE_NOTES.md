@@ -1,6 +1,7 @@
 # EFF v2.0.14
 
 - Preserves the authored simulation weights of custom cloth groups during gameplay. Stock physics groups keep the game's animation-driven weights.
+- Accepts Format 3 Skeletons whose root is represented by an empty relative path, as in the LVT package.
 - Checks Format 3 character packages with game-owned textures, DDS-only replacements and Parts that inherit the game's material in the runtime catalog smoke test.
 - Updates the pinned shared tools to AnimeStudio 1.9.6 and Mod Manager 0.2.7.
 

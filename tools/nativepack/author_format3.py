@@ -1951,10 +1951,10 @@ class _AuthorPayloadReader:
         require(math.isfinite(value), self.label + " contains a non-finite value")
         return value
 
-    def string16(self):
+    def string16(self, allow_empty=False):
         size = self.u16()
         value = self.take(size).decode("utf-8", "strict")
-        require(value and "\0" not in value, self.label + " contains an empty or invalid string")
+        require((value or allow_empty) and "\0" not in value, self.label + " contains an empty or invalid string")
         return value
 
     def end(self):
@@ -1978,12 +1978,12 @@ def _decode_author_skeleton(data, label):
     nodes = []
     paths = set()
     for index in range(count):
-        path = reader.string16()
+        path = reader.string16(allow_empty=index == 0)
         parent = reader.i32()
         position = tuple(reader.f32() for _ in range(3))
         rotation = tuple(reader.f32() for _ in range(4))
         scale = tuple(reader.f32() for _ in range(3))
-        require(_valid_bone_path(path) and path not in paths,
+        require((_valid_bone_path(path) or (index == 0 and not path)) and path not in paths,
                 label + " path is invalid or duplicated: " + path)
         paths.add(path)
         if index == 0:
@@ -1993,7 +1993,7 @@ def _decode_author_skeleton(data, label):
             require(0 <= parent < index and path.rpartition("/")[0] == nodes[parent][0],
                     label + " node path/parent differs: " + path)
         require(abs(sum(value * value for value in rotation) - 1.0) <= .001 and
-                all(value > 0 for value in scale),
+                all(value != 0 for value in scale),
                 label + " node transform is invalid: " + path)
         nodes.append((path, parent, position, rotation, scale))
     reader.end()

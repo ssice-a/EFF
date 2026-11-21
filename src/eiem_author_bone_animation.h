@@ -76,12 +76,12 @@ class Reader {
     return value;
   }
 
-  std::string String16() {
+  std::string String16(bool allowEmpty = false) {
     Need(2);
     size_t count = size_t(bytes_[position_]) | (size_t(bytes_[position_ + 1]) << 8);
     position_ += 2;
     Need(count);
-    if (!count || std::memchr(bytes_ + position_, 0, count))
+    if ((!count && !allowEmpty) || std::memchr(bytes_ + position_, 0, count))
       throw std::runtime_error("author animation string is empty or contains NUL");
     std::string value(reinterpret_cast<const char*>(bytes_ + position_), count);
     position_ += count;
@@ -140,13 +140,14 @@ inline Skeleton DecodeSkeleton(const unsigned char* bytes, size_t size) {
   result.nodes.reserve(count);
   for (uint32_t i = 0; i < count; ++i) {
     Node node;
-    node.path = reader.String16();
+    node.path = reader.String16(i == 0);
     node.parent = reader.I32();
     for (auto& value : node.position) value = reader.F32();
     for (auto& value : node.rotation) value = reader.F32();
     for (auto& value : node.scale) value = reader.F32();
 
-    if (!ValidPath(node.path) || !result.paths.insert(node.path).second)
+    if ((!ValidPath(node.path) && !(i == 0 && node.path.empty())) ||
+        !result.paths.insert(node.path).second)
       throw std::runtime_error("invalid or duplicate author Skeleton path: " + node.path);
     if (i == 0) {
       if (node.parent != -1 || node.path.find('/') != std::string::npos)

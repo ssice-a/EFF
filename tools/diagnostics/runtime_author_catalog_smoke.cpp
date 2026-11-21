@@ -85,7 +85,8 @@ static int SmokeRealMod(const std::filesystem::path& root){
   auto begin=std::chrono::steady_clock::now();auto catalog=std::make_shared<A::Catalog>(root);const auto& directory=catalog->Directory();
   Require(!directory.meshes.empty()&&!directory.materials.empty()&&!directory.textures.empty(),
     "real format 3 Mod lacks Mesh/Material/Texture resources");
-  Require(catalog->OpenMeshes()==0&&catalog->OpenMaterials()==0&&catalog->OpenTextures()==0&&catalog->OpenPhysics()==0,
+  Require(catalog->OpenMeshes()==0&&catalog->OpenMaterials()==0&&catalog->OpenTextures()==0&&
+    catalog->OpenPhysics()==0&&catalog->OpenSkeletons()==0,
     "format 3 startup opened a native resource payload");
   Native::Author controlAuthor(catalog);const auto published=controlAuthor.package;
   for(const auto& row:published.effects){const auto& effect=row.second;
@@ -162,6 +163,10 @@ static int SmokeRealMod(const std::filesystem::path& root){
   std::set<Identity> targets;for(const auto& rule:directory.rules)for(const auto& target:rule.targets)targets.insert(target.second);
   for(const auto& physics:catalog->GetPhysics(targets))
     for(const auto& native:physics->document.templates)physicsBytes+=native.second.bytes.size();
+  for(const auto& declaration:directory.skeletons){try{
+    const auto skeleton=catalog->GetSkeleton(declaration.id);
+    Require(!skeleton->nodes.empty()&&skeleton->nodes.front().parent==-1,"real Skeleton root differs");
+  }catch(const std::exception& error){throw std::runtime_error("real Skeleton "+declaration.id+" ("+declaration.file+"): "+error.what());}}
   SmokeStagedMeshMetadata(root);
   Native::Author author(catalog);std::vector<MatAsm::Use> uses;size_t renderer=1;
   for(const auto& row:author.package.parts){
@@ -188,6 +193,7 @@ static int SmokeRealMod(const std::filesystem::path& root){
   }
   std::cout<<"PASS real format 3 Catalog mod="<<directory.mod<<" meshes="<<directory.meshes.size()<<
     " materials="<<directory.materials.size()<<" textures="<<directory.textures.size()<<" rules="<<directory.rules.size()<<
+    " skeletons="<<catalog->OpenSkeletons()<<
     " physics="<<catalog->OpenPhysics()<<" rendererMaterialUses="<<shared.references.size()<<" materialVariants="<<shared.inputs.size()<<" prepareCalls="<<prepareCalls<<" meshMetadataBytes="<<meshBytes<<" materialMetadataBytes="<<materialBytes<<
     " textureMetadataBytes="<<textureBytes<<" physicsBytes="<<physicsBytes<<" effectBundles="<<effectBundles<<" effectBytes="<<effectBytes<<" ms="<<
     std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count()<<"\n";
@@ -281,9 +287,11 @@ int main(int argc,char** argv){
     for(double offset:{0.0,0.25,0.5})for(double value:{offset,0.0,0.0,0.0,0.0,0.0,1.0,1.0,1.0,1.0})samples.D(value);
     Save(root/"animations/shared.effanim",samples.b);
     Bytes skeletonPayload{'E','F','F','S','K','A','1',0};PutU32(skeletonPayload,1);PutU32(skeletonPayload,2);
-    PutString16(skeletonPayload,"unity-y-up-left-handed");PutString16(skeletonPayload,"WeaponRoot");PutI32(skeletonPayload,-1);
+    PutString16(skeletonPayload,"unity-y-up-left-handed");
+    skeletonPayload.insert(skeletonPayload.end(),{0,0}); // The root path is relative to the Prefab root.
+    PutI32(skeletonPayload,-1);
     for(float value:{0.f,0.f,0.f,0.f,0.f,0.f,1.f,1.f,1.f,1.f})PutF32(skeletonPayload,value);
-    PutString16(skeletonPayload,"WeaponRoot/FxAnchor");PutI32(skeletonPayload,0);
+    PutString16(skeletonPayload,"FxAnchor");PutI32(skeletonPayload,0);
     for(float value:{0.f,0.f,1.f,0.f,0.f,0.f,1.f,1.f,1.f,1.f})PutF32(skeletonPayload,value);
     D::Writer skeletonMetadata;skeletonMetadata.S(M::structure);skeletonMetadata.N(8);
     skeletonMetadata.S("WeaponRig");skeletonMetadata.S("skeletons/rig.effres");
@@ -307,9 +315,9 @@ int main(int argc,char** argv){
       "[ControlMaterial]\nvariable=$mat\nlabel=Material\nmin=0\nmax=1\n\n"
       "[KeyAnimationShared]\nkey=F6\ntype=press\n$anim_speed_shared=1\nlabel=Shared\n\n"
       "[MaterialTrack1]\nvariable=$mat\nmaterial=MaterialBody\nproperty=_Color\nkind=COLOR\ncomponent=3\n\n"
-      "[Animationshared]\nlabel=Shared\nduration=1\nspeed_variable=$anim_speed_shared\nspeed=1\nloop=1\nautoplay=0\nkey=F6\ntrack.0=$mat\ntrack.1=$smile\nbone.0.skeleton=WeaponRig\nbone.0.path=WeaponRoot/FxAnchor\nsamples=ResourceSamples_shared\n\n"
+      "[Animationshared]\nlabel=Shared\nduration=1\nspeed_variable=$anim_speed_shared\nspeed=1\nloop=1\nautoplay=0\nkey=F6\ntrack.0=$mat\ntrack.1=$smile\nbone.0.skeleton=WeaponRig\nbone.0.path=FxAnchor\nsamples=ResourceSamples_shared\n\n"
       "[PartBody]\nmesh=MeshBody\nmaterial=MaterialBody\nvisible=1\nshape.Smile=$smile\n\n"
-      "[PartUnhit]\nmesh=MeshUnhit\nmaterial_slot=2\nvisible=1\n\n"
+      "[PartUnhit]\nmesh=MeshUnhit\nmaterial_slot=2\nvisible=1\nafterimage=false\n\n"
       "[ReplaceBody]\ntarget.path=assets/base/body.mesh\ntarget.asset=Body\nparts=PartBody\n\n"
       "[ReplaceUnhit]\ntarget.path=assets/unhit/mesh.mesh\ntarget.asset=Unhit\nparts=PartUnhit\n\n"
       "[ResourceUnhitPhysics]\ntype=physics\npath=missing/physics/unhit.author\ntargets=ReplaceUnhit\n");
@@ -343,8 +351,8 @@ int main(int argc,char** argv){
     animationOwner.reset();animationPlayer.Advance(animationPackage,animationPackage.defaults,.1);
     Require(catalog.OpenAnimationSamples()==0&&animationPlayer.output.empty(),"retired animation retained payload/output");
     auto skeleton=catalog.GetSkeleton("WeaponRig");
-    Require(skeleton->paths.count("WeaponRoot/FxAnchor")&&catalog.OpenSkeletons()==1,
-      "format 3 Catalog did not resolve the mixed clip Bone path through its Skeleton");
+    Require(skeleton->nodes.front().path.empty()&&skeleton->paths.count("FxAnchor")&&catalog.OpenSkeletons()==1,
+      "format 3 Catalog did not resolve the mixed clip Bone path through a root-relative Skeleton");
     Require(directory.meshes[0].part=="PartBody"&&directory.meshes[0].material=="MaterialBody"&&
       directory.meshes[0].file=="custom/geometry/body.author"&&
       directory.meshes[0].vertices==3&&directory.meshes[0].shapes==std::vector<std::string>{"Smile"}&&
