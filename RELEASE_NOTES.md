@@ -1,3 +1,13 @@
+# EFF v2.0.15
+
+- Plays authored bone animation on additional bones and supports live rotation retargeting from the game's animated skeleton. Shape, material and bone channels can share one action.
+- Allows individual mesh parts to opt out of afterimages with `afterimage=false` in their Part section.
+- Keeps visible models active during F10 while the game still holds a shared prefab needed by the reload.
+- Stores temporary Mod resource snapshots next to the game and falls back to the Windows temporary directory if the preferred location cannot be written. Existing requests can finish reading their original bytes while Mod files are changed or removed.
+- Updates Blender material and skeleton round trips, including editable inherited material parameters and retarget mappings.
+
+Download `EFF_v2.0.15_dll.zip` for Windows x64. The runtime uses Format 3. Use EFF Blender 0.50.38 to author and export the new bone and afterimage settings.
+
 # EFF v2.0.14
 
 - Fixes custom cloth physics weights being overridden by character animations. The game's own cloth groups retain their animation-driven weights.

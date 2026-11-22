@@ -101,7 +101,7 @@ struct Api {
  void *uiLuaInstance=nullptr,*uiLuaDo=nullptr,*uiLuaCall=nullptr,*uiArraySet=nullptr,*uiObjectClass=nullptr;
  void *uiLuaKey=nullptr,*uiLuaEncode=nullptr,*uiLuaDecode=nullptr,*uiLuaCodeEquals=nullptr;
  void *uiLuaExceptionMessage=nullptr;
- void *proxyAsset=nullptr,*proxyHash=nullptr,*proxyGet=nullptr,*proxyPath=nullptr,*proxyInfoClass=nullptr,*proxyInfo=nullptr,*proxyAssetPath=nullptr,*proxyTryUnloadImmediately=nullptr,*proxyUnloaded=nullptr,*pathHashField=nullptr;
+ void *proxyAsset=nullptr,*proxyHash=nullptr,*proxyGet=nullptr,*proxyPath=nullptr,*proxyInfoClass=nullptr,*proxyInfo=nullptr,*proxyAssetPath=nullptr,*proxyTryUnloadImmediately=nullptr,*proxyUnloaded=nullptr,*proxyGameObject=nullptr,*proxyWaitingUnload=nullptr,*pathHashField=nullptr;
  void *handleUntrackedField=nullptr,*handleUntrackedClass=nullptr,*untrackedAssetGet=nullptr;
  void *rawAssetUnloaded=nullptr,*rawAssetRefCount=nullptr;
 } api;
@@ -312,6 +312,24 @@ void RememberPrefabProxy(uint64_t hash,void* proxy,void* source){
   for(auto it=sources.begin();it!=sources.end();){auto value=it->Get();if(!value){it=sources.erase(it);continue;}known=known||value==source;++it;}
   if(!known)sources.push_back(Ref::Make(source,true));}
 }
+bool CurrentPrefabProxy(void* proxy,uint64_t hash){
+ if(!proxy||RuntimeShapes::Scalar<unsigned char>(api.proxyUnloaded,proxy))return false;
+ auto asset=Ref::Make(Call(api.proxyAsset,proxy),false);
+ if(!Inherits(asset.Get(),"","AssetProxy"))return true;
+ const auto current=RuntimeShapes::Scalar<uint64_t>(api.proxyHash,asset.Get());
+ // The game pools proxy objects. Its current asset can differ from the
+ // logical path recorded before that proxy was returned to the pool.
+ return !current||current==hash;
+}
+bool HasUnownedPrefabProxy(uint64_t hash,const std::set<void*>& releasingRoots){
+ auto found=prefabProxiesByPath.find(hash);if(found==prefabProxiesByPath.end())return false;
+ for(const auto& observation:found->second){
+  auto proxy=observation.Get();if(!CurrentPrefabProxy(proxy,hash))continue;
+  if(RuntimeShapes::Scalar<unsigned char>(api.proxyWaitingUnload,proxy))continue;
+  if(!releasingRoots.count(Call(api.proxyGameObject,proxy)))return true;
+ }
+ return false;
+}
 size_t InvalidatePrefabProxyCache(uint64_t hash,const std::string& path,bool requireObserved,bool logAttempt){
  Require(api.proxyTryUnloadImmediately&&api.proxyUnloaded,"game prefab proxy unload/state API unavailable");auto found=prefabProxiesByPath.find(hash);
  if(found==prefabProxiesByPath.end()){
@@ -324,7 +342,7 @@ size_t InvalidatePrefabProxyCache(uint64_t hash,const std::string& path,bool req
   // TryUnloadImmediately only succeeds for a proxy still in the game's
   // waiting-unload queue. Clear removes it from that queue before managed GC,
   // so false does not mean that a historical weak observation still owns it.
-  if(RuntimeShapes::Scalar<unsigned char>(api.proxyUnloaded,proxy)){
+  if(!CurrentPrefabProxy(proxy,hash)){
    ++alreadyUnloaded;it=proxies.erase(it);continue;
   }
   void* args[]={proxy};
@@ -1030,7 +1048,8 @@ RuntimeControls::State CompiledControls(const std::shared_ptr<const std::vector<
  for(const auto& row:plan.parts){const auto& expected=row.second;auto owner=owners.at(expected.id);const auto& package=*owner.first;const auto& part=package.parts.at(owner.second);const auto& mesh=package.meshes.at(part.mesh);
   Require(expected.marker==row.first&&expected.vertices==mesh.vertices&&expected.bones==mesh.bones&&expected.shapes==mesh.shapes&&(plan.composed||expected.material==part.material),"offline controls/part descriptor differs");
   RuntimeControls::Spec spec{package.id,owner.second,expected.marker,part.mesh,mesh.vertices,mesh.shapes,part.shapes,part.visible};
-  spec.material=part.material;Require(state.specs.emplace(spec.marker,std::move(spec)).second,"offline control provenance collision");
+  spec.material=part.material;spec.skeleton=mesh.skeleton;
+  Require(state.specs.emplace(spec.marker,std::move(spec)).second,"offline control provenance collision");
  }RuntimeControls::PreviewPreferences(state);RuntimeControls::PreparePanel(state);return state;
 }
 RuntimeControls::State CompiledRuntimeControls(const std::shared_ptr<const std::vector<Package>>& graph,
@@ -1158,6 +1177,8 @@ void Install(void** assemblies,size_t count){
   bool returnsBoolean=resultType&&!strcmp(resultType,"System.Boolean");if(resultType)il2cpp_free((void*)resultType);
   Require(returnsBoolean,"game TryUnloadImmediately return type differs from Boolean");
   api.proxyUnloaded=Method(proxy,"get_isUnloaded",{},"System.Boolean",false);
+  api.proxyGameObject=Method(proxy,"get_gameObject",{},"UnityEngine.GameObject",false);
+  api.proxyWaitingUnload=Method(proxy,"get_isWaitUnload",{},"System.Boolean",false);
   Log("[FULL-RELOAD-PREFAB-CACHE-API] method=PrefabInstantiateProxyManager.TryUnloadImmediately static=1 parameter=PrefabInstantiateProxy return=Boolean state=PrefabInstantiateProxy.get_isUnloaded");
   Require(Entry::Install(proxy,"_PreloadPrefab",{"System.Boolean"},"System.Void",false,(void*)ProxyPreload,(void**)&originalProxyPreload),"game prefab instantiate lifecycle hook unavailable");
   api.rootCategory=Enum(FindClass("Beyond.Resource","RootCategory",assemblies,count),"Main");api.priority=Enum(FindClass("Beyond.Resource","EResourceRequestPriority",assemblies,count),"Default");

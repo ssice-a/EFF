@@ -16,14 +16,10 @@ inline bool SameInput(const EiemNativeStandaloneInput::Input& left,const EiemNat
     (left.view==right.view||EiemInputSpanView::SameBytes(*left.view,*right.view));
 }
 struct Use {RendererMaterialKey key;std::string material;};
-template<class Project> inline std::vector<Use> CollectUses(const SerializedLayout& layout,const std::string& cab,
-    const N::Author& author,const AssetIndex& targets,const Project& project) {
-  std::map<NativeReference,Identity> identities;std::set<NativeReference> selected;
-  for(const auto& target:targets)if(author.package.targetIndex.count(target.first)){
-    auto ref=CanonicalSerializedAssetReference({target.second.cab,target.second.pathId});selected.insert(ref);identities.emplace(ref,target.first);}
-  auto consumers=ProjectedMeshConsumers(layout,cab,selected,project,SerializedAssetCabKey);std::vector<Use> result;
-  for(const auto& consumer:consumers){auto identity=identities.find(CanonicalSerializedAssetReference(consumer.mesh));
-    Require(identity!=identities.end(),"native Material consumer Mesh target identity absent: "+consumer.mesh.first+"/"+std::to_string(consumer.mesh.second));
+inline std::vector<Use> CollectUses(const N::Author& author,const RendererTargetMatches& matches) {
+  std::vector<Use> result;
+  for(const auto& consumer:matches.consumers){auto identity=matches.identities.find(CanonicalSerializedAssetReference(consumer.mesh));
+    Require(identity!=matches.identities.end(),"native Material consumer Mesh target identity absent: "+consumer.mesh.first+"/"+std::to_string(consumer.mesh.second));
     auto ruleId=author.package.targetIndex.find(identity->second);
     Require(ruleId!=author.package.targetIndex.end(),"native Material consumer target has no author rule: "+identity->second.path+" / "+identity->second.asset);
     auto rule=author.package.rules.find(ruleId->second);
@@ -32,7 +28,7 @@ template<class Project> inline std::vector<Use> CollectUses(const SerializedLayo
     for(const auto& part:rule->second.parts){auto partEntry=author.package.parts.find(part);
       Require(partEntry!=author.package.parts.end(),"native Material consumer part is absent: "+part);
       const auto& material=partEntry->second.material;if(material.empty())continue;
-      (void)author.GetMaterial(material);result.push_back({{consumer.renderer,part},material});}
+      result.push_back({{consumer.renderer,part},material});}
   }return result;
 }
 struct Textures {

@@ -59,25 +59,42 @@ static int SmokeStagedMeshMetadata(const std::filesystem::path& root){
   Require(!directory.meshes.empty(),"metadata regression Mod has no Mesh resources");
   auto source=std::make_shared<Native::Author>(catalog);
   auto carrier=Native::Author::Compose({source});
-  auto selected=std::find_if(directory.meshes.begin(),directory.meshes.end(),[](const auto& row){
-    return row.part=="PartS_actor_chen_cloth_01_lod0_1.001";
-  });
-  if(selected==directory.meshes.end())selected=directory.meshes.begin();
-  const auto part=EiemComposedPackage::Prefix(directory.mod)+selected->part;
+  auto part=EiemComposedPackage::Name(directory.mod,"PartS_actor_chen_cloth_01_lod0_1.001");
+  const auto& targets=carrier->package.targetIndex;
+  const auto& rules=carrier->package.rules;
+  auto target=std::find_if(targets.begin(),targets.end(),
+    [&](const auto& entry){
+      const auto& parts=rules.at(entry.second).parts;
+      return std::find(parts.begin(),parts.end(),part)!=parts.end();
+    });
+  if(target==targets.end()){
+    target=std::find_if(targets.begin(),targets.end(),
+      [&](const auto& entry){return !rules.at(entry.second).parts.empty();});
+    Require(target!=targets.end(),"metadata regression Mod has no Mesh replacement target");
+    part=rules.at(target->second).parts.front();
+  }
   const auto carrierMesh=carrier->GetMesh(part);
-  EiemNativeInput::BuiltMeshPart staged;staged.part=part;
+  EiemNativeInput::BuiltMeshPart staged;
+  staged.target=target->first;staged.rule=target->second;staged.part=part;
   const auto resource=carrier->package.meshes.at(part).resource;
   Require(carrier->bindings.count(resource)&&carrier->markers.count(part),
     "carrier request did not register the selected Mesh metadata");
   auto consumer=Native::Author::Compose({source});
   Require(consumer->bindings.empty()&&consumer->markers.empty(),
     "new consumer composition unexpectedly retained carrier-local metadata");
-  Native::EnsureStagedMeshMetadata(*consumer,{staged});
+  EiemNativeInput::RendererTargetMatches matches;
+  const EiemNativeInput::NativeReference nativeMesh{"cab-metadata-fixture",1};
+  matches.identities.emplace(EiemNativeInput::CanonicalSerializedAssetReference(nativeMesh),staged.target);
+  Native::EnsureStagedMeshMetadata(*consumer,{staged},matches);
+  Require(consumer->bindings.empty()&&consumer->markers.empty(),
+    "consumer request restored staged Mesh metadata without a matching renderer");
+  matches.consumers.push_back({2,0,nativeMesh});
+  Native::EnsureStagedMeshMetadata(*consumer,{staged},matches);
   Require(consumer->bindings.count(resource)&&consumer->markers.at(part)==carrierMesh->declaration.marker&&
     catalog->OpenMeshes()==1,
     "consumer request did not restore only the staged Mesh metadata from the shared catalog");
   std::cout<<"PASS staged Mesh metadata restored across request compositions mod="<<directory.mod
-    <<" part="<<selected->part<<" openMeshResources="<<catalog->OpenMeshes()<<"\n";
+    <<" part="<<part<<" openMeshResources="<<catalog->OpenMeshes()<<"\n";
   return 0;
 }
 

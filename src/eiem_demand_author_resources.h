@@ -500,7 +500,7 @@ public:
     for(const auto& section:manifest_.sections){const auto& id=section.id;
       if(id=="Constants"||Begins(id,"Hierarchy")||Begins(id,"Parameter")||Begins(id,"Action")||Begins(id,"Event")||Begins(id,"Binding")||Begins(id,"UI")||Begins(id,"Control")||Begins(id,"ShapeControl")||Begins(id,"Key")||Begins(id,"Animation")||Begins(id,"MaterialTrack"))continue;
       result+="["+id+"]\n";for(const auto& field:section.values){if(id=="Mod"&&(field.first=="key_switch_enabled"||field.first=="controls"))continue;
-        if(Begins(id,"Part")&&(field.first=="visible"||Begins(field.first,"shape.")))continue;
+        if(Begins(id,"Part")&&(field.first=="visible"||field.first=="afterimage"||Begins(field.first,"shape.")))continue;
         result+=field.first+"="+field.second+"\n";}
     }return result;
   }
@@ -545,6 +545,17 @@ public:
     meshes_.emplace(part,asset);return asset;
   }
   std::shared_ptr<const Mesh> GetMeshResource(const std::string& id){std::lock_guard<std::mutex> lock(mutex_);return GetMeshResourceLocked(id);}
+  bool PartAfterimage(const std::string& id)const {return manifest_.parts.at(id).afterimage;}
+  std::vector<std::string> BonePalette(const std::string& part){
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto& declaration=directory_.meshes.at(parts_.at(part));
+    auto loaded=meshInputs_.find(declaration.file);
+    if(loaded!=meshInputs_.end())return loaded->second->declaration.bones;
+    auto snapshot=meshSnapshots_.find(declaration.file);
+    if(snapshot!=meshSnapshots_.end())return snapshot->second.declaration.bones;
+    CheckAssetFile(declaration.file);
+    return ReadMeshMetadata(root_,declaration,part).declaration.bones;
+  }
   size_t OpenMeshes(){std::lock_guard<std::mutex> lock(mutex_);return meshes_.size();}
   std::shared_ptr<const EiemAuthorBoneAnimation::Skeleton> GetSkeleton(const std::string& id) {
     std::lock_guard<std::mutex> lock(mutex_);auto found=skeletons_.find(id);if(found!=skeletons_.end())return found->second;
@@ -557,11 +568,16 @@ public:
     Bytes payload(metadata.bytes);file->ReadAt(layout.payloadOffset,payload.data(),payload.size());
     auto digest=Sha(payload.data(),payload.size());Require(Hex(digest.data(),digest.size())==metadata.hash,
       "author Skeleton payload checksum differs");
-    auto value=std::make_shared<const EiemAuthorBoneAnimation::Skeleton>(
-      EiemAuthorBoneAnimation::DecodeSkeleton(payload.data(),payload.size()));
+    auto skeleton=EiemAuthorBoneAnimation::DecodeSkeleton(payload.data(),payload.size());
+    const auto& retargets=manifest_.resources.at("Skeleton"+id).retargets;
+    EiemAuthorBoneAnimation::SetRetargets(skeleton,retargets);
     for(const auto& animation:directory_.runtime.animations)for(const auto& track:animation.second.boneTracks)
-      if(track.skeleton==id)Require(value->paths.count(track.path),
-        "author Animation bone path is absent from Skeleton: "+animation.first+"/"+track.path);
+      if(track.skeleton==id){
+        Require(skeleton.paths.count(track.path),
+          "author Animation bone path is absent from Skeleton: "+animation.first+"/"+track.path);
+        Require(!retargets.count(track.path),"author Animation and retarget both drive bone: "+track.path);
+      }
+    auto value=std::make_shared<const EiemAuthorBoneAnimation::Skeleton>(std::move(skeleton));
     file->VerifyStable();skeletons_.emplace(id,value);return value;
   }
   size_t OpenSkeletons(){std::lock_guard<std::mutex> lock(mutex_);return skeletons_.size();}

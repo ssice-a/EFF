@@ -179,9 +179,10 @@ void PrepareReplacement(uint64_t token,uint64_t scope,R::Reader& reader,const st
         stagedParts.erase(std::remove_if(stagedParts.begin(),stagedParts.end(),[&](const auto& part){return refreshed.count(part.target)!=0;}),stagedParts.end());
         for(const auto& part:carrier.parts){auto duplicate=std::find_if(stagedParts.begin(),stagedParts.end(),[&](const auto& old){return !(old.target<part.target)&&!(part.target<old.target)&&old.part==part.part&&old.cab==part.cab&&old.id==part.id;});if(duplicate==stagedParts.end())stagedParts.push_back(part);}
       }
-      phase("restore-staged-mesh-metadata");N::EnsureStagedMeshMetadata(*combined,stagedParts);
-      phase("collect-renderer-material-uses");auto uses=[&]{EiemLoadPerformance::Scope performance(EiemLoadPerformance::DemandMaterialUses);return M::CollectUses(transaction.Layout(),member.name,*combined,combinedTargets,
-        [&](int64_t id,const std::set<std::string>& fields){return transaction.Project(id,fields);});}();
+      phase("collect-renderer-material-uses");RendererTargetMatches matches;
+      auto uses=[&]{EiemLoadPerformance::Scope performance(EiemLoadPerformance::DemandMaterialUses);
+        matches=N::MatchConsumers(transaction,*combined,combinedTargets);return M::CollectUses(*combined,matches);}();
+      phase("restore-staged-mesh-metadata");N::EnsureStagedMeshMetadata(*combined,stagedParts,matches);
       M::Shared materials;
       if(!uses.empty()){
         phase("prepare-shared-materials");
@@ -190,7 +191,7 @@ void PrepareReplacement(uint64_t token,uint64_t scope,R::Reader& reader,const st
       }
       phase("stage-renderer-consumer");
       auto consumer=[&]{EiemLoadPerformance::Scope performance(EiemLoadPerformance::DemandConsumer);return N::StageConsumer(transaction,*combined,combinedTargets,stagedParts,
-        uses.empty()?nullptr:&materials.references,uses.empty()?nullptr:&materials.closures);}();
+        uses.empty()?nullptr:&materials.references,uses.empty()?nullptr:&materials.closures,&matches);}();
       for(const auto& target:combinedTargets){auto selected=combined->package.targetIndex.find(target.first);
         if(selected==combined->package.targetIndex.end()||!combined->package.rules.at(selected->second).skip)continue;
         NativeReference mesh{target.second.cab,target.second.pathId};std::vector<int64_t> renderers;

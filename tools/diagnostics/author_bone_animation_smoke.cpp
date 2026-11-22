@@ -26,13 +26,15 @@ void Sample(std::vector<unsigned char>& out, float y, float qz, float qw) {
   for (float value : {0.f, y, 0.f, 0.f, qz, 0.f, qw, 1.f, 1.f, 1.f}) F32(out, value);
 }
 
-std::vector<unsigned char> SkeletonBytes() {
+std::vector<unsigned char> SkeletonBytes(bool withSourceFlags=false) {
   std::vector<unsigned char> out{'E','F','F','S','K','A','1',0};
-  U32(out, 1); U32(out, 2); String(out, "unity-y-up-left-handed");
+  U32(out, withSourceFlags?2:1); U32(out, 2); String(out, "unity-y-up-left-handed");
   String(out, "WeaponRoot"); U32(out, 0xffffffffu);
   for (float value : {0.f,0.f,0.f,0.f,0.f,0.f,1.f,1.f,1.f,1.f}) F32(out, value);
+  if(withSourceFlags) U8(out,1);
   String(out, "WeaponRoot/Tip"); U32(out, 0);
   for (float value : {0.f,0.f,1.f,0.f,0.f,0.f,1.f,1.f,1.f,1.f}) F32(out, value);
+  if(withSourceFlags) U8(out,0);
   return out;
 }
 
@@ -46,10 +48,52 @@ std::vector<unsigned char> ClipBytes() {
   return out;
 }
 
+void CheckRetarget() {
+  const float half = std::sqrt(.5f);
+  const Rotation turnX{half, 0, 0, half}, turnY{0, half, 0, half}, turnZ{0, 0, half, half};
+  Skeleton rig;
+  rig.nodes = {{"Root", -1}, {"Root/Short", 0, {}, turnZ},
+               {"Root/Short/End", 1, {}, turnX},
+               {"Root/Long", 0, {}, {0, 0, 0, 1}, {1, 1, 1}, false},
+               {"Root/Long/End", 3, {0, 2, 0}, turnY, {1, 1, 1}, false}};
+  SetRetargets(rig, {{"Root/Long/End", "Root/Short/End"}});
+  const auto& mapping = rig.retargets.at(4);
+  if (mapping.ancestor != 0 || mapping.sourceRelativePath != "Short/End")
+    throw std::runtime_error("retarget did not preserve the instance-local relative source path");
+  const RetargetRoutes routes{{4,{4,6,1}}};
+  if (DecodeRetargetRoutes(EncodeRetargetRoutes("",routes),rig)!=routes)
+    throw std::runtime_error("serialized native retarget route differs");
+  for (const auto* bad : {"4=4,6,;", "4=4,-6,1,;", "0=4,6,1,;", "4=4,6,1,;4=4,6,1,;"}) {
+    bool rejected=false;
+    try { (void)DecodeRetargetRoutes(bad,rig); } catch (const std::exception&) { rejected=true; }
+    if (!rejected) throw std::runtime_error("invalid local retarget route accepted");
+  }
+  const auto requireRotation = [](const Rotation& actual, const Rotation& expected) {
+    for (size_t i = 0; i < 4; ++i)
+      if (std::abs(actual[i] - expected[i]) > 1e-6)
+        throw std::runtime_error("retarget rotation does not match the target bind basis");
+  };
+  requireRotation(RetargetRotation(mapping, turnX), turnY);
+  // A source X rotation becomes a target Y rotation because the short
+  // chain's parent is rotated +90 degrees around Z in the bind pose.
+  requireRotation(RetargetRotation(mapping, Multiply(turnX, turnX)), {0, 1, 0, 0});
+  for (const auto& source : {"Root/Missing", "Root/Long"}) {
+    bool rejected = false;
+    try { SetRetargets(rig, {{"Root/Long/End", source}}); }
+    catch (const std::exception&) { rejected = true; }
+    if (!rejected) throw std::runtime_error("invalid retarget source accepted");
+  }
+}
+
 int main() {
   try {
+    CheckRetarget();
     const auto skeletonBytes = SkeletonBytes();
     const auto skeleton = DecodeSkeleton(skeletonBytes.data(), skeletonBytes.size());
+    const auto ownedBytes=SkeletonBytes(true);
+    const auto owned=DecodeSkeleton(ownedBytes.data(),ownedBytes.size());
+    if(!skeleton.nodes[1].source||!owned.nodes[0].source||owned.nodes[1].source)
+      throw std::runtime_error("Skeleton ownership flags differ");
     const auto clipBytes = ClipBytes();
     const auto clip = DecodeClip(clipBytes.data(), clipBytes.size(), skeleton, "weapon_rig");
     const auto middle = Sample(clip.tracks.front(), .5);
@@ -109,6 +153,7 @@ int main() {
     competing.id = "weapon_idle";
     competing.tracks.clear();
     competing.tracks.emplace("other_channel", std::vector<float>{1.f, 0.f});
+    competing.boneTracks.front().path="WeaponRoot";
     competing.boneTracks.front().samples = {
       TransformSample{0.f, .75f, 0.f, 0.f, 0.f, 0.f, 1.f, 1.f, 1.f, 1.f},
       TransformSample{0.f, .75f, 0.f, 0.f, 0.f, 0.f, 1.f, 1.f, 1.f, 1.f}};
@@ -117,8 +162,9 @@ int main() {
     player.Play(package.shapeAnimations.at(mixed.id));
     player.Play(package.shapeAnimations.at(competing.id));
     if (player.clips.at(mixed.id).playing || player.output.count("shape_channel") ||
-        std::abs(player.boneOutput.at(target)[1] - .75f) > 1e-6f)
-      throw std::runtime_error("conflicting Bone target did not retire its previous clip");
+        player.boneOutput.count(target)||
+        std::abs(player.boneOutput.at({"weapon_rig","WeaponRoot"})[1] - .75f) > 1e-6f)
+      throw std::runtime_error("Action on disjoint bones did not retire the same Skeleton's previous clip");
 
     std::cout << "AUTHOR_BONE_ANIMATION_OK nodes=" << skeleton.nodes.size()
               << " tracks=" << clip.tracks.size() << " midpointY=" << middle[1]

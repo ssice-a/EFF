@@ -12,6 +12,7 @@ namespace EiemNativeInput {
 inline bool IsTransformClass(int kind) { return kind == 4 || kind == 224; }
 using MeshSchemaIndex = std::map<std::array<unsigned char, 16>, Type>;
 using MeshBoneHashIndex = std::map<NativeReference,std::vector<uint32_t>>;
+using AuthorBoneSlots = std::map<std::pair<int64_t,std::string>,std::map<size_t,int64_t>>;
 inline std::vector<uint32_t> BoneHashes(const Type& type,const Value& field){
   const auto& values=ArrayValue(type,field);std::vector<uint32_t> hashes;
   if(!values.raw.empty()){
@@ -64,6 +65,7 @@ inline std::vector<NativeReference> RendererMaterialSlots(const Type& type,const
 template<class Project> inline std::vector<MeshConsumer> ProjectedMeshConsumers(const SerializedLayout& layout,
     const std::string& cab,const std::set<NativeReference>& selected,const Project& project,
     std::string (*canonical)(std::string)=nullptr) {
+  if(selected.empty())return {};
   std::set<NativeReference> lookup=selected;
   if(canonical){lookup.clear();for(auto reference:selected){reference.first=canonical(std::move(reference.first));lookup.insert(std::move(reference));}}
   std::vector<MeshConsumer> result;
@@ -103,6 +105,25 @@ template<class Project> inline std::vector<MeshConsumer> ProjectedMeshConsumers(
   std::sort(result.begin(),result.end(),[&](const auto& a,const auto& b){
     return ordinals.at(a.filter?a.filter:a.renderer)<ordinals.at(b.filter?b.filter:b.renderer);
   });
+  return result;
+}
+struct RendererTargetMatches {
+  std::map<NativeReference,Identity> identities;
+  std::vector<MeshConsumer> consumers;
+};
+template<class Project> inline RendererTargetMatches MatchRendererTargets(const SerializedLayout& layout,
+    const std::string& cab,const Package& package,const AssetIndex& assets,const Project& project) {
+  RendererTargetMatches result;
+  std::set<NativeReference> selected;
+  for(const auto& target:package.targetIndex){
+    auto asset=assets.find(target.first);
+    if(asset==assets.end())continue;
+    Require(asset->second.classId==43,"Renderer target is not a Mesh");
+    auto reference=CanonicalSerializedAssetReference({asset->second.cab,asset->second.pathId});
+    Require(result.identities.emplace(reference,target.first).second,"Renderer target aliases are ambiguous");
+    selected.insert(std::move(reference));
+  }
+  result.consumers=ProjectedMeshConsumers(layout,cab,selected,project,SerializedAssetCabKey);
   return result;
 }
 inline std::vector<MeshConsumer> MeshConsumers(const Bytes& bytes,const SerializedLayout& layout,
@@ -377,6 +398,7 @@ class RendererMemberBuilder {
   const MaterialPreloadIndex* materialPreloads = nullptr;
   bool retainSourceMaterials = false;
   const std::map<std::string,EiemMeshBindingMetadata::Mesh>* authorMetadata = nullptr;
+  const AuthorBoneSlots* authorBoneSlots = nullptr;
   const std::map<std::string,std::string>* authorMarkers = nullptr;
   const RendererMaterialReferences* materialReferences = nullptr;
   const MaterialPreloadIndex* materialClosures = nullptr;
@@ -425,7 +447,8 @@ class RendererMemberBuilder {
     added.push_back({id, layout.objects.at(donor).type, EncodeValue(Schema(donor), value, trackOrigins?&objectOrigins[id]:nullptr)});
   }
   std::vector<int64_t> ResolveBones(int64_t ownerTransform, int64_t rootBone,
-      const Mesh& mesh,const std::vector<uint32_t>& sourceHashes,const std::vector<int64_t>& nativeBones) const {
+      const Mesh& mesh,const std::vector<uint32_t>& sourceHashes,const std::vector<int64_t>& nativeBones,
+      int64_t renderer,const std::string& part) const {
     std::map<size_t,int64_t> original;
     if(!sourceHashes.empty()){
       std::vector<uint32_t> author;
@@ -441,6 +464,11 @@ class RendererMemberBuilder {
         auto bound=skeleton->second.find(author[slot]);
         if(bound!=skeleton->second.end()&&bound->second)original.emplace(slot,bound->second);
       }
+    }
+    if(authorBoneSlots){
+      auto selected=authorBoneSlots->find({renderer,part});
+      if(selected!=authorBoneSlots->end())
+        for(const auto& slot:selected->second)original[slot.first]=slot.second;
     }
     std::set<int64_t> ownerAncestors;
     for (auto id = ownerTransform; id; id = parents.at(id)) ownerAncestors.insert(id);
@@ -560,21 +588,19 @@ public:
         project(std::move(fields)), decode(std::move(object)), layout(std::move(metadata)) {
     Require(project&&decode,"Renderer projected object source absent");
   }
-  RendererInputBuild Build(const AuthorByteSpans* inputOrigins=nullptr,AuthorByteSpans* outputOrigins=nullptr) {
+  RendererInputBuild Build(const AuthorByteSpans* inputOrigins=nullptr,AuthorByteSpans* outputOrigins=nullptr,
+      const RendererTargetMatches* matchedTargets=nullptr) {
     Require(!built,"Renderer member builder reused");built=true;
     Require(!project||(!inputOrigins&&!outputOrigins),"Renderer projected input cannot use full-file provenance");
     sourceOrigins=inputOrigins;trackOrigins=outputOrigins!=nullptr;
     auto start=std::chrono::steady_clock::now();
-    std::map<NativeReference, Identity> selected;
-    for (const auto& target : package.targetIndex) {
-      auto found = assets.find(target.first);
-      if (found == assets.end()) continue;
-      Require(found->second.classId == 43, "Renderer target is not a Mesh");
-      Require(selected.emplace(CanonicalSerializedAssetReference({found->second.cab, found->second.pathId}), target.first).second,
-              "Renderer target aliases are ambiguous");
+    RendererTargetMatches local;
+    if(!matchedTargets){
+      local=MatchRendererTargets(layout,cab,package,assets,[&](int64_t id,const std::set<std::string>& fields){return FieldsOf(id,fields);});
+      matchedTargets=&local;
     }
-    std::set<NativeReference> references;for(const auto& row:selected)references.insert(row.first);
-    auto matches=ProjectedMeshConsumers(layout,cab,references,[&](int64_t id,const std::set<std::string>& fields){return FieldsOf(id,fields);},SerializedAssetCabKey);
+    const auto& selected=matchedTargets->identities;
+    const auto& matches=matchedTargets->consumers;
     for(const auto& match:matches)result.consumers.emplace_back(cab,match);
     Cost("renderer-consumers",start);
     if (matches.empty()) { result.bytes = source;if(outputOrigins)*outputOrigins=inputOrigins?*inputOrigins:AuthorByteSpans{};return result; }
@@ -600,6 +626,7 @@ public:
       }
     }
     Cost("renderer-native-palettes",start);start=std::chrono::steady_clock::now();
+    std::set<std::string> validatedMetadata;
     for (const auto& matched : matches) {
       auto rid = matched.renderer;
       const auto& target = selected.at(CanonicalSerializedAssetReference(matched.mesh));
@@ -642,6 +669,11 @@ public:
         const auto& part = package.parts.at(pid);
         const auto rendererMarker=authorMarkers?authorMarkers->at(pid):RuntimePartName(package,pid,target);
         const auto& mesh = package.meshes.at(part.mesh);
+        if(authorMetadata&&validatedMetadata.insert(mesh.resource).second){
+          auto binding=authorMetadata->find(mesh.resource);
+          Require(binding!=authorMetadata->end(),"Renderer author Mesh metadata is absent: "+mesh.resource);
+          EiemMeshBindingMetadata::Validate(binding->second,mesh.bones.size());
+        }
         auto nativeMesh = std::find_if(meshes.begin(), meshes.end(), [&](const BuiltMeshPart& item) {
           return item.part == pid && !(item.target < target) && !(target < item.target);
         });
@@ -668,7 +700,7 @@ public:
           materialReference={material->second.cab,AllocateMaterialId(material->second.cab,package,part.material)};}
         Require(skinned||(mesh.bones.empty()&&mesh.shapes.empty()&&part.shapes.empty()),
                 "static MeshRenderer parts require unskinned geometry without runtime shape channels");
-        auto bones = skinned?ResolveBones(tid, rootBone, mesh,nativeMesh->sourceBoneHashes,nativeBones):std::vector<int64_t>{};
+        auto bones = skinned?ResolveBones(tid, rootBone, mesh,nativeMesh->sourceBoneHashes,nativeBones,rid,pid):std::vector<int64_t>{};
         auto renderer = original;
         int64_t newRid = rid, gid = owner, newTid = tid, newFilter=matched.filter;
         if (i) {
@@ -875,16 +907,9 @@ private:
 public:
   void SetAuthorMetadata(const std::map<std::string,EiemMeshBindingMetadata::Mesh>& metadata) {
     Require(!built,"Renderer author metadata supplied after Build");
-    std::set<std::string> checked;
-    for(const auto& targetMesh:meshes){
-      const auto& part=package.parts.at(targetMesh.part);const auto& mesh=package.meshes.at(part.mesh);
-      if(!checked.insert(mesh.resource).second)continue;
-      auto binding=metadata.find(mesh.resource);
-      Require(binding!=metadata.end(),"Renderer author Mesh metadata is absent: "+mesh.resource);
-      EiemMeshBindingMetadata::Validate(binding->second,mesh.bones.size());
-    }
     authorMetadata=&metadata;
   }
+  void SetAuthorBoneSlots(const AuthorBoneSlots& slots) {authorBoneSlots=&slots;}
   void SetAuthorMarkers(const std::map<std::string,std::string>& markers) {authorMarkers=&markers;}
   void SetMaterialReferences(const RendererMaterialReferences& references) {materialReferences=&references;}
   void SetMaterialClosures(const MaterialPreloadIndex& closures) {materialClosures=&closures;}

@@ -10,6 +10,7 @@
 #include "../../src/eiem_native_splice_view.h"
 #include "../../src/eiem_native_object_graft.h"
 #include "../../src/eiem_demand_native_assembly.h"
+#include "../../src/eiem_demand_material_assembly.h"
 #include "../../src/eiem_demand_material_build.h"
 #include <chrono>
 #include <random>
@@ -642,7 +643,17 @@ void NativeCatalogAssembly() {
       auto bounded=current.limits.fieldBytes;current.limits.fieldBytes=1024;
       Rejected([&]{transaction.Object(100);});current.limits.fieldBytes=bounded;
     }
-    auto stagedConsumer=N::StageConsumer(transaction,author,targets,stagedCarrier.parts);
+    auto matches=N::MatchConsumers(transaction,author,targets);
+    auto uses=EiemDemandMaterialAssembly::CollectUses(author,matches);
+    Require(matches.consumers.size()==2&&uses.size()==count*2&&!catalog->OpenMaterials(),
+      "shared discovery lost native owners/material uses or eagerly opened material files");
+    auto previousParts=stagedCarrier.parts;
+    previousParts.push_back({{"assets/unhit.mesh","Unhit"},"ReplaceUnhit","PartUnhit"});
+    N::Author restored(catalog);
+    N::EnsureStagedMeshMetadata(restored,previousParts,matches);
+    Require(restored.bindings.size()==count&&catalog->OpenMeshes()==count,
+      "native consumer did not restore exactly the matched Mesh metadata");
+    auto stagedConsumer=N::StageConsumer(transaction,restored,targets,previousParts,nullptr,nullptr,&matches);
     auto single=S::BuildRanges(current,{transaction.Commit().rewrite});
     auto combined=EndfieldInput::Decode(Materialize(single.Bind(read)));auto cl=ParseSerialized(combined.members[0].bytes);
     Require(cl.order==after.order&&cl.externals==after.externals&&stagedConsumer.result.matches==built.result.matches,"single native assembly transaction lost objects or dependencies");
@@ -730,6 +741,11 @@ void NativeCatalogAssembly() {
 }
 void RetainedSourceLease() {
   auto folder=std::filesystem::temp_directory_path()/("eff-demand-source-lease-"+std::to_string(GetCurrentProcessId()));Require(!std::filesystem::exists(folder),"source lease fixture directory exists");std::filesystem::create_directory(folder);
+  struct RestoreSnapshotDirectory {
+    std::filesystem::path prior;
+    ~RestoreSnapshotDirectory(){R::snapshotDirectory=std::move(prior);}
+  } restore{R::snapshotDirectory};
+  R::snapshotDirectory=folder/"runtime-storage"/"snapshots";
   auto path=folder/"source.bundle",retired=folder/"retired.bundle";Bytes data(4096);for(size_t i=0;i<data.size();++i)data[i]=static_cast<unsigned char>(i&255);
   auto input=Bundle(data,"lease");{std::ofstream out(path,std::ios::binary);out.write(reinterpret_cast<const char*>(input.data()),input.size());}
   constexpr size_t fileOffset=17, rangeOffset=23, rangeBytes=101;
@@ -740,6 +756,46 @@ void RetainedSourceLease() {
     snapshot=file.SnapshotRange(rangeOffset,rangeBytes);
     Require(!file.SnapshotBytes()&&snapshot->Size()==rangeBytes&&snapshot->SnapshotBytes()==rangeBytes,
       "native author range copied bytes outside the leased range");
+    Require(!std::filesystem::is_empty(R::snapshotDirectory),"runtime snapshot used the caller's TEMP directory");
+  }
+  {
+    auto preferred = R::snapshotDirectory;
+    auto fallbackTemp = folder / "user-temp";
+    auto fallback = fallbackTemp / "EFF-demand-snapshots";
+    std::filesystem::create_directory(fallbackTemp);
+    wchar_t previousTemp[32768]{};
+    GetEnvironmentVariableW(L"TMP", previousTemp, _countof(previousTemp));
+    struct RestoreTemp {
+      const wchar_t* path;
+      ~RestoreTemp() { SetEnvironmentVariableW(L"TMP", *path ? path : nullptr); }
+    } restoreTemp{previousTemp};
+    Require(SetEnvironmentVariableW(L"TMP", fallbackTemp.c_str()), "cannot set fallback TEMP fixture");
+    R::snapshotDirectory = folder / "unavailable-storage";
+    { std::ofstream blocker(R::snapshotDirectory); blocker << "not a directory"; }
+
+    R::File file(path, fileOffset);
+    auto copied = file.SnapshotRange(rangeOffset, rangeBytes);
+    Bytes bytes(rangeBytes);
+    Require(copied->SnapshotBytes() == rangeBytes, "fallback snapshot extent differs");
+    copied->ReadAt(0, bytes.data(), bytes.size());
+    Require(std::equal(bytes.begin(), bytes.end(), input.begin() + fileOffset + rangeOffset),
+        "fallback snapshot copied the wrong source range");
+    Require(!std::filesystem::is_empty(fallback), "snapshot did not use the Windows fallback directory");
+    copied.reset();
+    Require(std::filesystem::is_empty(fallback), "fallback snapshot persisted after final close");
+    std::filesystem::remove(fallback);
+
+    { std::ofstream blocker(fallback); blocker << "not a directory"; }
+    std::string error;
+    try { file.SnapshotRange(rangeOffset, rangeBytes); }
+    catch (const std::exception& failure) { error = failure.what(); }
+    Require(error.find(R::snapshotDirectory.u8string()) != std::string::npos &&
+        error.find(fallback.u8string()) != std::string::npos,
+        "snapshot storage failure did not report both attempted directories");
+    std::filesystem::remove(fallback);
+    std::filesystem::remove(fallbackTemp);
+    std::filesystem::remove(R::snapshotDirectory);
+    R::snapshotDirectory = std::move(preferred);
   }
   std::shared_ptr<const EiemInputSpanView::View> view;std::weak_ptr<R::File> weak;
   {auto file=std::make_shared<R::File>(path,0);weak=file;auto read=[file](size_t at,unsigned char* out,size_t n){file->ReadAt(at,out,n);};R::Reader reader(file->Size(),read);auto prepared=S::Build(reader,{});view=prepared.Bind(read);}
@@ -750,8 +806,11 @@ void RetainedSourceLease() {
   std::atomic<bool> correct{true};std::vector<std::thread> threads;
   for(size_t ti=0;ti<4;++ti)threads.emplace_back([&,ti]{try{EiemInputSpanView::Cursor cursor(view);for(size_t k=0;k<40;++k){auto at=(ti*977+k*67)%(input.size()-64);cursor.Seek(int64_t(at),0);Bytes bytes(64);Require(cursor.Read(bytes.data(),bytes.size())==bytes.size(),"retained source short read");if(!std::equal(bytes.begin(),bytes.end(),input.begin()+at))correct=false;}}catch(...){correct=false;}});
   for(auto& thread:threads)thread.join();Require(correct,"concurrent streams reopened the changed path or lost source position isolation");
-  view.reset();Require(weak.expired(),"native view source lease survived final cursor retirement");std::filesystem::remove(path);std::filesystem::remove(folder);
-  std::cout<<"PASS source lifetime: prepare scope ended, rename/delete/replace allowed, four independent cursors retain old bytes, final view releases handle\n";
+  view.reset();Require(weak.expired(),"native view source lease survived final cursor retirement");
+  snapshot.reset();Require(std::filesystem::is_empty(R::snapshotDirectory),"runtime snapshot was not deleted on final close");
+  std::filesystem::remove(R::snapshotDirectory);std::filesystem::remove(R::snapshotDirectory.parent_path());
+  std::filesystem::remove(path);std::filesystem::remove(folder);
+  std::cout<<"PASS source lifetime: preferred and fallback snapshot storage, rename/delete/replace, independent cursors, and final handle release\n";
 }
 void InspectObserved(const std::filesystem::path& path,uint64_t offset) {
   R::File file(path,offset);R::Reader reader(file.Size(),[&](size_t at,unsigned char* out,size_t n){file.ReadAt(at,out,n);});

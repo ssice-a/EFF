@@ -70,6 +70,32 @@ int main() {
                 !std::filesystem::exists(root / "editable/custom/body.dds"),
             "startup manifest validation opened or required resource payloads");
 
+    const auto skeletonIni = ini.substr(0, ini.find("[MeshBody]")) +
+        "[MeshBody]\npath=author/characters/body.mesh\nskeleton=Rig\n\n"
+        "[SkeletonRig]\ntype=skeleton\npath=author/rig.effres\n"
+        "retarget.front_01.source=Root/Native/Front\n"
+        "retarget.front_01.target=Root/LongSkirt/Front\n\n" +
+        ini.substr(ini.find("[ShapeAnimationWalk]"));
+    { std::ofstream output(root / "mod.ini", std::ios::binary); output << skeletonIni; }
+    const auto rig = EiemRuntimeAuthorManifest::Read(root).resources.at("SkeletonRig");
+    Require(rig.retargets.size() == 1 && rig.retargets.at("Root/LongSkirt/Front") == "Root/Native/Front",
+            "standalone Skeleton retarget paths were not preserved");
+    auto skeletonSections = EiemDirectory::ParseIni(EiemDirectory::Read(root / "mod.ini"));
+    const auto section = std::find_if(skeletonSections.begin(), skeletonSections.end(),
+        [](const auto& item) { return item.id == "SkeletonRig"; });
+    Require(section != skeletonSections.end(), "test Skeleton section absent");
+    for (const bool incomplete : {true, false}) {
+      auto broken = *section;
+      if (incomplete) broken.values.erase("retarget.front_01.source");
+      else {
+        broken.values.emplace("retarget.conflict.source", "Root/Native/Other");
+        broken.values.emplace("retarget.conflict.target", "Root/LongSkirt/Front");
+      }
+      bool rejected = false;
+      try { (void)ReadRetargets(broken); } catch (const std::exception&) { rejected = true; }
+      Require(rejected, "missing or duplicate retarget pair was accepted");
+    }
+
     auto inheritedMaterial = ini;
     const auto oldPart = std::string("[PartBody]\nmesh=MeshBody\nmaterial=MaterialBody\nvisible=1\n");
     const auto partAt = inheritedMaterial.find(oldPart);

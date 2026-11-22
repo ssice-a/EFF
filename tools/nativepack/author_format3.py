@@ -762,10 +762,14 @@ def _readable_public_ini(root, ini):
     """Hide generated identity suffixes without changing logical game paths."""
     aliases, occupied = {}, set(ini.sections())
     for section in ini.sections():
+        # Skeleton IDs are also stored in the resource envelope and referenced
+        # without the section prefix by Mesh and BoneTrack.
+        if section.startswith('Skeleton'):
+            continue
         if not re.search(r'[0-9a-fA-F]{12,}', section):
             continue
         base = re.sub(r'(?:_?[0-9a-fA-F]{12,})+', '', section).rstrip('_.-') or 'Resource'
-        candidate, suffix = base, 2
+        candidate, suffix = ('Animation_1' if base == 'Animation' else base), 2
         while candidate in occupied:
             candidate = base + '_' + str(suffix);suffix += 1
         aliases[section] = candidate;occupied.add(candidate)
@@ -980,6 +984,7 @@ def read_controls_ini(root, ini, native_library=None):
                     require(key[6:] and variable in controls, 'INI shape control is unresolved: ' + section)
                     parts[section]['shapes'][key[6:]] = variable
         elif section.startswith('Animation'):
+            identity = _identifier(section[len('Animation'):])
             source=row.get('samples')
             if source:
                 require(source in ini and ini[source].get('type') == 'animation-samples', 'animation sample resource is unresolved')
@@ -1026,7 +1031,7 @@ def read_controls_ini(root, ini, native_library=None):
             sample_count = next(iter(counts)) if counts else 2
             sample_rate = int(row.get('sample_rate', max(1, round((sample_count - 1) / duration))))
             require(sample_rate > 0, 'INI animation sample rate differs')
-            animations[section[len('Animation'):]] = dict(id=section[len('Animation'):], label=row.get('label', section),
+            animations[identity] = dict(id=identity, label=row.get('label', section),
                 duration=duration, speed=speed, speedVariable=variable, loop=boolean(row['loop']),
                 autoplay=boolean(row['autoplay']), key=row.get('key', ''), sampleRate=sample_rate,
                 tracks=tracks, boneTracks=bones,nativeOutputs=outputs)
@@ -1488,6 +1493,10 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
                 0 <= material_slot <= 0xFFFFFFFF,
                 "Format 3 Part source Material slot is invalid: " + section)
         values["material_slot"] = str(material_slot)
+        afterimage = part.get("afterimage", True)
+        require(isinstance(afterimage, bool), "Format 3 Part afterimage setting is invalid: " + section)
+        if not afterimage:
+            values["afterimage"] = "false"
         if material_id:
             material_id = _identifier(material_id)
             require(material_id in material_ids,
@@ -1564,6 +1573,7 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         ini[section] = values
 
     skeleton_ids = set()
+    retargets_by_skeleton = {}
     skeleton_paths = named_resource_paths(
         [(skeleton["id"], skeleton.get("label", skeleton["id"])) for skeleton in skeletons],
         "skeletons", ".effres")
@@ -1575,9 +1585,15 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         skeleton_ids.add(resource_id)
         relative = skeleton_paths[skeleton["id"]]
         payload = bytes(skeleton["data"])
+        retargets = skeleton.get("retargets", {})
+        if retargets:
+            _validate_skeleton_retargets(retargets, _decode_author_skeleton(payload, section_id))
+            retargets_by_skeleton[resource_id] = retargets
         (root / relative).parent.mkdir(parents=True, exist_ok=True)
         (root / relative).write_bytes(encode_skeleton_resource(resource_id, relative, payload))
         ini[section_id] = {"type": "skeleton", "path": relative}
+        for index, (target, source) in enumerate(sorted(retargets.items()), 1):
+            ini[section_id].update({f"retarget.{index}.source": source, f"retarget.{index}.target": target})
 
     referenced_skeletons = {
         values["skeleton"] for section, values in ini.items()
@@ -1586,6 +1602,8 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
     require(referenced_skeletons <= skeleton_ids,
             "Format 3 Mesh references an undeclared Skeleton: " +
             repr(sorted(referenced_skeletons - skeleton_ids)))
+    require(retargets_by_skeleton.keys() <= referenced_skeletons,
+            "Format 3 retarget Skeleton is not used by any Mesh")
     require({ _identifier(animation["skeleton"]) for animation in bone_animations } <= referenced_skeletons,
             "Format 3 Animation Skeleton is not used by any Mesh")
 
@@ -1603,12 +1621,12 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
     physics_paths = named_resource_paths(
         [(resource["id"], resource.get("label", resource["id"])) for resource in physics],
         "physics", ".effres")
+    physics_files = []
     for resource in physics:
-        resource_id = _identifier(resource["id"]); relative = physics_paths[resource["id"]]
-        author = bytes(resource["author"]); native = bytes(resource["native"])
-        (root / relative).parent.mkdir(parents=True, exist_ok=True)
-        (root / relative).write_bytes(encode_physics_resource(resource_id, relative, native,
-            author, resource["targets"]))
+        resource_id = _identifier(resource["id"])
+        relative = physics_paths[resource["id"]]
+        require(resource_id not in ini, "Format 3 Physics section collides: " + resource_id)
+        physics_files.append((resource_id, relative, resource))
         target_rules = set()
         wanted_targets = {tuple(target) for target in resource["targets"]}
         for rule in rules:
@@ -1676,6 +1694,7 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
         state_defaults=state_defaults, persistent_states=persistent_states,
         key_bindings=key_bindings, bone_animations=bone_animations, return_state=True,
         preserved_controls=preserved_controls, preserved_bindings=preserved_bindings)
+    _validate_retarget_animation_ownership(retargets_by_skeleton, state["animations"])
     for relative, identity in effect_resources.items():
         values = {"type": "effect", "path": relative}
         targets = sorted(effect_rules.get(relative, ()))
@@ -1731,6 +1750,12 @@ def write_format3_directory(root, mod_id, parts, materials, textures, rules,
                           and not s.startswith(('MaterialTrack', 'MaterialAnimation'))}
     translate, aliases = _readable_public_ini(root, ini)
     for old, row in resource_locations.items():row['id'] = aliases.get(old, old)
+    # The Physics envelope must use the final INI section ID.
+    for identity, relative, resource in physics_files:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(encode_physics_resource(aliases.get(identity, identity), relative,
+            resource["native"], resource["author"], resource["targets"]))
     _write_ini(root, ini)
     if text:
         with (root / 'mod.ini').open('a', encoding='utf-8', newline='\n') as stream:
@@ -1963,29 +1988,70 @@ class _AuthorPayloadReader:
 
 def _valid_bone_path(path):
     return (bool(path) and not path.startswith("/") and not path.endswith("/") and
-            "\\" not in path and "//" not in path and
+            "\\" not in path and "\0" not in path and "//" not in path and
             all(part not in ("", ".", "..") for part in path.split("/")))
+
+
+def _validate_skeleton_retargets(retargets, ownership):
+    for target, source in retargets.items():
+        require(_valid_bone_path(source) and _valid_bone_path(target) and
+                ownership.get(source) is True and ownership.get(target) is False,
+                f"骨骼重定向需要游戏源骨与新增目标骨：{source} → {target}")
+        ancestor = target.rpartition("/")[0]
+        while ancestor and ancestor != source and not source.startswith(ancestor + "/"):
+            ancestor = ancestor.rpartition("/")[0]
+        require(ownership.get(ancestor) is True,
+                f"重定向骨骼缺少共同的游戏骨骼祖先：{source} → {target}")
+
+
+def read_skeleton_retargets(values, ownership):
+    rows = {}
+    for key, value in values.items():
+        if not key.startswith("retarget."):
+            continue
+        match = re.fullmatch(r"retarget\.([A-Za-z0-9_.-]+)\.(source|target)", key)
+        require(match is not None, "Invalid Skeleton retarget key: " + key)
+        identity, field = match.groups()
+        rows.setdefault(identity, {})[field] = value
+    retargets = {}
+    for identity, row in rows.items():
+        require(row.keys() == {"source", "target"} and row["target"] not in retargets,
+                "Incomplete or duplicate Skeleton retarget: " + identity)
+        retargets[row["target"]] = row["source"]
+    _validate_skeleton_retargets(retargets, ownership)
+    return retargets
+
+
+def _validate_retarget_animation_ownership(retargets_by_skeleton, animations):
+    if retargets_by_skeleton:
+        for animation in animations.values():
+            for track in animation["boneTracks"]:
+                require(track["path"] not in retargets_by_skeleton.get(track["skeleton"], {}),
+                        "同一骨骼不能同时由重定向和 EFF 动画驱动：" + track["path"])
 
 
 def _decode_author_skeleton(data, label):
     reader = _AuthorPayloadReader(data, label)
     require(reader.take(8) == b"EFFSKA1\0", label + " signature differs")
-    require(reader.u32() == 1, label + " version differs")
+    version = reader.u32()
+    require(version in (1, 2), label + " version differs")
     count = reader.u32()
     require(0 < count <= 16384, label + " node count is invalid")
     require(reader.string16() == "unity-y-up-left-handed",
             label + " coordinate space differs")
     nodes = []
-    paths = set()
+    paths = {}
     for index in range(count):
         path = reader.string16(allow_empty=index == 0)
         parent = reader.i32()
         position = tuple(reader.f32() for _ in range(3))
         rotation = tuple(reader.f32() for _ in range(4))
         scale = tuple(reader.f32() for _ in range(3))
-        require((_valid_bone_path(path) or (index == 0 and not path)) and path not in paths,
+        source = reader.u8() if version == 2 else 1
+        require(source in (0, 1), label + " source flag differs")
+        require((_valid_bone_path(path) or (index == 0 and not path and source)) and path not in paths,
                 label + " path is invalid or duplicated: " + path)
-        paths.add(path)
+        paths[path] = bool(source)
         if index == 0:
             require(parent == -1 and "/" not in path,
                     label + " root node is invalid")
@@ -1997,7 +2063,7 @@ def _decode_author_skeleton(data, label):
                 label + " node transform is invalid: " + path)
         nodes.append((path, parent, position, rotation, scale))
     reader.end()
-    return {node[0] for node in nodes}
+    return paths
 
 
 def _decode_author_bone_animation(data, label, skeleton_paths):
@@ -2032,8 +2098,10 @@ def _read_author_resource(root, relative, expected_kind, payload_bytes, label):
         require(len(header) == HEADER.size, label + " header is truncated")
         magic, version, kind, metadata_bytes, declared_payload, digest = HEADER.unpack(header)
         require(magic == MAGIC and version == 3 and kind == expected_kind and
-                declared_payload == payload_bytes,
+                (payload_bytes is None or declared_payload == payload_bytes) and
+                HEADER.size + metadata_bytes + declared_payload == path.stat().st_size,
                 label + " envelope differs")
+        payload_bytes = declared_payload
         metadata = stream.read(metadata_bytes)
         payload = stream.read(payload_bytes)
     require(len(metadata) == metadata_bytes and hashlib.sha256(metadata).digest() == digest and
@@ -2042,7 +2110,7 @@ def _read_author_resource(root, relative, expected_kind, payload_bytes, label):
     return _MetadataReader(metadata), payload
 
 
-def _validate_skeleton_resource(root, relative, section, payload_bytes):
+def read_skeleton_resource(root, relative, section, payload_bytes=None):
     metadata, payload = _read_author_resource(root, relative, 8, payload_bytes, section)
     require((metadata.string(), metadata.integer()) == (METADATA_STRUCTURE, 8),
             "format-3 Skeleton metadata structure differs: " + relative)
@@ -2050,11 +2118,16 @@ def _validate_skeleton_resource(root, relative, section, payload_bytes):
     author_bytes, author_hash = metadata.integer(), metadata.string()
     metadata.end()
     require(section == "Skeleton" + resource_id and resource_file == relative and
-            author_bytes == payload_bytes and len(author_hash) == 64 and
+            author_bytes == len(payload) and len(author_hash) == 64 and
             author_hash.upper() == author_hash and
             hashlib.sha256(payload).hexdigest().upper() == author_hash,
             "format-3 Skeleton identity, extent, or checksum differs: " + section)
-    return _decode_author_skeleton(payload, section)
+    return payload
+
+
+def _validate_skeleton_resource(root, relative, section, payload_bytes):
+    return set(_decode_author_skeleton(
+        read_skeleton_resource(root, relative, section, payload_bytes), section))
 
 
 def _effmat_values(data, label):
@@ -2287,6 +2360,9 @@ def read_format3_directory(root):
     resources = {}
     dds_rows = {}
     for section in ini.sections():
+        if section.startswith("Part"):
+            require(ini[section].get("afterimage", "true") in ("true", "false", "1", "0"),
+                    "Format 3 Part afterimage setting is invalid: " + section)
         if section in ("Mod", "Constants") or section.startswith(("Part", "Replace", "AttachEffect", "Key", "Control", "ShapeControl", "Animation", "MaterialTrack", "Parameter", "Action", "Event", "Binding", "UI", "Hierarchy")):
             continue
         expected_kind = None
@@ -2380,6 +2456,7 @@ def read_format3_directory(root):
                 "format-3 Texture must contain only a native Texture2D scaffold: " + relative)
         _parse_dds(root / dds_relative)
     skeleton_paths = {}
+    retargets_by_skeleton = {}
     for section in ini.sections():
         if section.startswith("Material") and not section.startswith(("MaterialTrack", "MaterialAnimation")):
             _validate_material_resource(root, ini[section]["path"], section, ini,
@@ -2394,9 +2471,13 @@ def read_format3_directory(root):
             skeleton_id = section[len("Skeleton"):]
             require(skeleton_id and skeleton_id not in skeleton_paths,
                     "format-3 Skeleton id is empty or duplicated: " + section)
-            skeleton_paths[skeleton_id] = _validate_skeleton_resource(
-                root, ini[section]["path"], section,
-                resource_metadata[ini[section]["path"]][1])
+            relative = ini[section]["path"]
+            ownership = _decode_author_skeleton(read_skeleton_resource(
+                root, relative, section, resource_metadata[relative][1]), section)
+            skeleton_paths[skeleton_id] = set(ownership)
+            retargets = read_skeleton_retargets(ini[section], ownership)
+            if retargets:
+                retargets_by_skeleton[skeleton_id] = retargets
         elif section.startswith(("EffectAttachment", "AttachEffect", "ReplaceEffect")):
             author_id = ini[section].get("author", "")
             if ini[section].get('effect'):
@@ -2411,7 +2492,8 @@ def read_format3_directory(root):
     require(control_mode in ('ini', 'resource') and (control_mode == 'ini' or 'ResourceControls' in ini),
             'format-3 controls mode or ResourceControls is invalid')
     if control_mode == 'ini':
-        read_controls_ini(root, ini)
+        controls = read_controls_ini(root, ini)
+        _validate_retarget_animation_ownership(retargets_by_skeleton, controls["animations"])
     files = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
     if mod_type == "effect":
         effect_sections = [section for section in ini.sections()

@@ -13,6 +13,9 @@
 namespace EiemNativeRandomAccess {
 using namespace EiemNativeInput;
 using ReadRange = std::function<void(size_t, unsigned char*, size_t)>;
+// The game entry point sets the preferred directory before installing load
+// hooks. Standalone tools use the caller's temporary directory.
+inline std::filesystem::path snapshotDirectory;
 struct Limits {
   size_t directoryBytes = 16 * 1024 * 1024;
   size_t metadataBytes = 32 * 1024 * 1024;
@@ -89,12 +92,50 @@ private:
                                  FILE_FLAG_SEQUENTIAL_SCAN)};
     Require(held.value != INVALID_HANDLE_VALUE, "author resource is being written; retry loading after replacement completes");
     VerifyStable();
+    std::unique_ptr<File> snapshot;
+    if (snapshotDirectory.empty()) {
+      snapshot = CopyRangeTo(held.value, start, length, TemporarySnapshotDirectory());
+    } else {
+      try {
+        snapshot = CopyRangeTo(held.value, start, length, snapshotDirectory);
+      } catch (const SnapshotStorageError& preferred) {
+        // Preserve the same protected source across attempts. Only destination
+        // failures are retried and an incomplete destination closes first.
+        try {
+          snapshot = CopyRangeTo(held.value, start, length, TemporarySnapshotDirectory());
+        } catch (const SnapshotStorageError& temporary) {
+          throw std::runtime_error(std::string(preferred.what()) + "; TEMP fallback: " + temporary.what());
+        }
+      }
+    }
+    VerifyStable();
+    snapshot->available_ = length;
+    snapshot->frozen_ = true;
+    EiemLoadPerformance::Bytes(EiemLoadPerformance::AuthorSnapshot,length);
+    return snapshot;
+  }
+  struct SnapshotStorageError : std::system_error {
+    using std::system_error::system_error;
+  };
+  static std::filesystem::path TemporarySnapshotDirectory() {
     wchar_t temporary[MAX_PATH + 1]{};
-    auto pathLength = GetTempPathW(MAX_PATH + 1, temporary);
-    Require(pathLength && pathLength <= MAX_PATH, "author snapshot temporary path unavailable");
-    auto directory = std::filesystem::path(temporary) / L"EFF-demand-snapshots";
-    std::error_code error; std::filesystem::create_directories(directory, error);
-    Require(!error, "author snapshot temporary directory unavailable");
+    auto length = GetTempPathW(_countof(temporary), temporary);
+    if (!length || length >= _countof(temporary)) {
+      const auto error = length ? ERROR_INSUFFICIENT_BUFFER : GetLastError();
+      throw SnapshotStorageError(int(error), std::system_category(), "author snapshot TEMP path unavailable");
+    }
+    return std::filesystem::path(temporary) / L"EFF-demand-snapshots";
+  }
+  std::unique_ptr<File> CopyRangeTo(HANDLE source, size_t start, size_t length,
+                                    const std::filesystem::path& directory) {
+    std::error_code directoryError;
+    std::filesystem::create_directories(directory, directoryError);
+    if (directoryError)
+      throw SnapshotStorageError(directoryError, "author snapshot directory unavailable: " + directory.u8string());
+    ULARGE_INTEGER available{};
+    if (GetDiskFreeSpaceExW(directory.c_str(), &available, nullptr, nullptr) && length > available.QuadPart)
+      throw SnapshotStorageError(ERROR_DISK_FULL, std::system_category(),
+          "author snapshot insufficient free space: " + directory.u8string());
     static std::atomic<uint64_t> serial{0};
     auto path = directory / (std::to_wstring(GetCurrentProcessId()) + L"-" +
         std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(serial.fetch_add(1)) + L".snapshot");
@@ -102,23 +143,32 @@ private:
     snapshot->handle_ = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-    Require(snapshot->handle_ != INVALID_HANDLE_VALUE, "author resource snapshot creation failed");
+    if (snapshot->handle_ == INVALID_HANDLE_VALUE) {
+      const auto error = GetLastError();
+      throw SnapshotStorageError(int(error), std::system_category(),
+          "author resource snapshot creation failed: " + directory.u8string());
+    }
     LARGE_INTEGER position{}; position.QuadPart = LONGLONG(offset_ + start);
-    Require(SetFilePointerEx(held.value, position, nullptr, FILE_BEGIN), "author snapshot source seek failed");
-    std::array<unsigned char, 64 * 1024> scratch{};
+    Require(SetFilePointerEx(source, position, nullptr, FILE_BEGIN), "author snapshot source seek failed");
+    const size_t chunk = std::min(length, size_t(256 * 1024));
+    std::unique_ptr<unsigned char[]> scratch(new unsigned char[chunk]);
     for (size_t at = 0; at < length;) {
-      auto count = DWORD(std::min(length - at, scratch.size())); DWORD read = 0, written = 0;
-      Require(ReadFile(held.value, scratch.data(), count, &read, nullptr) && read == count,
+      auto count = DWORD(std::min(length - at, chunk)); DWORD read = 0, written = 0;
+      Require(ReadFile(source, scratch.get(), count, &read, nullptr) && read == count,
               "author snapshot source read truncated");
-      Require(WriteFile(snapshot->handle_, scratch.data(), count, &written, nullptr) && written == count,
-              "author resource snapshot write failed");
+      const auto writeOk = WriteFile(snapshot->handle_, scratch.get(), count, &written, nullptr);
+      if (!writeOk || written != count) {
+        const auto error = writeOk ? ERROR_WRITE_FAULT : GetLastError();
+        throw SnapshotStorageError(int(error), std::system_category(),
+            "author resource snapshot write failed: " + directory.u8string());
+      }
       at += count;
     }
-    VerifyStable();
-    Require(GetFileInformationByHandle(snapshot->handle_, &snapshot->stamp_), "author snapshot stamp unavailable");
-    snapshot->available_ = length;
-    snapshot->frozen_ = true;
-    EiemLoadPerformance::Bytes(EiemLoadPerformance::AuthorSnapshot,length);
+    if (!GetFileInformationByHandle(snapshot->handle_, &snapshot->stamp_)) {
+      const auto error = GetLastError();
+      throw SnapshotStorageError(int(error), std::system_category(),
+          "author snapshot stamp unavailable: " + directory.u8string());
+    }
     return snapshot;
   }
 public:

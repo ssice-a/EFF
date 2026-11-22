@@ -13,7 +13,7 @@ struct Player {
  std::map<std::string,std::set<std::string>> conflicts;
  std::map<std::string,std::set<std::string>> ownedTracks,trackOwners;
  std::map<std::string,std::set<BoneTarget>> ownedBones;
- std::map<BoneTarget,std::set<std::string>> boneOwners;
+ std::map<std::string,std::set<std::string>> bonePaths;
 private:
  // IDs, not pointers, survive candidate copies, swaps and F10 publication.
  std::set<std::string> active;
@@ -67,12 +67,13 @@ public:
    auto step=EiemSampledAnimation::Advance(state,clip.duration,clip.loop,values.at(clip.speedVariable),elapsed);
    if(step==EiemSampledAnimation::Step::Finished){Stop(clip);changed=true;}else if(step==EiemSampledAnimation::Step::Advanced)Evaluate(clip);
   }return changed;}
- void Prepare(const EiemDirectory::Package& p){clips.clear();output.clear();boneOutput.clear();conflicts.clear();ownedTracks.clear();trackOwners.clear();ownedBones.clear();boneOwners.clear();active.clear();lastVisited=0;sampleLeases.clear();
+ void Prepare(const EiemDirectory::Package& p){clips.clear();output.clear();boneOutput.clear();conflicts.clear();ownedTracks.clear();trackOwners.clear();ownedBones.clear();bonePaths.clear();active.clear();lastVisited=0;sampleLeases.clear();
   // Build conflicts once with the control graph, never by scanning Meshes or
   // testing group intersections in the per-frame interpolation path.
-  for(const auto& row:p.shapeAnimations){clips.emplace(row.first,Playback{});ownedTracks.emplace(row.first,std::set<std::string>{});ownedBones.emplace(row.first,std::set<BoneTarget>{});for(const auto& track:row.second.tracks){ownedTracks.at(row.first).insert(track.first);trackOwners[track.first].insert(row.first);}for(const auto& track:row.second.boneTracks){BoneTarget target{track.skeleton,track.path};ownedBones.at(row.first).insert(target);boneOwners[target].insert(row.first);}}
+  std::map<std::string,std::set<std::string>> skeletonOwners;
+  for(const auto& row:p.shapeAnimations){clips.emplace(row.first,Playback{});ownedTracks.emplace(row.first,std::set<std::string>{});ownedBones.emplace(row.first,std::set<BoneTarget>{});for(const auto& track:row.second.tracks){ownedTracks.at(row.first).insert(track.first);trackOwners[track.first].insert(row.first);}for(const auto& track:row.second.boneTracks){ownedBones.at(row.first).emplace(track.skeleton,track.path);bonePaths[track.skeleton].insert(track.path);skeletonOwners[track.skeleton].insert(row.first);}}
   for(const auto& row:trackOwners)for(const auto& id:row.second)for(const auto& other:row.second)if(id!=other)conflicts[id].insert(other);
-  for(const auto& row:boneOwners)for(const auto& id:row.second)for(const auto& other:row.second)if(id!=other)conflicts[id].insert(other);
+  for(const auto& row:skeletonOwners)for(const auto& id:row.second)for(const auto& other:row.second)if(id!=other)conflicts[id].insert(other);
   std::map<std::string,std::set<std::string>> nativeOwners;for(const auto& row:p.shapeAnimations)for(const auto& output:row.second.nativeOutputs)nativeOwners[output.hierarchy].insert(row.first);
   for(const auto& row:nativeOwners)for(const auto& id:row.second)for(const auto& other:row.second)if(id!=other)conflicts[id].insert(other);
   for(const auto& row:p.shapeAnimations)if(row.second.autoplay)Play(row.second);}

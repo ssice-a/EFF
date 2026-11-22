@@ -355,6 +355,7 @@ struct Mesh {
   std::string resource;
   unsigned vertices = 0, indices = 0;
   std::vector<std::string> bones, shapes;
+  std::string skeleton;
 };
 struct Material {
   std::string resource;
@@ -373,6 +374,7 @@ struct Part {
   std::shared_ptr<EiemExpression> visible;
   std::map<std::string, std::string> shapes;
   unsigned materialSlot = 0;
+  bool afterimage = true;
 };
 struct Rule {
   std::vector<std::string> parts;

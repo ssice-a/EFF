@@ -2,26 +2,42 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace EiemAuthorBoneAnimation {
+using Rotation = std::array<float, 4>;
+using RetargetPaths = std::map<std::string, std::string>; // target -> source
+
 struct Node {
   std::string path;
   int32_t parent = -1;
   std::array<float, 3> position{};
-  std::array<float, 4> rotation{0, 0, 0, 1};
+  Rotation rotation{0, 0, 0, 1};
   std::array<float, 3> scale{1, 1, 1};
+  bool source = true;
+};
+
+struct RotationRetarget {
+  size_t ancestor;
+  size_t source;
+  std::string sourceRelativePath;
+  Rotation before;
+  Rotation after;
 };
 
 struct Skeleton {
   std::vector<Node> nodes;
   std::set<std::string> paths;
+  std::map<size_t, RotationRetarget> retargets;
 };
 
 using TransformSample = std::array<float, 10>;
@@ -104,7 +120,8 @@ class Reader {
 
 inline bool ValidPath(const std::string& path) {
   if (path.empty() || path.front() == '/' || path.back() == '/' ||
-      path.find('\\') != std::string::npos || path.find("//") != std::string::npos)
+      path.find('\\') != std::string::npos || path.find("//") != std::string::npos ||
+      path.find('\0') != std::string::npos)
     return false;
   size_t begin = 0;
   while (begin < path.size()) {
@@ -115,6 +132,127 @@ inline bool ValidPath(const std::string& path) {
     begin = end + 1;
   }
   return true;
+}
+
+inline Rotation Multiply(const Rotation& a, const Rotation& b) {
+  const auto [x, y, z, w] = a;
+  const auto [u, v, s, t] = b;
+  return {w*u + x*t + y*s - z*v, w*v - x*s + y*t + z*u,
+          w*s + x*v - y*u + z*t, w*t - x*u - y*v - z*s};
+}
+
+inline Rotation Conjugate(const Rotation& q) { return {-q[0], -q[1], -q[2], q[3]}; }
+
+inline Rotation Normalize(Rotation q) {
+  double length = 0;
+  for (auto value : q) length += double(value) * value;
+  if (!std::isfinite(length) || length <= 0)
+    throw std::runtime_error("invalid live bone rotation");
+  const auto inverse = 1.0 / std::sqrt(length);
+  for (auto& value : q) value = float(value * inverse);
+  return q;
+}
+
+inline void SetRetargets(Skeleton& skeleton, const RetargetPaths& paths) {
+  if (paths.empty()) return;
+  const Rotation identity{0, 0, 0, 1};
+  std::map<std::string, size_t> indices;
+  std::vector<Rotation> worldRest;
+  worldRest.reserve(skeleton.nodes.size());
+  const auto parentRest = [&](const Node& node) {
+    return node.parent < 0 ? identity : worldRest[size_t(node.parent)];
+  };
+  for (const auto& node : skeleton.nodes) {
+    indices.emplace(node.path, worldRest.size());
+    worldRest.push_back(Normalize(Multiply(parentRest(node), node.rotation)));
+  }
+  for (const auto& [targetPath, sourcePath] : paths) {
+    const auto sourceIndex = indices.find(sourcePath), targetIndex = indices.find(targetPath);
+    if (sourceIndex == indices.end() || targetIndex == indices.end())
+      throw std::runtime_error("retarget path is absent from Skeleton: " + sourcePath + " -> " + targetPath);
+    const auto& source = skeleton.nodes[sourceIndex->second];
+    const auto& target = skeleton.nodes[targetIndex->second];
+    if (!source.source || target.source)
+      throw std::runtime_error("retarget needs a native source and an authored target: " + sourcePath + " -> " + targetPath);
+
+    // The shared native ancestor lets the runtime resolve both paths on one
+    // character instance, even when the source is outside the mesh palette.
+    std::set<size_t> sourceAncestors;
+    for (int32_t at = int32_t(sourceIndex->second); at >= 0; at = skeleton.nodes[size_t(at)].parent) {
+      if (!skeleton.nodes[size_t(at)].source)
+        throw std::runtime_error("retarget source hierarchy is not native: " + sourcePath);
+      sourceAncestors.insert(size_t(at));
+    }
+    auto ancestor = target.parent;
+    while (ancestor >= 0 && !sourceAncestors.count(size_t(ancestor)))
+      ancestor = skeleton.nodes[size_t(ancestor)].parent;
+    if (ancestor < 0)
+      throw std::runtime_error("retarget bones have no shared native ancestor: " + targetPath);
+    const auto& ancestorPath = skeleton.nodes[size_t(ancestor)].path;
+    auto relative = sourcePath == ancestorPath ? std::string() :
+        sourcePath.substr(ancestorPath.empty() ? 0 : ancestorPath.size() + 1);
+
+    // Change the source's parent-space rotational delta into the target's
+    // parent bind basis. Only the source's current local rotation is sampled.
+    const auto before = Multiply(Conjugate(parentRest(target)), parentRest(source));
+    const auto after = Multiply(Multiply(Conjugate(source.rotation), Conjugate(before)), target.rotation);
+    skeleton.retargets.emplace(targetIndex->second,
+        RotationRetarget{size_t(ancestor), sourceIndex->second, std::move(relative), before, after});
+  }
+}
+
+// Carries local Transform addresses inside the assembled prefab. It contains
+// no game bone names, native pointers, or cross-instance object identifiers.
+using LocalBoneRoute = std::vector<int>;
+using RetargetRoutes = std::map<size_t, LocalBoneRoute>;
+inline std::string RetargetRoutePrefix(const std::string& skeletonId) {
+  return "__EFF_RETARGET_ROUTES_1_" + skeletonId + ":";
+}
+inline std::string EncodeRetargetRoutes(const std::string& prefix, const RetargetRoutes& routes) {
+  std::string encoded = prefix;
+  for (const auto& [target, route] : routes) {
+    encoded += std::to_string(target) + '=';
+    for (auto step : route) encoded += std::to_string(step) + ',';
+    encoded += ';';
+  }
+  return encoded;
+}
+inline RetargetRoutes DecodeRetargetRoutes(std::string_view rows, const Skeleton& skeleton) {
+  const auto readIndex = [&rows](auto& value, char end) {
+    const auto at = rows.find(end);
+    if (at == rows.npos || !at) throw std::runtime_error("invalid prefab retarget route field");
+    const auto last = rows.data() + at;
+    const auto number = std::from_chars(rows.data(), last, value);
+    if (number.ec != std::errc() || number.ptr != last)
+      throw std::runtime_error("invalid prefab retarget route index");
+    rows.remove_prefix(at + 1);
+  };
+  RetargetRoutes result;
+  while (!rows.empty()) {
+    size_t target = 0;
+    readIndex(target, '=');
+    const auto mapping = skeleton.retargets.find(target);
+    if (mapping == skeleton.retargets.end())
+      throw std::runtime_error("prefab retarget route has no authored target");
+    const auto& path = skeleton.nodes.at(mapping->second.source).path;
+    const auto depth = path.empty() ? 0 : size_t(std::count(path.begin(), path.end(), '/')) + 1;
+    LocalBoneRoute route;
+    route.reserve(depth);
+    for (size_t i = 0; i < depth; ++i) {
+      int child = 0;
+      readIndex(child, ',');
+      if (child < 0) throw std::runtime_error("negative prefab retarget child ordinal");
+      route.push_back(child);
+    }
+    if (rows.empty() || rows.front() != ';' || !result.emplace(target, std::move(route)).second)
+      throw std::runtime_error("invalid or duplicate prefab retarget route");
+    rows.remove_prefix(1);
+  }
+  return result;
+}
+
+inline Rotation RetargetRotation(const RotationRetarget& retarget, const Rotation& current) {
+  return Normalize(Multiply(Multiply(retarget.before, current), retarget.after));
 }
 
 inline void ValidateSample(const TransformSample& sample) {
@@ -130,7 +268,8 @@ inline void ValidateSample(const TransformSample& sample) {
 inline Skeleton DecodeSkeleton(const unsigned char* bytes, size_t size) {
   Reader reader(bytes, size);
   reader.Magic("EFFSKA1\0", 8);
-  if (reader.U32() != 1) throw std::runtime_error("unsupported author Skeleton version");
+  const auto version = reader.U32();
+  if (version != 1 && version != 2) throw std::runtime_error("unsupported author Skeleton version");
   const auto count = reader.U32();
   if (!count || count > 16384) throw std::runtime_error("invalid author Skeleton node count");
   if (reader.String16() != "unity-y-up-left-handed")
@@ -145,12 +284,18 @@ inline Skeleton DecodeSkeleton(const unsigned char* bytes, size_t size) {
     for (auto& value : node.position) value = reader.F32();
     for (auto& value : node.rotation) value = reader.F32();
     for (auto& value : node.scale) value = reader.F32();
+    if (version == 2) {
+      const auto source = reader.U8();
+      if (source > 1) throw std::runtime_error("invalid author Skeleton source flag");
+      node.source = source != 0;
+    }
 
     if ((!ValidPath(node.path) && !(i == 0 && node.path.empty())) ||
         !result.paths.insert(node.path).second)
       throw std::runtime_error("invalid or duplicate author Skeleton path: " + node.path);
     if (i == 0) {
-      if (node.parent != -1 || node.path.find('/') != std::string::npos)
+      if (node.parent != -1 || node.path.find('/') != std::string::npos ||
+          (!node.source && node.path.empty()))
         throw std::runtime_error("author Skeleton root must be a path root");
     } else {
       if (node.parent < 0 || uint32_t(node.parent) >= i)
@@ -170,6 +315,18 @@ inline Skeleton DecodeSkeleton(const unsigned char* bytes, size_t size) {
   }
   if (!reader.Done()) throw std::runtime_error("author Skeleton has trailing bytes");
   return result;
+}
+
+// The palette includes weighted bones only. Their unweighted author parents
+// still need to exist and participate in animation.
+inline std::vector<bool> AuthorBoneClosure(const Skeleton& skeleton, const std::set<std::string>& palette) {
+  std::vector<bool> used(skeleton.nodes.size());
+  for (size_t index = used.size(); index-- > 0;) {
+    const auto& node = skeleton.nodes[index];
+    used[index] = !node.source && (used[index] || palette.count(node.path));
+    if (used[index] && node.parent >= 0) used[size_t(node.parent)] = true;
+  }
+  return used;
 }
 
 inline Clip DecodeClip(const unsigned char* bytes, size_t size,

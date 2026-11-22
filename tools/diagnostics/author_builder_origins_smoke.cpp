@@ -62,6 +62,49 @@ void PhysicsBuilderOrigins(){
  auto changedDocuments=EiemPhysicsInput::Documents(changedPackage);auto rebuilt=EiemPhysicsInput::MemberBuilder(before,source.cab,changedPackage,assets,changedDocuments).Build();
  Require(rebound==rebuilt,"Physics explicit payload replay differs from full compile");
  std::cout<<"PASS Physics author provenance: template decoding, both actor roots, remapped references and parameter replay/full-compile equality\n";
+
+ // The world actor has the native collider mount; the UI actor omits it.
+ auto& document=documents.front();
+ const EiemPhysicsInput::Node mount{"spine/native collider","spine",true,true,
+     {0.25,0.5,0.75},{1,2,1},{0,1,0,0}};
+ document.nodes.emplace(mount.path,mount);
+ document.colliders.emplace("collider",EiemPhysicsInput::Collider{
+     "collider","Collider",mount.path,donor.cab,900,{0,0,0},{0,0,0,1}});
+ document.groups.front().colliders.push_back("collider");
+ source.Add(60,0);source.Add(61,1);
+ SetString(source.T(60),Child(source.T(60),source.V(60),"m_Name"),"native collider");
+ source.List(60,"m_Component",{61},"component");
+ source.Pointer(61,"m_GameObject",60);source.Pointer(61,"m_Father",41);
+ source.List(41,"m_Children",{61});
+ auto variant=source.BytesOf();
+ auto assembled=EiemPhysicsInput::MemberBuilder(variant,source.cab,package,assets,documents).Build();
+ auto result=ParseSerialized(assembled);
+ auto ref=[&](int64_t id,const char* name){
+   const auto& type=result.types.at(result.objects.at(id).type);
+   auto value=ObjectValue(assembled,result,id);
+   return NullableReference(type,Child(type,value,name),result,source.cab);
+ };
+ auto generated=[&](int64_t anchor,const char* purpose){
+   return RendererObjectId(source.cab,package,"physics-transform",anchor,document.id+purpose);
+ };
+ const auto proxy=generated(21,":collider-mount:spine/native collider");
+ Require(!result.objects.count(generated(11,":collider-mount:spine/native collider"))&&
+         ref(generated(11,":collider:collider"),"m_Father")==NativeReference{source.cab,61}&&
+         ref(generated(21,":collider:collider"),"m_Father")==NativeReference{source.cab,proxy}&&
+         ref(proxy,"m_Father")==NativeReference{source.cab,51},
+         "Physics collider mount left its actor skeleton");
+ const auto& proxyType=result.types.at(result.objects.at(proxy).type);
+ auto proxyValue=ObjectValue(assembled,result,proxy);
+ Require(ReadVector(proxyType,Child(proxyType,proxyValue,"m_LocalPosition"))==mount.position&&
+         ReadVector(proxyType,Child(proxyType,proxyValue,"m_LocalScale"))==mount.scale&&
+         FloatValue(proxyType,Child(proxyType,Child(proxyType,proxyValue,"m_LocalRotation"),"y"))==1,
+         "Physics collider mount lost its authored transform");
+ document.groups.front().nodes.emplace_back(mount.path,false);
+ bool rejected=false;
+ try{EiemPhysicsInput::MemberBuilder(variant,source.cab,package,assets,documents).Build();}
+ catch(const std::runtime_error& error){rejected=std::string(error.what()).find("no unique local skeleton anchor")!=std::string::npos;}
+ Require(rejected,"Physics synthesized a missing native chain bone");
+ std::cout<<"PASS collider mount fallback: world reference kept, UI proxy local with authored TRS, missing chain bone rejected\n";
 }
 void BoundsOrigins(){
  auto matrix=AffineIdentity();matrix[3]=0.123;matrix[7]=-2;auto name=BoundsOriginName(17,matrix,"resources/mesh:variant.bin");
@@ -112,6 +155,43 @@ void RendererBoundsIntegration(){
   Require(leaf.rawOrigins.size()==1&&leaf.rawOrigins.front().resource==BoundsOriginName(0,AffineIdentity(),"mesh")&&leaf.rawOrigins.front().owned&&leaf.rawOrigins.front().owned->size()==24,"skinned Renderer did not bind derived bounds context");
  }
  std::cout<<"PASS skinned Renderer bounds integration: both native consumers retain derived payload origins\n";
+
+ // The unweighted Pivot drives Tip. Neither needs a Physics group.
+ auto skeleton=std::make_shared<EiemAuthorBoneAnimation::Skeleton>();
+ using BoneNode=EiemAuthorBoneAnimation::Node;
+ BoneNode root,pivot,tip;
+ pivot.path="Pivot";pivot.parent=0;pivot.source=false;pivot.position[1]=1;
+ tip.path="Pivot/Tip";tip.parent=1;tip.source=false;tip.position[1]=2;
+ skeleton->nodes={root,pivot,tip};
+ package.meshes["M"].bones={"","Pivot/Tip"};
+ EiemPhysicsInput::SkeletonUses uses;
+ for(int64_t id:{13,23})uses[id].push_back({"rig","P",skeleton,&package.meshes.at("M").bones});
+ uses[13].push_back({"rig","SiblingPart",skeleton,&package.meshes.at("M").bones});
+ const std::vector<EiemPhysicsInput::Document> noPhysics;
+ EiemPhysicsInput::MemberBuilder skeletonBuilder(before,fixture.cab,package,assets,noPhysics);
+ skeletonBuilder.SetSkeletonUses(uses);
+ auto withBones=skeletonBuilder.Build();
+ auto slots=skeletonBuilder.TakeAuthorBoneSlots();
+ Require(slots.size()==3&&slots.at({13,"P"})==slots.at({13,"SiblingPart"})&&
+         slots.at({13,"P"}).at(1)!=slots.at({23,"P"}).at(1),"author skeleton crossed instances or duplicated a shared bone");
+ auto skeletonLayout=ParseSerialized(withBones);
+ Require(skeletonLayout.objects.size()==ParseSerialized(before).objects.size()+8,"author skeleton added objects other than two bone pairs per instance");
+ auto pointer=[&](int64_t id,const char* field){
+  auto value=ObjectValue(withBones,skeletonLayout,id);const auto& type=skeletonLayout.types.at(skeletonLayout.objects.at(id).type);
+  return NullableReference(type,Child(type,value,field),skeletonLayout,fixture.cab).second;
+ };
+ RendererMemberBuilder skinned(withBones,fixture.cab,package,assets,parts);
+ skinned.SetBoundsCache(cache);skinned.SetAuthorBoneSlots(slots);
+ auto authored=skinned.Build();
+ Require(authored.parts.size()==2,"ordinary author bones did not assemble both skinned Renderers");
+ for(const auto& part:authored.parts){
+   auto tipId=slots.at({part.sourceRenderer,"P"}).at(1);
+   auto rootId=part.sourceRenderer-2;
+   auto pivotId=pointer(tipId,"m_Father");
+   Require(pointer(pivotId,"m_Father")==rootId&&part.bones==std::vector<int64_t>{rootId,tipId},
+           "ordinary author parent or weighted Renderer bone slot differs");
+ }
+ std::cout<<"PASS ordinary author bones: native slot binding, unweighted parent, shared Parts, isolated roots, no Physics\n";
 }
 } // namespace
 #ifndef EIEM_AUTHOR_BUILDER_FIXTURE_ONLY

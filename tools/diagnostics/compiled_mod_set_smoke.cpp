@@ -335,14 +335,15 @@ void StoreSnapshotPinsRegression(){
  auto fallbackPath=fallback/"compiled.bin";auto fallbackIndex=Fork({},fallbackPath,0,{{"runtime/proof/x",Bytes{4,5,6}},{"runtime/common",Bytes{7,8}}});
  {std::shared_ptr<EiemCompiledModStore::Backing> direct;{Lock publication(fallbackPath);direct=std::make_shared<EiemCompiledModStore::Backing>(fallbackPath,true);Require(direct->Get("runtime/common")==Bytes({7,8}),"fallback consumer immediate metadata differs");}
   Require(!direct->link.path.empty()&&direct->link.error&&direct->directBlobs.empty(),"consumer cache failure did not fall back to an outside snapshot");
-  auto blob=fallback/std::filesystem::u8path(fallbackIndex.blocks.at("runtime/proof/x").external);
+  const auto tempCache=std::filesystem::temp_directory_path()/"EFF"/"compiled-snapshots";
   auto pinnedBlob=direct->link.directory/std::filesystem::u8path(fallbackIndex.blocks.at("runtime/proof/x").external);
-  Require(std::filesystem::exists(pinnedBlob)&&!std::filesystem::equivalent(blob,pinnedBlob),"cross-volume fallback did not copy the delayed proof outside the Mod tree");
+  Require(std::filesystem::equivalent(direct->link.directory.parent_path(),tempCache)&&
+    std::filesystem::is_regular_file(pinnedBlob),"TEMP fallback did not retain the delayed proof outside the Mod tree");
   auto moved=fallbackPlugin/"removed-mods";std::error_code moveError;std::filesystem::rename(fallbackPlugin/"mods",moved,moveError);
   Require(!moveError,"outside fallback snapshot still pins the nested Mod directory against movement: "+moveError.message());
   std::error_code removeError;std::filesystem::remove_all(moved,removeError);Require(!removeError,"outside fallback snapshot still pins the nested Mod directory against removal: "+removeError.message());
   Require(direct->Get("runtime/proof/x")==Bytes({4,5,6}),"outside fallback snapshot lost its delayed proof after Mod removal");}
- std::cout<<"PASS store snapshot pins: author/consumer pin coverage, nested Mod directory move/removal, delayed sidecar proof, cleanup and proof-only hardlink fallback survive blob GC\n";
+ std::cout<<"PASS store snapshot pins: author/consumer pin coverage, nested Mod directory move/removal, delayed sidecar proof, cleanup and proof-only TEMP fallback survive blob GC\n";
 }
 
 void SharedSchemaDictionaryRegression(){

@@ -3,6 +3,7 @@
 #include "eiem_runtime_shape_identity.h"
 #include "eiem_entry_controls.h"
 namespace RuntimeMaterials {void Register(void*,void*,const RuntimeControls::Spec&);void Frame();void Forget(void*);void Install(void**,size_t);}
+namespace RuntimeBones {void Register(void*,const RuntimeControls::Spec&);void Forget(void*) noexcept;void FrameRetargets();}
 namespace RuntimeAttachments {void ModelReady(void*);void QueueOwnerReady(void*);void OwnerReleasing(void*) noexcept;void Frame();}
 namespace RuntimeAnimations {void Frame(double,int);}
 namespace FullResourceReload {void HelperReady(void*);}
@@ -47,9 +48,11 @@ struct Bound {
   std::string marker;
   std::map<std::string,int> indices;
   bool nativeEnabled = true;
+  bool authorVisible = true;
   bool tracksNativeEnabled = false;
   bool restoreNativeIntent = false;
   bool modelReady = false;
+  bool bonesRegistered = false;
   Ref filter;
   uint64_t visibilityRevision=~uint64_t(0);
   bool shapeCompatible = true;
@@ -103,11 +106,13 @@ int lastFrame = -1;
 unsigned snapshotSequence = 0;
 size_t liveSnapshots = 0;
 using CaptureFn = void* (*)(void*, void*, int, void*);
+using RendererMaskFn = bool (*)(void*, void*, int, void*);
 using ReleaseFn = void (*)(void*, void*, void*);
 using TickFn = void (*)(void*, void*);
 using InitFn = void (*)(void*, void*, void*, void*, bool, void*);
 using MeshGetterFn = void* (*)(void*);
 CaptureFn originalCapture = nullptr;
+RendererMaskFn originalRendererMask = nullptr;
 ReleaseFn originalRelease = nullptr;
 TickFn originalTick = nullptr, originalReset = nullptr, originalFrameTick = nullptr;
 InitFn originalInit = nullptr;
@@ -215,6 +220,7 @@ void RetireRenderer(void* renderer) {
 #if defined(EIEM_MOD_ANIMATION_PROBE)
   ModAnimationProbe::Forget(renderer);
 #endif
+  RuntimeBones::Forget(renderer);
   auto found=bound.find(renderer);
   if(found==bound.end())return;
   try {
@@ -310,7 +316,7 @@ void Bind(void* renderer, void* mesh, const Spec& spec) {
   if (existing != bound.end() && existing->second.renderer.Get() == renderer && existing->second.mesh.Get() == mesh) return;
   if(existing!=bound.end()) {
     if(existing->second.renderer.Get()==renderer)RetireRenderer(renderer);
-    else {bound.erase(existing);boundCount.store(unsigned(bound.size()));}
+    else {RuntimeBones::Forget(renderer);bound.erase(existing);boundCount.store(unsigned(bound.size()));}
   }
   Require(Alive(renderer) && Alive(mesh), "runtime shape binding target is no longer alive");
   // A managed Mesh wrapper can be collected while its native Renderer still
@@ -628,6 +634,22 @@ void* Capture(void* self, void* root, int mask, void* info) {
   }
   return result;
 }
+bool PassRendererMask(void* self, void* renderer, int mask, void* info) {
+  if (!originalRendererMask(self,renderer,mask,info)) return false;
+  if (!scope || !enabled || !renderer || packageGeneration != generation.load()) return true;
+  try {
+    // Preserve the game's LOD visibility and readiness checks. Filter only
+    // when it adds an eligible Renderer to the capture list.
+    auto binding = bound.find(renderer);
+    if (binding == bound.end()) return true;
+    auto spec = specs.find(binding->second.marker);
+    if (spec == specs.end() || spec->second.afterimage || binding->second.renderer.Get() != renderer) return true;
+    return !Alive(renderer) || SourceMesh(renderer) != binding->second.mesh.Get();
+  } catch (const std::exception& e) {
+    Log("[SHAPE-CAPTURE-GAP] rendererMask=%s",e.what());
+    return true;
+  }
+}
 void Release(void* self, void* entity, void* info) {
   originalRelease(self,entity,info);
   try {
@@ -661,10 +683,18 @@ void SetEnabled(void* renderer,bool nativeRequest) {
       auto it=bound.find(renderer);
       if (it!=bound.end() && it->second.renderer.Get()==renderer && Alive(renderer) &&
           SourceMesh(renderer)==it->second.mesh.Get()) {
-        const auto& spec=specs.at(it->second.marker);
-        if (spec.visible) {
-          it->second.nativeEnabled=nativeRequest;
-          output=nativeRequest && (!it->second.modelReady || spec.visible->Evaluate(EffectiveValues(spec.package))!=0);
+        auto& binding=it->second;
+        auto spec=specs.find(binding.marker);
+        if (binding.tracksNativeEnabled) binding.nativeEnabled=nativeRequest;
+        if (spec==specs.end()) {
+          // F10 may leave this model in use until its native owner can release it.
+          if (binding.tracksNativeEnabled && binding.modelReady)
+            output=nativeRequest && binding.authorVisible;
+        } else if (spec->second.visible) {
+          binding.nativeEnabled=nativeRequest;
+          if (nativeRequest && binding.modelReady)
+            binding.authorVisible=spec->second.visible->Evaluate(EffectiveValues(spec->second.package))!=0;
+          output=nativeRequest && (!binding.modelReady || binding.authorVisible);
         }
       } else {
         auto retired=retiredNativeIntents.find(renderer);
@@ -683,15 +713,15 @@ void SetEnabled(void* renderer,bool nativeRequest) {
 void ApplyVisibility(void* renderer,Bound& binding,const Spec& spec,bool onlyIfChanged=false) {
   if (!spec.visible || !binding.modelReady) return;
   if(onlyIfChanged&&binding.visibilityRevision==RuntimeControls::valueRevision)return;
-  bool authorVisible=spec.visible->Evaluate(EffectiveValues(spec.package))!=0;
-  bool target=binding.nativeEnabled && authorVisible;
+  binding.authorVisible=spec.visible->Evaluate(EffectiveValues(spec.package))!=0;
+  bool target=binding.nativeEnabled && binding.authorVisible;
   struct Guard {bool old=visibilityWriting;Guard(){visibilityWriting=true;}~Guard(){visibilityWriting=old;}} guard;
   if (ActualEnabled(renderer)==target) {binding.visibilityRevision=RuntimeControls::valueRevision;return;}
   originalEnabledSetter(renderer,target);
   Require(ActualEnabled(renderer)==target,"runtime visibility readback mismatch");
   binding.visibilityRevision=RuntimeControls::valueRevision;
   Log("[CONTROL-RUNTIME-VISIBILITY] package=%s part=%s renderer=%p authorVisible=%d nativeEnabled=%d enabled=%d",
-      spec.package.c_str(),spec.part.c_str(),renderer,int(authorVisible),int(binding.nativeEnabled),int(target));
+      spec.package.c_str(),spec.part.c_str(),renderer,int(binding.authorVisible),int(binding.nativeEnabled),int(target));
 }
 void RegisterRenderer(void* renderer,void* mesh,bool modelReady=true) {
   if (registrationPaused) return;
@@ -706,6 +736,9 @@ void RegisterRenderer(void* renderer,void* mesh,bool modelReady=true) {
       binding.modelReady=true;
     }
     ApplyVisibility(renderer,binding,*spec);
+    if(modelReady&&!spec->skeleton.empty()&&!binding.bonesRegistered){
+      RuntimeBones::Register(renderer,*spec);binding.bonesRegistered=true;
+    }
     if(modelReady)RuntimeMaterials::Register(renderer,mesh,*spec);
   }
 }
@@ -857,35 +890,40 @@ void ApplyOutputs(int frame) {
 #endif
   EiemLoadPerformance::Scope bindings(EiemLoadPerformance::ControlBindings);
   for (auto it=bound.begin();it!=bound.end();) {
-    const auto& spec=specs.at(it->second.marker);
-    bool visibilityDirty=spec.visible&&it->second.modelReady&&it->second.visibilityRevision!=RuntimeControls::valueRevision;
+    auto found=specs.find(it->second.marker);
+    const auto* spec=found==specs.end()?nullptr:&found->second;
+    bool visibilityDirty=spec&&spec->visible&&it->second.modelReady&&it->second.visibilityRevision!=RuntimeControls::valueRevision;
     // Shape channels can be rewritten by animation each frame. Visibility
     // already follows native setters and only needs work on author changes.
     // Spread idle weak-reference cleanup instead of polling every Renderer.
     bool cleanup=(uintptr_t(it->first)>>4)%64==unsigned(frame)%64;
-    if(spec.controls.empty()&&!visibilityDirty&&!cleanup){++it;continue;}
+    if((!spec||spec->controls.empty())&&!visibilityDirty&&!cleanup){++it;continue;}
     auto renderer=it->second.renderer.Get(), mesh=it->second.mesh.Get();
-    if (!Alive(renderer) || !Alive(mesh)) {
-      if(Alive(renderer)) {auto key=it->first;++it;RetireRenderer(key);}
-      else {it=bound.erase(it);boundCount.store(unsigned(bound.size()));}
-      continue;
+    if (renderer!=it->first || !Alive(renderer) || !Alive(mesh)) {
+      auto key=it->first;++it;RetireRenderer(key);continue;
     }
     auto filter=it->second.filter.Get();
     auto current=it->second.filter.handle?(Alive(filter)?Call(api.filterMesh,filter):nullptr):SourceMesh(renderer);
     if (current!=mesh) {
       auto key=it->first;++it;RetireRenderer(key);continue;
     }
-    ApplyVisibility(renderer,it->second,spec,true);
+    // The current generation may no longer define this retained Renderer.
+    // Leave its last authored output intact until the owner retires it.
+    if(!spec){++it;continue;}
+    ApplyVisibility(renderer,it->second,*spec,true);
 #if defined(EIEM_MOD_ANIMATION_PROBE)
     auto nativeShapes=it->second.shapeCompatible&&it->second.modelReady?
-      ModAnimationProbe::Apply(renderer,mesh,spec):std::set<std::string>{};
+      ModAnimationProbe::Apply(renderer,mesh,*spec):std::set<std::string>{};
 #endif
-    if(it->second.shapeCompatible) for (const auto& control : spec.controls) {
+    if(it->second.shapeCompatible) for (const auto& control : spec->controls) {
 #if defined(EIEM_MOD_ANIMATION_PROBE)
       if(nativeShapes.count(control.first))continue;
 #endif
-      int index=it->second.indices.at(control.first);
-      float target=float(ShapeValue(spec.package,control.second)*100.0);
+      // A stable Part marker can also name a replacement with new channels.
+      auto channel=it->second.indices.find(control.first);
+      if(channel==it->second.indices.end())continue;
+      int index=channel->second;
+      float target=float(ShapeValue(spec->package,control.second)*100.0);
       void* readArgs[]={&index};
       float before=Scalar<float>(api.getWeight,renderer,readArgs);
       if (before!=target) {
@@ -908,7 +946,10 @@ void Tick(void* self, void* info) {
 }
 void FrameTick(void* self,void* info) {
   originalFrameTick(self,info);
-  try { Update(); } catch(const std::exception& e) { Log("[SHAPE-RUNTIME-GAP] frameUpdate=%s",e.what()); }
+  try {
+    Update();
+    RuntimeBones::FrameRetargets();
+  } catch(const std::exception& e) { Log("[SHAPE-RUNTIME-GAP] frameUpdate=%s",e.what()); }
 }
 void Init(void* self, void* renderers, void* configs, void* custom, bool skip, void* info) {
 #if defined(EIEM_MESH_TARGET_PROBE)
@@ -1021,6 +1062,8 @@ void InstallOptional(void** assemblies,size_t count) {
     auto controller=FindClass("Beyond.Rendering","EntityRenderCaptureMeshController",assemblies,count);
     auto material=FindClass("Beyond.Rendering","EntityRenderHelperMaterialController",assemblies,count);
     Require(Install(controller,"Capture",{"UnityEngine.GameObject","Beyond.Rendering.EntityVFXRendererMask"},"Beyond.Rendering.EntityRenderCapturedEntity",false,(void*)Capture,(void**)&originalCapture),"runtime capture hook absent");
+    if (!Install(controller,"_PassRendererMaskFilter",{"UnityEngine.Renderer","Beyond.Rendering.EntityVFXRendererMask"},"System.Boolean",false,(void*)PassRendererMask,(void**)&originalRendererMask))
+      Log("[SHAPE-CAPTURE-GAP] rendererMask=unavailable PartAfterimageOverrides=disabled");
     Require(Install(controller,"Release",{"Beyond.Rendering.EntityRenderCapturedEntity"},"System.Void",false,(void*)Release,(void**)&originalRelease),"runtime capture release hook absent");
     Require(Install(controller,"Reset",{},"System.Void",false,(void*)Reset,(void**)&originalReset),"runtime capture reset hook absent");
     Require(Install(controller,"LateTick",{},"System.Void",false,(void*)Tick,(void**)&originalTick),"runtime shape tick hook absent");

@@ -17,6 +17,6 @@ class BlenderSkeletonTests(unittest.TestCase):
                 str(ROOT/'tools/Blender/eiem_blender_addon.py'),directory],
                 capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=90)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-            self.assertIn('EIEM_SKELETON_EXPORT_OK',result.stdout)
+            self.assertIn('EFF_SKELETON_EXPORT_OK',result.stdout)
 
 if __name__=='__main__': unittest.main()

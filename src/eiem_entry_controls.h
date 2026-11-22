@@ -11,7 +11,8 @@ struct Spec {
   std::vector<std::string> channels;
   std::map<std::string,std::string> controls;
   std::shared_ptr<EiemExpression> visible;
-  std::string material;
+  std::string material, skeleton;
+  bool afterimage = true;
 };
 
 std::map<std::string,Spec> specs;
@@ -143,7 +144,9 @@ State Prepare(const std::shared_ptr<const std::vector<Package>>& graph,const Eie
         const auto& part=package.parts.at(partId);const auto& mesh=package.meshes.at(part.mesh);
         for(const auto& marker:{RuntimePartName(package,partId,target.second),LegacyRuntimePartName(package,partId,target.second)}) {
           Spec spec{package.id,partId,marker,part.mesh,mesh.vertices,mesh.shapes,part.shapes,part.visible};
-          spec.material=part.material;Require(state.specs.emplace(marker,std::move(spec)).second,"runtime part provenance collision");
+          spec.material=part.material;spec.skeleton=mesh.skeleton;
+          spec.afterimage=part.afterimage;
+          Require(state.specs.emplace(marker,std::move(spec)).second,"runtime part provenance collision");
         }
       }
   }

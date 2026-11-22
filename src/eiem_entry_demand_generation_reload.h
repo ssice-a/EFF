@@ -23,10 +23,10 @@ struct PathReload {
   std::string path;
   uint64_t hash=0;
   std::vector<OwnerReload> owners;
-  bool poolDiscarded=false,cacheInvalidated=false;
+  bool poolDiscarded=false,idlePoolChecked=false,cacheInvalidated=false;
   bool prefabInvalidated=false,prefabInvalidationAttempted=false,rawCaptured=false;
   ULONGLONG prefabRetryAt=0,prefabBlockedSince=0;
-  bool prefabRetryDeferred=false;
+  bool prefabRetryDeferred=false,waitingForPrefabHolder=false;
   unsigned prefabDeferredRetries=0;
   std::vector<Ref> rawAssets;
   bool failed=false;
@@ -397,7 +397,7 @@ void AddAffectedOwners(const DemandLoadingProbe::InstalledGeneration& candidate)
     // Cached sources may have appeared while the transaction was idle.
     // Revisit the pool/raw observations; retain proof of an already-unloaded
     // instantiate proxy so an absent old proxy is not required a second time.
-    batch.poolDiscarded=false;batch.cacheInvalidated=false;batch.rawCaptured=false;
+    batch.poolDiscarded=false;batch.idlePoolChecked=false;batch.cacheInvalidated=false;batch.rawCaptured=false;
     batch.prefabInvalidationAttempted=false;batch.prefabRetryAt=0;batch.prefabBlockedSince=0;batch.prefabRetryDeferred=false;batch.prefabDeferredRetries=0;
     for(auto& item:batch.owners)if(item.phase==OwnerPhase::Released){
       auto root=FullResourceReload::CurrentRoot(item.owner);
@@ -432,6 +432,7 @@ void Commit(std::shared_ptr<Prepared> candidate) {
   auto graph=candidate->generation->packages;RuntimeControls::Swap(controls);
   std::atomic_store(&published,graph);settings.Publish(candidate->config);
   RuntimeAttachments::CommitResourceGeneration(resources);
+  RuntimeBones::RefreshControls(candidate->generation->delta.controlOnlyPackages);
   auto next=generation.load()+1;
   RuntimeShapes::packageGeneration=next;RuntimeShapes::checkedGeneration=next;generation.store(next);
   committedGeneration=resources->serial;active=true;
@@ -462,7 +463,7 @@ void AppendOwner(Owner owner,OwnerPhase phase) {
     return row.owner.component.Get()==component&&row.owner.uiModel==owner.uiModel;
   });
   if(duplicate==batch.owners.end())batch.owners.push_back({std::move(owner),phase});
-  batch.started=0;batch.poolDiscarded=false;batch.cacheInvalidated=false;
+  batch.started=0;batch.poolDiscarded=false;batch.idlePoolChecked=false;batch.cacheInvalidated=false;
   batch.prefabInvalidated=false;batch.prefabInvalidationAttempted=false;batch.rawCaptured=false;
   batch.prefabRetryAt=0;batch.prefabBlockedSince=0;batch.prefabRetryDeferred=false;batch.prefabDeferredRetries=0;
   batch.failed=false;
@@ -505,6 +506,49 @@ void StartLoads(PathReload& batch) {
         owner.path.c_str(),error.what());
     }
   }
+}
+
+bool DependsOn(const PathReload& ownerPath,const PathReload& dependencyPath){
+  for(const auto& item:ownerPath.owners){
+    for(const auto& dependency:item.owner.prefabDependencies)
+      if(FullResourceReload::SameAssetPath(dependency.path,dependencyPath.path))return true;
+    for(const auto& dependency:dependencyPath.owners)
+      if(dependency.rebuildParent.Get()==item.owner.component.Get()&&dependency.rebuildParent.Get())return true;
+  }
+  return false;
+}
+
+void CheckPrefabHolders(PathReload& batch,ULONGLONG now){
+  // A retained weapon proxy can block its parent and a display page. Check
+  // those paths as one group before retiring any live model in the group.
+  std::vector<PathReload*> related{&batch};
+  for(size_t i=0;i<related.size();++i)for(auto& other:reloads){
+    if(std::find(related.begin(),related.end(),&other)==related.end()&&
+        (DependsOn(*related[i],other)||DependsOn(other,*related[i])))related.push_back(&other);
+  }
+  for(auto* path:related){
+    if(path->cacheInvalidated)continue;
+    std::set<void*> roots;
+    for(const auto& item:path->owners){
+      if(item.phase!=OwnerPhase::Queued&&item.phase!=OwnerPhase::AwaitExisting)continue;
+      auto root=FullResourceReload::CurrentRoot(item.owner);
+      if(RuntimeShapes::Alive(root))roots.insert(root);
+    }
+    if(!FullResourceReload::HasUnownedPrefabProxy(path->hash,roots))continue;
+    if(!path->idlePoolChecked&&FullResourceReload::api.discardHasUnloadImmediately&&
+       (path->owners.empty()||std::any_of(path->owners.begin(),path->owners.end(),[](const auto& item){return !item.owner.uiModel;}))){
+      // This native call discards only idle entries for the path. Passing
+      // false preserves native resources still held by active consumers.
+      auto manager=Ref::Make(FullResourceReload::ModelManager(),false);
+      if(manager.Get())FullResourceReload::DiscardPool(manager.Get(),path->hash);
+      path->idlePoolChecked=true;
+      if(!FullResourceReload::HasUnownedPrefabProxy(path->hash,roots))continue;
+    }
+    if(!batch.prefabBlockedSince)batch.prefabBlockedSince=now;
+    batch.waitingForPrefabHolder=true;batch.prefabRetryAt=now+kPrefabProxyRetryIntervalMs;
+    throw FullResourceReload::PrefabProxyRetainedError("game still owns a prefab outside the reload: "+path->path);
+  }
+  if(batch.waitingForPrefabHolder){batch.waitingForPrefabHolder=false;batch.prefabBlockedSince=0;}
 }
 
 void ReleasePath(PathReload& batch) {
@@ -683,11 +727,17 @@ void Frame() {
   ResumeDeferredPrefabRetries();
   if(!active)return;
   PollUIPaths();
-  for(auto& batch:reloads)if(!batch.failed&&!batch.cacheInvalidated)try{ReleasePath(batch);}
+  for(auto& batch:reloads)if(!batch.failed&&!batch.cacheInvalidated)try{
+    const auto now=GetTickCount64();
+    if(batch.prefabRetryAt&&now<batch.prefabRetryAt)continue;
+    CheckPrefabHolders(batch,now);
+    ReleasePath(batch);
+  }
     catch(const std::exception& error){
       if(batch.lastError!=error.what()){
         batch.lastError=error.what();batch.waitLogged=false;
-        Log("[DEMAND-F10-PATH-WAIT] path=%s phase=owner-release reason=%s otherPathsContinue=1",batch.path.c_str(),error.what());
+        Log("[DEMAND-F10-PATH-WAIT] path=%s phase=%s reason=%s otherPathsContinue=1",batch.path.c_str(),
+          batch.waitingForPrefabHolder?"holder-before-release":"owner-release",error.what());
       }
     }
   size_t ownerCount=0,settled=0,failed=0,failedPaths=0,settledPaths=0;

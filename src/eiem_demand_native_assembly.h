@@ -48,7 +48,8 @@ struct Author {
     for(const auto& asset:directory.meshes){
       package.parts[asset.part].mesh=asset.part;package.parts[asset.part].material=asset.material;
       package.parts[asset.part].materialSlot=asset.materialSlot;
-      package.meshes[asset.part]={asset.file,asset.vertices,asset.indices,asset.bones,asset.shapes};
+      package.parts[asset.part].afterimage=catalog->PartAfterimage(asset.part);
+      package.meshes[asset.part]={asset.file,asset.vertices,asset.indices,asset.bones,asset.shapes,asset.skeleton};
       package.resources.emplace(asset.file,std::make_shared<const Resource>());
       meshSources.emplace(asset.part,std::make_pair(catalog,asset.part));
     }
@@ -98,10 +99,14 @@ struct Author {
     return ComposePhysicsDocuments(loaded,relevant);
   }
 };
-inline void EnsureStagedMeshMetadata(Author& author,const std::vector<BuiltMeshPart>& parts) {
+inline void EnsureStagedMeshMetadata(Author& author,const std::vector<BuiltMeshPart>& parts,
+    const RendererTargetMatches& matches) {
+  std::set<Identity> relevant;
+  for(const auto& consumer:matches.consumers)
+    relevant.insert(matches.identities.at(CanonicalSerializedAssetReference(consumer.mesh)));
   std::set<std::string> checked;
   for(const auto& part:parts){
-    if(!checked.insert(part.part).second)continue;
+    if(!relevant.count(part.target)||!checked.insert(part.part).second)continue;
     const auto& declaration=author.package.meshes.at(author.package.parts.at(part.part).mesh);
     if(author.bindings.count(declaration.resource)&&author.markers.count(part.part))continue;
     author.GetMesh(part.part);
@@ -138,6 +143,7 @@ inline Carrier StageCarrier(EiemNativeEditTransaction::Member& transaction,R::Re
       result.parts.push_back({target.first,selected->second,part,member.name,asset.pathId,id,mesh->declaration.vertices,mesh->declaration.indices,sourceHashes});first=false;
     }
   }
+  if(changed.empty()&&added.empty())return result;
   auto output=transaction.Layout();std::set<NativeReference> covered;
   if(!expansion.empty())for(auto id:output.order){const auto& type=output.types.at(output.objects.at(id).type);if(type.classId!=142)continue;
     auto bundle=transaction.Object(id);if(ExpandNativePreloads(type,bundle,output,member.name,expansion,covered)){
@@ -151,28 +157,61 @@ inline Carrier PrepareCarrier(R::Reader& reader,size_t memberIndex,const Seriali
   auto result=StageCarrier(transaction,reader,memberIndex,author,targets);result.plan=transaction.Commit();return result;
 }
 struct Consumer {P::Plan plan;RendererInputBuild result;size_t physicsDocuments=0;};
+inline RendererTargetMatches MatchConsumers(EiemNativeEditTransaction::Member& transaction,
+    const Author& author,const AssetIndex& targets) {
+  return MatchRendererTargets(transaction.Layout(),transaction.Cab(),author.package,targets,
+    [&](int64_t id,const std::set<std::string>& fields){return transaction.Project(id,fields);});
+}
 inline Consumer StageConsumer(EiemNativeEditTransaction::Member& transaction,
     const Author& author,const AssetIndex& targets,const std::vector<BuiltMeshPart>& parts,
-    const RendererMaterialReferences* materials=nullptr,const MaterialPreloadIndex* materialClosures=nullptr) {
+    const RendererMaterialReferences* materials=nullptr,const MaterialPreloadIndex* materialClosures=nullptr,
+    const RendererTargetMatches* matchedTargets=nullptr) {
   const auto& cab=transaction.Cab();Consumer result;
-  std::map<NativeReference,Identity> identities;std::set<NativeReference> refs;
-  for(const auto& target:targets)if(author.package.targetIndex.count(target.first)){auto ref=CanonicalSerializedAssetReference({target.second.cab,target.second.pathId});refs.insert(ref);identities.emplace(ref,target.first);}
-  auto consumers=ProjectedMeshConsumers(transaction.Layout(),cab,refs,[&](int64_t id,const std::set<std::string>& fields){return transaction.Project(id,fields);},SerializedAssetCabKey);
+  RendererTargetMatches local;
+  if(!matchedTargets){local=MatchConsumers(transaction,author,targets);matchedTargets=&local;}
+  const auto& consumers=matchedTargets->consumers;
+  const auto& identities=matchedTargets->identities;
+  if(consumers.empty()){
+    result.result.changedObjects=transaction.ChangedObjects();
+    result.result.addedObjects=transaction.AddedObjects();
+    return result;
+  }
   std::set<Identity> relevant;for(const auto& consumer:consumers)relevant.insert(identities.at(CanonicalSerializedAssetReference(consumer.mesh)));
   auto documents=author.PhysicsDocuments(relevant);result.physicsDocuments=documents.size();
-  if(!documents.empty()){
+  EiemPhysicsInput::SkeletonUses skeletons;
+  for(const auto& consumer:consumers){
+    const auto& target=identities.at(CanonicalSerializedAssetReference(consumer.mesh));
+    const auto& rule=author.package.rules.at(author.package.targetIndex.at(target));
+    if(rule.skip||consumer.filter)continue;
+    for(const auto& part:rule.parts){
+      const auto& mesh=author.package.meshes.at(author.package.parts.at(part).mesh);
+      if(mesh.skeleton.empty()||mesh.bones.empty())continue;
+      const auto& source=author.meshSources.at(part);
+      auto skeleton=source.first->GetSkeleton(mesh.skeleton);
+      if(std::any_of(skeleton->nodes.begin(),skeleton->nodes.end(),[](const auto& node){return !node.source;}))
+        skeletons[consumer.renderer].push_back({EiemComposedPackage::Prefix(author.catalogInstances.at(source.first->Root()))+mesh.skeleton,
+                                               part,std::move(skeleton),&mesh.bones});
+    }
+  }
+  AuthorBoneSlots authorBoneSlots;
+  if(!documents.empty()||!skeletons.empty()){
     EiemPhysicsInput::MemberBuilder builder(transaction.Layout(),cab,author.package,targets,documents,
       [&](int64_t id,const std::set<std::string>& fields){return transaction.Project(id,fields);},[&](int64_t id){return transaction.Object(id);},&relevant);
-    Require(builder.Build().empty(),"native Physics assembled a complete member");
+    builder.SetSkeletonUses(skeletons);
+    builder.SetRetargetPalettes(consumers,parts);
+    Require(builder.Build(nullptr,nullptr,&consumers).empty(),"native skeleton assembly returned a complete member");
+    authorBoneSlots=builder.TakeAuthorBoneSlots();
     transaction.Stage(builder.OutputLayout(),builder.TakeChanges(),builder.TakeAdded(),builder.AddedTypes(),builder.AddedScripts());
   }
   RendererMemberBuilder builder(transaction.Layout(),cab,author.package,targets,parts,
     [&](int64_t id,const std::set<std::string>& fields){return transaction.Project(id,fields);},
     [&](int64_t id){return transaction.Object(id);});
   builder.SetAuthorMetadata(author.bindings);
+  builder.SetAuthorBoneSlots(authorBoneSlots);
   if(materials)builder.SetMaterialReferences(*materials);else builder.UseSourceMaterials();
   if(materialClosures)builder.SetMaterialClosures(*materialClosures);
-  result.result=builder.Build();transaction.Stage(builder.OutputLayout(),builder.TakeChanges(),builder.TakeAdded());
+  // Physics adds auxiliary components and bones without changing consumer Mesh references.
+  result.result=builder.Build(nullptr,nullptr,matchedTargets);transaction.Stage(builder.OutputLayout(),builder.TakeChanges(),builder.TakeAdded());
   result.result.changedObjects=transaction.ChangedObjects();result.result.addedObjects=transaction.AddedObjects();return result;
 }
 inline Consumer PrepareConsumer(R::Reader& reader,size_t memberIndex,const SerializedLayout& layout,

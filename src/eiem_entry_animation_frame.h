@@ -9,6 +9,7 @@ void Frame(double elapsed,int frame) {
     RuntimeControls::AdvanceAnimations(elapsed);}
   RuntimeMaterials::Frame();
   RuntimeShapes::ApplyOutputs(frame);
+  RuntimeBones::Frame();
   RuntimeAttachments::Frame();
   RuntimeAuthorTransforms::Frame();
 }

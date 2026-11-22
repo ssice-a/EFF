@@ -1,4 +1,5 @@
 #pragma once
+#include "eiem_author_bone_animation.h"
 #include "eiem_mesh_target_directory.h"
 #include "eiem_runtime_author_directory.h"
 #include <cerrno>
@@ -23,6 +24,7 @@ struct Resource {
   std::string dds;
   std::string author;
   std::string skeleton;
+  EiemAuthorBoneAnimation::RetargetPaths retargets;
   Identity source;
   std::string sourcePrefab;
   TextureSettings textureSettings;
@@ -34,6 +36,7 @@ struct Part {
   std::string mesh;
   std::string material;
   unsigned materialSlot = 0;
+  bool afterimage = true;
 };
 struct Manifest {
   std::filesystem::path root;
@@ -86,6 +89,32 @@ inline unsigned PartMaterialSlot(const std::map<std::string, std::string>& value
   return unsigned(parsed);
 }
 
+inline EiemAuthorBoneAnimation::RetargetPaths ReadRetargets(const Section& section) {
+  const std::string prefix = "retarget.";
+  struct Mapping { std::string source, target; };
+  std::map<std::string, Mapping> mappings;
+  for (const auto& [key, value] : section.values) {
+    if (!Begins(key, prefix.c_str())) continue;
+    const auto dot = key.find_last_of('.');
+    const auto field = key.substr(dot + 1);
+    Require(dot > prefix.size() && (field == "source" || field == "target"),
+            "invalid retarget key: " + section.id + "." + key);
+    const auto id = key.substr(prefix.size(), dot - prefix.size());
+    Require(Identifier(id) && EiemAuthorBoneAnimation::ValidPath(value),
+            "invalid retarget id or bone path: " + section.id + "." + key);
+    auto& mapping = mappings[id];
+    (field == "source" ? mapping.source : mapping.target) = value;
+  }
+  EiemAuthorBoneAnimation::RetargetPaths result;
+  for (const auto& [id, mapping] : mappings) {
+    Require(!mapping.source.empty() && !mapping.target.empty() && mapping.source != mapping.target,
+            "retarget requires distinct source and target paths: " + section.id + ".retarget." + id);
+    Require(result.emplace(mapping.target, mapping.source).second,
+            "duplicate retarget target: " + mapping.target);
+  }
+  return result;
+}
+
 inline Manifest Read(const std::filesystem::path& root,
                      const std::vector<Section>& sections) {
   Manifest result;
@@ -121,6 +150,7 @@ inline Manifest Read(const std::filesystem::path& root,
       resource.kind=8;resource.type="skeleton";resource.path=values.at("path");
       resource.skeleton=section.id.substr(strlen("Skeleton"));
       Require(Identifier(resource.skeleton),"invalid format 3 Skeleton id");
+      resource.retargets=ReadRetargets(section);
       isResource=true;
     } else if (Begins(section.id, "ShapeAnimation")) {
       Keys(section, {"path"});
@@ -212,11 +242,19 @@ inline Manifest Read(const std::filesystem::path& root,
       }
       isResource = true;
     } else if (Begins(section.id, "Part")) {
-      Keys(section, {"mesh", "visible"}, {"material", "material_slot"}, {"shape."});
+      Keys(section, {"mesh", "visible"}, {"material", "material_slot", "afterimage"}, {"shape."});
       auto material = values.find("material");
+      auto afterimage = values.find("afterimage");
+      bool participates = true;
+      if (afterimage != values.end()) {
+        const auto& flag = afterimage->second;
+        Require(flag == "true" || flag == "false" || flag == "1" || flag == "0",
+                "invalid Part afterimage setting: " + section.id);
+        participates = flag == "true" || flag == "1";
+      }
       result.parts.emplace(section.id, Part{values.at("mesh"),
           material == values.end() ? std::string{} : material->second,
-          PartMaterialSlot(values)});
+          PartMaterialSlot(values), participates});
     }
     if (!isResource) continue;
     if(!resource.path.empty())ResourcePath(resource.path);

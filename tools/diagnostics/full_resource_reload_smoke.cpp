@@ -87,6 +87,7 @@ void* byteClass=(void*)0xAA10;unsigned memoryCalls=0,fileFallbackCalls=0;
 std::set<void*> unloadedStreamBundles;
 std::vector<void*>* identityUnloaded=nullptr;
 unsigned prefabProxyUnloadCalls=0;bool prefabProxyUnloadAllowed=true;
+std::set<void*> waitingPrefabProxies;
 std::set<void*> unloadedPrefabProxies;
 std::map<void*,std::vector<unsigned char>> prefabProxyUnloadPlan;
 std::map<void*,size_t> prefabProxyUnloadIndex;
@@ -287,6 +288,8 @@ void* Invoke(void* method,void* self,void** args,void** exception){
   auto proxy=args[0];auto plan=prefabProxyUnloadPlan.find(proxy);if(plan==prefabProxyUnloadPlan.end())return prefabProxyUnloadAllowed?&yes:&no;
   auto& index=prefabProxyUnloadIndex[proxy];return index<plan->second.size()&&plan->second[index++]?&yes:&no;}
  if(m==190){Require(self,"prefab unload state queried without a proxy");return unloadedPrefabProxies.count(self)?&yes:&no;}
+ if(m==191)return self==instance?oldRoot:restoredRoot;
+ if(m==192)return waitingPrefabProxies.count(self)?&yes:&no;
  if(m==86){Require(self&&args&&args[0]==(void*)81&&*(unsigned char*)args[1]==1,"controls queried scene objects instead of inactive model children");
   auto found=controlRenderers.find(self);return found==controlRenderers.end()?Array(self==newRoot||self==uiResultRoot?newRenderer:oldRenderer):Array(found->second);}
  throw std::runtime_error("unexpected fixture managed call: "+std::to_string(m));
@@ -328,6 +331,7 @@ void Setup(){
  a.pathHashField=(void*)10;a.proxyAsset=(void*)92;a.proxyHash=(void*)93;a.proxyGet=(void*)94;a.proxyPath=(void*)99;
  a.proxyTryUnloadImmediately=(void*)98;
  a.proxyUnloaded=(void*)190;
+ a.proxyGameObject=(void*)191;a.proxyWaitingUnload=(void*)192;
  a.rawAssetUnloaded=(void*)184;a.rawAssetRefCount=(void*)185;
  a.handleUntrackedField=(void*)11;a.handleUntrackedClass=configClass;a.untrackedAssetGet=(void*)95;
  FullResourceReload::originalProxyPreload=[](void*,bool asynchronous,void*){proxyCloneResult=asynchronous?FullResourceReload::InstantiateAsync(resourceSource,1,factoryParent,factoryPosition,factoryRotation):FullResourceReload::Clone(resourceSource);};
@@ -393,6 +397,7 @@ FullResourceReload::Attempt MakeAttempt(){
 }
 void Reset(){
  unloadedPrefabProxies.clear();
+ waitingPrefabProxies.clear();fixtureProxyHash=0;
  uiWeaponHeld=false;FullResourceReload::uiWeaponDependenciesApi.collections.clear();
  directPartFixture=false;partUsesPool=true;partHandleLive=true;rawProxyUnloaded=rawUnloadDelayed=false;rawProxyRefs=1;rawReloads=0;
  parentWeaponFixture=false;weaponRoot=oldWeaponRoot;fixturePathHashes.clear();
@@ -457,7 +462,13 @@ void PrefabProxyAlreadyUnloadedRegression(){
  unloadedPrefabProxies.insert(candidate);
  InvalidatePrefabProxyCache(hash,modelPath);
  Require(prefabProxyUnloadCalls==1&&!prefabProxiesByPath.count(hash)&&!prefabProxySourcesByPath.count(hash),
-   "already-unloaded native proxies were retried forever instead of retiring their observations");Reset();
+   "already-unloaded native proxies were retried forever instead of retiring their observations");
+ unloadedPrefabProxies.clear();
+ RememberPrefabProxy(hash,instance,source);fixtureProxyHash=hash+1;
+ Require(!HasUnownedPrefabProxy(hash,{})&&InvalidatePrefabProxyCache(hash,modelPath)==0&&
+         prefabProxyUnloadCalls==1&&!prefabProxiesByPath.count(hash),
+   "proxy recycled for a different path blocked F10 or was unloaded through its old path");
+ Reset();
 }
 void PrefabProxyRetainedWaitRegression(){
  using namespace DemandGenerationReload;Reset();reloads.clear();pendingUIPaths.clear();DemandGenerationReload::active=false;
@@ -476,10 +487,101 @@ void PrefabProxyRetainedWaitRegression(){
  Require(batch.prefabRetryDeferred&&batch.prefabRetryAt&&batch.prefabDeferredRetries==1,
    "retained prefab path was not scheduled for an automatic retry");
  prefabProxyUnloadAllowed=true;batch.prefabRetryAt=GetTickCount64()-1;
+ waitingPrefabProxies.insert(instance);
  Frame();
  Require(!batch.failed&&batch.cacheInvalidated&&DemandGenerationReload::active&&batch.prefabDeferredRetries==0,
    "a released prefab proxy was not retried automatically against the committed generation");
  reloads.clear();Reset();DemandGenerationReload::active=false;
+}
+void PrefabProxyRetainedWorldOwnerRegression(){
+ using namespace DemandGenerationReload;Reset();reloads.clear();pendingUIPaths.clear();
+ auto owner=MakeAttempt().owners.front();FullResourceReload::CaptureConsumers(owner);
+ auto& batch=AddPath(modelPath,0x91A02B3C4D5E6F73ULL);
+ batch.owners.push_back({std::move(owner),OwnerPhase::Queued});
+ FullResourceReload::RememberPrefabProxy(batch.hash,instance);
+ FullResourceReload::RememberPrefabProxy(batch.hash,candidate);
+ prefabProxyUnloadPlan[instance]={1};prefabProxyUnloadPlan[candidate]={0};
+
+ RuntimeShapes::Bound retained;
+ retained.renderer=Ref::Make(oldRenderer,true);
+ retained.mesh=Ref::Make(oldMesh,false);
+ retained.marker="removed-part";
+ retained.modelReady=true;
+ retained.tracksNativeEnabled=true;
+ retained.authorVisible=false;
+ RuntimeShapes::bound.emplace(oldRenderer,std::move(retained));
+
+ Package survivor;survivor.id="unaffected-character";survivor.defaults["$speed"]=1;survivor.defaults["$shape"]=0;
+ EiemDirectory::ShapeAnimation clip;clip.id="loop";clip.duration=1;clip.autoplay=true;clip.speedVariable="$speed";
+ const EiemAuthorBoneAnimation::TransformSample rest{0,0,0,0,0,0,1,1,1,1}, raised{0,2,0,0,0,0,1,1,1,1};
+ clip.boneTracks.push_back({"Rig","Tip",{rest,raised}});
+ survivor.shapeAnimations.emplace(clip.id,clip);
+ auto controls=RuntimeControls::Prepare(std::make_shared<const std::vector<Package>>(std::vector<Package>{survivor}),EiemGlobalConfig{});
+ RuntimeControls::Spec newLayout;newLayout.marker="changed-part";newLayout.package=survivor.id;
+ newLayout.channels={"NewChannel"};newLayout.controls.emplace("NewChannel","$shape");
+ controls.specs.emplace(newLayout.marker,newLayout);
+ RuntimeShapes::Bound previousLayout;
+ previousLayout.renderer=Ref::Make(unrelatedRenderer,true);previousLayout.mesh=Ref::Make(oldMesh,false);
+ previousLayout.marker=newLayout.marker;previousLayout.modelReady=true;previousLayout.indices.emplace("OldChannel",0);
+ RuntimeShapes::bound.emplace(unrelatedRenderer,std::move(previousLayout));
+ RuntimeControls::Swap(controls);
+ auto& liveBone=RuntimeBones::bones[leftBone];
+ liveBone.transform=Ref::Make(leftBone,true);liveBone.package=survivor.id;
+ liveBone.target={"Rig","Tip"};liveBone.rest=rest;liveBone.consumers=1;
+ RuntimeBones::renderers.emplace(unrelatedRenderer,std::vector<void*>{leftBone});
+ auto oldMethods=RuntimeBones::methods;
+ auto oldInvoke=il2cpp_runtime_invoke;
+ auto oldSetter=RuntimeShapes::originalEnabledSetter;
+ const bool shapesEnabled=RuntimeShapes::enabled;
+ struct RestoreAnimation {
+  RuntimeControls::State& controls;
+  RuntimeBones::Methods methods;
+  decltype(il2cpp_runtime_invoke) invoke;
+  RuntimeShapes::EnabledSetterFn setter;
+  bool enabled;
+  ~RestoreAnimation(){
+   RuntimeBones::Forget(unrelatedRenderer);RuntimeControls::Swap(controls);
+   RuntimeBones::methods=methods;il2cpp_runtime_invoke=invoke;
+   RuntimeShapes::originalEnabledSetter=setter;RuntimeShapes::enabled=enabled;
+   reloads.clear();Reset();DemandGenerationReload::active=false;
+  }
+ } restore{controls,oldMethods,oldInvoke,oldSetter,shapesEnabled};
+ static float survivorHeight;survivorHeight=0;
+ RuntimeBones::methods.position=(void*)193;RuntimeBones::methods.rotation=(void*)194;RuntimeBones::methods.scale=(void*)195;
+ il2cpp_runtime_invoke=[](void* method,void* self,void** args,void** exception)->void*{
+  auto id=uintptr_t(method);
+  if(id<193||id>195)return Invoke(method,self,args,exception);
+  Require(self==leftBone,"animation updated the wrong model instance");
+  if(id==193)survivorHeight=static_cast<float*>(args[0])[1];
+  *exception=nullptr;return nullptr;
+ };
+ RuntimeShapes::enabled=true;
+ RuntimeShapes::originalEnabledSetter=[](void* renderer,bool value){
+  Require(renderer==oldRenderer&&!value,"retained Renderer lost its last author visibility");
+ };
+
+ DemandGenerationReload::active=true;cursor=0;Frame();
+ Require(currentRoot==oldRoot&&!removeCalls&&!weaponUnloads&&!loadCalls&&
+         batch.owners.front().phase==OwnerPhase::Queued,
+   "F10 removed the live world model before a foreign prefab holder released");
+ RuntimeShapes::SetEnabled(oldRenderer,true);
+ RuntimeShapes::SetEnabled(oldRenderer,false);
+ RuntimeAnimations::Frame(.5,int((uintptr_t(oldRenderer)>>4)%64));
+ Require(RuntimeShapes::bound.count(oldRenderer)&&!RuntimeShapes::bound.at(oldRenderer).nativeEnabled,
+   "retained Renderer lost its native visibility intent");
+ Require(survivorHeight==1.f,"retained Renderer stopped another character's bone animation");
+ batch.prefabBlockedSince=GetTickCount64()-kPrefabProxyWaitTimeoutMs-1;
+ Frame();
+ Require(!DemandGenerationReload::active&&batch.prefabRetryDeferred&&currentRoot==oldRoot,
+   "deferred foreign prefab holder left the game without its existing model");
+ unloadedPrefabProxies.insert(candidate);
+ batch.prefabRetryAt=GetTickCount64()-1;Frame();
+ Require(batch.cacheInvalidated&&removeCalls==1&&loadCalls==1&&
+         (batch.owners.front().phase==OwnerPhase::WaitingModel||batch.owners.front().phase==OwnerPhase::Done),
+   "world refresh did not resume once the foreign prefab holder released");
+ Require(!RuntimeShapes::bound.count(oldRenderer)&&RuntimeShapes::retiredNativeIntents.count(oldRenderer)&&
+         !RuntimeShapes::retiredNativeIntents.at(oldRenderer).nativeEnabled,
+   "old Renderer binding and native intent did not follow owner retirement");
 }
 void RawAssetApiBindingRegression(){
  // IL2CPP abstract interface slots have metadata but no native entry point.
@@ -3340,6 +3442,7 @@ int main(int argc,char** argv){
   if(argc==2&&std::string(argv[1])=="--shared-world-ui-weapon"){Entry::logFile=stdout;SharedWorldUIWeaponGenerationRegression();Entry::logFile=nullptr;return 0;}
   if(argc==2&&std::string(argv[1])=="--weapon-owner-closure"){Entry::logFile=stdout;ParentWeaponGenerationRegression(true);ParentWeaponGenerationRegression(true,false);Entry::logFile=nullptr;std::cout<<"PASS weapon-only F10 uses native owner, detached weapon, absent observation, unrelated character isolation and retry\n";return 0;}
   if(argc==2&&std::string(argv[1])=="--unloaded-prefab-proxy"){PrefabProxyAlreadyUnloadedRegression();std::cout<<"PASS historical unloaded prefab proxy retirement preserves the active-holder barrier\n";return 0;}
+  if(argc==2&&std::string(argv[1])=="--retained-world-owner"){PrefabProxyRetainedWorldOwnerRegression();return 0;}
   if(argc==2&&std::string(argv[1])=="--installed-controls"){StandaloneControlPublicationRegression();return 0;}
   if(argc==2&&std::string(argv[1])=="--issue6-selection"){VanillaGenerationSelectionRegression();std::cout<<"PASS issue6 vanilla selection\n";return 0;}
   if(argc==2&&std::string(argv[1])=="--issue6-handoff"){NativeSourceHandoffRegression();std::cout<<"PASS issue6 native handoff\n";return 0;}
@@ -3370,6 +3473,7 @@ int main(int argc,char** argv){
   check("partially unloaded prefab proxies",PrefabProxyPartialInvalidationRegression);
   check("historical unloaded prefab proxies",PrefabProxyAlreadyUnloadedRegression);
   check("demand F10 throttles and quickly defers retained prefab proxies",PrefabProxyRetainedWaitRegression);
+  check("demand F10 keeps the world owner while a foreign prefab proxy is retained",PrefabProxyRetainedWorldOwnerRegression);
   check("raw asset startup binds addressless abstract interface",RawAssetApiBindingRegression);
   check("demand F10 routes retained Bundles by generation and restores deleted targets",VersionedGenerationRouteRegression);
   check("demand F10 reuses cached source views across dependency groups",PreparedRootViewCacheRegression);

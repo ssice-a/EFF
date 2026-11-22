@@ -1261,6 +1261,7 @@ void CompleteRuleInput(void* request,void* bundle){NativeBundle::CompleteMemory(
 #include "eiem_standalone_effect_mods.h"
 #include "eiem_entry_author_transforms.h"
 #include "eiem_entry_effect_attachments.h"
+#include "eiem_entry_bone_animation.h"
 #include "eiem_entry_animation_frame.h"
 #include "eiem_entry_demand_generation_reload.h"
 #if defined(EIEM_NATIVE_ANIMATION_PROBE) || defined(EIEM_MOD_ANIMATION_PROBE)
@@ -1593,6 +1594,9 @@ DWORD StartImpl() {
   wchar_t executable[32768] = {};
   GetModuleFileNameW(nullptr, executable, _countof(executable));
   gameDirectory = std::filesystem::path(executable).parent_path();
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+  EiemNativeRandomAccess::snapshotDirectory = gameDirectory / "plugin" / ".eff-cache" / "snapshots";
+#endif
 #if defined(EIEM_DIAGNOSTICS)
   FILETIME created{}, exited{}, kernel{}, user{};
   Require(
@@ -1635,6 +1639,10 @@ DWORD StartImpl() {
       __DATE__, __TIME__, GetCurrentProcessId());
   Log("[ENTRY-LOG] path=%s diagnostics=%d readers=shared writers=exclusive",
       logPath.u8string().c_str(), !!logMirror);
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+  Log("[DEMAND-SNAPSHOT-STORAGE] directory=%s",
+      EiemNativeRandomAccess::snapshotDirectory.u8string().c_str());
+#endif
   while (!GetModuleHandleW(L"GameAssembly.dll"))
     Sleep(100);
   // Preserve the startup timing verified by the previous game run. Module

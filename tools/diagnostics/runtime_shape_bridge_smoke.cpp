@@ -7,6 +7,7 @@ unsigned shapeCounts=0,filterSets=0,matrixRequests=0;
 int shapeResult=2,matrixSize=0;
 bool matrixResult=false;
 void *lastSelf=nullptr,*lastRoot=nullptr,*lastInfo=nullptr;
+void *captureSelf=nullptr,*captureInfo=nullptr;
 int lastMask=0;
 bool observeScope=false;
 std::function<void()> captureWork;
@@ -81,6 +82,7 @@ void FreeHandle(uint32_t handle) {handles.erase(handle);}
 void* Unbox(void* object) { return object; }
 void* Capture(void* self,void* root,int mask,void* info) {
   ++captures;lastSelf=self;lastRoot=root;lastMask=mask;lastInfo=info;
+  captureSelf=self;captureInfo=info;
   if(captureWork)captureWork();
   if(observeScope) {
     Require(RuntimeShapes::scope!=nullptr,"capture TLS scope absent");
@@ -375,11 +377,16 @@ int main(int argc,char** argv) {
       const auto variables=RuntimeShapes::variables;const auto bound=RuntimeShapes::bound;
       const auto retired=RuntimeShapes::retiredNativeIntents;const auto setter=RuntimeShapes::originalEnabledSetter;
       const auto getter=RuntimeShapes::originalEnabledGetter;const auto revision=RuntimeControls::valueRevision;
+      const auto rendererMask=RuntimeShapes::originalRendererMask;
       RuntimeShapes::bound.clear();RuntimeShapes::retiredNativeIntents.clear();RuntimeShapes::specs.clear();
       RuntimeShapes::variables={{"fixture",{{"$switch",0}}}};
       RuntimeShapes::api.mesh=(void*)0x303;RuntimeShapes::api.name=(void*)0x306;
       RuntimeShapes::api.getEnabled=(void*)0x308;RuntimeShapes::api.alive=(void*)1;
       RuntimeShapes::originalEnabledSetter=Test::Enabled;RuntimeShapes::originalEnabledGetter=Test::EnabledGetter;
+      RuntimeShapes::originalRendererMask=[](void* self,void*,int mask,void* info) {
+        Require(self==Test::captureSelf&&info==Test::captureInfo,"capture mask changed native context");
+        return mask!=0;
+      };
       void* renderers[2][2]={{(void*)0x71000,(void*)0x71010},{(void*)0x72000,(void*)0x72010}};
       for(int part=0;part<2;++part) {
         RuntimeShapes::Spec spec;spec.marker="snapshot-part-"+std::to_string(part);spec.part=spec.marker;spec.package="fixture";
@@ -426,7 +433,9 @@ int main(int argc,char** argv) {
             if(!visible)return;
             RuntimeShapes::Finished(renderer,true);
           }
-          for(auto renderer:renderers[instance])if(RuntimeShapes::GetEnabled(renderer))selected.push_back(renderer);
+          for(auto renderer:renderers[instance])
+            if(RuntimeShapes::PassRendererMask(self,renderer,Test::lastMask,info)&&RuntimeShapes::GetEnabled(renderer))
+              selected.push_back(renderer);
         };
         Test::captureWork=[&]{collect();};
         auto beforeCaptures=Test::captures;
@@ -439,6 +448,29 @@ int main(int argc,char** argv) {
         Test::captureWork=[&]{collect(renderers[instance][1]);};
         RuntimeShapes::Capture(self,root,-1,info);
         Require(selected.empty(),"capture forced a genuinely culled Renderer visible");
+        stage="scoped Part afterimage participation";
+        state(0,instance);
+        auto& policy=RuntimeShapes::specs.at("snapshot-part-0").afterimage;
+        const auto writes=Test::enabledWrites;
+        Test::captureWork=[&]{collect();};
+        policy=false;
+        RuntimeShapes::Capture(self,root,-1,info);
+        Require(selected==std::vector<void*>{renderers[instance][1]}&&
+                RuntimeShapes::ActualEnabled(renderers[instance][0])&&Test::enabledWrites==writes,
+                "afterimage=false altered visibility or failed to exclude just one Part");
+        Require(RuntimeShapes::PassRendererMask(self,renderers[instance][0],-1,info),
+                "Part afterimage policy applied outside capture");
+        auto changed=renderers[instance][0];auto priorMesh=Test::renderMeshes.at(changed);
+        Test::renderMeshes[changed]=(void*)0x73080;
+        RuntimeShapes::Capture(self,root,-1,info);
+        Require(selected.size()==2,"stale Part binding filtered a different mesh");
+        Test::renderMeshes[changed]=priorMesh;
+        policy=true;
+        RuntimeShapes::Capture(self,root,0,info);
+        Require(selected.empty(),"Part afterimage policy bypassed a native mask rejection");
+        RuntimeShapes::Capture(self,root,-1,info);
+        Require(selected.size()==2,"updated Part policy did not apply to the existing Renderer");
+        state(1,instance);
         Test::captureWork={};
       }
       stage="three-state switch across game snapshot and model reuse";
@@ -458,6 +490,7 @@ int main(int argc,char** argv) {
       RuntimeShapes::enabled=false;Require(!RuntimeShapes::GetEnabled(renderers[0][0]),"disabled runtime still virtualizes visibility");RuntimeShapes::enabled=true;
       RuntimeShapes::bound=bound;RuntimeShapes::retiredNativeIntents=retired;RuntimeShapes::specs=specs;RuntimeShapes::variables=variables;
       RuntimeShapes::api=api;RuntimeShapes::originalEnabledSetter=setter;RuntimeShapes::originalEnabledGetter=getter;
+      RuntimeShapes::originalRendererMask=rendererMask;
       RuntimeControls::valueRevision=revision;RuntimeShapes::boundCount=unsigned(bound.size());
       Test::renderMeshes.clear();Test::renderEnabled.clear();Test::meshes.clear();
       Require(Test::handles.empty(),"model snapshot regression leaks managed handles");
