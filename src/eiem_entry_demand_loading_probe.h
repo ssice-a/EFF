@@ -12,6 +12,26 @@ namespace Q=EiemDemandRequests;
 namespace R=EiemNativeRandomAccess;
 struct Api {void *lookup=nullptr,*subLookup=nullptr,*packClass=nullptr,*proxyInfo=nullptr,*assetPath=nullptr;size_t packSize=0,bundleOffset=0,assetOffset=0;} api;
 struct Binding {size_t target=0;uint64_t bundle=0,asset=0;std::string cab;int64_t object=0;};
+#if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+struct NativeMeshAddress {uint64_t bundle;std::string cab;int64_t object;};
+struct NativeMeshRoutes {
+  using Addresses=std::vector<NativeMeshAddress>;
+  std::mutex mutex;
+  std::map<Identity,std::map<uint64_t,Addresses>> confirmed;
+  size_t routeCount=0;
+  Addresses Read(const Identity& identity,uint64_t candidate){
+    std::lock_guard<std::mutex> lock(mutex);
+    auto row=confirmed.find(identity);if(row==confirmed.end())return {};
+    auto route=row->second.find(candidate);
+    return route==row->second.end()?Addresses{}:route->second;
+  }
+  void Remember(const Identity& identity,uint64_t candidate,const Addresses& addresses){
+    if(addresses.empty())return;
+    std::lock_guard<std::mutex> lock(mutex);
+    if(routeCount<4096&&confirmed[identity].try_emplace(candidate,addresses).second)++routeCount;
+  }
+};
+#endif
 struct InstalledGeneration;
 struct ProvenNativeMesh {Ref mesh;std::set<Identity> identities;};
 struct Manifest {Ref object;uint64_t serial=0;std::vector<Binding> bindings;std::unordered_set<uint64_t> bundles;std::mutex candidateMutex;std::map<uint64_t,Q::Candidate> candidates;
@@ -26,6 +46,9 @@ struct Manifest {Ref object;uint64_t serial=0;std::vector<Binding> bindings;std:
   std::set<uint64_t> observedMeshBundles;bool unresolvedObservedMeshes=false;
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
   std::shared_ptr<const InstalledGeneration> catalog;
+  std::shared_ptr<NativeMeshRoutes> meshRoutes=std::make_shared<NativeMeshRoutes>();
+  StartupDependencies::ManifestState nativeSource;
+  std::map<Identity,uint64_t> restorationCandidates;
 #endif
 };
 std::mutex mutex;
@@ -138,12 +161,28 @@ void PrepareReplacement(uint64_t token,uint64_t scope,R::Reader& reader,const st
     EiemNativeEditTransaction::Member transaction(reader,mi,reader.Layout(member));const auto& layout=transaction.SourceLayout();bool touched=false;
     if(record.candidate==Q::Candidate::Target){
       phase("match-target-meshes");
-      std::map<std::string,AssetIndex> selectedByMod;std::map<std::string,std::set<size_t>> bindingIndices;auto hashes=reader.HashAssets(member,layout);std::vector<Asset> names;
+      std::map<std::string,AssetIndex> selectedByMod;std::map<std::string,std::set<size_t>> bindingIndices;
+      std::optional<decltype(reader.HashAssets(member,layout))> hashes;
+      std::optional<std::vector<Asset>> names;
       for(size_t bi=0;bi<manifest->bindings.size();++bi){const auto& binding=manifest->bindings[bi];if(binding.bundle!=record.bundle)continue;const auto& target=manifest->catalog->targets.at(binding.target);
         EiemNativeInput::Asset observed;const EiemNativeInput::Asset* selected=nullptr;
-        if(binding.object&&nativeName(binding.cab)==nativeName(member.name)){auto object=layout.objects.find(binding.object);if(object!=layout.objects.end()&&layout.types.at(object->second.type).classId==43){observed.cab=member.name;observed.pathId=binding.object;observed.classId=43;observed.type=layout.types.at(object->second.type).hash;selected=&observed;}}
-        auto hashed=hashes.find(binding.asset);if(!selected&&binding.asset&&hashed!=hashes.end()&&hashed->second.classId==43&&nativeName(hashed->second.cab)==nativeName(member.name))selected=&hashed->second;
-        if(!selected){if(names.empty())names=reader.Assets(member,layout);for(const auto& candidate:names)if(candidate.classId==43&&candidate.cab==member.name&&nativeName(candidate.path)==nativeName(target.source.path)&&candidate.asset==target.source.asset){selected=&candidate;break;}}
+        if(binding.object){
+          if(nativeName(binding.cab)!=nativeName(member.name))continue;
+          auto object=layout.objects.find(binding.object);
+          Require(object!=layout.objects.end()&&layout.types.at(object->second.type).classId==43,
+            "confirmed Mesh no longer belongs to the current Bundle member: "+target.source.path+"#"+target.source.asset);
+          observed.cab=member.name;observed.pathId=binding.object;observed.classId=43;
+          observed.type=layout.types.at(object->second.type).hash;selected=&observed;
+        }
+        if(!selected&&binding.asset){
+          if(!hashes)hashes=reader.HashAssets(member,layout);
+          auto hashed=hashes->find(binding.asset);
+          if(hashed!=hashes->end()&&hashed->second.classId==43&&nativeName(hashed->second.cab)==nativeName(member.name))selected=&hashed->second;
+        }
+        if(!selected){
+          if(!names)names=reader.Assets(member,layout);
+          for(const auto& candidate:*names)if(candidate.classId==43&&candidate.cab==member.name&&nativeName(candidate.path)==nativeName(target.source.path)&&candidate.asset==target.source.asset){selected=&candidate;break;}
+        }
         if(!selected)continue;auto asset=*selected;asset.path=target.source.path;asset.asset=target.source.asset;
         if(target.skip)Log("[DEMAND-SKIP-MESH] token=%llu mod=%s target=%s#%s cab=%s pathId=%lld",token,target.mod.c_str(),target.source.path.c_str(),target.source.asset.c_str(),asset.cab.c_str(),asset.pathId);
         auto& targetsForMod=selectedByMod[target.mod];Require(targetsForMod.emplace(target.source,std::move(asset)).second,"two manifest bindings resolved one native Mesh identity");bindingIndices[target.mod].insert(binding.target);
@@ -201,7 +240,15 @@ void PrepareReplacement(uint64_t token,uint64_t scope,R::Reader& reader,const st
         for(auto renderer:renderers)Log("[DEMAND-SKIP-RENDERER] token=%llu target=%s#%s pfb=%s rendererPathId=%lld action=m_Enabled:0",token,target.first.path.c_str(),target.first.asset.c_str(),member.name.c_str(),renderer);
         Require(consumer.result.skipped>=renderers.size(),"handling=skip disabled Renderer count differs from target consumers");
       }
-      if(consumer.result.matches&&usedMods)for(const auto& row:staged)if(!row.second.targets.empty())usedMods->insert(row.first);
+      if(consumer.result.matches&&usedMods){
+        std::set<Identity> usedTargets;
+        for(const auto& match:matches.consumers)
+          usedTargets.insert(matches.identities.at(CanonicalSerializedAssetReference(match.mesh)));
+        for(const auto& row:staged){
+          if(std::any_of(usedTargets.begin(),usedTargets.end(),[&](const auto& target){return row.second.targets.count(target)!=0;}))
+            usedMods->insert(row.first);
+        }
+      }
       consumerMatches+=consumer.result.matches;touched|=consumer.result.matches!=0;
     }
     if(touched||transaction.ChangedObjects()||transaction.AddedObjects()){phase("commit-member-rewrite");EiemLoadPerformance::Scope performance(EiemLoadPerformance::DemandEditCommit);rewrites.push_back(transaction.Commit().rewrite);}
@@ -346,6 +393,7 @@ std::shared_ptr<Manifest> Current(void* object) {
   auto state=std::make_shared<Manifest>();state->object=Ref::Make(object,true);state->serial=++serial;
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
   state->catalog=catalog;
+  if(StartupDependencies::api.manifestData)state->nativeSource=StartupDependencies::State(object);
 #endif
   auto begin=std::chrono::steady_clock::now();
   StartupDependencies::Names hintNames;
@@ -383,9 +431,11 @@ std::shared_ptr<Manifest> Current(void* object) {
    for(const auto& name:catalog->deltaBundles){auto key=hintKeys.find(name);if(key!=hintKeys.end())state->bundles.insert(key->second);}
   for(const auto& identity:catalog->restorationTargets){Bytes info;bool exact=false;
     const bool found=LookupTarget(object,identity,info,exact);
-    if(found){uint64_t bundle=0;memcpy(&bundle,info.data()+api.bundleOffset,sizeof(bundle));if(bundle)state->bundles.insert(bundle);}
-    if(!found||(!exact&&(identity.path.size()<5||identity.path.compare(identity.path.size()-5,5,".mesh"))))
+    uint64_t bundle=0;if(found)memcpy(&bundle,info.data()+api.bundleOffset,sizeof(bundle));
+    if(bundle){state->bundles.insert(bundle);state->restorationCandidates.emplace(identity,bundle);}
+    if(!found||(!exact&&(identity.path.size()<5||identity.path.compare(identity.path.size()-5,5,".mesh")))){
       state->unresolvedRestorations.push_back(identity);
+    }
   }
   EiemDemandGenerationRoutes::IncludeTargetRoots(state->bundles,catalog->delta.targets,
     [&](const std::string& path,const std::string& asset){
@@ -401,6 +451,11 @@ std::shared_ptr<Manifest> Current(void* object) {
     // A slower builder must not publish an older catalog over a completed F10.
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
     if(std::atomic_load(&installedGeneration)!=catalog)continue;
+    if(old!=manifests.end()&&old->second->object.Get()==object){
+      const auto& before=old->second->nativeSource;const auto& after=state->nativeSource;
+      if(before.data==after.data&&before.address==after.address&&before.length==after.length)
+        state->meshRoutes=old->second->meshRoutes;
+    }
 #endif
     for(auto it=manifests.begin();it!=manifests.end();)if(!it->second->object.Get()){registry.RetireScope(it->second->serial);scopes.erase(it->second->serial);it=manifests.erase(it);}else if(it->first==object){it=manifests.erase(it);}else ++it;
     PruneLocked();Require(manifests.size()<64,"demand manifest scope budget exhausted");
@@ -487,6 +542,7 @@ Q::Record PrefabAssetRequest(void* manager,void* asset) noexcept {
   return {};
 }
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
+void Submitted(uint64_t token,void* result,bool asynchronous) noexcept;
 #include "eiem_entry_demand_shared_inputs.h"
 #endif
 uint64_t BeginVfs(uint64_t hash) noexcept {

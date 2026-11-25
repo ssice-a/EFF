@@ -48,6 +48,30 @@ static void SaveText(const std::filesystem::path& path,const std::string& value)
   std::ofstream output(path,std::ios::binary|std::ios::trunc);
   output<<value;Require(bool(output),"smoke Mod INI output failed");
 }
+#if defined(EIEM_LOAD_PERF)
+static uint64_t NativeReadBytes(){
+  const auto& counters=EiemLoadPerformance::counters[EiemLoadPerformance::NativeRead];
+  return counters[0].bytes.load(std::memory_order_relaxed)+counters[1].bytes.load(std::memory_order_relaxed);
+}
+#endif
+static void CheckCatalogLeavesLargeUnmatchedPayloadUnread(const std::filesystem::path& root){
+  auto ddsPath=root/"artist/albedo-final.dds";
+  const auto original=Read(ddsPath);
+  auto padded=original;padded.resize(original.size()+32*1024*1024,0x5a);Save(ddsPath,padded);
+  const auto before=NativeReadBytes();
+  try{
+    A::Catalog catalog(root);
+    Require(catalog.OpenMeshes()==0&&catalog.OpenMaterials()==0&&catalog.OpenTextures()==0&&
+      catalog.OpenPhysics()==0&&catalog.OpenSkeletons()==0,
+      "building the target Catalog opened an unmatched author payload");
+  }catch(...){Save(ddsPath,original);throw;}
+  const auto readBytes=NativeReadBytes()-before;
+  Save(ddsPath,original);
+  Require(readBytes<256*1024,
+    "building the target Catalog read a large unmatched DDS payload: bytes="+std::to_string(readBytes));
+  std::cout<<"PASS target Catalog reads declarations/metadata only and leaves a 32 MiB unmatched DDS payload unread"
+    <<" catalogNativeReadBytes="<<readBytes<<"\n";
+}
 template<class F> static bool Fails(F&& action){try{action();return false;}catch(const std::exception&){return true;}}
 static void PutU32(Bytes& bytes,uint32_t value){for(unsigned i=0;i<4;++i)bytes.push_back(static_cast<unsigned char>(value>>(i*8)));}
 static void PutI32(Bytes& bytes,int32_t value){PutU32(bytes,static_cast<uint32_t>(value));}
@@ -272,8 +296,9 @@ int main(int argc,char** argv){
   if(argc==2){try{return SmokeRealMod(std::filesystem::u8path(argv[1]));}
     catch(const std::exception& error){std::cerr<<"FAIL real format 3 Mod: "<<error.what()<<'\n';return 1;}}
   if(argc!=1){std::cerr<<"usage: runtime_author_catalog_smoke [format-3-Mod]\n";return 2;}
-  PhysicsRetargetChecks();auto root=std::filesystem::temp_directory_path()/
-    ("eff-format3-catalog-"+std::to_string(GetTickCount64()));
+  PhysicsRetargetChecks();auto root=std::filesystem::current_path()/"bin/runtime-author-catalog"/
+    ("fixture-"+std::to_string(GetTickCount64()));
+  R::snapshotDirectory=root/"snapshots";
   try{
     D::MeshAsset mesh;mesh.part="PartBody";mesh.file="meshes/body.mesh";mesh.path="assets/body.mesh";
     mesh.marker="Body";mesh.hash=std::string(64,'A');mesh.material="MaterialBody";
@@ -345,6 +370,7 @@ int main(int argc,char** argv){
     std::filesystem::rename(root/mesh.file,root/"custom/geometry/body.author");
     std::filesystem::rename(root/material.file,root/"custom/materials/body.author");
 
+    CheckCatalogLeavesLargeUnmatchedPayloadUnread(root);
     A::Catalog catalog(root);const auto& directory=catalog.Directory();
     Require(directory.mod=="CatalogSmoke"&&directory.meshes.size()==2&&
       directory.materials.size()==3&&directory.textures.size()==3&&directory.rules.size()==2,
@@ -419,6 +445,11 @@ int main(int argc,char** argv){
     auto shared=MatAsm::PrepareShared(nativeAuthor,uses,[&](const auto& material,const auto&){++prepareCalls;return DummyMaterialInput(material);});
     Require(shared.references.size()==2&&shared.inputs.size()==1&&prepareCalls==1,
       "one sparse Material edit generated duplicate variants for multiple Renderer uses");
+    size_t hitPrepareCalls=0;auto hitOnly=MatAsm::PrepareShared(nativeAuthor,{uses.front()},
+      [&](const auto& material,const auto&){++hitPrepareCalls;return DummyMaterialInput(material);});
+    Require(hitOnly.references.size()==1&&hitOnly.inputs.size()==1&&hitPrepareCalls==1&&
+        hitOnly.references.at(uses.front().key)==hitOnly.inputs.begin()->second.asset,
+      "matched PFB material preparation opened resources outside its Renderer uses");
     std::vector<MatAsm::Use> equivalentUses{{{3,"PartBody"},"MaterialBody"},{{4,"PartBody"},"MaterialTwin"}};
     auto equivalentBuilder=[](const auto&,const auto&){return DummyMaterialInput("CAB-equivalent",7,Bytes{4,5,6});};
     auto equivalent=MatAsm::PrepareShared(nativeAuthor,equivalentUses,equivalentBuilder);

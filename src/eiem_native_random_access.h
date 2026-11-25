@@ -213,6 +213,7 @@ class DecodedViewSource {
       auto bytes = it->bytes; cache_.splice(cache_.begin(), cache_, it); return bytes;
     }
     const auto& block = blocks_.at(index).block;
+    Require(block.flags==5,"Endfield extended storage block payload cannot be inspected");
     if(!(block.encoded <= blockLimit_ && block.decoded <= blockLimit_))throw InspectionBudgetExceeded{"native streamed block budget exhausted"};
     Bytes encoded(block.encoded); source_(blocks_[index].offset, encoded.data(), encoded.size());
     EiemLoadPerformance::Scope performance(EiemLoadPerformance::NativeStreamDecode);performance.hit=true;
@@ -281,6 +282,7 @@ class Reader {
       auto bytes = it->bytes; cache_.splice(cache_.begin(), cache_, it); ++stats.cacheHits; return bytes;
     }
     const auto& block = directory.blocks.at(index);
+    Require(block.block.flags==5,"Endfield extended storage block payload cannot be inspected");
     if(!(block.block.encoded <= limits.blockBytes && block.block.decoded <= limits.blockBytes))throw InspectionBudgetExceeded{"native inspection block budget exhausted"};
     pinned_.reset(); pinnedIndex_=SIZE_MAX; stats.pinnedBytes=0;
     Bytes encoded(block.block.encoded); Source(block.offset, encoded.data(), encoded.size());
@@ -407,11 +409,13 @@ public:
           Require(!id, "author native view source id differs"); decoded->ReadAt(at,out,n);
         });
   }
-  std::map<std::string, Value> Fields(const EiemNativeViewWriter::Member& member,
-      const SerializedLayout& layout, int64_t id, const std::set<std::string>& wanted) {
+  template<class Visit> void VisitFields(const EiemNativeViewWriter::Member& member,
+      const SerializedLayout& layout, int64_t id, const std::set<std::string>& wanted, Visit&& visit) {
+    if(wanted.empty())return;
     const auto& object = layout.objects.at(id); const auto& type = layout.types.at(object.type);
     auto begin = AddSize(member.offset, object.offset);
-    Cursor cursor{*this, begin, AddSize(begin, object.size), begin}; std::map<std::string, Value> result;
+    Cursor cursor{*this, begin, AddSize(begin, object.size), begin};
+    size_t remaining=wanted.size();std::set<std::string> visited;
     for (auto child : type.nodes.at(0).children) {
       auto at = cursor.position; Skip(type, child, cursor);
       const auto& name = type.nodes[child].name; if (!wanted.count(name)) continue;
@@ -419,10 +423,18 @@ public:
       if(!(size <= limits.fieldBytes))throw InspectionBudgetExceeded{"native inspection field budget exhausted"};
       Bytes bytes(AddSize(padding,size)); ReadAt(at,bytes.data()+padding,size);
       EiemNativeInput::Reader value(bytes,padding); auto decoded=ReadValue(type,child,value,0);
-      Require(value.p==bytes.size()&&result.emplace(name,std::move(decoded)).second,"native projected field extent/identity differs");
-      if (result.size() == wanted.size()) break;
+      Require(value.p==bytes.size()&&(type.nodes.front().uniqueFields||visited.insert(name).second),
+        "native projected field extent/identity differs");
+      visit(name,std::move(decoded));
+      if(!--remaining)return;
     }
-    Require(result.size()==wanted.size(),"native projected field absent"); return result;
+    Require(!remaining,"native projected field absent");
+  }
+  std::map<std::string, Value> Fields(const EiemNativeViewWriter::Member& member,
+      const SerializedLayout& layout, int64_t id, const std::set<std::string>& wanted) {
+    std::map<std::string,Value> result;
+    VisitFields(member,layout,id,wanted,[&](const std::string& name,Value value){result.emplace(name,std::move(value));});
+    return result;
   }
   Value Object(const EiemNativeViewWriter::Member& member,const SerializedLayout& layout,int64_t id) {
     const auto& object=layout.objects.at(id);const auto& type=layout.types.at(object.type);
@@ -435,7 +447,13 @@ public:
       const std::set<std::string>& wanted) {
     const auto& type=layout.types.at(layout.objects.at(id).type);std::set<std::string> present;
     for(auto child:type.nodes.at(0).children)if(wanted.count(type.nodes.at(child).name))present.insert(type.nodes.at(child).name);
-    Value result;auto values=present.empty()?std::map<std::string,Value>{}:Fields(member,layout,id,present);
+    Value result;
+    if(type.nodes.front().uniqueFields){
+      result.children.reserve(present.size());
+      VisitFields(member,layout,id,present,[&](const std::string&,Value value){result.children.push_back(std::move(value));});
+      return result;
+    }
+    auto values=Fields(member,layout,id,present);
     for(auto child:type.nodes.at(0).children){auto found=values.find(type.nodes.at(child).name);if(found!=values.end())result.children.push_back(std::move(found->second));}
     return result;
   }

@@ -3,6 +3,7 @@
 #include "../../src/eiem_renderer_input_builder.h"
 #include "../../src/eiem_vfs_catalog.h"
 #include "../../src/eiem_demand_native_assembly.h"
+#include "../../src/eiem_demand_target_lookup.h"
 #include "../eff_author_sources.h"
 #include <iostream>
 
@@ -168,7 +169,8 @@ std::pair<size_t,size_t> VerifyRetargetBindings(const Bytes& bytes,const std::st
 }
 }
 int wmain(int argc,wchar_t** argv){try{
-  Require(argc==3||argc==5,"story_prefab_read_smoke <game> <logical Bundle> [asset-index Mod]");
+  const bool discover=argc==4&&std::wstring_view(argv[3])==L"--mesh-sources";
+  Require(argc==3||argc==5||discover,"story_prefab_read_smoke <game> <logical Bundle> [--mesh-sources | asset-index Mod]");
   const auto logical=std::filesystem::path(argv[2]).generic_u8string();
   const auto entries=EiemVfsCatalog::ReadEffectiveVfs(argv[1],{logical});
   const auto& entry=entries.at(logical);Require(!entry.encrypted,"fixture requires native unencrypted VFS input");
@@ -176,6 +178,18 @@ int wmain(int argc,wchar_t** argv){try{
   R::Limits limits;limits.blockBytes=8*1024*1024;limits.metadataBytes=8*1024*1024;
   limits.fieldBytes=4*1024*1024;limits.cacheBytes=1024*1024;limits.readBytes=32*1024*1024;
   R::Reader reader(size_t(entry.size),[file](size_t at,unsigned char* out,size_t n){file->ReadAt(at,out,n);},limits);
+  if(discover){
+    EiemDemandTargetLookup::Inspection inspection;
+    const auto start=std::chrono::steady_clock::now();
+    const auto sources=inspection.MeshSources(reader);
+    const auto elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+    file->VerifyStable();
+    for(const auto& cab:sources)std::cout<<"SOURCE "<<cab<<'\n';
+    std::cout<<"MESH-SOURCES bundle="<<logical<<" count="<<sources.size()<<" readBytes="<<reader.stats.encodedBytes
+      <<" inflatedBytes="<<reader.stats.inflatedBytes<<" inflatedBlocks="<<reader.stats.inflatedBlocks
+      <<" cachePeak="<<reader.stats.cachePeak<<" discoverMs="<<elapsed<<'\n';
+    return 0;
+  }
   try{for(const auto& member:reader.directory.members){if(!(member.flags&4))continue;
     auto layout=reader.Layout(member);Package package;package.id="story-read-fixture";AssetIndex assets;
     for(auto id:layout.order){const auto& type=layout.types.at(layout.objects.at(id).type);
@@ -201,8 +215,10 @@ int wmain(int argc,wchar_t** argv){try{
       std::set<std::string> sourceNames;
       for(const auto& row:index.assets)if(row.kind=="Mesh"&&author.package.targetIndex.count({row.path,row.name}))sourceNames.insert(row.source);
       auto sources=EiemVfsCatalog::ReadEffectiveVfs(argv[1],sourceNames);AssetIndex targets;std::vector<BuiltMeshPart> parts;
+      size_t verifiedRoutes=0;double routeMs=0;
       for(const auto& source:sources){auto carrierFile=std::make_shared<R::File>(source.second.physical,source.second.offset);
         R::Reader carrier(size_t(source.second.size),[carrierFile](size_t at,unsigned char* out,size_t n){carrierFile->ReadAt(at,out,n);},limits);
+        EiemDemandTargetLookup::Inspection routeInspection;
         for(size_t mi=0;mi<carrier.directory.members.size();++mi){const auto& m=carrier.directory.members[mi];if(!(m.flags&4))continue;
           // CAB filtering is fixture setup only. The actual assembly resolves
           // current serialized assets and uses the production sparse builder.
@@ -211,6 +227,16 @@ int wmain(int argc,wchar_t** argv){try{
           for(const auto& asset:carrier.Assets(m,nativeLayout))if(asset.classId==43&&author.package.targetIndex.count({asset.path,asset.asset})&&
               wanted.count(CanonicalSerializedAssetReference({asset.cab,asset.pathId})))selected.emplace(Identity{asset.path,asset.asset},asset);
           if(selected.empty())continue;targets.insert(selected.begin(),selected.end());
+          const auto routeStarted=std::chrono::steady_clock::now();
+          for(const auto& [identity,expected]:selected){
+            auto matches=routeInspection.Find(carrier,identity,[](const auto&,const auto&,auto&){return false;});
+            const auto reference=CanonicalSerializedAssetReference({expected.cab,expected.pathId});
+            Require(std::any_of(matches.begin(),matches.end(),[&](const auto& match){
+              return CanonicalSerializedAssetReference({match.cab,match.pathId})==reference;
+            }),"native candidate route differs from the exact story Renderer reference");
+            ++verifiedRoutes;
+          }
+          routeMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-routeStarted).count();
           auto prepared=N::PrepareCarrier(carrier,mi,nativeLayout,author,selected);
           parts.insert(parts.end(),prepared.parts.begin(),prepared.parts.end());
         }
@@ -241,7 +267,7 @@ int wmain(int argc,wchar_t** argv){try{
         <<" matches="<<prepared.result.matches<<" changedObjects="<<prepared.result.changedObjects<<" addedObjects="<<prepared.result.addedObjects
         <<" retargetBindings="<<retargets.first<<" paletteBindings="<<retargets.second
         <<" readBytes="<<reader.stats.encodedBytes<<" inflatedBytes="<<reader.stats.inflatedBytes<<" cachePeak="<<reader.stats.cachePeak
-        <<" prepareMs="<<prepareMs<<std::endl;
+        <<" prepareMs="<<prepareMs<<" verifiedRoutes="<<verifiedRoutes<<" routeMs="<<routeMs<<std::endl;
       continue;
     }
     const std::vector<BuiltMeshPart> parts;

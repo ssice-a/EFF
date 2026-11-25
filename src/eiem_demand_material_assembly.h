@@ -12,7 +12,7 @@ namespace P=EiemNativeSerializedSplice;
 
 inline bool SameInput(const EiemNativeStandaloneInput::Input& left,const EiemNativeStandaloneInput::Input& right){
   return left.cab==right.cab&&left.bundle==right.bundle&&left.path==right.path&&
-    left.asset==right.asset&&left.dependencies==right.dependencies&&left.view&&right.view&&
+    left.asset==right.asset&&left.origin==right.origin&&left.dependencies==right.dependencies&&left.view&&right.view&&
     (left.view==right.view||EiemInputSpanView::SameBytes(*left.view,*right.view));
 }
 struct Use {RendererMaterialKey key;std::string material;};

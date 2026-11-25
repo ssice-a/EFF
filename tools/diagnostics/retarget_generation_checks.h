@@ -140,7 +140,7 @@ void DeferredSharedRetirementRegression(){
  std::cout<<"PASS deferred shared retirement: nonblocking Unity frame, final old scope/routes, reactivation, negative query and failed effect preparation/release\n";
 }
 
-void RemovedDependencyMeshGenerationRegression(bool externalMesh=false,bool fallback=false){
+void RemovedDependencyMeshGenerationRegression(bool externalMesh=false,bool fallback=false,bool routed=false){
  using namespace Test;namespace D=DemandLoadingProbe;namespace S=StartupDependencies;
  auto saved=std::make_tuple(D::api,D::sharedApi,S::api,S::originalAll,il2cpp_runtime_invoke,il2cpp_object_new,
    propertyElementWidth,D::sharedInputsEnabled.load(),D::enabled.load(),gameDirectory);
@@ -162,8 +162,8 @@ void RemovedDependencyMeshGenerationRegression(bool externalMesh=false,bool fall
   dependencyLists.clear();dependencyNames.clear();D::PruneLocked();
   std::error_code error;std::filesystem::remove_all(folder,error);
  };
- static std::string physical;static uint64_t sourceLength=0,remoteLength=0;static unsigned unrelatedReads=0;
- static bool crossBundle=false,useFallback=false,remoteUnavailable=false;
+ static std::string physical;static uint64_t sourceLength=0,remoteLength=0;static unsigned unrelatedReads=0,vfsQueries=0;
+ static bool crossBundle=false,useFallback=false,remoteUnavailable=false,nativeIncomplete=false;
  static MInfo physicalMethod{},encryptedMethod{};
  try{
   RetargetNativeFixture::Fixture fixture;
@@ -171,9 +171,16 @@ void RemovedDependencyMeshGenerationRegression(bool externalMesh=false,bool fall
   fixture.objects.erase(200);fixture.Add(200,6);fixture.Pointer(200,"m_Shader",201);fixture.Pointer(200,"m_Texture",202);
   fixture.types.push_back(RetargetNativeFixture::Schema(48,{{"string","m_Name",{}}}));fixture.Add(201,9);
   fixture.types.push_back(RetargetNativeFixture::Schema(28,{{"string","m_Name",{}}}));fixture.Add(202,10);
-  Bytes remoteBytes;crossBundle=externalMesh;useFallback=fallback;remoteUnavailable=false;
+  Bytes remoteBytes;crossBundle=externalMesh;useFallback=fallback;remoteUnavailable=false;nativeIncomplete=false;
+  const std::string logical=routed?"assets/static.asset":"assets/static.mesh";
+  auto renameContainer=[&](RetargetNativeFixture::Fixture& value){
+    auto& rows=ArrayValue(value.T(300),Child(value.T(300),value.V(300),"m_Container"));
+    SetString(value.T(300),Child(value.T(300),rows.children.back(),"first"),logical);
+  };
+  renameContainer(fixture);
   if(externalMesh){
    RetargetNativeFixture::Fixture remote;remote.cab="CAB-remote-mesh";
+   renameContainer(remote);
    for(auto it=remote.objects.begin();it!=remote.objects.end();)if(it->first!=100&&it->first!=300)it=remote.objects.erase(it);else ++it;
    remote.SetList(300,"m_PreloadTable",{100});
    auto& rows=ArrayValue(remote.T(300),Child(remote.T(300),remote.V(300),"m_Container"));rows.children={rows.children.back()};rows.count=1;
@@ -182,7 +189,7 @@ void RemovedDependencyMeshGenerationRegression(bool externalMesh=false,bool fall
    fixture.objects.erase(100);
    for(auto id:{12,22,32})SetReference(fixture.T(id),Child(fixture.T(id),fixture.V(id),"m_Mesh"),{remote.cab,100},fixture.refs,fixture.cab);
    auto& containers=ArrayValue(fixture.T(300),Child(fixture.T(300),fixture.V(300),"m_Container"));
-   if(!fallback){
+   if(!fallback&&!routed){
     // Only the Renderer's actual reference leads to this Mesh carrier.
     containers.children.pop_back();containers.count=containers.children.size();
    }else{
@@ -202,10 +209,12 @@ void RemovedDependencyMeshGenerationRegression(bool externalMesh=false,bool fall
   {std::ofstream file(std::filesystem::u8path(physical),std::ios::binary);file.write((char*)bytes.data(),bytes.size());file.write((char*)remoteBytes.data(),remoteBytes.size());Require(bool(file),"write native fixture");}
   gameDirectory=folder;std::filesystem::create_directories(folder/"plugin/mods");
   D::sharedInputsEnabled=true;D::enabled=true;propertyElementWidth=8;
-  D::api={};D::api.packSize=16;D::api.bundleOffset=0;D::api.assetOffset=8;D::api.lookup=D::api.subLookup=(void*)181;
+  D::api={};D::api.packSize=16;D::api.bundleOffset=0;D::api.assetOffset=8;D::api.subLookup=(void*)181;
+  D::api.lookup=routed?(void*)0xFEE214:(void*)181;
   S::api={};S::api.listCtor=(void*)140;S::api.listClass=(void*)700;S::api.listItems=(void*)18;S::api.listSize=(void*)19;S::api.listAdd=(void*)141;S::api.bundleName=(void*)143;
-  dependencyNames={{"main/restoration.ab",0xFEE201},{"textures/unrelated.ab",0xFEE202},{"meshes/remote.ab",0xFEE203}};unrelatedReads=0;
-  S::originalAll=[](void*,uint64_t key,void* list,void*)->bool{dependencyLists[list]=key==0xFEE201?(crossBundle?std::vector<uint64_t>{0xFEE202,0xFEE203}:std::vector<uint64_t>{0xFEE202}):std::vector<uint64_t>{};return true;};
+  dependencyNames={{"main/restoration.ab",0xFEE201},{"textures/unrelated.ab",0xFEE202},{"meshes/remote.ab",0xFEE203},
+    {"main/other-scene.ab",0xFEE204},{"main/incomplete-unrelated.ab",0xFEE205}};unrelatedReads=0;
+  S::originalAll=[](void*,uint64_t key,void* list,void*)->bool{dependencyLists[list]=key==0xFEE201?(crossBundle?std::vector<uint64_t>{0xFEE202,0xFEE203}:std::vector<uint64_t>{0xFEE202}):std::vector<uint64_t>{};return !nativeIncomplete;};
   S::originalDirect=[](void*,uint64_t key,void* list,void*)->bool{
    dependencyLists[list]=key==0xFEE201&&crossBundle&&!useFallback?std::vector<uint64_t>{0xFEE203}:std::vector<uint64_t>{};return true;
   };
@@ -218,7 +227,7 @@ void RemovedDependencyMeshGenerationRegression(bool externalMesh=false,bool fall
   il2cpp_runtime_invoke=[](void* method,void* self,void** args,void** exception)->void*{
    if(method==(void*)0xFEE210)return (void*)0xFEE212;
    if(method==(void*)0xFEE214){uint64_t root=0xFEE201,asset=0;memcpy(args[1],&root,8);memcpy((char*)args[1]+8,&asset,8);return &yes;}
-   if(method==(void*)0xFEE211){if(String(args[0]).find("unrelated.ab")!=std::string::npos){++unrelatedReads;throw std::runtime_error("unrelated Texture must not be inspected for Mesh targets");}
+   if(method==(void*)0xFEE211){++vfsQueries;if(String(args[0]).find("unrelated.ab")!=std::string::npos){++unrelatedReads;throw std::runtime_error("unrelated Texture must not be inspected for Mesh targets");}
     const bool remote=String(args[0]).find("remote.ab")!=std::string::npos;
     if(remote&&remoteUnavailable)return &no;
     uint64_t offset=remote?sourceLength:0,length=remote?remoteLength:sourceLength;
@@ -227,7 +236,7 @@ void RemovedDependencyMeshGenerationRegression(bool externalMesh=false,bool fall
   };
   auto loads=Test::memoryCalls;std::vector<uint64_t> aliases;
   auto mod=folder/"plugin/mods/weapon";std::filesystem::create_directory(mod);
-  {std::ofstream ini(mod/"mod.ini");ini<<"[Mod]\nformat=3\nid=RemovedWeapon\n[ReplaceOld]\ntarget.path=assets/static.mesh\ntarget.asset=Static\nhandling=skip\n";}
+  {std::ofstream ini(mod/"mod.ini");ini<<"[Mod]\nformat=3\nid=RemovedWeapon\n[ReplaceOld]\ntarget.path="<<logical<<"\ntarget.asset=Static\nhandling=skip\n";}
   std::atomic_store(&D::installedGeneration,std::shared_ptr<const D::InstalledGeneration>{});
   D::PublishInstalledGeneration(D::BuildInstalledGeneration());
   auto oldState=D::Current(dependencyManifest);auto oldList=S::NewListForManifest(dependencyManifest);
@@ -235,12 +244,42 @@ void RemovedDependencyMeshGenerationRegression(bool externalMesh=false,bool fall
   Require(fallback?unrelatedReads==1:!unrelatedReads,"Mesh discovery read an unexpected number of unrelated native dependencies");
   auto oldShared=D::SharedFor(oldState);uint64_t oldAlias=0;EiemDemandSharedGraph::Input oldInput;
   Require(oldShared->bundleNamespace.Alias(0xFEE201,oldAlias)&&oldShared->graph.Find(oldAlias,oldInput),"initial Mod input missing");
+  if(routed){
+    const auto before=vfsQueries;
+    Require(!D::PrepareDependencyGroup(oldState,0xFEE204,oldList.Get())&&vfsQueries==before&&oldShared->targetDiscoveryChecked.empty(),
+      "verified logical route still opened or traversed an unrelated scene");
+    nativeIncomplete=true;
+    const auto beforeIncomplete=vfsQueries;
+    Require(!D::PrepareDependencyGroup(oldState,0xFEE205,oldList.Get())&&vfsQueries>beforeIncomplete&&
+      !oldShared->targetDiscoveryMisses.count(0xFEE205),"incomplete dependency table suppressed a retryable source search");
+    nativeIncomplete=false;
+    unrelatedReads=0;
+  }
+  {
+   const auto beforeReuse=vfsQueries;
+   D::DependencyGroup later;later.manifest=oldState;later.shared=oldShared;later.root=0xFEE204;later.prototype=oldList.Get();
+   auto record=later.Prepare(0xFEE201,D::Q::Candidate::Yes);
+   auto reused=later.VersionedRoot(0xFEE201,record);
+   Require(reused.view==oldInput.view&&reused.dependencies==oldInput.dependencies,
+     "later scene did not reuse the published input and dependencies");
+   later.keys={0xFEE201};
+   D::M::Shared material;
+   EiemNativeStandaloneInput::Input variant;
+   variant.cab="CAB-test-variant";variant.view=oldInput.view;variant.dependencies.emplace(fixture.cab,200);
+   material.inputs.emplace(variant.cab,variant);
+   later.consumer=later.root;
+   later.AddResourceInputs(material);
+   Require(later.inputs.size()==1&&later.inputs.front().dependencies==std::vector<uint64_t>{0xFEE201},
+     "a reused native CAB did not retain the material dependency edge");
+   Require(vfsQueries==beforeReuse&&later.headerReads==0,"later scene reopened an already prepared source Bundle");
+   std::cout<<"PASS shared scene input and Material dependency reuse: source Bundle opens="<<(vfsQueries-beforeReuse)<<std::endl;
+  }
   oldShared->activeAuthorProxies.insert(oldAlias);aliases.push_back(oldAlias);
   {EiemNativeRandomAccess::Reader reader(oldInput.view->Size(),[view=oldInput.view](size_t at,unsigned char* out,size_t n){Require(view->ReadAt(at,out,n)==n,"old input truncated");});
    const auto& member=reader.directory.members.at(0);auto layout=reader.Layout(member);
    Require(Integer(reader.Fields(member,layout,13,{"m_Enabled"}).at("m_Enabled"))==0,"initial Mod did not hide the source Renderer");}
   {
-   auto observed=std::make_shared<D::InstalledGeneration>();observed->observedMeshTargets.insert({"assets/static.mesh","Static"});
+   auto observed=std::make_shared<D::InstalledGeneration>();observed->observedMeshTargets.insert({logical,"Static"});
    auto state=std::make_shared<D::Manifest>();state->serial=++D::serial;state->object=oldState->object;state->catalog=observed;state->unresolvedObservedMeshes=true;
    // The attach-only observer must use the same selective source traversal,
    // including when the Mesh exists only in another native input.
@@ -256,8 +295,8 @@ void RemovedDependencyMeshGenerationRegression(bool externalMesh=false,bool fall
       "temporary external CAB read failure did not leave a bounded, retryable attachment lookup");
    }
    const auto priorReads=unrelatedReads;
-   auto proof=D::NativePrefabProof(state,"assets/a.prefab");D::api.lookup=(void*)181;
-   Require(proof&&proof->uses.size()==1&&proof->uses.front().identities.count({"assets/static.mesh","Static"})&&unrelatedReads==priorReads+unsigned(fallback),
+   auto proof=D::NativePrefabProof(state,"assets/a.prefab");D::api.lookup=routed?(void*)0xFEE214:(void*)181;
+   Require(proof&&proof->uses.size()==1&&proof->uses.front().identities.count({logical,"Static"})&&unrelatedReads==priorReads+unsigned(fallback),
      "attach-only Mesh proof lost its exact source or inspected an unrelated dependency");
    auto shared=D::SharedFor(state);Require(shared->observationChecked.size()==size_t(externalMesh?2:1),"attach-only observer expanded the complete native dependency group");
    Require(D::NativePrefabProof(state,"assets/a.prefab")==proof,"attach-only observer did not retain its generation-local structural proof");
@@ -271,6 +310,8 @@ void RemovedDependencyMeshGenerationRegression(bool externalMesh=false,bool fall
    Require(D::PrepareDependencyGroup(state,0xFEE201,prototype.Get()),
     "removed dependency-only Mesh without a public entry or Bundle hint did not prepare baseline inputs");
    auto shared=D::SharedFor(state);uint64_t alias=0;
+   if(routed)Require(state->meshRoutes==oldState->meshRoutes&&shared->targetDiscoveryChecked.empty(),
+     "F10 restoration repeated confirmed Mesh discovery or reused a Mod binding");
    Require(shared->bundleNamespace.Alias(0xFEE201,alias)&&std::find(aliases.begin(),aliases.end(),alias)==aliases.end(),
     "baseline restoration reused an older generation proxy");aliases.push_back(alias);
    shared->activeAuthorProxies.insert(alias);EiemDemandSharedGraph::Input input;
@@ -298,5 +339,5 @@ void RemovedDependencyMeshGenerationRegression(bool externalMesh=false,bool fall
   Require(unrelatedReads==beforeReloads+(fallback?3u:0u),"baseline restoration read an unexpected number of unrelated dependencies");
   Require(Test::memoryCalls==loads&&!leaseRequests&&!sceneQueries,"baseline preparation loaded native objects or scanned the scene");
  }catch(...){cleanup();throw;}cleanup();
- std::cout<<"PASS removed dependency-only target: crossBundle="<<externalMesh<<" fallback="<<fallback<<" no public entry or hint, baseline Mesh/Renderer/Shader/Texture, repeated F10 and pinned old generations\n";
+ std::cout<<"PASS removed dependency-only target: crossBundle="<<externalMesh<<" fallback="<<fallback<<" nativeRoute="<<routed<<" baseline Mesh/Renderer/Shader/Texture, repeated F10 and pinned old generations\n";
 }

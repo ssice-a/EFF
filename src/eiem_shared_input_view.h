@@ -10,7 +10,7 @@ struct Stream {uint32_t flags=0;size_t size=0;std::vector<EiemResourceRecipe::Sp
 struct Prepared {EiemCompiledInputView::Recipe recipe;EiemCompiledInputView::Buffers buffers;};
 inline EiemResourceRecipe::Span Literal(Bytes bytes){auto size=bytes.size();return {EiemResourceRecipe::Literal,{},0,size,std::move(bytes)};}
 inline void Add(Stream& stream,EiemResourceRecipe::Span span){if(!span.size)return;stream.size=AddSize(stream.size,span.size);stream.spans.push_back(std::move(span));}
-inline const unsigned char* Data(const EiemCompiledInputView::Buffer& buffer){return buffer.bytes?buffer.bytes->data():buffer.file->Data();}
+inline const unsigned char* Data(const EiemCompiledInputView::Buffer& buffer){return buffer.Data();}
 inline EiemResourceRecipe::Span Original(const std::string& name,const Bytes& bytes,Prepared& output){
  auto key="original/"+name;if(!output.buffers.count({EiemResourceRecipe::Author,key})){auto source=std::make_shared<const Bytes>(bytes);output.buffers.emplace(std::make_pair(EiemResourceRecipe::Author,key),source);}return {EiemResourceRecipe::Author,key,0,bytes.size(),{}};
 }
@@ -18,7 +18,7 @@ template<class Artifact> inline void Append(Stream& stream,const std::shared_ptr
  Require(recipe.size>=original.size(),"compiled stream changes its original prefix");size_t position=0;
  for(const auto& piece:recipe.spans){Require(piece.size&&piece.size<=recipe.size-position,"shared stream recipe extent differs");EiemCompiledInputView::Buffer buffer;std::string key="mod/"+std::to_string(mod)+"/"+std::to_string(piece.kind)+"/"+piece.source;if(piece.kind==EiemResourceRecipe::Literal)key+="/"+recipe.name+"/"+std::to_string(position);
   switch(piece.kind){case EiemResourceRecipe::Original:{auto source=originals.find(piece.source);Require(source!=originals.end(),"shared original stream absent");Original(piece.source,source->second->bytes,output);buffer=output.buffers.at({EiemResourceRecipe::Author,"original/"+piece.source});break;}
-  case EiemResourceRecipe::Author:{const auto&r=artifact->manifest.package.resources.at(piece.source);buffer=r->mapped?EiemCompiledInputView::Buffer(r->mapped):EiemCompiledInputView::Buffer(std::shared_ptr<const Bytes>(r,&r->bytes));break;}
+  case EiemResourceRecipe::Author:{const auto&r=artifact->manifest.package.resources.at(piece.source);buffer=r->mapped?EiemCompiledInputView::Buffer(r->mapped,[r]{VerifyDeferredResource(*r);}):EiemCompiledInputView::Buffer(std::shared_ptr<const Bytes>(r,&r->bytes));break;}
   case EiemResourceRecipe::ExpandedFrame:buffer=EiemCompiledInputView::Buffer(std::shared_ptr<const Bytes>(artifact,&artifact->preparedFrames.at(piece.source)));break;
   case EiemResourceRecipe::Literal:Require(piece.offset==0&&piece.literal.size()==piece.size,"shared stream literal extent differs");buffer=EiemCompiledInputView::Buffer(std::shared_ptr<const Bytes>(artifact,&piece.literal));break;
   default:Require(false,"shared stream source kind differs");}

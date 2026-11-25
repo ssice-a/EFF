@@ -38,7 +38,11 @@ share this compiler; controls do not require a parallel persisted program.
    Mesh target selection and Material replacement are independent. A Part
    may omit `material`; in that case `material_slot` (zero-based, default
    `0`) selects the material from the current matched Renderer in each
-   requested PFB. The runtime retains that PFB's own Material and does not
+   requested PFB. This is a source Renderer slot, not the author's Blender
+   SubMesh/material slot. Blender splits an author Mesh with extra material
+   slots into separate Parts, but inherited Parts use source slot `0` unless
+   the published INI explicitly chooses another source slot. The runtime
+   retains that PFB's own Material and does not
    load an author Material resource. A declared `material` explicitly
    replaces that slot with the author's sparse Material variant. Blender
    omits the Material declaration when its values are unchanged, except for

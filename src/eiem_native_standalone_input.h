@@ -10,6 +10,10 @@ using namespace EiemNativeInput;
 namespace R=EiemNativeRandomAccess;namespace S=EiemNativeSpliceView;namespace P=EiemNativeSerializedSplice;
 struct Input {
   std::string cab,bundle,path;NativeReference asset;
+  // Logical game object used as the current-schema template. Prefab assembly
+  // can preserve its native references while placing the authored object in
+  // the matched Prefab's own SerializedFile.
+  NativeReference origin;
   std::set<NativeReference> dependencies;
   std::shared_ptr<const EiemInputSpanView::View> view;
   size_t literalBytes=0,streamedBytes=0;

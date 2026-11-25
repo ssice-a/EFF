@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cwctype>
+#include <functional>
 #include <mutex>
 
 namespace EiemReadonlyFileRange {
@@ -55,15 +56,23 @@ public:
  const unsigned char* Data()const{return mapped_+delta_;}
 };
 struct Buffer {
+ struct DeferredCheck {
+  mutable std::once_flag once;
+  std::function<void()> check;
+  void Verify()const{std::call_once(once,check);}
+ };
  std::shared_ptr<const Bytes> bytes;std::shared_ptr<const Range> file;
+ std::shared_ptr<DeferredCheck> deferredCheck;
  Buffer()=default;Buffer(std::shared_ptr<const Bytes> value):bytes(std::move(value)){}
  Buffer(std::shared_ptr<Bytes> value):bytes(std::move(value)){}
- explicit Buffer(std::shared_ptr<const Range> value):file(std::move(value)){}
+ explicit Buffer(std::shared_ptr<const Range> value,std::function<void()> check={})
+  :file(std::move(value)){if(check){deferredCheck=std::make_shared<DeferredCheck>();deferredCheck->check=std::move(check);}}
  explicit operator bool()const{return bool(bytes)||bool(file);}
  size_t Size()const{return bytes?bytes->size():file->Size();}
+ const unsigned char* Data()const{if(deferredCheck)deferredCheck->Verify();return bytes?bytes->data():file->Data();}
  void Read(size_t offset,unsigned char* destination,size_t count)const{
   EiemLoadPerformance::Scope performance(EiemLoadPerformance::BufferRead);performance.hit=bool(file);
-  Require(offset<=Size()&&count<=Size()-offset,"compiled backing read exceeds range");std::memcpy(destination,(bytes?bytes->data():file->Data())+offset,count);
+  Require(offset<=Size()&&count<=Size()-offset,"compiled backing read exceeds range");std::memcpy(destination,Data()+offset,count);
   EiemLoadPerformance::Bytes(EiemLoadPerformance::BufferRead,count,performance.hit);
  }
 };

@@ -6,6 +6,7 @@ using RuntimeShapes::Ref;
 constexpr ULONGLONG kPrefabProxyRetryIntervalMs=250;
 constexpr ULONGLONG kPrefabProxyWaitTimeoutMs=3000;
 constexpr ULONGLONG kPrefabProxyDeferredRetryMs=1500;
+constexpr ULONGLONG kPrefabHolderPollMs=500;
 
 struct Prepared {
   std::shared_ptr<const DemandLoadingProbe::InstalledGeneration> generation;
@@ -26,6 +27,7 @@ struct PathReload {
   bool poolDiscarded=false,idlePoolChecked=false,cacheInvalidated=false;
   bool prefabInvalidated=false,prefabInvalidationAttempted=false,rawCaptured=false;
   ULONGLONG prefabRetryAt=0,prefabBlockedSince=0;
+  ULONGLONG prefabHolderPollAt=0;
   bool prefabRetryDeferred=false,waitingForPrefabHolder=false;
   unsigned prefabDeferredRetries=0;
   std::vector<Ref> rawAssets;
@@ -518,7 +520,7 @@ bool DependsOn(const PathReload& ownerPath,const PathReload& dependencyPath){
   return false;
 }
 
-void CheckPrefabHolders(PathReload& batch,ULONGLONG now){
+PathReload* RetainedPrefabPath(PathReload& batch,bool discardIdle){
   // A retained weapon proxy can block its parent and a display page. Check
   // those paths as one group before retiring any live model in the group.
   std::vector<PathReload*> related{&batch};
@@ -535,7 +537,7 @@ void CheckPrefabHolders(PathReload& batch,ULONGLONG now){
       if(RuntimeShapes::Alive(root))roots.insert(root);
     }
     if(!FullResourceReload::HasUnownedPrefabProxy(path->hash,roots))continue;
-    if(!path->idlePoolChecked&&FullResourceReload::api.discardHasUnloadImmediately&&
+    if(discardIdle&&!path->idlePoolChecked&&FullResourceReload::api.discardHasUnloadImmediately&&
        (path->owners.empty()||std::any_of(path->owners.begin(),path->owners.end(),[](const auto& item){return !item.owner.uiModel;}))){
       // This native call discards only idle entries for the path. Passing
       // false preserves native resources still held by active consumers.
@@ -544,6 +546,13 @@ void CheckPrefabHolders(PathReload& batch,ULONGLONG now){
       path->idlePoolChecked=true;
       if(!FullResourceReload::HasUnownedPrefabProxy(path->hash,roots))continue;
     }
+    return path;
+  }
+  return nullptr;
+}
+
+void CheckPrefabHolders(PathReload& batch,ULONGLONG now){
+  if(auto* path=RetainedPrefabPath(batch,true)){
     if(!batch.prefabBlockedSince)batch.prefabBlockedSince=now;
     batch.waitingForPrefabHolder=true;batch.prefabRetryAt=now+kPrefabProxyRetryIntervalMs;
     throw FullResourceReload::PrefabProxyRetainedError("game still owns a prefab outside the reload: "+path->path);
@@ -708,14 +717,25 @@ void PollOwner(OwnerReload& item) {
 }
 
 void ResumeDeferredPrefabRetries() {
-  if(active)return;const auto now=GetTickCount64();bool resumed=false;
-  for(auto& batch:reloads)if(batch.failed&&batch.prefabRetryDeferred&&batch.prefabRetryAt&&now>=batch.prefabRetryAt){
+  const auto now=GetTickCount64();
+  for(auto& batch:reloads){
+    if(!batch.failed||!batch.prefabRetryDeferred||!batch.prefabRetryAt)continue;
+    bool ready=now>=batch.prefabRetryAt;
+    if(!ready&&now>=batch.prefabHolderPollAt){
+      batch.prefabHolderPollAt=now+kPrefabHolderPollMs;
+      // Check native readiness without discarding pools or unloading assets.
+      // The regular retry remains available if the native query fails.
+      try{
+        ready=batch.waitingForPrefabHolder?!RetainedPrefabPath(batch,false):
+          !FullResourceReload::HasUnownedPrefabProxy(batch.hash,{});
+      }catch(const std::exception&){}
+    }
+    if(!ready)continue;
     batch.failed=false;batch.started=now;batch.prefabBlockedSince=0;batch.prefabRetryAt=0;
-    batch.prefabRetryDeferred=false;batch.lastError.clear();batch.waitLogged=false;resumed=true;
+    batch.prefabRetryDeferred=false;batch.lastError.clear();batch.waitLogged=false;active=true;
     Log("[DEMAND-F10-PATH-AUTO-RETRY] path=%s previousReason=prefab-proxy-retained latestGeneration=%llu",
       batch.path.c_str(),(unsigned long long)committedGeneration);
   }
-  if(resumed)active=true;
 }
 
 void Frame() {
@@ -747,7 +767,7 @@ void Frame() {
     const auto exponent=std::min(batch.prefabDeferredRetries,5u);
     const auto retryDelay=std::min<ULONGLONG>(30000,kPrefabProxyDeferredRetryMs<<exponent);
     ++batch.prefabDeferredRetries;
-    batch.failed=true;batch.prefabRetryDeferred=true;batch.prefabRetryAt=now+retryDelay;
+    batch.failed=true;batch.prefabRetryDeferred=true;batch.prefabRetryAt=now+retryDelay;batch.prefabHolderPollAt=now;
     Log("[DEMAND-F10-PATH-DEFERRED] path=%s elapsedMs=%llu phase=prefab-proxy-release retry=automatic retryDelayMs=%llu otherPathsContinue=1",
       batch.path.c_str(),(unsigned long long)(now-batch.prefabBlockedSince),(unsigned long long)retryDelay);
   }

@@ -113,8 +113,10 @@ void MeshSourceReachability(){
  // Typed terminal pointers and even generic pointers inside a Material cannot
  // turn unrelated texture/shader dependency closures into Mesh searches.
  auto materialRef=Ref("material");materialRef.type="PPtr<Material>";
- auto typed=fixture.types.size();fixture.types.push_back(Schema(23,{materialRef}));fixture.Add(43,typed);
+ auto spriteRef=Ref("sprite");spriteRef.type="PPtr<Sprite>";
+ auto typed=fixture.types.size();fixture.types.push_back(Schema(23,{materialRef,spriteRef}));fixture.Add(43,typed);
  SetReference(fixture.T(43),Child(fixture.T(43),fixture.V(43),"material"),{"CAB-material",200},fixture.refs,fixture.cab);
+ SetReference(fixture.T(43),Child(fixture.T(43),fixture.V(43),"sprite"),{"CAB-sprite",210},fixture.refs,fixture.cab);
  fixture.types[6]=Schema(21,{Ref("texture")});fixture.objects.erase(200);fixture.Add(200,6);
  SetReference(fixture.T(200),Child(fixture.T(200),fixture.V(200),"texture"),{"CAB-texture",201},fixture.refs,fixture.cab);
  auto& preloads=ArrayValue(fixture.T(300),Child(fixture.T(300),fixture.V(300),"m_PreloadTable"));
@@ -134,6 +136,29 @@ void MeshSourceReachability(){
  R::Reader second(wrapper.size(),[&](size_t at,unsigned char* out,size_t size){memcpy(out,wrapper.data()+at,size);});
  EiemDemandTargetLookup::Inspection fresh;Require(fresh.MeshSources(second).count("CAB-external-root"),"external container root omitted from Mesh traversal");
  std::cout<<"PASS Mesh source reachability: static/skinned Mesh, external hierarchy, nested Prefab, unknown component, terminal resources, unrelated preloads and no rereads\n";
+}
+void TextureOnlyBundleMeshDiscovery(){
+ Fixture fixture;
+ fixture.objects.erase(100);
+ fixture.types[6]=Schema(28,{{"string","m_Name",{}}});
+ fixture.objects.at(200).second=EmptyValue(fixture.types[6],0);
+ SetString(fixture.T(200),Child(fixture.T(200),fixture.V(200),"m_Name"),"Texture");
+ auto raw=fixture.BytesOf();const auto metadata=ParseSerialized(raw).dataOffset;
+ const Bytes opaque(32,0xA6);
+ auto input=EiemNativeViewWriter::Prefix(EiemAuthorMeshBundle::EnvelopeHeader(),
+   {{metadata,metadata,0},{raw.size()-metadata,opaque.size(),EiemNativeViewWriter::ExtendedBlock,1}},
+   {{fixture.cab,4,0,raw.size()}});
+ input.insert(input.end(),raw.begin(),raw.begin()+metadata);
+ const auto payload=input.size();input.insert(input.end(),opaque.begin(),opaque.end());
+ R::Reader reader(input.size(),[&](size_t at,unsigned char* out,size_t n){
+   Require(at<=payload&&n<=payload-at,"Mesh discovery read a terminal asset block");
+   memcpy(out,input.data()+at,n);
+ });
+ EiemDemandTargetLookup::Inspection inspection;
+ const auto missing=inspection.Find(reader,{"assets/static.mesh","Static"},
+   [](const auto&,const auto&,auto&)->bool{throw std::runtime_error("terminal input followed a Mesh source");});
+ Require(missing.empty()&&inspection.MeshSources(reader).empty(),"texture-only Bundle became a Mesh source");
+ std::cout<<"PASS texture-only extended Bundle classified by metadata without reading an unsupported asset block\n";
 }
 void EmbeddedMaterialClosure() {
   Fixture fixture;fixture.types[6]=Schema(21,{{"string","m_Name",{}},Ref("m_Shader"),
@@ -961,5 +986,5 @@ void RealInputs(const std::filesystem::path& game,const std::filesystem::path& m
   }
   Require(count,"no real input fixtures inspected");
 }
-int main(int argc,char** argv) {try{if(argc==8&&std::string(argv[1])=="--native-author-observed"){InspectNativeAuthor(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[6]),argv[7],std::filesystem::u8path(argv[4]),std::stoull(argv[5]));return 0;}if(argc==4&&std::string(argv[1])=="--inspect"){InspectObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]));return 0;}if(argc==6&&std::string(argv[1])=="--author-observed"){InspectAuthorObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[4]),argv[5]);return 0;}if(argc==8&&std::string(argv[1])=="--author-consumer-observed"){InspectAuthorObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[6]),argv[7],std::filesystem::u8path(argv[4]),std::stoull(argv[5]));return 0;}ExactContainerPreloads();SharedTargetInspection();MeshSourceReachability();EmbeddedMaterialClosure();SparseInput();CompressedRanges();CutsceneHierarchyReadOrder();CompressedDecodedView();SpliceCompressed();SpliceMetadata();SpliceSparse();SpliceDifferential();SerializedPlanDifferential();SerializedPlanSparse();ProjectedRendererAssembly();StreamedAuthorGraft();PreloadIntervals();NativeCatalogAssembly();RetainedSourceLease();if(argc==3)RealInputs(std::filesystem::u8path(argv[1]),std::filesystem::u8path(argv[2]));else Require(argc==1,"usage: native_random_access_smoke [game mod]");std::cout<<"PASS native random access; no author payloads or native game objects created\n";return 0;}catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}}
+int main(int argc,char** argv) {try{if(argc==8&&std::string(argv[1])=="--native-author-observed"){InspectNativeAuthor(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[6]),argv[7],std::filesystem::u8path(argv[4]),std::stoull(argv[5]));return 0;}if(argc==4&&std::string(argv[1])=="--inspect"){InspectObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]));return 0;}if(argc==6&&std::string(argv[1])=="--author-observed"){InspectAuthorObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[4]),argv[5]);return 0;}if(argc==8&&std::string(argv[1])=="--author-consumer-observed"){InspectAuthorObserved(std::filesystem::u8path(argv[2]),std::stoull(argv[3]),std::filesystem::u8path(argv[6]),argv[7],std::filesystem::u8path(argv[4]),std::stoull(argv[5]));return 0;}ExactContainerPreloads();SharedTargetInspection();MeshSourceReachability();TextureOnlyBundleMeshDiscovery();EmbeddedMaterialClosure();SparseInput();CompressedRanges();CutsceneHierarchyReadOrder();CompressedDecodedView();SpliceCompressed();SpliceMetadata();SpliceSparse();SpliceDifferential();SerializedPlanDifferential();SerializedPlanSparse();ProjectedRendererAssembly();StreamedAuthorGraft();PreloadIntervals();NativeCatalogAssembly();RetainedSourceLease();if(argc==3)RealInputs(std::filesystem::u8path(argv[1]),std::filesystem::u8path(argv[2]));else Require(argc==1,"usage: native_random_access_smoke [game mod]");std::cout<<"PASS native random access; no author payloads or native game objects created\n";return 0;}catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}}
 

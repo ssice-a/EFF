@@ -13,6 +13,7 @@ using namespace EiemNativeInput;
 class Inspection {
  struct Member {
   SerializedLayout layout;
+  bool canContainTarget=false;
   bool hasContainers=false;
   std::map<std::string,std::vector<EiemNativeRandomAccess::Reader::ContainerEntry>> containers;
   std::map<int64_t,std::vector<NativeReference>> preloads;
@@ -23,7 +24,17 @@ class Inspection {
  std::map<EiemNativeRandomAccess::Reader*,std::map<size_t,Member>> layouts_;
  Member& Metadata(EiemNativeRandomAccess::Reader& reader,const EiemNativeViewWriter::Member& member){
   auto& layouts=layouts_[&reader];auto found=layouts.find(member.offset);
-  if(found==layouts.end()){Member value;value.layout=reader.Layout(member);found=layouts.emplace(member.offset,std::move(value)).first;}
+  if(found==layouts.end()){
+   Member value;value.layout=reader.Layout(member);
+   // The object table can rule out this member without reading its container.
+   // An external container/preload can still name a Mesh in another member.
+   const auto& layout=value.layout;
+   value.canContainTarget=std::any_of(layout.externals.begin(),layout.externals.end(),GameBundleSource)||
+     std::any_of(layout.objects.begin(),layout.objects.end(),[&](const auto& object){
+       return layout.types.at(object.second.type).classId==43;
+     });
+   found=layouts.emplace(member.offset,std::move(value)).first;
+  }
   return found->second;
  }
  const SerializedLayout& Layout(EiemNativeRandomAccess::Reader& reader,const EiemNativeViewWriter::Member& member){
@@ -44,7 +55,7 @@ class Inspection {
   if(type.compare(0,5,"PPtr<"))return false;
   static const std::set<std::string> terminal={"PPtr<Material>","PPtr<Shader>","PPtr<Texture>","PPtr<Texture2D>",
    "PPtr<Texture3D>","PPtr<Cubemap>","PPtr<RenderTexture>","PPtr<ComputeShader>","PPtr<MonoScript>",
-   "PPtr<Avatar>","PPtr<AudioClip>"};
+   "PPtr<Avatar>","PPtr<AudioClip>","PPtr<Sprite>","PPtr<SpriteAtlas>","PPtr<Font>"};
   return !terminal.count(type);
  }
  static bool HasMeshPointer(const Type& type,size_t node){
@@ -53,47 +64,56 @@ class Inspection {
   for(auto child:value.children)if(HasMeshPointer(type,child))return true;
   return false;
  }
- static bool GameBundleSource(const std::string& cab){
+public:
+ static bool GameBundleSourceKey(std::string_view key){
   // Engine built-ins are resolved by Unity, not a CAB in the game's native
   // dependency closure; they cannot own an authored assets/packages target.
-  auto key=SerializedAssetCabKey(cab);return key!="unity default resources"&&key!="unity_builtin_extra";
+  return key!="unity default resources"&&key!="unity_builtin_extra";
  }
- static void MeshReferences(const Type& type,const Value& value,const SerializedLayout& layout,
-     const std::string& cab,std::set<std::string>& result){
+ static bool GameBundleSource(const std::string& cab){
+  return GameBundleSourceKey(SerializedAssetCabKey(cab));
+ }
+ static void MeshReferences(const Type& type,const Value& value,std::vector<bool>& externalFiles){
   const auto& node=type.nodes.at(value.node);
   if(node.type.compare(0,5,"PPtr<")==0){
    if(!MeshPointer(node.type)||!Integer(Child(type,value,"m_PathID")))return;
-   auto externalIndex=Integer(Child(type,value,"m_FileID"));Require(externalIndex<=layout.externals.size(),"native Mesh discovery external index differs");
-   if(externalIndex){const auto& external=layout.externals[size_t(externalIndex)-1];
-    if(GameBundleSource(external)&&SerializedAssetCabKey(external)!=SerializedAssetCabKey(cab))result.insert(external);}
+   auto externalIndex=Integer(Child(type,value,"m_FileID"));
+   Require(externalIndex<=externalFiles.size(),"native Mesh discovery external index differs");
+   if(externalIndex)externalFiles[size_t(externalIndex)-1]=true;
    return;
   }
-  for(const auto& child:value.children)MeshReferences(type,child,layout,cab,result);
+  for(const auto& child:value.children)MeshReferences(type,child,externalFiles);
  }
-public:
  std::set<std::string> MeshSources(EiemNativeRandomAccess::Reader& reader){
   std::set<std::string> result;
   for(const auto& member:reader.directory.members){if(!(member.flags&4))continue;
    auto& metadata=Metadata(reader,member);const auto& layout=metadata.layout;
    if(std::none_of(layout.externals.begin(),layout.externals.end(),GameBundleSource))continue;
    if(!metadata.hasMeshSources){std::set<std::string> sources;std::map<size_t,std::set<std::string>> fieldsByType;
+    std::vector<bool> externalFiles(layout.externals.size());
+    const auto localCab=SerializedAssetCabKey(member.name);
     for(auto id:layout.order){const auto typeIndex=layout.objects.at(id).type;const auto& type=layout.types.at(typeIndex);
      // AssetBundle preload tables mix every container's dependencies. Find()
      // alone examines the exact requested container interval; never walk all
      // preloads just to discover unrelated logical Meshes.
      if(type.classId==142){
       for(const auto& rows:Containers(reader,member))for(const auto& entry:rows.second)if(entry.asset.pathId&&GameBundleSource(entry.asset.cab)&&
-          SerializedAssetCabKey(entry.asset.cab)!=SerializedAssetCabKey(member.name))sources.insert(entry.asset.cab);
+          SerializedAssetCabKey(entry.asset.cab)!=localCab)sources.insert(entry.asset.cab);
       continue;
      }
      if(type.classId==21||type.classId==28||type.classId==43||type.classId==48||
-        type.classId==83||type.classId==90||type.classId==115)continue;
+        type.classId==83||type.classId==90||type.classId==115||type.classId==128||type.classId==213)continue;
      auto fields=fieldsByType.find(typeIndex);
      if(fields==fieldsByType.end()){std::set<std::string> wanted;
       for(auto child:type.nodes.at(0).children)if(HasMeshPointer(type,child))wanted.insert(type.nodes.at(child).name);
       fields=fieldsByType.emplace(typeIndex,std::move(wanted)).first;}
      if(fields->second.empty())continue;
-     for(const auto& field:reader.Fields(member,layout,id,fields->second))MeshReferences(type,field.second,layout,member.name,sources);
+     reader.VisitFields(member,layout,id,fields->second,
+       [&](const std::string&,const Value& field){MeshReferences(type,field,externalFiles);});
+    }
+    for(size_t i=0;i<externalFiles.size();++i)if(externalFiles[i]){
+     const auto& external=layout.externals[i];const auto key=SerializedAssetCabKey(external);
+     if(key!=localCab&&GameBundleSourceKey(key))sources.insert(external);
     }
     metadata.meshSources=std::move(sources);metadata.hasMeshSources=true;
    }
@@ -116,6 +136,7 @@ template<class Resolve>
 std::vector<Asset> Find(EiemNativeRandomAccess::Reader& reader,const Identity& identity,Resolve&& resolve){
  std::map<NativeReference,Asset> matches;
  for(const auto& member:reader.directory.members){if(!(member.flags&4))continue;auto& metadata=Metadata(reader,member);const auto& layout=metadata.layout;
+  if(!metadata.canContainTarget)continue;
   const auto& containers=Containers(reader,member);
   auto rows=containers.find(identity.path);if(rows==containers.end())continue;
   std::set<NativeReference> references;

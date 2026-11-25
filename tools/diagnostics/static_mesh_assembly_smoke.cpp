@@ -26,7 +26,10 @@ void PerRendererMaterialDonorRegression(){
  std::cout<<"PASS Mesh hit/material mapping: explicit full Material input ignores source Renderer slot count; unchanged Renderer arrays preserve 0/1/N slots\n";
 }
 void InheritedMaterialSlotRegression(){
- Fixture f;f.Add(201,6);f.SetList(13,"m_Materials",{200,201});f.SetList(23,"m_Materials",{200,201});
+ // The author Mesh has two SubMeshes/material slots, while the matched game
+ // Renderer exposes one material. Each split author Part must inherit that
+ // sole source material rather than treating its author slot as a source slot.
+ Fixture f;f.Add(201,6);f.SetList(13,"m_Materials",{200});f.SetList(23,"m_Materials",{200});
  Package p;p.id="inherit-source-material";Identity target{"assets/static.mesh","Static"};p.targetIndex[target]="R";p.rules["R"].parts={"P","Q"};
  p.parts["P"].mesh=p.parts["Q"].mesh="M";p.parts["P"].materialSlot=1;p.parts["Q"].materialSlot=0;p.meshes["M"]={"mesh",3,3,{},{}};
  auto meshSchema=std::make_shared<Resource>();meshSchema->type=f.types[5].hash;p.resources["mesh"]=meshSchema;
@@ -35,12 +38,15 @@ void InheritedMaterialSlotRegression(){
  auto built=RendererMemberBuilder(f.BytesOf(),f.cab,p,assets,parts).Build();
  Require(built.matches==2&&built.parts.size()==4,"Mesh-only Parts did not assemble for all source Renderers");
  auto layout=ParseSerialized(built.bytes);
- for(const auto& part:built.parts){const int64_t expected=part.part=="P"?201:200;auto value=ObjectValue(built.bytes,layout,part.renderer);const auto& type=layout.types.at(layout.objects.at(part.renderer).type);
+ for(const auto& part:built.parts){const int64_t expected=200;auto value=ObjectValue(built.bytes,layout,part.renderer);const auto& type=layout.types.at(layout.objects.at(part.renderer).type);
   const auto& materials=ConstArray(type,Child(type,value,"m_Materials"));
   Require(materials.children.size()==1&&NullableReference(type,materials.children.front(),layout,f.cab)==NativeReference{f.cab,expected},
     "Mesh-only Part did not inherit the exact source Renderer material slot");}
+ // With more than one source material, an out-of-range author slot remains
+ // invalid because there is no unambiguous inheritance target.
+ f.SetList(13,"m_Materials",{200,201});f.SetList(23,"m_Materials",{200,201});
  p.parts["P"].materialSlot=2;Rejected([&]{RendererMemberBuilder(f.BytesOf(),f.cab,p,assets,parts).Build();});
- std::cout<<"PASS Mesh-only author Parts bind each current Renderer material slot and reject missing slots\n";
+ std::cout<<"PASS split author material slots inherit a sole source Renderer material and reject ambiguous slots\n";
 }
 void CrossCabSkipCaseRegression(){
  Fixture f;const std::string external="cab-external";

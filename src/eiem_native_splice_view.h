@@ -82,7 +82,7 @@ inline Prepared BuildRanges(R::Reader& reader,const std::vector<Rewrite>& rewrit
     while(size){auto local=at-it->decodedOffset,n=std::min(size,it->block.decoded-local);Require(n,"native splice original block made no progress");
       if(!it->block.flags||(!local&&n==it->block.decoded)){
         auto encoded=it->block.flags?it->block.encoded:n;auto offset=AddSize(it->offset,it->block.flags?0:local);
-        result.blocks.push_back({n,encoded,it->block.flags});result.spans.push_back({0,offset,encoded,{}});result.reusedEncoded=AddSize(result.reusedEncoded,encoded);result.decoded=AddSize(result.decoded,n);
+        result.blocks.push_back({n,encoded,it->block.flags,it->block.extension});result.spans.push_back({0,offset,encoded,{}});result.reusedEncoded=AddSize(result.reusedEncoded,encoded);result.decoded=AddSize(result.decoded,n);
       }else literal(std::make_shared<const Bytes>(reader.ReadAt(at,n,literalBudget-result.literalBytes)));
       at+=n;size-=n;++it;
     }

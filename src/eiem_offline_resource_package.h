@@ -78,8 +78,12 @@ inline void ReadAuthorReference(Reader& r,const Package& package,const std::stri
  auto path=DiskPath(package.root,key,resource.kind);
  if(r.mapResourceBytes&&(resource.kind==1||resource.kind==2||resource.kind==4)){
   std::shared_ptr<const EiemReadonlyFileRange::Range> mapped;
-  try{mapped=std::make_shared<const EiemReadonlyFileRange::Range>(path,0,0,true);}catch(const std::runtime_error&){resource=Decode(Read(path),resource.kind);}
-  if(mapped){resource=DecodeView(mapped->Data(),mapped->Size(),resource.kind);resource.mappedBytes=mapped->Data();resource.mapped=std::move(mapped);}
+  mapped=std::make_shared<const EiemReadonlyFileRange::Range>(path,0,0,true);
+  resource=DecodeView(mapped->Data(),mapped->Size(),resource.kind,false);
+  resource.mappedBytes=mapped->Data();resource.mapped=std::move(mapped);resource.contentHash=hash;
+  auto verification=std::make_shared<DeferredVerification>();verification->expected=hash;
+  verification->data=resource.mappedBytes;verification->size=ResourceSize(resource);
+  resource.deferredVerification=std::move(verification);
  }else resource=Decode(Read(path),resource.kind);
  Require(ResourceContentHash(resource)==hash,"rule author resource content changed");
 }

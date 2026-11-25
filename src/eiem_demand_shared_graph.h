@@ -42,6 +42,7 @@ struct Input {
   std::shared_ptr<const EiemInputSpanView::View> sourceView;
   bool generationIsolated=false;
   std::optional<bool> observedDependencyReady;
+  uint64_t observationScope=0;
 };
 class Graph {
   mutable std::mutex mutex_;

@@ -2,11 +2,50 @@
 #include "static_mesh_assembly_smoke.cpp"
 #undef main
 #include "../../src/eiem_demand_material_build.h"
+#include "../../src/eiem_demand_material_assembly.h"
+#include "../../src/eiem_offline_resource_package.h"
 #include <iostream>
 
 using namespace EiemNativeInput;
 namespace R=EiemNativeRandomAccess;
 namespace M=EiemDemandMaterialBuild;
+namespace MA=EiemDemandMaterialAssembly;
+namespace Offline=EiemOfflinePackage;
+
+static void PutLe(Bytes& bytes,size_t offset,uint64_t value,size_t width){
+  Require(offset<=bytes.size()&&width<=bytes.size()-offset,"deferred resource fixture field extent differs");
+  for(size_t i=0;i<width;++i)bytes[offset+i]=static_cast<unsigned char>(value>>(i*8));
+}
+static Bytes ResourceEnvelope(const Bytes& block){
+  const std::string name="x";const size_t directory=2+name.size()+48;
+  const size_t payload=(80+directory+15)&~size_t(15);Bytes bytes(payload+block.size(),0);
+  std::memcpy(bytes.data(),"EFFRES",6);bytes[6]='2';
+  PutLe(bytes,12,1,4);PutLe(bytes,16,1,4);PutLe(bytes,20,directory,4);
+  PutLe(bytes,40,bytes.size(),8);PutLe(bytes,80,name.size(),2);
+  std::memcpy(bytes.data()+82,name.data(),name.size());PutLe(bytes,83,payload,8);
+  PutLe(bytes,91,block.size(),8);if(!block.empty())std::memcpy(bytes.data()+payload,block.data(),block.size());
+  auto blockHash=Sha(bytes.data()+payload,block.size());std::memcpy(bytes.data()+99,blockHash.data(),blockHash.size());
+  auto bodyHash=Sha(bytes.data()+80,bytes.size()-80);std::memcpy(bytes.data()+48,bodyHash.data(),bodyHash.size());
+  return bytes;
+}
+static void CheckDeferredResourcePayloadVerification(){
+  Bytes block(1024*1024,0x35);auto valid=ResourceEnvelope(block);auto expected=Sha(valid.data(),valid.size());
+  auto expectedText=Hex(expected.data(),expected.size());auto damaged=valid;damaged.back()^=1;
+  auto decoded=DecodeView(damaged.data(),damaged.size(),1,false);decoded.contentHash=expectedText;
+  auto verification=std::make_shared<DeferredVerification>();verification->expected=expectedText;
+  verification->data=damaged.data();verification->size=damaged.size();decoded.deferredVerification=verification;
+  Require(!verification->complete.load(std::memory_order_acquire),"runtime resource was verified before it was used");
+  bool rejected=false;try{VerifyDeferredResource(decoded);}catch(const std::exception&){rejected=true;}
+  Require(rejected&&!verification->complete.load(std::memory_order_acquire),
+    "damaged runtime author resource did not fail at first-use verification");
+  auto good=DecodeView(valid.data(),valid.size(),1,false);good.contentHash=expectedText;
+  auto goodVerification=std::make_shared<DeferredVerification>();goodVerification->expected=expectedText;
+  goodVerification->data=valid.data();goodVerification->size=valid.size();good.deferredVerification=goodVerification;
+  Require(!goodVerification->complete.load(std::memory_order_acquire),"valid resource was verified during lazy decode");
+  VerifyDeferredResource(good);
+  Require(goodVerification->complete.load(std::memory_order_acquire),"valid resource was not verified when used");
+  std::cout<<"PASS author payload integrity is deferred until first resource read bytes="<<block.size()<<"\n";
+}
 
 static Fixture MaterialFixture(){
   Fixture fixture;
@@ -99,6 +138,80 @@ static void CheckCurrentSourceMaterialIsClonedAndEdited(){
     "current game Shader PPtr was not preserved");
 }
 
+static void CheckMatchedPrefabKeepsSharedMaterialReferences(){
+  auto source=MaterialFixture();auto sourceBytes=Bundle(source.BytesOf(),source.cab);
+  R::Reader sourceReader(sourceBytes.size(),[&](size_t at,unsigned char* out,size_t size){
+    Require(at<=sourceBytes.size()&&size<=sourceBytes.size()-at,"material source fixture truncated");
+    memcpy(out,sourceBytes.data()+at,size);
+  });
+  const auto& sourceMember=sourceReader.directory.members.front();auto sourceLayout=sourceReader.Layout(sourceMember);
+  const std::string authorText="format=EFFMAT\nversion=1\noverrides=true\n"
+    "source=assets/material.mat\nname=Metal\ntexture._BaseMap=TextureBody\n";
+  Bytes document(authorText.begin(),authorText.end());auto author=EiemAuthorMaterialEdits::Parse(document);
+  const NativeReference authoredTexture{"CAB-author-texture",901};
+  const std::map<std::string,NativeReference> textures{{"_BaseMap",authoredTexture}};
+  auto material=M::Build(sourceReader,0,sourceLayout,200,{"assets/material.mat","Metal"},author,textures,
+    [&](size_t at,unsigned char* out,size_t size){
+      Require(at<=sourceBytes.size()&&size<=sourceBytes.size()-at,"material source range truncated");
+      memcpy(out,sourceBytes.data()+at,size);
+    });
+
+  MA::Shared resources;resources.inputs.emplace(material.cab,material);
+  resources.references.emplace(M::RendererMaterialKey{13,"P"},material.asset);
+  resources.references.emplace(M::RendererMaterialKey{23,"P"},material.asset);
+  auto closure=material.dependencies;closure.insert(material.asset);
+  resources.closures.emplace(material.asset,std::move(closure));
+
+  Fixture prefab;auto prefabBytes=Bundle(prefab.BytesOf(),prefab.cab);
+  R::Reader prefabReader(prefabBytes.size(),[&](size_t at,unsigned char* out,size_t size){
+    Require(at<=prefabBytes.size()&&size<=prefabBytes.size()-at,"matched Prefab fixture truncated");
+    memcpy(out,prefabBytes.data()+at,size);
+  });
+  const auto& prefabMember=prefabReader.directory.members.front();
+  EiemNativeEditTransaction::Member transaction(prefabReader,0,prefabReader.Layout(prefabMember));
+  Package package;package.id="material-pfb-assembly";Identity target{"assets/static.mesh","Static"};
+  package.targetIndex[target]="R";package.rules["R"].parts={"P"};package.parts["P"].mesh="M";
+  package.parts["P"].material="A";package.meshes["M"]={"mesh",3,3,{},{}};
+  auto meshSchema=std::make_shared<Resource>();meshSchema->type=prefab.types[5].hash;package.resources["mesh"]=meshSchema;
+  AssetIndex assets;assets[target].cab=prefab.cab;assets[target].pathId=100;assets[target].classId=43;assets[target].type=meshSchema->type;
+  std::vector<BuiltMeshPart> parts{{target,"R","P",prefab.cab,100,100,3,3}};
+  RendererMemberBuilder renderer(transaction.Layout(),prefab.cab,package,assets,parts,
+    [&](int64_t id,const std::set<std::string>& fields){return transaction.Project(id,fields);},
+    [&](int64_t id){return transaction.Object(id);});
+  renderer.SetMaterialReferences(resources.references);renderer.SetMaterialClosures(resources.closures);
+  auto built=renderer.Build();transaction.Stage(renderer.OutputLayout(),renderer.TakeChanges(),renderer.TakeAdded());
+  auto plan=transaction.Commit();auto prepared=EiemNativeSpliceView::BuildRanges(prefabReader,{plan.rewrite});
+  auto outputView=prepared.Bind([&](size_t at,unsigned char* out,size_t size){
+    Require(at<=prefabBytes.size()&&size<=prefabBytes.size()-at,"matched Prefab source truncated");
+    memcpy(out,prefabBytes.data()+at,size);
+  });
+  R::Reader output(outputView->Size(),[&](size_t at,unsigned char* out,size_t size){
+    Require(outputView->ReadAt(at,out,size)==size,"assembled Prefab output truncated");
+  });
+  const auto& outputMember=output.directory.members.front();auto outputLayout=output.Layout(outputMember);
+  Require(built.matches==2,"matched PFB Renderers were not rewritten");
+  Require(material.asset.first!=prefab.cab,"shared author Material unexpectedly belongs to the matched PFB");
+  for(const auto rendererId:{int64_t(13),int64_t(23)}){
+    const auto& rendererType=outputLayout.types.at(outputLayout.objects.at(rendererId).type);
+    auto rendererObject=output.Object(outputMember,outputLayout,rendererId);
+    const auto& slots=ConstArray(rendererType,Child(rendererType,rendererObject,"m_Materials"));
+    Require(slots.children.size()==1&&
+        Reference(rendererType,slots.children.front(),outputLayout,prefab.cab)==material.asset,
+      "matched Renderer did not retain its shared author Material reference");
+  }
+  std::set<NativeReference> prefabPreloads;
+  for(auto id:outputLayout.order){const auto& type=outputLayout.types.at(outputLayout.objects.at(id).type);
+    if(type.classId!=142)continue;auto bundle=output.Object(outputMember,outputLayout,id);
+    for(const auto& pointer:ConstArray(type,Child(type,bundle,"m_PreloadTable")).children)
+      prefabPreloads.insert(Reference(type,pointer,outputLayout,prefab.cab));}
+  Require(prefabPreloads.count(material.asset)&&prefabPreloads.count(authoredTexture)&&
+      prefabPreloads.count({"CAB-current-shader",555}),
+    "matched PFB preload closure omits the shared Material, authored Texture, or current Shader");
+  Require(outputLayout.externals.end()!=std::find(outputLayout.externals.begin(),outputLayout.externals.end(),material.asset.first),
+    "matched PFB omitted its shared author Material CAB reference");
+  std::cout<<"PASS matched PFB references the shared author Material and preloads only its declared dependency closure\n";
+}
+
 int main(int argc,char** argv){try{
   if(argc>1&&std::string(argv[1])=="--removal-only"){
     CheckMaterialPropertyRemoval();
@@ -106,7 +219,9 @@ int main(int argc,char** argv){try{
     return 0;
   }
   CheckCurrentSourceMaterialIsClonedAndEdited();
+  CheckMatchedPrefabKeepsSharedMaterialReferences();
   CheckMaterialPropertyRemoval();
+  CheckDeferredResourcePayloadVerification();
   auto malformed=Bytes{'f','o','r','m','a','t','=','E','F','F','M','A','T','\n'};
   bool rejected=false;try{(void)EiemAuthorMaterialEdits::Parse(malformed);}catch(const std::exception&){rejected=true;}
   Require(rejected,"incomplete EFFMAT document was accepted");

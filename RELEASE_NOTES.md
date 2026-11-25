@@ -1,3 +1,13 @@
+# EFF v2.0.16
+
+- Resolves Format 3 mesh and material references against the current game manifest. A game update can move those assets to different Bundles without requiring authors to export their mods again, as long as the assets keep their logical identities.
+- Fixes missing and purple materials by queuing authored Material and Texture dependencies through the game's own loader before the matched prefab is assembled.
+- Supports the current game's extended Bundle directory entries. Unrecognized storage formats leave the affected game request intact and log the reason.
+- F10 resumes deferred refreshes soon after the game releases a retained prefab. Startup and reload continue to read mod payloads only when a game request matches.
+- Blender splits multi-material meshes into compact Parts and preserves skin weights and shape keys. Existing Format 3 packages can still be used. Export again to get the smaller mesh resources.
+
+Download `EFF_v2.0.16_dll.zip` for Windows x64. The Blender exporter update is available through the `continuous` channel.
+
 # EFF v2.0.15
 
 - Plays authored bone animation on additional bones and supports live rotation retargeting from the game's animated skeleton. Shape, material and bone channels can share one action.

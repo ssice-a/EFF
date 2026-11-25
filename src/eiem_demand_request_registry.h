@@ -49,6 +49,10 @@ public:
     Record record{++serial_,scope,bundle,Name(name),candidate};records_.emplace(record.token,record);identities_[key]=record.token;if(!record.name.empty())names_[record.name].insert(record.token);return record;
   }
   Record Get(uint64_t token) const {std::lock_guard<std::mutex> lock(mutex_);auto it=records_.find(token);return it==records_.end()?Record{}:it->second;}
+  Record Find(uint64_t scope,uint64_t bundle) const {
+    std::lock_guard<std::mutex> lock(mutex_);auto found=identities_.find({scope,bundle});
+    return found==identities_.end()?Record{}:records_.at(found->second);
+  }
   bool BindVfs(uint64_t token,uint64_t hash) {
     std::lock_guard<std::mutex> lock(mutex_);if(!records_.count(token))return false;
     if(!vfs_.count(hash)&&vfs_.size()>=limit_)return false;vfs_[hash].insert(token);return true;

@@ -4,7 +4,13 @@
 
 目标匹配只由 `Replace` 中的 Mesh 逻辑路径、资产名和 LOD 决定；材质是否替换是独立选择。一个 Format 3 `Part` 可以被多个 `Replace` 规则引用，复用同一份作者 Mesh、形态/动画控制数据，并命中多个逻辑目标。单个 Mod 中每个逻辑目标仍只能声明一次。
 
-`Part` 省略 `material` 时，`material_slot`（零起始，默认 `0`）表示使用当前命中 PFB 的 Renderer 对应槽位。运行时为每个实际 Renderer 读取该 PFB 自己的 Material 引用，不准备或加载作者 Material；不同 PFB 的原材质差异因此保留。显式声明 `material` 才为该槽准备作者材质变体。Blender 未检测到材质改动时省略这个声明；材质切换或材质动画仍需显式作者材质。该约定取代下文 2026-10-29 历史记录中“每个 Part 必须指定完整作者 Material”的说法。
+`Part` 省略 `material` 时，`material_slot`（零起始，默认 `0`）表示使用当前命中 PFB 的 Renderer 对应槽位。这个字段描述的是源 Renderer 的材质槽，不是作者 Mesh 被拆分前的材质槽。Blender 会把一个多 SubMesh/多材质作者 Mesh 拆成多个 Part；拆分槽号只用于选取作者几何和作者材质，不会写入 `material_slot`。当前导出器对继承材质的每个 Part 写入源 Renderer 的默认槽 `0`，因此源 Renderer 只有一个非空 Material 时所有拆分 Part 都继承同一材质。只有源 Renderer 有多个非空材质且请求的槽位不存在时才视为歧义并拒绝。运行时为每个实际 Renderer 读取该 PFB 自己的 Material 引用，不准备或加载作者 Material；不同 PFB 的原材质差异因此保留。显式声明 `material` 才为该槽准备作者材质变体。Blender 未检测到材质改动时省略这个声明；材质切换或材质动画仍需显式作者材质。需要源 Renderer 多槽位特殊映射时，应在导出后的 INI 中显式设置 `material_slot`，不能依赖作者 Mesh 槽号。该约定取代下文 2026-10-29 历史记录中“每个 Part 必须指定完整作者 Material”的说法。
+
+按材质拆分时，每个 Part 仅写入其面索引引用的顶点。索引、UV、法线、切线、顶点色、权重和形态键顶点使用同一套顶点映射。形态键通道和帧在该 Part 无顶点变化时也保留，继续使用原动画通道身份。
+
+游戏更新后，Mesh 和 Material 的逻辑身份从当前 Manifest 解析。通过原始序列化引用确认的 Bundle/CAB/PathID 只在同一份映射的 Manifest 内供 F10 复用。新增的 Material 和 Texture 依赖在命中 PFB 的请求中交给游戏加载和持有。
+
+Bundle 目录读取保留 `0x85` 数据块表项及其扩展字段。纯贴图和 Sprite 包可由序列化对象表排除，像素数据继续由游戏读取。未知块标志按当前 Manifest 记录，受影响的请求继续使用原始输入。F10 在游戏仍持有的 PFB 上保留原有释放约束，延期后按 500 毫秒间隔检查持有状态，在可以交接时恢复刷新。
 
 ## 设计与历史记录
 

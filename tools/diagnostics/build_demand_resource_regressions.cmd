@@ -15,7 +15,7 @@ if errorlevel 1 goto failed
 if errorlevel 1 goto failed
 cl /nologo /utf-8 /O2 /MT /EHsc /std:c++17 /W4 /I src /Fo"%eff_demand_test_output%\author_material_edits_smoke.obj" tools\diagnostics\author_material_edits_smoke.cpp /Fe"%eff_demand_test_output%\author_material_edits_smoke.exe" /link /NODEFAULTLIB:MSVCRT bcrypt.lib
 if errorlevel 1 goto failed
-"%eff_demand_test_output%\author_material_edits_smoke.exe" --removal-only
+"%eff_demand_test_output%\author_material_edits_smoke.exe"
 if errorlevel 1 goto failed
 popd
 exit /b 0

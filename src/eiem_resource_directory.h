@@ -6,6 +6,7 @@
 // bcrypt.h depends on the Windows type declarations; keep this include first.
 #include <windows.h>
 
+#include <atomic>
 #include <bcrypt.h>
 
 #include <algorithm>
@@ -15,6 +16,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -129,6 +131,13 @@ struct Block {
   size_t offset = 0, size = 0;
   Digest digest{};
 };
+struct DeferredVerification {
+  std::once_flag once;
+  std::atomic<bool> complete{false};
+  std::string expected;
+  const unsigned char* data=nullptr;
+  size_t size=0;
+};
 struct Resource {
   uint32_t kind = 0;
   std::array<unsigned char, 16> type{};
@@ -140,7 +149,19 @@ struct Resource {
   std::map<std::string, Block> blocks;
   // Set only when bytes have been verified. Packages share immutable Resources.
   std::string contentHash;
+  std::shared_ptr<DeferredVerification> deferredVerification;
 };
+inline void VerifyDeferredResource(const Resource& resource) {
+  auto state=resource.deferredVerification;
+  if(!state)return;
+  std::call_once(state->once,[state]{
+    Require(state->data&&state->size,"deferred author resource backing absent");
+    auto digest=Sha(state->data,state->size);
+    Require(Hex(digest.data(),digest.size())==state->expected,
+      "mapped author resource content changed before use");
+    state->complete.store(true,std::memory_order_release);
+  });
+}
 inline std::string ResourceContentHash(const Resource& resource) {
   if (!resource.contentHash.empty()) return resource.contentHash;
   auto data=resource.mappedBytes?resource.mappedBytes:resource.bytes.data();
@@ -156,7 +177,7 @@ inline uint64_t Le(const unsigned char* bytes,size_t size,size_t p,size_t n) {
 inline uint64_t ResourceLe(const Resource& resource,size_t offset,size_t width) {
   return Le(ResourceData(resource),ResourceSize(resource),offset,width);
 }
-inline Resource DecodeView(const unsigned char* data,size_t size,unsigned expected) {
+inline Resource DecodeView(const unsigned char* data,size_t size,unsigned expected,bool verifyPayload=true) {
   Require(size >= 80, "resource header truncated");
   Require(memcmp(data, "EFFRES", 6) == 0 && data[7] == 0,
           "unsupported resource container");
@@ -165,9 +186,11 @@ inline Resource DecodeView(const unsigned char* data,size_t size,unsigned expect
   Require(r.kind && (!expected || r.kind == expected),
           "resource kind mismatch");
   Require(Le(data,size,40,8) == size, "resource total size mismatch");
-  auto bodyHash=Sha(data+80,size-80);
-  Require(std::equal(bodyHash.begin(),bodyHash.end(),data+48),
-          "resource body SHA256 mismatch");
+  if(verifyPayload){
+    auto bodyHash=Sha(data+80,size-80);
+    Require(std::equal(bodyHash.begin(),bodyHash.end(),data+48),
+            "resource body SHA256 mismatch");
+  }
   std::copy_n(data + 24, 16, r.type.begin());
   size_t count = (size_t)Le(data,size,16,4), directory = (size_t)Le(data,size,20,4);
   Require(directory <= size - 80 && count <= directory / 51, "invalid block directory");
@@ -189,15 +212,18 @@ inline Resource DecodeView(const unsigned char* data,size_t size,unsigned expect
     block.offset = (size_t)off;
     block.size = (size_t)blockSize;
     std::copy_n(data + p + 16, 32, block.digest.begin());
-    auto blockHash=Sha(data+block.offset,block.size);
-    Require(std::equal(blockHash.begin(),blockHash.end(),data+p+16),
-            "block SHA256 mismatch: " + name);
+    if(verifyPayload){
+      auto blockHash=Sha(data+block.offset,block.size);
+      Require(std::equal(blockHash.begin(),blockHash.end(),data+p+16),
+              "block SHA256 mismatch: " + name);
+    }
     Require(r.blocks.emplace(name, block).second, "duplicate block: " + name);
     p += 48;
     end = block.offset + blockSize;
   }
   Require(p == stop && end == size, "unreferenced directory/suffix");
-  auto content=Sha(data,size);r.contentHash=Hex(content.data(),content.size());r.byteSize=size;r.directoryVerified=true;
+  if(verifyPayload){auto content=Sha(data,size);r.contentHash=Hex(content.data(),content.size());}
+  r.byteSize=size;r.directoryVerified=true;
   return r;
 }
 inline Resource Decode(Bytes bytes, unsigned expected) {

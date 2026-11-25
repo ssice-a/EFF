@@ -686,9 +686,24 @@ public:
           retainedMaterials=RendererMaterials(type,original,layout,cab);if(!retainedMaterials.empty())materialReference=retainedMaterials.front();
         }else if(part.material.empty()){
           auto sourceSlots=RendererMaterialSlots(type,original,layout,cab);
-          Require(part.materialSlot<sourceSlots.size()&&sourceSlots[part.materialSlot].second,
-            "Renderer source Material slot is absent: "+pid+" slot="+std::to_string(part.materialSlot));
-          materialReference=sourceSlots[part.materialSlot];
+          if(part.materialSlot<sourceSlots.size()&&sourceSlots[part.materialSlot].second) {
+            // A valid INI source slot wins.  It is independent of the
+            // author's Blender SubMesh/material slot used during export.
+            materialReference=sourceSlots[part.materialSlot];
+          } else {
+            // Blender splits one author Mesh into one Part per author
+            // SubMesh/material slot. The matched game Renderer can still
+            // expose a single material for that whole Mesh. In that case all
+            // inherited author Parts use the sole non-null source material.
+            size_t only=sourceSlots.size();
+            for(size_t slot=0;slot<sourceSlots.size();++slot)if(sourceSlots[slot].second){
+              if(only!=sourceSlots.size()){only=sourceSlots.size()+1;break;}
+              only=slot;
+            }
+            Require(only<sourceSlots.size(),
+              "Renderer source Material slot is absent or ambiguous: "+pid+" slot="+std::to_string(part.materialSlot));
+            materialReference=sourceSlots[only];
+          }
         }else if(materialReferences){
           auto variant=materialReferences->find({rid,pid});
           Require(variant!=materialReferences->end(),"Renderer material variant missing for source Renderer/Part");

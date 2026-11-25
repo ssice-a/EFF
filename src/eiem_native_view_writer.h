@@ -6,7 +6,13 @@
 // to the original game bytes or immutable compiled author bytes.
 namespace EiemNativeViewWriter {
 using namespace EiemNativeInput;
-struct Block {size_t decoded=0,encoded=0;uint16_t flags=0;};
+struct Block {size_t decoded=0,encoded=0;uint16_t flags=0;uint32_t extension=0;};
+inline constexpr uint16_t ExtendedBlock=0x85;
+inline bool SupportedBlockTableFlags(uint16_t flags){return flags==0||flags==5||flags==ExtendedBlock;}
+struct UnsupportedStorageFlags : std::runtime_error {
+ explicit UnsupportedStorageFlags(uint16_t flags)
+   :std::runtime_error("unsupported Endfield storage block flags: "+std::to_string(flags)){}
+};
 struct Member {std::string name;uint32_t flags=0;size_t offset=0,size=0;};
 struct OriginalBlock {Block block;size_t offset=0,decodedOffset=0;};
 struct Directory {std::vector<OriginalBlock> blocks;std::vector<Member> members;size_t decoded=0;};
@@ -20,7 +26,9 @@ inline Directory ReadDirectory(const EndfieldInput::Header& h,Bytes info){
  auto count=EndfieldInput::Count(r,0x23F77B8A,0x91CE0A4F);Require(count<=(r.limit-r.p)/10,"offline native view block table truncated");
  for(size_t i=0;i<count;++i){auto a=uint16_t(r.Get(2)),b=uint16_t(r.Get(2)),c=uint16_t(r.Get(2)),ef=uint16_t(r.Get(2)^0x9CD6),d=uint16_t(r.Get(2));auto lo=uint8_t(ef),hi=uint8_t(ef>>8);
   Block block{EndfieldInput::Size32(a,c),EndfieldInput::Size32(b,d),uint16_t(c^EndfieldInput::Rol16(uint16_t((uint16_t(lo^hi)<<8)|lo),14)^0x523F)};
-  auto end=h.flags&0x80?infoAt:h.bytes;Require(block.decoded&&block.encoded&&(block.flags==0||block.flags==5)&&(block.flags||block.decoded==block.encoded)&&offset<=end&&block.encoded<=end-offset,"offline native view original block extent differs");
+  if(!SupportedBlockTableFlags(block.flags))throw UnsupportedStorageFlags(block.flags);
+  if(block.flags==ExtendedBlock)block.extension=uint32_t(r.Get(4));
+  auto end=h.flags&0x80?infoAt:h.bytes;Require(block.decoded&&block.encoded&&(block.flags||block.decoded==block.encoded)&&offset<=end&&block.encoded<=end-offset,"offline native view original block extent differs");
   result.blocks.push_back({block,offset,result.decoded});offset=AddSize(offset,block.encoded);result.decoded=AddSize(result.decoded,block.decoded);
  }
  Require(offset==(h.flags&0x80?infoAt:h.bytes),"offline native view original data extent differs");
@@ -43,13 +51,14 @@ inline Bytes Prefix(const Bytes& sourceHeader,const std::vector<Block>& blocks,c
  Bytes info;size_t encoded=0,decoded=0;
  EndfieldInput::Append(info,EndfieldInput::EncodeCount(uint32_t(blocks.size()),0x23F77B8A,0x91CE0A4F),4);
  for(const auto& block:blocks){
-  Require(block.decoded&&block.encoded&&block.decoded<=UINT32_MAX&&block.encoded<=UINT32_MAX&&(block.flags==0||block.flags==5)&&(block.flags||block.decoded==block.encoded),"compiled native view block representation differs");
+  Require(block.decoded&&block.encoded&&block.decoded<=UINT32_MAX&&block.encoded<=UINT32_MAX&&SupportedBlockTableFlags(block.flags)&&(block.flags==ExtendedBlock||!block.extension)&&(block.flags||block.decoded==block.encoded),"compiled native view block representation differs");
   encoded=AddSize(encoded,block.encoded);decoded=AddSize(decoded,block.decoded);
   auto a=EndfieldInput::Encode32(uint32_t(block.decoded)),b=EndfieldInput::Encode32(uint32_t(block.encoded));
   auto value=EndfieldInput::Rol16(uint16_t(a.second^block.flags^0x523F),2);
   auto lo=uint8_t(value),hi=uint8_t((value>>8)^lo);
   EndfieldInput::Append(info,a.first,2);EndfieldInput::Append(info,b.first,2);EndfieldInput::Append(info,a.second,2);
   EndfieldInput::Append(info,((uint16_t(hi)<<8)|lo)^0x9CD6,2);EndfieldInput::Append(info,b.second,2);
+  if(block.flags==ExtendedBlock)EndfieldInput::Append(info,block.extension,4);
  }
  EndfieldInput::Append(info,EndfieldInput::EncodeCount(uint32_t(members.size()),0x6B0AE55D,0xE4C1D9F2),4);
  std::set<std::string> names;

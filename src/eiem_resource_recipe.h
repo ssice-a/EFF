@@ -14,7 +14,7 @@ struct Frame {std::string resource,hash;size_t offset=0,size=0,count=0;std::arra
 inline std::string Digest(const Bytes& bytes){auto hash=Sha(bytes.data(),bytes.size());return Hex(hash.data(),hash.size());}
 inline Bytes ReadAuthorResource(const Resource& resource){
  if(!resource.bytes.empty())return resource.bytes;
- Require(resource.mapped&&ResourceSize(resource),"recipe author resource backing absent");Bytes bytes(ResourceSize(resource));
+ Require(resource.mapped&&ResourceSize(resource),"recipe author resource backing absent");VerifyDeferredResource(resource);Bytes bytes(ResourceSize(resource));
  std::memcpy(bytes.data(),resource.mapped->Data(),bytes.size());Require(Digest(bytes)==ResourceContentHash(resource),"mapped author resource content changed");return bytes;
 }
 inline Bytes ExpandFrame(const Frame& frame,const Bytes& resource){
@@ -116,7 +116,7 @@ inline Bytes Apply(const Member& member,const std::map<std::string,const Bytes*>
  Bytes output;Require(member.size<=output.max_size(),"recipe output size cannot be represented");output.reserve(member.size);
  for(const auto& span:member.spans){Require(span.size&&span.size<=member.size-output.size(),"recipe output span extent differs");const Bytes* source=nullptr;
   switch(span.kind){case Original:Require(originals.count(span.source),"recipe original member absent");source=originals.at(span.source);break;
-   case Author:{Require(package.resources.count(span.source),"recipe author resource absent");const auto& resource=*package.resources.at(span.source);auto size=ResourceSize(resource);Require(span.offset<=size&&span.size<=size-span.offset,"recipe source span extent differs");auto data=ResourceData(resource);output.insert(output.end(),data+span.offset,data+span.offset+span.size);continue;}
+   case Author:{Require(package.resources.count(span.source),"recipe author resource absent");const auto& resource=*package.resources.at(span.source);auto size=ResourceSize(resource);Require(span.offset<=size&&span.size<=size-span.offset,"recipe source span extent differs");VerifyDeferredResource(resource);auto data=ResourceData(resource);output.insert(output.end(),data+span.offset,data+span.offset+span.size);continue;}
    case ExpandedFrame:if(generated&&generated->count(span.source))source=generated->at(span.source);else{Require(frames.count(span.source),"recipe expanded frame absent");source=&frames.at(span.source);}break;
    case Literal:Require(span.offset==0&&span.source.empty()&&span.literal.size()==span.size,"recipe literal extent differs");source=&span.literal;break;
    default:Require(false,"recipe source kind differs");}
