@@ -131,37 +131,56 @@ function Deploy-Dll([string]$BuildRoot, [string]$Revision) {
 function Publish-Directory([string]$Candidate, [string]$Target, [string]$Name, [string[]]$PreserveFiles = @()) {
     $target = [IO.Path]::GetFullPath($Target)
     $candidate = [IO.Path]::GetFullPath($Candidate)
-    $candidateRoot = [IO.Path]::GetPathRoot($candidate)
-    if ($candidateRoot -ne [IO.Path]::GetPathRoot($target)) { throw "$Name staging and target must be on the same volume" }
-    if (-not (Test-Path -LiteralPath $candidate -PathType Container)) { throw "$Name staging directory not found: $candidate" }
+    if (-not (Test-Path -LiteralPath $candidate -PathType Container)) { throw "$Name build directory not found: $candidate" }
+    $targetParent = Split-Path -Parent $target
     if (Test-Path -LiteralPath $target) {
         $targetItem = Get-Item -LiteralPath $target -Force
         if (-not $targetItem.PSIsContainer -or ($targetItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
             throw "Refusing to replace a non-directory or linked $Name target: $target"
         }
-        foreach ($relative in $PreserveFiles) {
-            $old = Join-Path $target $relative
-            $new = Join-Path $candidate $relative
-            if ((Test-Path -LiteralPath $old -PathType Leaf) -and -not (Test-Path -LiteralPath $new -PathType Leaf)) {
-                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $new) | Out-Null
-                Copy-Item -LiteralPath $old -Destination $new
-            } elseif ((Test-Path -LiteralPath $old -PathType Leaf) -and (Test-Path -LiteralPath $new -PathType Leaf)) {
-                Copy-Item -LiteralPath $old -Destination $new -Force
-            }
-        }
     }
 
-    $parent = Split-Path -Parent $target
-    $backupRoot = Join-Path $parent '.eff-local-deployment-backups'
+    $backupRoot = Join-Path $targetParent '.eff-local-deployment-backups'
     New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
     $backup = Join-Path $backupRoot "$Name-$runId"
-    $hadTarget = Test-Path -LiteralPath $target -PathType Container
-    if ($hadTarget) { Move-Item -LiteralPath $target -Destination $backup }
+    $staging = Join-Path $targetParent ".eff-stage-$Name-$runId"
+    if (Test-Path -LiteralPath $staging) { throw "$Name staging path already exists: $staging" }
+    [IO.Directory]::CreateDirectory($staging) | Out-Null
     try {
-        Move-Item -LiteralPath $candidate -Destination $target
-    } catch {
-        if ($hadTarget -and -not (Test-Path -LiteralPath $target)) { Move-Item -LiteralPath $backup -Destination $target }
-        throw
+        $files = [ordered]@{}
+        foreach ($file in Get-ChildItem -LiteralPath $candidate -File -Recurse -Force) {
+            $files[[IO.Path]::GetRelativePath($candidate, $file.FullName)] = $file.FullName
+        }
+        foreach ($relative in $PreserveFiles) {
+            $old = Join-Path $target $relative
+            if (Test-Path -LiteralPath $old -PathType Leaf) { $files[$relative] = $old }
+        }
+
+        # Fresh files inherit the install volume's permissions and integrity level.
+        # Moving the build directory would carry over the build sandbox's labels.
+        foreach ($relative in $files.Keys) {
+            $destination = Join-Path $staging $relative
+            [IO.Directory]::CreateDirectory((Split-Path -Parent $destination)) | Out-Null
+            $sourceStream = [IO.File]::OpenRead($files[$relative])
+            try {
+                $destinationStream = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
+                try { $sourceStream.CopyTo($destinationStream) } finally { $destinationStream.Dispose() }
+            } finally { $sourceStream.Dispose() }
+        }
+
+        $hadTarget = Test-Path -LiteralPath $target -PathType Container
+        if ($hadTarget) { Move-Item -LiteralPath $target -Destination $backup }
+        try {
+            Move-Item -LiteralPath $staging -Destination $target
+        } catch {
+            if ($hadTarget -and -not (Test-Path -LiteralPath $target)) { Move-Item -LiteralPath $backup -Destination $target }
+            throw
+        }
+    } finally {
+        if (Test-Path -LiteralPath $staging -PathType Container) {
+            $resolvedStaging = (Resolve-Path -LiteralPath $staging).ProviderPath
+            if ($resolvedStaging -eq $staging) { Remove-Item -LiteralPath $resolvedStaging -Recurse -Force }
+        }
     }
     return $backup
 }
