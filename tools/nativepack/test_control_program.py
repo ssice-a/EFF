@@ -129,6 +129,38 @@ value=$result
         self.assertEqual(result['bindings'][0]['variable'], '$binding_BindingExample')
         self.assertEqual(result['bindings'][0]['value'], '$result')
 
+    def test_color_component_uses_shared_control_parser(self):
+        source = '''[ParameterAlpha]
+variable=$alpha
+default=1.5
+public=true
+ui.type=slider
+ui.min=0
+ui.max=2
+
+[MaterialExample]
+path=unused.effres
+
+[BindingAlpha]
+target=material.color
+material=MaterialExample
+property=_BaseColor
+channel=a
+value=$alpha
+'''
+        ini = configparser.ConfigParser(interpolation=None, delimiters=('=',))
+        ini.optionxform = str
+        ini.read_string(source)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / 'mod.ini').write_text(source, encoding='utf-8')
+            state = author_format3.read_controls_ini(root, ini, native_library=LIBRARY)
+        self.assertEqual(state['defaults']['$alpha'], 1.5)
+        self.assertEqual(state['material_tracks']['$binding_BindingAlpha'],
+                         dict(material='MaterialExample', property='_BaseColor', kind='COLOR', component=3))
+        with self.assertRaisesRegex(ValueError, 'invalid material component'):
+            control_program.describe(source.replace('channel=a', 'channel=w'))
+
     def test_only_widget_owned_parameter_fields_override_retained_declarations(self):
         control = dict(enabled=True, identity='Smile', variable='$value', shape='Smile',
                        label='Edited Smile', default=.75, minimum=0, maximum=2,

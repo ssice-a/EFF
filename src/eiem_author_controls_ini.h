@@ -219,10 +219,15 @@ inline C::State Read(const std::vector<Section>& inputSections,const ReadSamples
   }
   for(const auto& binding:program->bindings){
     state.controls.emplace(binding.variable,Control{binding.id,-DBL_MAX,DBL_MAX});
-    if(binding.target=="material.float"){
-      Require(index.count(binding.material)&&Begins(binding.material,"Material")&&!binding.property.empty(),binding.id+": material/property absent");
-      for(const auto& existing:state.materialTracks)Require(existing.second.material!=binding.material||existing.second.property!=binding.property,binding.id+": property already has a driver");
-      state.materialTracks.emplace(binding.variable,MaterialTrack{binding.material,binding.property,"FLOAT",0});
+    if(Begins(binding.target,"material.")){
+      Require(index.count(binding.material)&&Begins(binding.material,"Material")&&!Begins(binding.material,"MaterialTrack")&&!Begins(binding.material,"MaterialAnimation")&&!binding.property.empty(),binding.id+": material/property absent");
+      const std::string kind=binding.target=="material.float"?"FLOAT":binding.target=="material.color"?"COLOR":"VECTOR";
+      for(const auto& existing:state.materialTracks){
+        const auto& track=existing.second;
+        if(track.material==binding.material&&track.property==binding.property)
+          Require(track.kind==kind&&track.component!=binding.component,binding.id+": material channel already has a driver or uses a different type");
+      }
+      state.materialTracks.emplace(binding.variable,MaterialTrack{binding.material,binding.property,kind,binding.component});
     }else{
       Require(state.parts.count(binding.part),binding.id+": Part absent");auto& part=state.parts.at(binding.part);
       if(binding.target=="part.visible"){auto gate=EiemExpression::Make();gate->op=EiemExpression::And;gate->left=part.visible;gate->right=binding.value;part.visible=gate;}

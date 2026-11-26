@@ -148,15 +148,34 @@ class Window {
   static bool EffectToggle(const EiemDirectory::Package& p,const std::string& variable){
     return std::any_of(p.effects.begin(),p.effects.end(),[&](const auto& row){return row.second.variable==variable;});
   }
+  bool SliderWithNumber(const char* label,double& value,double low,double high,
+                        const char* format,Action action,const std::string& package,const std::string& name){
+    ImGui::TextWrapped("%s",label);
+    const float width=ImGui::GetContentRegionAvail().x;
+    const float numberWidth=ImGui::CalcTextSize("-0.000000").x+2*ImGui::GetStyle().FramePadding.x;
+    const float spacing=ImGui::GetStyle().ItemSpacing.x;
+    const bool inlineNumber=width>=2*numberWidth+spacing;
+    ImGui::SetNextItemWidth(inlineNumber?width-numberWidth-spacing:-1.f);
+    bool changed=ImGui::SliderScalar("##slider",ImGuiDataType_Double,&value,&low,&high,format,ImGuiSliderFlags_NoInput);
+    Item(action,package,name);
+    if(inlineNumber)ImGui::SameLine();
+    ImGui::SetNextItemWidth(inlineNumber?numberWidth:-1.f);
+    const bool typed=ImGui::InputDouble("##number",&value,0,0,"%.9g");
+    Item(action,package,name+"##number");
+    if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"直接输入数值");
+    return typed||changed;
+  }
   void Parameter(const EiemDirectory::Package& p,const EiemControlProgram::Parameter& d,const std::string& type,const std::string& label){
     double actual=view->effective.at(p.id).at(d.variable);
     double value=d.computed?actual:view->values.at(p.id).at(d.variable);
     ImGui::BeginDisabled(bool(d.computed));bool changed=false;
     if(type=="checkbox"||(type.empty()&&d.type==EiemControlProgram::Type::Boolean)){bool b=value!=0;changed=ImGui::Checkbox(label.c_str(),&b);value=b?1:0;}
     else if(type=="number"){ImGui::TextUnformatted(label.c_str());ImGui::SetNextItemWidth(-1);changed=ImGui::InputDouble("##value",&value,0,0,"%.6g");}
-    else{ImGui::TextUnformatted(label.c_str());ImGui::SetNextItemWidth(-1);changed=ImGui::SliderScalar("##value",ImGuiDataType_Double,&value,&d.softMin,&d.softMax,"%.4g");}
+    else changed=SliderWithNumber(label.c_str(),value,d.softMin,d.softMax,"%.4g",Action::Value,p.id,d.variable);
     if(d.type==EiemControlProgram::Type::Integer)value=std::round(value);
-    if(changed)Send(Action::Value,p.id,d.variable,value);Item(Action::Value,p.id,d.variable);ImGui::EndDisabled();
+    if(changed)Send(Action::Value,p.id,d.variable,value);
+    if(type=="number"||type=="checkbox"||(type.empty()&&d.type==EiemControlProgram::Type::Boolean))Item(Action::Value,p.id,d.variable);
+    ImGui::EndDisabled();
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)){ImGui::BeginTooltip();ImGui::Text("%s",d.variable.c_str());ImGui::Text(u8"设定值: %.6g",view->values.at(p.id).at(d.variable));ImGui::Text(u8"生效值: %.6g",view->effective.at(p.id).at(d.variable));if(d.computed)ImGui::TextUnformatted(u8"由表达式计算（只读）");else{auto animation=view->animations.find(p.id);if(animation!=view->animations.end())for(const auto& clip:p.shapeAnimations)if(clip.second.tracks.count(d.variable)&&animation->second.at(clip.first).playing)ImGui::Text(u8"动画驱动: %s",clip.first.c_str());}if(!d.description.empty())ImGui::TextWrapped("%s",d.description.c_str());ImGui::EndTooltip();}
     if(d.computed||actual!=view->values.at(p.id).at(d.variable))ImGui::TextDisabled(u8"生效值: %.6g%s",actual,d.computed?u8"（表达式）":u8"（动画）");
   }
@@ -178,8 +197,12 @@ class Window {
   }
   void Program(const EiemDirectory::Package& p){
     auto error=view->errors.find(p.id);if(error!=view->errors.end())ImGui::TextWrapped("%s",error->second.c_str());
-    try{const auto& program=*p.program;if(!program.ui.empty()){auto root=program.children.find("");if(root!=program.children.end())for(const auto& id:root->second)ProgramNode(p,id);}
-      else{for(const auto& row:program.parameters)if(row.second.exposed){ImGui::PushID(row.first.c_str());Parameter(p,row.second,"",row.second.label);ImGui::PopID();}for(const auto& row:program.actions)if(row.second.exposed){ImGui::PushID(row.first.c_str());if(ImGui::Button(row.second.label.c_str()))Send(Action::InvokeAction,p.id,row.first);Item(Action::InvokeAction,p.id,row.first);ImGui::PopID();}}
+    try{const auto& program=*p.program;
+      if(!program.ui.empty()){auto root=program.children.find("");if(root!=program.children.end())for(const auto& id:root->second)ProgramNode(p,id);}
+      for(const auto& row:program.parameters){const auto& parameter=row.second;
+        if(!parameter.exposed||(!program.ui.empty()&&(parameter.uiType.empty()||program.placedParameters.count(row.first))))continue;
+        ImGui::PushID(row.first.c_str());Parameter(p,parameter,parameter.uiType,parameter.label);ImGui::PopID();}
+      if(program.ui.empty())for(const auto& row:program.actions)if(row.second.exposed){ImGui::PushID(row.first.c_str());if(ImGui::Button(row.second.label.c_str()))Send(Action::InvokeAction,p.id,row.first);Item(Action::InvokeAction,p.id,row.first);ImGui::PopID();}
     }catch(const std::exception& e){ImGui::TextWrapped(u8"UI 表达式错误: %s",e.what());}
   }
   void Draw() {
@@ -233,7 +256,8 @@ class Window {
         ImGui::PushID(row.first.c_str());double value=view->values.at(p.id).at(row.first);const auto& c=row.second;
         if(EffectToggle(p,row.first)){bool enabled=value>=.5;if(ImGui::Checkbox(c.label.c_str(),&enabled))Send(Action::Value,p.id,row.first,enabled?1:0);Item(Action::Value,p.id,row.first);}
         else if(c.minimum==c.maximum)ImGui::Text("%s = %.3f",c.label.c_str(),value);
-        else{ImGui::TextWrapped("%s",c.label.c_str());ImGui::SetNextItemWidth(-1);if(ImGui::SliderScalar("##value",ImGuiDataType_Double,&value,&c.minimum,&c.maximum,"%.3f"))Send(Action::Value,p.id,row.first,value);Item(Action::Value,p.id,row.first);}
+        else if(SliderWithNumber(c.label.c_str(),value,c.minimum,c.maximum,"%.3f",Action::Value,p.id,row.first))
+          Send(Action::Value,p.id,row.first,value);
         ImGui::PopID();
       }
       for(bool material:{false,true}){
@@ -246,8 +270,8 @@ class Window {
         if(ImGui::Button(u8"暂停"))Send(Action::AnimationPause,p.id,clip.id);Item(Action::AnimationPause,p.id,clip.id);ImGui::SameLine();
         if(ImGui::Button(u8"停止"))Send(Action::AnimationStop,p.id,clip.id);Item(Action::AnimationStop,p.id,clip.id);
         double speed=view->values.at(p.id).at(clip.speedVariable),low=.1,high=4;
-        if(ImGui::SliderScalar(u8"速度倍率",ImGuiDataType_Double,&speed,&low,&high,"%.2fx"))Send(Action::AnimationSpeed,p.id,clip.id,speed);Item(Action::AnimationSpeed,p.id,clip.id);
-        if(ImGui::InputDouble(u8"输入倍率",&speed,.1,1,"%.3f")&&std::isfinite(speed)&&speed>0)Send(Action::AnimationSpeed,p.id,clip.id,speed);
+        if(SliderWithNumber(u8"速度倍率",speed,low,high,"%.2fx",Action::AnimationSpeed,p.id,clip.id)&&std::isfinite(speed)&&speed>0)
+          Send(Action::AnimationSpeed,p.id,clip.id,speed);
         if(ImGui::Button(u8"恢复作者默认"))Send(Action::AnimationReset,p.id,clip.id);Item(Action::AnimationReset,p.id,clip.id);ImGui::PopID();
       }
       }

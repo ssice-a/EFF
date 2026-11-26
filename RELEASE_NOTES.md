@@ -1,3 +1,11 @@
+# EFF v2.0.17
+
+- The Ins panel now has an editable numeric field next to each slider. Sliders exposed from Blender use the range set by the mod author.
+- Material controls apply immediately as you drag a slider or enter a value, without pressing F10. Authors can expose a single color or vector component, such as `_BaseColor` alpha, while preserving the other components.
+- The Blender EFF sidebar adds a Material Parameters panel for viewing, adding, editing, and removing exposed material controls.
+
+Download `EFF_v2.0.17_dll.zip` for Windows x64. Existing Format 3 mods remain compatible. Authors can get the updated Blender exporter through the `continuous` channel.
+
 # EFF v2.0.16
 
 - Resolves Format 3 mesh and material references against the current game manifest. A game update can move those assets to different Bundles without requiring authors to export their mods again, as long as the assets keep their logical identities.

@@ -1127,10 +1127,22 @@ def read_controls_ini(root, ini, native_library=None):
             effects[section[len('EffectAttachment'):]] = dict(row, **transform)
     if program:
         for binding in program['bindings']:
-            if binding['target'] == 'material.float':
-                require(binding['material'] in ini and binding['property'], 'INI material binding unresolved')
-                require(not any(t['material'] == binding['material'] and t['property'] == binding['property'] for t in material_tracks.values()), 'duplicate material property driver')
-                material_tracks[binding['variable']] = dict(material=binding['material'], property=binding['property'], kind='FLOAT', component=0)
+            if binding['target'].startswith('material.'):
+                material = binding['material']
+                require(material in ini and material.startswith('Material') and
+                        not material.startswith(('MaterialTrack', 'MaterialAnimation')) and binding['property'],
+                        'INI material binding unresolved')
+                kind, channels = {
+                    'material.float': ('FLOAT', ''),
+                    'material.color': ('COLOR', 'rgba'),
+                    'material.vector': ('VECTOR', 'xyzw'),
+                }[binding['target']]
+                component = channels.index(binding['channel']) if channels else 0
+                require(not any(t['material'] == material and t['property'] == binding['property'] and
+                                (t['kind'] != kind or t['component'] == component)
+                                for t in material_tracks.values()), 'duplicate or incompatible material channel driver')
+                material_tracks[binding['variable']] = dict(material=material, property=binding['property'],
+                                                            kind=kind, component=component)
             else:
                 require(binding['part'] in parts, 'INI binding Part unresolved')
                 if binding['target'] == 'shape.weight':

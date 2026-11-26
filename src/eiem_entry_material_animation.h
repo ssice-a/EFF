@@ -2,8 +2,12 @@
 // Included in Entry after RuntimeShapes and native owner helpers.
 namespace RuntimeMaterials {
 using RuntimeShapes::Ref;using RuntimeShapes::Call;using RuntimeShapes::Scalar;
+using Components=std::array<float,4>;
 struct Api {void *blockClass=nullptr,*ctor=nullptr,*copy=nullptr,*getSlot=nullptr,*getGlobal=nullptr,*empty=nullptr,*propertyId=nullptr,*has=nullptr,*materials=nullptr,*setFloat=nullptr,*setVector=nullptr,*setColor=nullptr,*getVector=nullptr;
- void *clone=nullptr,*sharedMaterial=nullptr,*setSharedMaterial=nullptr,*materialFloat=nullptr,*materialVector=nullptr,*materialColor=nullptr,*getMaterialVector=nullptr;bool(*emptyIcall)(void*)=nullptr;} api;
+ void *clone=nullptr,*sharedMaterial=nullptr,*setSharedMaterial=nullptr,*materialFloat=nullptr,*materialVector=nullptr,*materialColor=nullptr,*getMaterialVector=nullptr;
+ void *getMaterialColor=nullptr,*hasBlockVector=nullptr;
+ bool(*emptyIcall)(void*)=nullptr;
+ bool(*hasBlockVectorIcall)(void*,int)=nullptr;} api;
 using SlotSetter=void(*)(void*,void*,int);using GlobalSetter=void(*)(void*,void*);
 SlotSetter originalSlot=nullptr;GlobalSetter originalGlobal=nullptr;
 SlotSetter originalGetSlot=nullptr;thread_local unsigned internalRead=0;
@@ -26,14 +30,50 @@ void Material(Bound& b){auto current=Call(api.sharedMaterial,b.renderer.Get());i
  Require(RuntimeShapes::Alive(clone.Get())&&clone.Get()!=current,"animated Material clone failed");b.sourceMaterial=Ref::Make(current,false);b.animatedMaterial=clone;void* assign[]={clone.Get()};Call(api.setSharedMaterial,b.renderer.Get(),assign);
 }
 void Restore(Bound& b){if(b.installed&&RuntimeShapes::Alive(b.renderer.Get()))originalSlot(b.renderer.Get(),b.baseEmpty?nullptr:b.baseline.Get(),0);b.installed=false;ReleaseMaterial(b);}
+bool HasBlockComponents(void* block,int id,const Components& values){
+ void* key[]={&id};
+ if(api.hasBlockVector)return Scalar<unsigned char>(api.hasBlockVector,block,key)!=0;
+ if(api.hasBlockVectorIcall)return api.hasBlockVectorIcall(block,id);
+ // Some player builds strip both presence APIs. GetVector returns zero for
+ // absent fields, so only nonzero vectors can be distinguished from absence.
+ return std::any_of(values.begin(),values.end(),[](float value){return value!=0;});
+}
 bool Values(Bound& b){auto player=RuntimeControls::animations.find(b.package);if(player==RuntimeControls::animations.end())return false;bool any=false;
- for(const auto& property:b.properties){bool present=false,complete=true;std::array<float,4> values{};
-   for(const auto& c:property.channels){double value=0;bool found=Channel(b.package,c.second,value);present|=found;complete&=found;if(found){Require(std::isfinite(value)&&std::abs(value)<=FLT_MAX,"material property exceeds float range");values[c.first]=float(value);}}
-  if(!present)continue;Require(complete,"material animation property has partial component ownership");Material(b);void* args[]={const_cast<int*>(&property.id),values.data()};Call(property.kind=="FLOAT"?api.materialFloat:property.kind=="COLOR"?api.materialColor:api.materialVector,b.animatedMaterial.Get(),args);
+ for(const auto& property:b.properties){
+  Components values{};unsigned changed=0;
+  for(const auto& c:property.channels){
+    double value=0;if(!Channel(b.package,c.second,value))continue;
+    Require(std::isfinite(value)&&std::abs(value)<=FLT_MAX,"material property exceeds float range");
+    values[c.first]=float(value);changed|=1u<<c.first;
+  }
+  if(!changed)continue;
+  Material(b);
+  const bool scalar=property.kind=="FLOAT",color=property.kind=="COLOR";
+  auto id=property.id;
+  Components materialValues=values,blockValues{};
+  bool preserveBlock=false;
+  if(!scalar&&changed!=15){
+    auto getter=color?api.getMaterialColor:api.getMaterialVector;
+    void* key[]={&id};
+    materialValues=Scalar<Components>(getter,b.sourceMaterial.Get(),key);
+   blockValues=Scalar<Components>(api.getVector,b.work.Get(),key);
+   preserveBlock=HasBlockComponents(b.work.Get(),id,blockValues);
+   for(unsigned i=0;i<4;++i)if(changed&(1u<<i))materialValues[i]=values[i];
+  }
+  void* materialArgs[]={&id,materialValues.data()};
+  Call(scalar?api.materialFloat:color?api.materialColor:api.materialVector,b.animatedMaterial.Get(),materialArgs);
   // Supply Material constants as well as per-slot PropertyBlocks. A successful
   // block readback alone does not establish which path the draw consumes.
   // Both use the same sample without mutating the shared donor or game block.
-  Call(property.kind=="FLOAT"?api.setFloat:property.kind=="COLOR"?api.setColor:api.setVector,b.work.Get(),args);EiemLoadPerformance::Add(EiemLoadPerformance::Operation::MaterialValueWrite);any=true;
+  Call(scalar?api.setFloat:color?api.setColor:api.setVector,b.work.Get(),materialArgs);
+  if(preserveBlock){
+   // Colors and vectors share the native block storage. Let SetColor convert
+   // the driven components, then merge without converting the others again.
+   void* key[]={&id};auto converted=Scalar<Components>(api.getVector,b.work.Get(),key);
+   for(unsigned i=0;i<4;++i)if(changed&(1u<<i))blockValues[i]=converted[i];
+   void* blockArgs[]={&id,blockValues.data()};Call(api.setVector,b.work.Get(),blockArgs);
+  }
+  EiemLoadPerformance::Add(EiemLoadPerformance::Operation::MaterialValueWrite);any=true;
  }return any;
 }
 void Capture(Bound& b){Read(api.getSlot,b.renderer.Get(),b.baseline.Get());b.baseEmpty=api.empty?Scalar<unsigned char>(api.empty,b.baseline.Get())!=0:api.emptyIcall(b.baseline.Get());Read(b.baseEmpty?api.getGlobal:api.getSlot,b.renderer.Get(),b.work.Get());}
@@ -61,8 +101,14 @@ void Register(void* renderer,void* mesh,const RuntimeControls::Spec& spec){
  if(properties.empty())return;performance.hit=true;
  auto mats=Ref::Make(Call(api.materials,renderer),false);auto materials=FullResourceReload::ReferenceArray(mats.Get(),1);Require(RuntimeShapes::Alive(materials.front()),"material animation target material missing");
  Bound b;b.renderer=Ref::Make(renderer,true);b.mesh=Ref::Make(mesh,false);b.package=spec.package;b.marker=spec.marker;b.baseline=Block();b.work=Block();b.observeAt=GetTickCount64()+1000;
- for(auto& row:properties){auto key=Ref::Make(il2cpp_string_new(row.first.c_str()),false);void* args[]={key.Get()};Require(Scalar<unsigned char>(api.has,materials.front(),args),"animated Shader property absent: "+row.first);row.second.id=Scalar<int>(api.propertyId,nullptr,args);
-  Require(row.second.channels.size()==(row.second.kind=="FLOAT"?1:4),"animated vector requires four channels");b.properties.push_back(std::move(row.second));}
+ for(auto& row:properties){auto& property=row.second;auto key=Ref::Make(il2cpp_string_new(row.first.c_str()),false);void* args[]={key.Get()};
+  if(!Scalar<unsigned char>(api.has,materials.front(),args)||
+     (property.kind!="FLOAT"&&property.channels.size()<4&&
+      (!api.getVector||!(property.kind=="COLOR"?api.getMaterialColor:api.getMaterialVector)))){
+   Log("[MATERIAL-ANIMATION-GAP] property=%s part=%s skipped=1",row.first.c_str(),spec.part.c_str());continue;
+  }
+  property.id=Scalar<int>(api.propertyId,nullptr,args);b.properties.push_back(std::move(property));}
+ if(b.properties.empty())return;
  // The Renderer consumes these tracks for its entire model lifetime. Bundle
  // proxies are loader objects and can retire before their instantiated model;
  // their leases alone cannot gate a live material's lazy samples.
@@ -99,9 +145,17 @@ void Install(void** assemblies,size_t count){try{
  api.clone=method(FindClass("UnityEngine","Object",assemblies,count),"Instantiate",{"UnityEngine.Object"},"UnityEngine.Object",true);
  api.materialFloat=method(material,"SetFloat",{"System.Int32","System.Single"},"System.Void",false);api.materialVector=method(material,"SetVector",{"System.Int32","UnityEngine.Vector4"},"System.Void",false);api.materialColor=method(material,"SetColor",{"System.Int32","UnityEngine.Color"},"System.Void",false);
  api.getMaterialVector=Exact(material,"GetVector",{"System.Int32"},"UnityEngine.Vector4",false);
+ if(!api.getMaterialVector)api.getMaterialVector=Exact(material,"GetColorImpl",{"System.Int32"},"UnityEngine.Color",false);
+ api.getMaterialColor=Exact(material,"GetColor",{"System.Int32"},"UnityEngine.Color",false);
+ if(!api.getMaterialColor)api.getMaterialColor=Exact(material,"GetColorImpl",{"System.Int32"},"UnityEngine.Color",false);
  api.propertyId=method(FindClass("UnityEngine","Shader",assemblies,count),"PropertyToID",{"System.String"},"System.Int32",true);
  api.setFloat=method(api.blockClass,"SetFloat",{"System.Int32","System.Single"},"System.Void",false);api.setVector=method(api.blockClass,"SetVector",{"System.Int32","UnityEngine.Vector4"},"System.Void",false);api.setColor=method(api.blockClass,"SetColor",{"System.Int32","UnityEngine.Color"},"System.Void",false);
  api.getVector=Exact(api.blockClass,"GetVector",{"System.Int32"},"UnityEngine.Vector4",false);
+ if(!api.getVector)api.getVector=Exact(api.blockClass,"GetVectorImpl",{"System.Int32"},"UnityEngine.Vector4",false);
+ api.hasBlockVector=Exact(api.blockClass,"HasVector",{"System.Int32"},"System.Boolean",false);
+ if(!api.hasBlockVector)api.hasBlockVector=Exact(api.blockClass,"HasVectorImpl",{"System.Int32"},"System.Boolean",false);
+ if(!api.hasBlockVector)api.hasBlockVectorIcall=(decltype(api.hasBlockVectorIcall))il2cpp_resolve_icall("UnityEngine.MaterialPropertyBlock::HasVectorImpl(System.Int32)");
+ if(!api.hasBlockVector&&!api.hasBlockVectorIcall)api.hasBlockVectorIcall=(decltype(api.hasBlockVectorIcall))il2cpp_resolve_icall("UnityEngine.MaterialPropertyBlock::HasVectorImpl");
  auto slot=il2cpp_resolve_icall("UnityEngine.Renderer::Internal_SetPropertyBlockMaterialIndex"),global=il2cpp_resolve_icall("UnityEngine.Renderer::Internal_SetPropertyBlock");Require(slot&&global&&!installed.count(slot)&&!installed.count(global),"material animation native block setters unavailable");
  Require(Entry::InstallAddress(slot,"Renderer.Internal_SetPropertyBlockMaterialIndex",(void*)SetSlot,(void**)&originalSlot),"material slot override hook failed");
  Require(Entry::InstallAddress(global,"Renderer.Internal_SetPropertyBlock",(void*)SetGlobal,(void**)&originalGlobal),"material global override hook failed");revision=RuntimeControls::revision;

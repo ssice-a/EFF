@@ -231,6 +231,12 @@ target=material.float
 material=MaterialExample
 property=_Probe
 value=$actual
+[BindingAlpha]
+target=material.color
+material=MaterialExample
+property=_BaseColor
+channel=a
+value=$value
 [UISettings]
 type=group
 label=Settings
@@ -265,6 +271,9 @@ variable=$mode
  auto recovering=p;auto formula=std::make_shared<EiemControlProgram::Program>(*p.program);formula->parameters.at("$actual").computed=EiemControlProgram::Expression("(1 - $value) / (1 - $value)",p.defaults,"recovering");recovering.program=formula;
  Install({recovering});panel.open=true;Queue(Action::Value,p.id,"$value",1);Frame(true,0);Require(panel.Read()->errors.count(p.id)&&ShapeValue(p.id,"$actual")==1,"failed expression did not retain last effective state");
  Queue(Action::Value,p.id,"$value",.4);Frame(true,0);Require(!panel.Read()->errors.count(p.id)&&ShapeValue(p.id,"$actual")==1,"corrected expression retained stale error");
+ auto& alpha=p.materialTracks.at("$binding_BindingAlpha");
+ Require(alpha.kind=="COLOR"&&alpha.component==3&&RuntimeMaterials::Channel(p.id,"$binding_BindingAlpha",property)&&property==.4,
+         "panel command did not update the alpha channel in the same frame");
  Install({},true);panel.open=false;physical=0;
  std::cout<<"PASS unified INI program: shared key/UI actions, atomic failure, timeline effective values, material adapter, F10 migration/phase/stale commands, domains and focus\n";
 }
@@ -594,6 +603,9 @@ void WindowChecks(bool demo) {
   Require(variables.at("other").at("$switch")==1&&variables.at("lizhiyan").at("$switch")==0,"ImGui cycle button not isolated");
   auto before=variables.at("other").at("$shape");Click(window.TestRect(Action::Value,"other","$shape"));
   auto value=variables.at("other").at("$shape");Require(value>=0&&value<=1&&value!=before,"ImGui shape slider not wired");
+  Click(window.TestRect(Action::Value,"other","$shape##number"));
+  for(wchar_t ch:std::wstring(L"0.375"))SendMessageW(window.Handle(),WM_CHAR,ch,1);
+  Pump();Pump();Require(variables.at("other").at("$shape")==.375,"slider number field did not apply typed value");
   auto fx=window.TestRect(Action::Value,"other","$fx_petals");RECT fxClient{};GetClientRect(window.Handle(),&fxClient);
   ClickAt(fxClient.right-110,(fx.top+fx.bottom)/2);Require(variables.at("other").at("$fx_petals")==0,"effect enable control still responds as a full-width slider");
   Click(fx);Require(variables.at("other").at("$fx_petals")==1,"effect checkbox failed to enable");Click(fx);

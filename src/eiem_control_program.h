@@ -21,7 +21,7 @@ inline std::set<std::string> Dependencies(const Expr& e){std::set<std::string> r
 inline Expr Expression(const std::string& text,const EiemVariables& declared,const std::string& where){std::string error;auto e=EiemExpressionParser(text,error).Parse();Check(e&&e->Validate(declared,error),where+": "+error);return e;}
 enum class Type { Float, Integer, Boolean };
 struct Parameter {
-  std::string id,variable,label,description,group;
+  std::string id,variable,label,description,group,uiType;
   Type type=Type::Float;
   double initial=0,minimum=-std::numeric_limits<double>::max(),maximum=std::numeric_limits<double>::max(),softMin=0,softMax=1;
   bool exposed=false,persistent=false,retain=true;
@@ -34,7 +34,7 @@ struct Instruction {
 };
 struct Action {std::string id,label;bool exposed=false;std::vector<Instruction> code;};
 struct Event {std::string id,action,trigger="press";EiemKeyChord key;};
-struct Binding {std::string id,target,part,material,property,channel,variable;Expr value;};
+struct Binding {std::string id,target,part,material,property,channel,variable;Expr value;unsigned component=0;};
 struct Ui {std::string id,type,parent,label,variable,action,description;int order=0;bool expanded=false;Expr visible,enabled;};
 struct Program {
   std::map<std::string,Parameter> parameters;
@@ -43,6 +43,7 @@ struct Program {
   std::vector<Binding> bindings;
   std::map<std::string,Ui> ui;
   std::map<std::string,std::vector<std::string>> children;
+  std::set<std::string> placedParameters;
   std::vector<std::string> derivedOrder;
   std::map<std::string,std::string> rawSections;
 };
@@ -55,6 +56,7 @@ template<class Section>std::shared_ptr<Program> Declare(const std::vector<Sectio
       auto get=[&](const char* k,const std::string& fallback){auto f=v.find(k);return f==v.end()?fallback:f->second;};
       auto type=get("type","float");Check(type=="float"||type=="int"||type=="bool","unsupported parameter type: "+type);d.type=type=="bool"?Type::Boolean:type=="int"?Type::Integer:Type::Float;
       d.label=get("label",d.variable);d.description=get("description","");d.group=get("group","");d.exposed=Boolean(get("public","false"));d.persistent=Boolean(get("persist",persistent.count(d.variable)?"true":"false"));
+      d.uiType=get("ui.type","");Check(d.uiType.empty()||((d.uiType=="slider"||d.uiType=="number")&&d.type!=Type::Boolean),"unsupported parameter UI type: "+d.uiType);
       Check(!persistent.count(d.variable)||d.persistent,"parameter persistence disagrees with Constants: "+d.variable);
       auto reload=get("reload","preserve");Check(reload=="preserve"||reload=="reset","invalid parameter reload policy");d.retain=reload=="preserve";
       if(d.type==Type::Boolean){d.minimum=0;d.maximum=1;}if(v.count("min"))d.minimum=Number(v.at("min"));if(v.count("max"))d.maximum=Number(v.at("max"));Check(d.minimum<=d.maximum,"invalid parameter range");
@@ -93,7 +95,14 @@ template<class Section>void Compile(Program& p,const std::vector<Section>& secti
       }Check(branches.empty(),a.id+": missing endif");Check(!a.code.empty(),a.id+": empty action");p.actions.emplace(a.id,std::move(a));
     }else if(Starts(section.id,"Event")){Event e;e.id=section.id;e.action=v.at("action");e.trigger=get("trigger","press");Check(e.trigger=="press"||e.trigger=="release"||e.trigger=="hold","invalid event trigger");Check(EiemParseKeyChord(v.at("key"),&e.key),"invalid event key");p.events.push_back(std::move(e));}
     else if(Starts(section.id,"Binding")){Binding b;b.id=section.id;b.target=v.at("target");b.part=get("part");b.material=get("material");b.property=get("property");b.channel=get("channel");
-      Check(b.target=="material.float"||b.target=="part.visible"||b.target=="shape.weight","unsupported binding target: "+b.target);b.value=Expression(v.at("value"),defaults,section.id);b.variable="$binding_"+section.id;
+      const bool component=b.target=="material.color"||b.target=="material.vector";
+      Check(b.target=="material.float"||component||b.target=="part.visible"||b.target=="shape.weight","unsupported binding target: "+b.target);
+      if(component){
+        const std::string channels=b.target=="material.color"?"rgba":"xyzw";
+        Check(b.channel.size()==1&&channels.find(b.channel)!=channels.npos,"invalid material component: "+b.channel);
+        b.component=unsigned(channels.find(b.channel));
+      }
+      b.value=Expression(v.at("value"),defaults,section.id);b.variable="$binding_"+section.id;
       Check(!defaults.count(b.variable),"generated binding variable collision");defaults[b.variable]=0;Parameter d;d.variable=b.variable;d.computed=b.value;p.parameters.emplace(b.variable,std::move(d));p.bindings.push_back(std::move(b));
     }else if(Starts(section.id,"UI")){Ui u;u.id=section.id;u.type=v.at("type");u.parent=get("parent");u.label=get("label",u.id);u.variable=get("variable");u.action=get("action");u.description=get("description");auto order=Number(get("order","0"));Check(order==std::trunc(order)&&order>=std::numeric_limits<int>::min()&&order<=std::numeric_limits<int>::max(),"UI order requires a 32-bit integer");u.order=int(order);u.expanded=Boolean(get("expanded","false"));
       Check(u.type=="group"||u.type=="row"||u.type=="tabs"||u.type=="tab"||u.type=="slider"||u.type=="number"||u.type=="checkbox"||u.type=="button"||u.type=="text","unsupported UI type: "+u.type);
@@ -111,7 +120,7 @@ template<class Section>void Compile(Program& p,const std::vector<Section>& secti
   for(const auto& row:p.ui){const auto& u=row.second;
     if(!u.parent.empty()){Check(p.ui.count(u.parent),u.id+": UI parent absent");const auto& type=p.ui.at(u.parent).type;Check(type=="group"||type=="row"||type=="tabs"||type=="tab",u.id+": parent is not a layout");Check((type=="tabs")== (u.type=="tab"),u.id+": tab must belong to tabs");}
     else Check(u.type!="tab",u.id+": tab requires tabs parent");
-    if(u.type=="slider"||u.type=="number"||u.type=="checkbox"){Check(p.parameters.count(u.variable)&&p.parameters.at(u.variable).exposed,u.id+": parameter must be public");Check(u.type!="checkbox"||p.parameters.at(u.variable).type==Type::Boolean,u.id+": checkbox requires bool");}
+    if(u.type=="slider"||u.type=="number"||u.type=="checkbox"){Check(p.parameters.count(u.variable)&&p.parameters.at(u.variable).exposed,u.id+": parameter must be public");Check(u.type!="checkbox"||p.parameters.at(u.variable).type==Type::Boolean,u.id+": checkbox requires bool");p.placedParameters.insert(u.variable);}
     if(u.type=="button")Check(p.actions.count(u.action)&&p.actions.at(u.action).exposed,u.id+": action must be public");
     if(u.type=="text"&&!u.variable.empty())Check(defaults.count(u.variable),u.id+": display variable absent");
     parents[u.id];if(!u.parent.empty())parents[u.parent].push_back(u.id);p.children[u.parent].push_back(u.id);
