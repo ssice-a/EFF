@@ -192,7 +192,7 @@ bool ImmediateLog(std::string_view line) {
   if (line.empty() || line.front() != '[') return false;
   auto end=line.find(']');if(end==std::string_view::npos)return false;
   auto tag=line.substr(1,end-1);
-  if(tag=="BUILD")return true;
+  if(tag=="BUILD"||tag=="CONTROL-PANEL-REQUEST"||tag=="CONTROL-PANEL-GRAPHICS")return true;
   while(!tag.empty()) {
     auto separator=tag.find('-');auto part=tag.substr(0,separator);
     if(part=="FATAL"||part=="GAP"||part=="ERROR"||part=="FAIL"||part=="FAILED"||
@@ -1707,6 +1707,7 @@ DWORD StartImpl() {
   RuntimeAttachments::PrepareDiskReload(false);
 #endif
   EiemControlPanel::Shortcut reloadKey, guiKey;
+  EiemControlPanel::GuiShortcuts customGuiKeys;
 #if defined(EIEM_DIAGNOSTICS)
   ULONGLONG report = GetTickCount64();
 #endif
@@ -1720,14 +1721,15 @@ DWORD StartImpl() {
     auto gui=settings.Get().gui;
     bool guiPhysical=RuntimeControls::Down(gui);
     if(guiKey.Press(gui,guiPhysical,active && process==GetCurrentProcessId())) {
-      {
-        RuntimeControls::panel.open=!RuntimeControls::panel.open.load();
-        Log("[CONTROL-PANEL] requestedOpen=%d vk=%u modifiers=%u",int(RuntimeControls::panel.open.load()),gui.vk,gui.modifiers);
-      }
+      const bool open=!RuntimeControls::panel.open.load();
+      // Keep the request on disk before the worker can enter Win32 or D3D.
+      Log("[CONTROL-PANEL-REQUEST] requestedOpen=%d vk=%u modifiers=%u",int(open),gui.vk,gui.modifiers);
+      RuntimeControls::panel.open=open;
     }
-    if(!active) RuntimeControls::panel.open=false;
+    if(!active) RuntimeControls::panel.Close();
     auto shortcut=settings.Get().reload;
     bool physical=RuntimeControls::Down(shortcut);
+    customGuiKeys.Poll(RuntimeControls::panel,gui,shortcut,active && process==GetCurrentProcessId(),RuntimeControls::Down);
     if (reloadKey.Press(shortcut,physical,active && process==GetCurrentProcessId())) {
       reloadClock.store(NativeBundle::Clock());
       reload.store(true);
@@ -1828,7 +1830,7 @@ APPLEPIE_PLUGIN_EXPORT bool AP_PluginDisable() {
     Entry::EffectDebug::mailbox.Submit(std::move(command));
   }catch(const std::exception& e){Log("[EFFECT-DEBUG-CLEANUP-GAP] disableQueue=%s",e.what());}
 #endif
-  Entry::RuntimeControls::panel.open=false;
+  Entry::RuntimeControls::panel.Close();
   Log("[ENTRY] disabled");
   Entry::EntryCameraFade::Report();
   return true;

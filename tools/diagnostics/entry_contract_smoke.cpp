@@ -31,6 +31,11 @@ void LoggingChecks(const std::filesystem::path& root) {
     Require(bytes(main)==flushed,"ordinary event wrote through before startup evidence");
     Log("[BUILD] fixture identity");
     Require(bytes(main)>flushed&&bytes(main)==bytes(mirror),"startup build identity was left buffered");
+    for(const auto* marker:{"[CONTROL-PANEL-REQUEST] requestedOpen=1", "[CONTROL-PANEL-GRAPHICS] stage=first-present"}){
+      flushed=bytes(main);
+      Log("%s",marker);
+      Require(bytes(main)>flushed&&bytes(main)==bytes(mirror),"panel crash breadcrumb was left buffered");
+    }
     std::string bounded(2048,'x');
     for(size_t i=0;i<1000;++i)Log("[ENTRY-FIXTURE] %zu %s",i,bounded.c_str());
     Require(bytes(main)>1000000,"bounded log buffering grew without flushing full buffers");

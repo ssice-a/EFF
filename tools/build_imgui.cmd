@@ -16,10 +16,27 @@ where cl >nul 2>nul
 if errorlevel 1 for /f "usebackq tokens=*" %%i in (`"%imgui_vswhere%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat" >nul
 if not exist "%imgui_folder%" mkdir "%imgui_folder%"
 powershell -NoProfile -Command "$lib=Get-Item '%imgui_folder%/eiem_imgui.lib' -ErrorAction SilentlyContinue; if($lib -and !(Get-ChildItem 'deps/imgui' -File | Where-Object LastWriteTimeUtc -gt $lib.LastWriteTimeUtc)){exit 0}; exit 1"
-if not errorlevel 1 (popd & exit /b 0)
+if not errorlevel 1 goto lua
 cl /nologo /utf-8 /c /O2 %imgui_runtime% /EHsc /std:c++17 /bigobj /Fo"%imgui_folder%\\" deps\imgui\imgui.cpp deps\imgui\imgui_draw.cpp deps\imgui\imgui_widgets.cpp deps\imgui\imgui_tables.cpp deps\imgui\imgui_impl_win32.cpp deps\imgui\imgui_impl_dx11.cpp
 if errorlevel 1 (popd & exit /b 1)
 lib /nologo /out:"%imgui_folder%\eiem_imgui.lib" "%imgui_folder%\imgui.obj" "%imgui_folder%\imgui_draw.obj" "%imgui_folder%\imgui_widgets.obj" "%imgui_folder%\imgui_tables.obj" "%imgui_folder%\imgui_impl_win32.obj" "%imgui_folder%\imgui_impl_dx11.obj"
+if errorlevel 1 (popd & exit /b 1)
+:lua
+setlocal EnableDelayedExpansion
+set "lua_folder=%imgui_folder%\lua"
+if not exist "%lua_folder%" mkdir "%lua_folder%"
+powershell -NoProfile -Command "$lib=Get-Item '%imgui_folder%/eiem_lua.lib' -ErrorAction SilentlyContinue; if($lib -and !(Get-ChildItem 'deps/lua','tools/build_imgui.cmd' -File | Where-Object LastWriteTimeUtc -gt $lib.LastWriteTimeUtc)){exit 0}; exit 1"
+if not errorlevel 1 (popd & exit /b 0)
+set "lua_sources="
+set "lua_objects="
+for %%i in (deps\lua\*.c) do if /i not "%%~nxi"=="lua.c" if /i not "%%~nxi"=="luac.c" (
+ set "lua_sources=!lua_sources! %%i"
+ set "lua_objects=!lua_objects! %lua_folder%\%%~ni.obj"
+)
+rem Lua errors must unwind C++ locals inside ImGui callbacks.
+cl /nologo /TP /c /O2 %imgui_runtime% /EHsc /std:c++17 /Fo"%lua_folder%\\" !lua_sources!
+if errorlevel 1 (popd & exit /b 1)
+lib /nologo /out:"%imgui_folder%\eiem_lua.lib" !lua_objects!
 set "imgui_result=%errorlevel%"
 popd
 exit /b %imgui_result%

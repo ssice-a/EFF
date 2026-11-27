@@ -97,6 +97,17 @@ void MeshSourceReachability(){
   R::Reader reader(local.size(),read,limits);EiemDemandTargetLookup::Inspection inspection;
   Require(inspection.MeshSources(reader).empty()&&reader.stats.encodedBytes==baseline.stats.encodedBytes,
     "Mesh source search read object fields in a fully local serialized member");
+  Require(inspection.MayContainMeshRoutes(reader),"static Mesh route did not pass preflight");
+  const auto reads=reader.stats.reads;
+  const auto layout=inspection.TakeLayout(reader,reader.directory.members.front());
+  Require(layout.objects.count(12)&&reader.stats.reads==reads,"assembly reread metadata already inspected for this Bundle");
+  std::set<NativeReference> observed;
+  const auto& member=reader.directory.members.front();
+  auto matches=ProjectedMeshConsumers(layout,member.name,{},
+    [&](int64_t id,const std::set<std::string>& fields){return reader.Project(member,layout,id,fields);},
+    SerializedAssetCabKey,&observed);
+  Require(matches.empty()&&observed==std::set<NativeReference>{{SerializedAssetCabKey(member.name),100}},
+    "a root without resolved targets lost its serialized Mesh references before caching discovery");
  }
  SetReference(fixture.T(12),Child(fixture.T(12),fixture.V(12),"m_Mesh"),{"CAB-static-mesh",100},fixture.refs,fixture.cab);
  auto skin=fixture.types.size();fixture.types.push_back(Schema(137,{Ref("m_Mesh")}));fixture.Add(40,skin);
@@ -135,6 +146,12 @@ void MeshSourceReachability(){
  auto wrapper=EndfieldInput::Encode(EiemAuthorMeshBundle::EnvelopeHeader(),{{fixture.cab,4,fixture.BytesOf()}});
  R::Reader second(wrapper.size(),[&](size_t at,unsigned char* out,size_t size){memcpy(out,wrapper.data()+at,size);});
  EiemDemandTargetLookup::Inspection fresh;Require(fresh.MeshSources(second).count("CAB-external-root"),"external container root omitted from Mesh traversal");
+ auto nativeBytes=fixture.BytesOf();
+ Require(SerializedMayContainMeshRoutes(nativeBytes,nativeBytes.size()),"external Mesh route was excluded by object preflight");
+ fixture.refs.externals.clear();fixture.objects.clear();nativeBytes=fixture.BytesOf();
+ Require(!SerializedMayContainMeshRoutes(nativeBytes,nativeBytes.size()),"terminal input required full Mesh discovery");
+ fixture.Add(100,5);nativeBytes=fixture.BytesOf();
+ Require(SerializedMayContainMeshRoutes(nativeBytes,nativeBytes.size()),"local Mesh without a Renderer was excluded by object preflight");
  std::cout<<"PASS Mesh source reachability: static/skinned Mesh, external hierarchy, nested Prefab, unknown component, terminal resources, unrelated preloads and no rereads\n";
 }
 void TextureOnlyBundleMeshDiscovery(){

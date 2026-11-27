@@ -24,6 +24,7 @@
     <Compile Include="..\AnimeStudio\AnimeStudio.IndexTests\IncrementalIndexTests.cs" Link="IncrementalIndexTests.cs" />
     <Compile Include="..\AnimeStudio\AnimeStudio.GUI\EndfieldBundleDependencyIndex.cs" Link="EndfieldBundleDependencyIndex.cs" />
     <Compile Include="..\AnimeStudio\AnimeStudio.GUI\EndfieldIndexStore.cs" Link="EndfieldIndexStore.cs" />
+    <Compile Include="..\AnimeStudio\AnimeStudio.GUI\EndfieldAssetSourceIndex.cs" Link="EndfieldAssetSourceIndex.cs" />
     <Compile Include="..\AnimeStudio\AnimeStudio.GUI\VirtualAssetPathIndex.cs" Link="VirtualAssetPathIndex.cs" />
     <Compile Include="..\AnimeStudio\AnimeStudio.GUI\EndfieldPrefabDocument.cs" Link="EndfieldPrefabDocument.cs" />
     <Compile Include="..\AnimeStudio\AnimeStudio.GUI\EiemPackageIdentity.cs" Link="EiemPackageIdentity.cs" />

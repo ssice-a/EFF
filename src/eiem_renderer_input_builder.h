@@ -64,8 +64,8 @@ inline std::vector<NativeReference> RendererMaterialSlots(const Type& type,const
 // the owning GameObject actually references; names and scene state play no role.
 template<class Project> inline std::vector<MeshConsumer> ProjectedMeshConsumers(const SerializedLayout& layout,
     const std::string& cab,const std::set<NativeReference>& selected,const Project& project,
-    std::string (*canonical)(std::string)=nullptr) {
-  if(selected.empty())return {};
+    std::string (*canonical)(std::string)=nullptr,std::set<NativeReference>* observed=nullptr) {
+  if(selected.empty()&&!observed)return {};
   std::set<NativeReference> lookup=selected;
   if(canonical){lookup.clear();for(auto reference:selected){reference.first=canonical(std::move(reference.first));lookup.insert(std::move(reference));}}
   std::vector<MeshConsumer> result;
@@ -79,7 +79,9 @@ template<class Project> inline std::vector<MeshConsumer> ProjectedMeshConsumers(
   for(auto id:ordered){const auto& type=layout.types.at(layout.objects.at(id).type);
     auto value=project(id,{"m_Mesh","m_GameObject"});auto mesh=NullableReference(type,Child(type,value,"m_Mesh"),layout,cab);
     auto key=mesh;if(canonical)key.first=canonical(key.first);
-    if(!mesh.second||!lookup.count(key))continue;
+    if(!mesh.second)continue;
+    if(observed)observed->insert(key);
+    if(!lookup.count(key))continue;
     if(type.classId==137){result.push_back({id,0,mesh});continue;}
     auto owner=NullableReference(type,Child(type,value,"m_GameObject"),layout,cab);
     Require(owner.first==cab&&owner.second&&layout.objects.count(owner.second),"static MeshFilter has no local GameObject");

@@ -144,7 +144,8 @@ void PublishPrepared(uint64_t token,std::shared_ptr<const EiemInputSpanView::Vie
 }
 void PrepareReplacement(uint64_t token,uint64_t scope,R::Reader& reader,const std::shared_ptr<R::File>& file,const std::shared_ptr<Manifest>& manifest,
     const MaterialPrepare* materialPrepare=nullptr,const PreparedPublisher* publisher=nullptr,std::unique_lock<std::mutex>* scopeTransaction=nullptr,const char** phaseOut=nullptr,
-    void (*phaseObserver)(void*,const char*)=nullptr,void* phaseContext=nullptr,std::set<std::string>* usedMods=nullptr){
+    void (*phaseObserver)(void*,const char*)=nullptr,void* phaseContext=nullptr,std::set<std::string>* usedMods=nullptr,
+    EiemDemandTargetLookup::Inspection* inspection=nullptr){
   auto phase=[&](const char* value){if(phaseOut)*phaseOut=value;if(phaseObserver)phaseObserver(phaseContext,value);};phase("initialize-rewrite");
   auto publish=[&](std::shared_ptr<const EiemInputSpanView::View> view){if(publisher)(*publisher)(token,std::move(view),false);else PublishPrepared(token,std::move(view));};
   phase("lock-mod-generation");
@@ -158,7 +159,8 @@ void PrepareReplacement(uint64_t token,uint64_t scope,R::Reader& reader,const st
   for(size_t mi=0;mi<reader.directory.members.size();++mi){const auto& member=reader.directory.members[mi];if(!(member.flags&4))continue;phase("read-native-member-layout");
     // The transaction owns the parsed source. Matching reads its immutable
     // baseline instead of retaining another full copy of every type tree.
-    EiemNativeEditTransaction::Member transaction(reader,mi,reader.Layout(member));const auto& layout=transaction.SourceLayout();bool touched=false;
+    EiemNativeEditTransaction::Member transaction(reader,mi,inspection?inspection->TakeLayout(reader,member):reader.Layout(member));
+    const auto& layout=transaction.SourceLayout();bool touched=false;
     if(record.candidate==Q::Candidate::Target){
       phase("match-target-meshes");
       std::map<std::string,AssetIndex> selectedByMod;std::map<std::string,std::set<size_t>> bindingIndices;

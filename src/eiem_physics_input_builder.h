@@ -74,6 +74,13 @@ class MemberBuilder {
  std::map<int64_t,int64_t> owners,transforms,parents;std::map<int64_t,std::string> paths;std::map<int64_t,std::map<std::string,int64_t>> hierarchy;
  std::vector<AddedObject> added;std::vector<Bytes> types,scripts;std::map<std::pair<std::string,size_t>,size_t> imported;
  std::set<int64_t> movingBones;
+ struct ClothSelection {
+  int64_t component,anchor;
+  const Document* document;
+  const Group* group;
+  std::map<std::string,int64_t> nodes;
+ };
+ std::vector<ClothSelection> clothSelections;
  std::map<int64_t,std::vector<NativeReference>> preloads;
  using Project=std::function<Value(int64_t,const std::set<std::string>&)>;
  Project project;
@@ -308,6 +315,56 @@ class MemberBuilder {
  void RemapScript(const Template& donor,const Type& type,Value& value){auto ref=NullableReference(type,Child(type,value,"m_Script"),donor.layout,donor.cab);Require(ref.second&&ref.first!=donor.cab,"Physics native script source unresolved");SetReference(type,Child(type,value,"m_Script"),ref,layout,cab);}
  int64_t Component(int64_t anchor,const std::string& identity,int64_t go,const Template& donor,int64_t donorId){auto object=donor.layout.objects.at(donorId);auto tree=ObjectValue(donor.bytes,donor.layout,donorId,&donor.origins);const auto& originalType=donor.layout.types.at(object.type);RemapScript(donor,originalType,tree);auto type=Import(donor,object.type);auto id=Allocate(anchor,identity,"physics-component");Add(id,type,std::move(tree));Reference(id,"m_GameObject",go);Append(go,"m_Component",id,"component");return id;}
  Vector3 TransformPoint(int64_t id,Vector3 point,int64_t stop){for(auto current=id;current&&current!=stop;current=parents.at(current)){const auto& t=Schema(current);auto& tree=Tree(current);auto s=ReadVector(t,Child(t,tree,"m_LocalScale"));for(size_t i=0;i<3;++i)point[i]*=s[i];auto& q=Child(t,tree,"m_LocalRotation");double x=FloatValue(t,Child(t,q,"x")),y=FloatValue(t,Child(t,q,"y")),z=FloatValue(t,Child(t,q,"z")),w=FloatValue(t,Child(t,q,"w"));auto tx=2*(y*point[2]-z*point[1]),ty=2*(z*point[0]-x*point[2]),tz=2*(x*point[1]-y*point[0]);Vector3 next{point[0]+w*tx+y*tz-z*ty,point[1]+w*ty+z*tx-x*tz,point[2]+w*tz+x*ty-y*tx};auto p=ReadVector(t,Child(t,tree,"m_LocalPosition"));for(size_t i=0;i<3;++i)point[i]=next[i]+p[i];}return point;}
+ bool CanUseNativeBoneSelection(const ClothSelection& selection){
+  std::set<int64_t> groupBones;
+  for(const auto& node:selection.nodes)groupBones.insert(node.second);
+  if(groupBones.size()!=selection.group->nodes.size())return false;
+  for(const auto& [path,move]:selection.group->nodes){
+   const auto bone=selection.nodes.at(path);
+   if(move!=(groupBones.count(parents.at(bone))!=0))return false;
+   const auto& type=Schema(bone);
+   for(const auto& child:ConstArray(type,Child(type,Tree(bone),"m_Children")).children){
+    const auto ref=NullableReference(type,child,layout,cab);
+    if(ref.first!=cab||!groupBones.count(ref.second))return false;
+   }
+  }
+  return true;
+ }
+ void PopulateClothSelections(){
+  for(const auto& selection:clothSelections){
+   const auto& t=Schema(selection.component);
+   auto& value=FieldPath(t,Tree(selection.component),{"serializeData2","selectionData"});
+   // Native BoneCloth builds an empty selection from the initialized bones
+   // and marks rootBones fixed by Transform identity. Serialized bind-pose
+   // positions can miss those same bones once the model is already posed.
+   if(CanUseNativeBoneSelection(selection)){
+    value=EmptyValue(t,value.node);
+    continue;
+   }
+   auto& positions=ArrayValue(t,Child(t,value,"positions"));
+   auto& attributes=ArrayValue(t,Child(t,value,"attributes"));
+   double maxDistance=0;
+   for(const auto& [path,move]:selection.group->nodes){
+    auto point=ArrayElement(t,positions);
+    auto position=TransformPoint(selection.nodes.at(path),{0,0,0},selection.anchor);
+    SetVector(t,point,position);
+    positions.children.push_back(std::move(point));
+    auto attribute=ArrayElement(t,attributes);
+    SetInteger(t,Child(t,attribute,"Value"),move?2:1);
+    attributes.children.push_back(std::move(attribute));
+    const auto parent=selection.nodes.find(selection.document->nodes.at(path).parent);
+    if(parent==selection.nodes.end())continue;
+    const auto other=TransformPoint(parent->second,{0,0,0},selection.anchor);
+    double distance=0;
+    for(size_t i=0;i<3;++i)distance+=(position[i]-other[i])*(position[i]-other[i]);
+    maxDistance=std::max(maxDistance,std::sqrt(distance));
+   }
+   positions.count=positions.children.size();
+   attributes.count=attributes.children.size();
+   SetFloat(t,Child(t,value,"maxConnectionDistance"),maxDistance);
+   SetInteger(t,Child(t,value,"userEdit"),1);
+  }
+ }
  void Populate(int64_t anchor,int64_t preloadRenderer,const Document& d,const std::vector<const Group*>& groups,const ColliderMounts& mounts){
   const auto addedStart=added.size();std::map<std::string,int64_t> colliders,createdMounts;std::vector<NativeReference> refs;
   for(const auto* group:groups)for(const auto& id:group->colliders)if(!colliders.count(id)){const auto& c=d.colliders.at(id);auto parent=ColliderParent(anchor,d,c,mounts,createdMounts);auto owner=NewObject(anchor,parent,d.id+":collider:"+id,EiemPhysicsComponentIdentity::Name(package.id,id),c.position,c.rotation,{1,1,1});
@@ -318,9 +375,7 @@ class MemberBuilder {
    auto& roots=ArrayValue(t,FieldPath(t,v,{"serializeData","rootBones"}));std::set<std::string> nodePaths;for(const auto& node:group->nodes)nodePaths.insert(node.first);
    for(const auto& node:group->nodes)if(!nodePaths.count(d.nodes.at(node.first).parent)){auto p=ArrayElement(t,roots);SetReference(t,p,{cab,nodes.at(node.first)},layout,cab);roots.children.push_back(std::move(p));}roots.count=roots.children.size();Require(roots.count,"Physics chain has no root");
    auto& list=ArrayValue(t,FieldPath(t,v,{"serializeData","colliderCollisionConstraint","colliderList"}));for(const auto& id:group->colliders){auto p=ArrayElement(t,list);SetReference(t,p,{cab,colliders.at(id)},layout,cab);list.children.push_back(std::move(p));}list.count=list.children.size();
-   auto& positions=ArrayValue(t,FieldPath(t,v,{"serializeData2","selectionData","positions"}));auto& attributes=ArrayValue(t,FieldPath(t,v,{"serializeData2","selectionData","attributes"}));double maxDistance=0;
-   for(const auto& node:group->nodes){auto point=ArrayElement(t,positions);auto position=TransformPoint(nodes.at(node.first),{0,0,0},anchor);SetVector(t,point,position);positions.children.push_back(std::move(point));auto attribute=ArrayElement(t,attributes);SetInteger(t,Child(t,attribute,"Value"),node.second?2:1);attributes.children.push_back(std::move(attribute));auto parent=d.nodes.at(node.first).parent;if(nodes.count(parent)){auto other=TransformPoint(nodes.at(parent),{0,0,0},anchor);double dist=0;for(size_t i=0;i<3;++i)dist+=(position[i]-other[i])*(position[i]-other[i]);maxDistance=std::max(maxDistance,sqrt(dist));}}
-   positions.count=positions.children.size();attributes.count=attributes.children.size();SetFloat(t,FieldPath(t,v,{"serializeData2","selectionData","maxConnectionDistance"}),maxDistance);SetInteger(t,FieldPath(t,v,{"serializeData2","selectionData","userEdit"}),1);
+   clothSelections.push_back({component,anchor,&d,group,std::move(nodes)});
    refs.emplace_back(cab,owner.first);refs.emplace_back(cab,owner.second);refs.emplace_back(cab,component);
   }
   for(size_t i=addedStart;i<added.size();++i)refs.emplace_back(cab,added[i].id);
@@ -354,6 +409,7 @@ class MemberBuilder {
   }
   if(skeletonUses)for(const auto& row:*skeletonUses)for(const auto& use:row.second)PopulateSkeleton(row.first,use);
   PublishRetargetRoutes();
+  PopulateClothSelections();
   for(auto& row:preloads){auto& dependencies=row.second;std::sort(dependencies.begin(),dependencies.end());dependencies.erase(std::unique(dependencies.begin(),dependencies.end()),dependencies.end());}
   Preloads();std::map<int64_t,AuthorByteSpans> objectOrigins;for(auto id:changed)encodedChanges[id]=EncodeValue(Schema(id),Tree(id),outputOrigins?&objectOrigins[id]:nullptr);for(auto& object:added)object.bytes=EncodeValue(Schema(object.id),Tree(object.id),outputOrigins?&objectOrigins[object.id]:nullptr);if(project)return {};return BuildSerialized(bytes,layout,encodedChanges,added,{},types,scripts,inputOrigins,&objectOrigins,outputOrigins);
  }

@@ -1040,6 +1040,7 @@ RuntimeControls::State CompiledControls(const std::shared_ptr<const std::vector<
   auto validateKey=[&](const EiemKeyChord& key){Require(!key.vk||(key.vk!=config.reload.vk&&key.vk!=config.gui.vk),"Mod shortcut overlaps a global shortcut: "+package.id);};for(const auto& key:package.bindings)validateKey(key.key);for(const auto& clip:package.shapeAnimations)validateKey(clip.second.key);if(package.program)for(const auto& event:package.program->events){validateKey(event.key);state.held[package.id+"/"+event.id]=RuntimeControls::Down(event.key);}
   state.variables[package.id]=package.defaults;state.keys[package.id]=package.bindings;
   state.keySwitchEnabled[package.id]=RuntimeControls::keySettings.Preview(package);
+  if(!package.customGui.script.empty())state.customGuiEnabled[package.id]=RuntimeControls::keySettings.Preview(package,true);
   RuntimeControls::PrepareAnimations(state,package);
   for(const auto& part:package.parts)Require(owners.emplace(plan.composed?EiemComposedPackage::Name(package.id,part.first):part.first,std::make_pair(&package,part.first)).second,"compiled part owner collision");
  }

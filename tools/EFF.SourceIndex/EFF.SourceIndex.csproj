@@ -14,6 +14,7 @@
     <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldPortableIndex.cs" Link="Sources/EndfieldPortableIndex.cs" />
     <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldBundleIndexCache.cs" Link="Sources/EndfieldBundleIndexCache.cs" />
     <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldIndexStore.cs" Link="Sources/EndfieldIndexStore.cs" />
+    <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldAssetSourceIndex.cs" Link="Sources/EndfieldAssetSourceIndex.cs" />
     <Compile Include="../AnimeStudio/AnimeStudio.GUI/EndfieldBundleDependencyIndex.cs" Link="Sources/EndfieldBundleDependencyIndex.cs" />
     <Compile Include="../AnimeStudio/AnimeStudio.GUI/VirtualAssetPathIndex.cs" Link="Sources/VirtualAssetPathIndex.cs" />
     <Content Include="../../LICENSE" CopyToOutputDirectory="PreserveNewest" />

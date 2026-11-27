@@ -27,6 +27,7 @@
 #include "eiem_expression.h"
 #include "eiem_keys.h"
 #include "eiem_control_program.h"
+#include "eiem_custom_gui.h"
 #include "eiem_effect_native_types.h"
 #include "eiem_mod_directory.h"
 #pragma comment(lib, "bcrypt.lib")
@@ -439,6 +440,7 @@ struct Package {
   std::map<std::string,MaterialTrack> materialTracks;
   std::map<std::string,EffectAttachment> effects;
   bool keySwitchEnabled=true;
+  EiemCustomGui::Declaration customGui;
   std::shared_ptr<const EiemControlProgram::Program> program;
   std::string loadError;
   // Compiler-only ownership metadata, reconstructed from the original authors

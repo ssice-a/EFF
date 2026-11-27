@@ -190,8 +190,10 @@ int wmain(int argc,wchar_t** argv){try{
       <<" cachePeak="<<reader.stats.cachePeak<<" discoverMs="<<elapsed<<'\n';
     return 0;
   }
+  EiemDemandTargetLookup::Inspection rootInspection;
+  Require(rootInspection.MayContainMeshRoutes(reader),"story fixture excluded by native Mesh route preflight");
   try{for(const auto& member:reader.directory.members){if(!(member.flags&4))continue;
-    auto layout=reader.Layout(member);Package package;package.id="story-read-fixture";AssetIndex assets;
+    auto layout=rootInspection.TakeLayout(reader,member);Package package;package.id="story-read-fixture";AssetIndex assets;
     for(auto id:layout.order){const auto& type=layout.types.at(layout.objects.at(id).type);
       if(type.classId!=137&&type.classId!=33)continue;
       auto value=reader.Project(member,layout,id,{"m_Mesh","m_GameObject"});

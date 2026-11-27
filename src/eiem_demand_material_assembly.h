@@ -45,14 +45,16 @@ struct Shared {
 using PrepareInput=std::function<EiemNativeStandaloneInput::Input(const EiemDemandAuthorResources::Material&,const Use&)>;
 inline Shared PrepareShared(const N::Author& author,const std::vector<Use>& uses,const PrepareInput& prepare={},
     const EiemDemandAuthorResources::TextureResolver& resolveTexture={}) {
-  Shared result;std::set<RendererMaterialKey> keys;std::map<std::string,EiemNativeStandaloneInput::Input> built;
+  Shared result;std::map<std::string,NativeReference> built;
   for(const auto& use:uses){
-    Require(use.key.first&&!use.key.second.empty()&&keys.insert(use.key).second,"native Material Renderer/Part use is invalid or duplicated");
-    auto material=author.GetMaterial(use.material,resolveTexture);auto found=built.find(use.material);
-    EiemNativeStandaloneInput::Input input;
-    if(found==built.end()){Require(bool(prepare),"current game Material source builder is absent");input=prepare(*material,use);}
-    else input=found->second;
-    if(found==built.end())built.emplace(use.material,input);
+    Require(use.key.first&&!use.key.second.empty()&&!result.references.count(use.key),"native Material Renderer/Part use is invalid or duplicated");
+    auto found=built.find(use.material);
+    if(found!=built.end()){
+      result.references.emplace(use.key,found->second);
+      continue;
+    }
+    Require(bool(prepare),"current game Material source builder is absent");
+    auto material=author.GetMaterial(use.material,resolveTexture);auto input=prepare(*material,use);
     Require(input.asset.second&&!input.cab.empty()&&input.asset.first==input.cab&&input.view,
       "native author Material input is incomplete: "+use.material);
     auto previous=result.inputs.emplace(input.cab,input);
@@ -62,8 +64,8 @@ inline Shared PrepareShared(const N::Author& author,const std::vector<Use>& uses
     auto prior=result.closures.emplace(input.asset,std::move(closure));
     Require(prior.second||prior.first->second==expectedClosure,
       "native author Material dependency closure differs");
-    Require(result.references.emplace(use.key,input.asset).second,"native Material Renderer/Part use was assembled more than once");
-    ++result.variants;
+    built.emplace(use.material,input.asset);
+    result.references.emplace(use.key,input.asset);
 
     for(const auto& dependency:input.dependencies)if(auto texture=author.FindTexture(dependency)){
       if(!texture->input)continue; // Logical game Texture stays owned by the game.

@@ -136,8 +136,7 @@ use F10 (VK_F10). After editing a binding, use the old active shortcut once
 to publish the new one. Mod bindings may share keys with other Mods, but cannot
 overlap the global reload, effects-reload or GUI keys. Users control which Mods
 respond through their INI flags and panel checkboxes. `gui=INSERT` toggles
-the built-in control panel in current source. The separate Lua adapter is still
-not wired to this host.
+the built-in control panel. Mods can also [declare their own Lua panel](custom-mod-gui.md).
 
 ### Ins control panel
 

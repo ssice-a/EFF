@@ -1159,9 +1159,10 @@ void EffectSharedResourceLifetimeRegression(){
 void CachedResourceLogicalUsageRegression(){
  namespace D=DemandLoadingProbe;namespace A=EiemDemandAuthorResources;
  auto state=std::make_shared<D::Manifest>();state->serial=0xEF310;
- D::DependencyGroup group;group.manifest=state;group.shared=std::make_shared<D::SharedScope>(state);group.schedulingPack={1};
+ D::DependencyGroup group;group.manifest=state;group.shared=std::make_shared<D::SharedScope>(state);
  EiemNativeInput::Identity materialIdentity{"assets/current/shared.mat","Shared"},textureIdentity{"assets/current/star.png","Star"};
- auto source=std::make_shared<D::GroupSource>();source->key=10;group.sources.emplace(10,source);group.native[10]={};
+ group.native[10]={};
+ group.shared->preparationFailures.emplace(10,std::make_exception_ptr(std::runtime_error("cached Material reopened a verified source Bundle")));
  group.shared->logicalDependencies.emplace(materialIdentity,D::LogicalDependencyBinding{{"CAB-material-source",1},10,21});
  group.shared->logicalDependencies.emplace(textureIdentity,D::LogicalDependencyBinding{{"CAB-texture-source",7},10,28});
  auto texture=std::make_shared<A::Texture>();texture->source=textureIdentity;texture->cab="CAB-texture-source";texture->id=7;
@@ -1169,12 +1170,28 @@ void CachedResourceLogicalUsageRegression(){
  material.textures.emplace("_MainTex",std::make_pair(texture->cab,texture->id));material.textureAssets.emplace("_MainTex",texture);
  const auto cacheKey=material.ownerRoot.u8string()+"\n"+materialIdentity.path+"\n"+materialIdentity.asset+
   "\nCAB-material-source/1\ncached\n_MainTex=CAB-texture-source/7";
- EiemNativeStandaloneInput::Input input;input.cab="CAB-private-material";group.shared->materialVariants.emplace(cacheKey,input);
+ auto bytes=std::make_shared<const Bytes>(Bytes{1});
+ auto view=std::make_shared<const EiemInputSpanView::View>(std::vector<EiemInputSpanView::Span>{{EiemInputSpanView::literalSource,0,1,bytes}},std::vector<size_t>{},EiemInputSpanView::ReadRange{});
+ EiemNativeStandaloneInput::Input input;input.cab="CAB-private-material";input.view=view;
+ input.dependencies.emplace("CAB-game-shader",3);group.shared->materialVariants.emplace(cacheKey,input);
+ group.root=100;group.consumer=100;group.shared->cabKeys.emplace("CAB-game-shader",40);
+ auto published=group.Input(input.cab,view);published.sourceView=view;published.dependencies={40};
+ group.shared->graph.Commit({published},{},{{40,{}}});
  auto result=group.MaterialInput(material);
  Require(result.cab==input.cab&&group.usedMaterials.count(cacheKey)&&group.usedLogicalDependencies.size()==2&&
   group.usedLogicalDependencies.count(materialIdentity)&&group.usedLogicalDependencies.count(textureIdentity),
   "cached Material omitted its game Texture source from the new consumer's logical lifetime");
- auto invalid=*texture;invalid.id=8;bool rejected=false;try{group.TextureSource(invalid);}catch(const std::exception&){rejected=true;}
+ D::M::Shared materials;materials.inputs.emplace(input.cab,result);group.AddResourceInputs(materials);
+ Require(group.inputs.size()==1&&group.inputs.front().dependencies==std::vector<uint64_t>{40}&&
+  group.edges.at(group.consumer)==std::vector<uint64_t>{published.key}&&group.sources.empty(),
+  "cached Material did not attach its complete published dependencies to the new PFB without source reads");
+ auto invalid=std::make_shared<A::Texture>(*texture);invalid->id=8;
+ material.textureAssets.at("_MainTex")=invalid;
+ bool rejected=false;
+ try{group.MaterialInput(material);}catch(const std::runtime_error& error){
+  if(std::string_view(error.what())!="cached game Texture identity differs from the current manifest")throw;
+  rejected=true;
+ }
  Require(rejected,"cached Texture from another native manifest was silently reused");
  std::cout<<"PASS cached Material/Texture reuse retains current logical source usage without reading author payloads\n";
 }
@@ -1784,6 +1801,14 @@ void ControlProgramGenerationRegression(){
  auto first=D::BuildInstalledGeneration();Require(first->authors.size()==1&&first->packages->size()==1&&first->packages->front().program,"installed catalog lost INI program");const auto instance=first->packages->front().id;
  D::PublishInstalledGeneration(first);write(source+"[UIMode]\ntype=checkbox\nvariable=$mode\n");
  auto ui=D::BuildInstalledGeneration();Require(ui->delta.controlOnlyPackages.count(instance)&&ui->packages->front().program->ui.count("UIMode"),"UI-only catalog edit rebuilds resources or lost UI");
+ D::PublishInstalledGeneration(ui);
+ auto withGui=source;
+ withGui.insert(withGui.find("[ParameterMode]"),"gui_script=ui/panel.lua\ngui_key=F8\ngui_enabled=0\n");
+ write(withGui);
+ auto gui=D::BuildInstalledGeneration();const auto& declared=gui->packages->front().customGui;
+ Require(gui->delta.controlOnlyPackages.count(instance)&&gui->delta.targets.empty()&&
+         declared.error.empty()&&declared.script=="ui/panel.lua"&&declared.key.vk==VK_F8&&!declared.enabled,
+         "author GUI declaration changed native targets or was lost during installed catalog load");
  D::PublishInstalledGeneration(ui);write(source+"[ActionBad]\ncode=$missing=1\n");
  auto invalid=D::BuildInstalledGeneration();Require(invalid->authors.size()==1&&!invalid->packages->front().loadError.empty()&&invalid->packages->front().program->ui.count("UIMode")&&invalid->delta.removedPackages.empty()&&invalid->delta.controlOnlyPackages.count(instance)&&D::InstalledGenerationFilesUnchanged(*invalid),"invalid edit deleted Mod, lost previous program, or violated precommit file guard");
  D::PublishInstalledGeneration(invalid);write(source);
@@ -3730,7 +3755,7 @@ int main(int argc,char** argv){
   if(argc==2&&std::string(argv[1])=="--retarget-native-routes"){NativeSourceRouteIsolationRegression();return 0;}
   if(argc==2&&std::string(argv[1])=="--retired-generation-index"){RetiredGenerationRouteIndexRegression();return 0;}
   if(argc==2&&std::string(argv[1])=="--deferred-shared-retirement"){DeferredSharedRetirementRegression();return 0;}
-  if(argc==2&&std::string(argv[1])=="--removed-dependency-mesh"){Entry::logFile=stdout;RemovedDependencyMeshGenerationRegression();RemovedDependencyMeshGenerationRegression(true);RemovedDependencyMeshGenerationRegression(true,true);Entry::logFile=nullptr;return 0;}
+  if(argc==2&&std::string(argv[1])=="--removed-dependency-mesh"){Entry::logFile=stdout;RemovedDependencyMeshGenerationRegression();RemovedDependencyMeshGenerationRegression(true);RemovedDependencyMeshGenerationRegression(true,true);RemovedDependencyMeshGenerationRegression(true,false,false,true);Entry::logFile=nullptr;return 0;}
   if(argc==3&&std::string(argv[1])=="--effect-shared-inputs"){RealEffectSharedInputRegression(std::filesystem::u8path(argv[2]));return 0;}
   if(argc==8&&std::string(argv[1])=="--material-vfs"){EmbeddedMaterialVfsRegression(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7]);return 0;}
   if(argc==9&&std::string(argv[1])=="--material-vfs-source"){EmbeddedMaterialVfsRegression(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8]);return 0;}
@@ -3762,6 +3787,7 @@ int main(int argc,char** argv){
   check("retired generation reclaims native and VFS routes",RetiredGenerationRouteIndexRegression);
   check("queued shared retirement progresses without another request",DeferredSharedRetirementRegression);
   check("removed dependency-only Mesh restores native resources",[]{RemovedDependencyMeshGenerationRegression();RemovedDependencyMeshGenerationRegression(true);RemovedDependencyMeshGenerationRegression(true,true);RemovedDependencyMeshGenerationRegression(true,false,true);});
+  check("story PFB late Mesh dependency discovery",[]{RemovedDependencyMeshGenerationRegression(true,false,false,true);});
   check("cached Resource logical source lifetime",CachedResourceLogicalUsageRegression);
   check("synthetic unload releases native and authored dependencies",SyntheticUnloadDependencyRegression);
   check("generation Prefab retains native dependencies",VersionedRootNativeDependenciesRegression);

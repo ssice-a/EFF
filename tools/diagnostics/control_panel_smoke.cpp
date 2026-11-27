@@ -542,13 +542,76 @@ void KeySettingsChecks(){
   Require(EiemDirectory::KeySwitchEnabled("TRUE")&&!EiemDirectory::KeySwitchEnabled("0"),"INI key boolean parsing differs");
   std::cout<<"PASS per-Mod checkbox INI save, comments/BOM/CRLF preservation, restart/compiled control defaults, no resource rewrite, removed Mod save refusal\n";
 }
+void CustomGuiChecks(){
+  using Op=EiemCustomGui::Operation;
+  auto p=Make("CustomGui");
+  p.customGui=EiemCustomGui::Declaration::Read(Settings{{"gui_script","ui/panel.lua"},{"gui_key","F8"}});
+  Require(p.customGui.error.empty()&&p.customGui.key.vk==VK_F8,"custom GUI INI declaration");
+  Require(!EiemCustomGui::Declaration::Read(Settings{{"gui_script","../outside.lua"}}).error.empty(),"GUI traversal accepted");
+  const std::string original="[Mod]\r\nformat=3\r\nid=CustomGui\r\ngui_script=ui/panel.lua\r\n";
+  auto rewritten=EiemModKeySettings::Rewrite(Bytes(original.begin(),original.end()),p.id,false,"gui_enabled");
+  Require(rewritten==std::string(original).insert(7,"gui_enabled=0\r\n"),"GUI preference rewrote other INI declarations");
+  auto program=std::make_shared<EiemControlProgram::Program>();
+  EiemControlProgram::Action action;action.id="ActionCostume";
+  EiemControlProgram::Instruction assign;assign.target="$shape";
+  assign.expression=EiemControlProgram::Expression("$shape + 0.25",p.defaults,"GUI test");
+  action.code.push_back(assign);program->actions.emplace(action.id,action);p.program=program;
+  auto second=p;second.id="AnotherGui";second.root=p.root.parent_path()/second.id;
+  panel.Close();Install({p,second});
+  EiemControlPanel::GuiShortcuts shortcuts;
+  auto poll=[&](bool focused=true){shortcuts.Poll(panel,{VK_INSERT,0},{VK_F10,0},focused,Sample);};
+  physical=VK_F8;poll();
+  Require(!panel.Visible(),"held shortcut manufactured an open edge");
+  physical=0;poll();physical=VK_F8;poll();
+  auto view=panel.Read();auto session=panel.GuiSession(p.id);
+  Require(session&&panel.GuiSession(second.id)&&!panel.open,"custom shortcut requires the main panel");
+  auto submit=[&](const auto& snapshot,uint64_t scope,EiemCustomGui::Requests requests){
+    Require(panel.Submit({snapshot->revision,scope,Action::GuiRequests,p.id,{},0,std::move(requests)}),"GUI command queue");
+  };
+  submit(view,session,{{Op::Set,"$shape",.25},{Op::Invoke,action.id},{Op::Trigger,"衣装切换"}});
+  Frame();
+  Require(variables.at(p.id).at("$shape")==.5&&variables.at(p.id).at("$switch")==1&&
+    variables.at(second.id).at("$switch")==0,"GUI command bypassed transaction order or Mod isolation");
+  submit(view,session,{{Op::Set,"$shape",.75},{Op::Play,"missing"}});
+  Frame();
+  Require(variables.at(p.id).at("$shape")==.5,"GUI published a partial request batch");
+  unsigned flooded=0;
+  for(int i=0;i<150;++i)
+    flooded+=panel.Submit({view->revision,session,Action::GuiRequests,p.id,{},0,{{Op::Trigger,"衣装切换"}}});
+  Require(flooded>0&&flooded<128,"one author panel consumed the entire command queue");
+  Require(panel.Submit({view->revision,panel.GuiSession(second.id),Action::GuiRequests,second.id,{},0,
+    {{Op::Set,"$shape",.75}}}),"busy author panel blocked another Mod");
+  panel.open=true;
+  Queue(Action::Value,p.id,"$shape",.125);
+  Frame();
+  Require(variables.at(p.id).at("$shape")==.125&&variables.at(second.id).at("$shape")==.75,
+    "queue recovery lost an accepted Ins or author command");
+  submit(view,session,{{Op::Set,"$shape",.5}});Frame();
+  Require(variables.at(p.id).at("$shape")==.5,"author commands did not resume after draining");
+  panel.open=false;
+  panel.CloseGui(p.id);Require(panel.ToggleGui(*view,p.id),"GUI reopen");
+  submit(view,session,{{Op::Set,"$shape",.75}});Frame();
+  Require(variables.at(p.id).at("$shape")==.5,"closed GUI command reached a new session");
+  auto liveSession=panel.GuiSession(p.id);
+  Install({p,second},true);
+  submit(view,liveSession,{{Op::Set,"$shape",.75}});Frame();
+  Require(variables.at(p.id).at("$shape")!=.75,"GUI command crossed F10");
+  panel.open=true;Queue(Action::GuiEnabled,p.id,{},0);Frame();
+  Require(!panel.GuiSession(p.id)&&!panel.Read()->customGuiEnabled.at(p.id),"Ins did not disable and close author GUI");
+  Queue(Action::GuiEnabled,p.id,{},1);Queue(Action::Keyboard,p.id,{},0);Frame();
+  physical=0;poll();physical=VK_F8;poll();
+  Require(!panel.GuiSession(p.id),"disabled physical keys opened author GUI");
+  panel.Close();Install({});physical=0;
+  std::cout<<"PASS custom GUI shortcut, controls, transaction rollback, session and F10 isolation\n";
+}
 void GraphicsRecoveryChecks(){
   Install({Make("GraphicsRecovery")});
   HWND owner=CreateWindowExW(0,L"STATIC",L"EFF graphics recovery fixture",WS_OVERLAPPEDWINDOW|WS_VISIBLE,50,50,800,600,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
   Require(owner!=nullptr,"graphics fixture owner missing");
   for(unsigned fallback=1;fallback<=2;++fallback){
     EiemControlPanel::Store store;store.gameWindow=owner;store.Publish(panel.Read());store.open=true;
-    unsigned deviceAttempts=0;
+    unsigned deviceAttempts=0,firstPresents=0;
+    store.diagnostic=[&](const std::string& message){if(message=="stage=first-present-returned")++firstPresents;};
     store.graphicsFailure=[&](const char* stage){
       if(std::string(stage)=="composition-swap"&&fallback==1)return E_FAIL;
       if(std::string(stage)=="device-create"&&++deviceAttempts<3&&fallback==2)return E_FAIL;
@@ -557,6 +620,7 @@ void GraphicsRecoveryChecks(){
     EiemControlPanel::Window window(store);Require(window.Create(),"compatible backend was not selected");
     Require(window.Backend()==fallback,"graphics failure did not select expected fallback");
     for(int i=0;i<3;++i)window.Tick();
+    Require(firstPresents==1,"first-present diagnostics did not match the panel's visible transition");
     SendMessageW(window.Handle(),WM_DWMCOMPOSITIONCHANGED,0,0);
     Require(!window.TestAcrylic(),"fallback re-enabled transparent composition");
   }
@@ -571,6 +635,141 @@ void GraphicsRecoveryChecks(){
   store.stopping=true;worker.join();DestroyWindow(owner);
   Require(recovered,"device loss did not recreate the panel through compatible presentation");
   std::cout<<"PASS real D3D11 composition failure -> HWND, hardware failure -> WARP, Present device loss -> worker recreation, retained open/snapshot and fallback backdrop\n";
+}
+const unsigned char guiTestPng[]={
+  0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,0x0d,0x49,0x48,0x44,0x52,
+  0,0,0,1,0,0,0,1,8,6,0,0,0,0x1f,0x15,0xc4,0x89,0,0,0,0x0d,0x49,0x44,0x41,0x54,
+  0x78,0x9c,0x63,0xf8,0xcf,0xc0,0xf0,0x1f,0,5,0,1,0xff,0x89,0x99,0x3d,0x1d,
+  0,0,0,0,0x49,0x45,0x4e,0x44,0xae,0x42,0x60,0x82};
+void GuiImageChecks() {
+  namespace fs=std::filesystem;
+  const auto root=fs::temp_directory_path()/("eff-gui-images-"+std::to_string(GetCurrentProcessId()));
+  fs::create_directories(root);
+  struct Cleanup {fs::path path;~Cleanup(){std::error_code error;fs::remove_all(path,error);}} cleanup{root};
+  std::ofstream(root/"card.png",std::ios::binary).write(reinterpret_cast<const char*>(guiTestPng),sizeof(guiTestPng));
+  auto saveDds=[&](const fs::path& path,unsigned width,unsigned height,unsigned mips,unsigned format) {
+    auto bytes=EiemDdsTexture::Header(width,height,mips,format,false);
+    bytes.resize(bytes.size()+EiemDdsTexture::MipBytes(width,height,mips,format),0x40);
+    std::ofstream output(path,std::ios::binary);
+    output.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());
+  };
+  saveDds(root/"card.dds",8,12,4,25);
+  saveDds(root/"invalid.dds",4,4,1,27);
+  const auto dds=EiemGuiImageDecode::Decode(root,"card.dds");
+  Require(dds.format==DXGI_FORMAT_BC7_UNORM&&dds.Bytes()==160&&dds.mips.size()==4&&
+    dds.mips[0].pitch==32&&dds.mips[1].offset==244&&dds.mips[3].offset==292,"BC7 blocks and mip pitches differ");
+  Microsoft::WRL::ComPtr<ID3D11Device> device;
+  Require(SUCCEEDED(D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_WARP,nullptr,0,nullptr,0,D3D11_SDK_VERSION,&device,nullptr,nullptr)),
+    "WARP device creation failed");
+  ImGui::CreateContext();
+  struct Context {~Context(){ImGui::DestroyContext();}} context;
+  auto& io=ImGui::GetIO();io.IniFilename=nullptr;io.DisplaySize={640,480};
+  unsigned char* pixels;int width,height;io.Fonts->GetTexDataAsRGBA32(&pixels,&width,&height);
+  EiemGuiImages gallery;
+  auto frame=[&](size_t count,auto draw) {
+    ImGui::NewFrame();gallery.BeginFrame(count);draw();gallery.EndFrame();ImGui::EndFrame();
+  };
+  auto load=[&](uint64_t session,const char* path){return gallery.Load(device.Get(),session,root,path);};
+  auto waitFor=[&](size_t panels,auto draw) {
+    const auto end=GetTickCount64()+8000;
+    bool done=false;
+    do {
+      frame(panels,[&]{done=draw();});
+      if(done)return;
+      Sleep(1);
+    } while(GetTickCount64()<end);
+    Require(false,"GUI image loader did not finish");
+  };
+  auto until=[&](auto draw) {
+    waitFor(2,draw);
+  };
+  Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> oldDds;
+  frame(2,[&] {
+    Require(!load(1,"card.dds").id&&!load(2,"card.dds").id&&!load(2,"card.png").id,"first request uploaded synchronously");
+  });
+  until([&] {
+    auto first=load(1,"card.dds"),second=load(2,"card.dds"),png=load(2,"card.png"),invalid=load(1,"invalid.dds");
+    if(!first.id||!second.id||!png.id||!invalid.error||!*invalid.error)return false;
+    Require(first.id!=second.id&&first.width==8&&first.height==12,"panel did not isolate DDS texture or preserve source dimensions");
+    oldDds=reinterpret_cast<ID3D11ShaderResourceView*>(first.id);
+    D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
+    oldDds->GetDesc(&desc);
+    Require(desc.Format==DXGI_FORMAT_BC7_UNORM&&desc.Texture2D.MipLevels==4,"D3D11 did not retain BC7 and mip levels");
+    Require(png.width==1&&png.height==1&&!invalid.id,"PNG upload or invalid image placeholder failed");
+    return true;
+  });
+  gallery.Release(1);
+  saveDds(root/"card.dds",16,12,1,25);
+  until([&] {
+    auto reloaded=load(3,"card.dds");
+    if(!reloaded.id)return false;
+    Require(reloaded.width==16&&reloaded.id!=reinterpret_cast<ImTextureID>(oldDds.Get())&&load(2,"card.dds").width==8,
+      "closing one panel did not isolate the other session or reload changed pixels");
+    return true;
+  });
+  frame(1,[&]{load(4,"invalid.dds");});
+  gallery.Clear();
+  saveDds(root/"invalid.dds",4,4,1,25);
+  until([&] { return load(4,"invalid.dds").id!=ImTextureID_Invalid; });
+  gallery.Clear();
+  saveDds(root/"wide.dds",3840,2160,12,25);
+  saveDds(root/"button.dds",256,256,1,25);
+  auto textureWidth=[](ImTextureID id) {
+    Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+    reinterpret_cast<ID3D11ShaderResourceView*>(id)->GetResource(&resource);
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+    Require(SUCCEEDED(resource.As(&texture)),"GUI SRV has no texture");
+    D3D11_TEXTURE2D_DESC desc{};
+    texture->GetDesc(&desc);
+    return desc.Width;
+  };
+  auto background=[&](uint64_t session,ImVec2 size) {
+    return gallery.Load(device.Get(),session,root,"wide.dds",size);
+  };
+  waitFor(8,[&] {
+    bool ready=true;
+    for(uint64_t session=1;session<=8;++session) {
+      auto back=background(session,{800,450});
+      auto button=load(session,"button.dds");
+      if(back.id)Require(back.width==3840&&textureWidth(back.id)==960,"window-size mip or authored extent was lost");
+      ready=ready&&back.id&&button.id;
+    }
+    return ready;
+  });
+  waitFor(8,[&] {
+    auto tile=background(1,{800,450});
+    auto large=background(1,{3840,2160});
+    Require(tile.id==large.id,"same-frame requests used different SRVs");
+    return large.id&&textureWidth(large.id)==3840&&load(1,"button.dds").id;
+  });
+  gallery.Clear();
+  const size_t imageCount=520,pageSize=8;
+  std::vector<std::string> names;
+  for(size_t i=0;i<imageCount;++i) {
+    names.push_back("tile"+std::to_string(i)+".dds");
+    fs::copy_file(root/"invalid.dds",root/names.back());
+  }
+  Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> beforeEviction;
+  for(size_t start=0;start<imageCount;start+=pageSize)waitFor(8,[&] {
+    bool ready=true;
+    for(size_t i=start;i<start+pageSize;++i) {
+      const auto image=load(1,names[i].c_str());
+      if(!i&&image.id)beforeEviction=reinterpret_cast<ID3D11ShaderResourceView*>(image.id);
+      ready=ready&&image.id!=ImTextureID_Invalid;
+    }
+    // Keep a second Mod's image visible while the first Mod pages the gallery.
+    const auto other=load(2,"card.dds");
+    return ready&&other.id!=ImTextureID_Invalid;
+  });
+  frame(8,[&] {
+    Require(!load(1,names.front().c_str()).id&&load(2,"card.dds").id,
+      "gallery failed to evict its oldest texture or disturbed the other Mod");
+  });
+  waitFor(8,[&] {
+    const auto reloaded=load(1,names.front().c_str());
+    return reloaded.id&&reloaded.id!=reinterpret_cast<ImTextureID>(beforeEviction.Get())&&load(2,"card.dds").id;
+  });
+  std::cout<<"PASS async WIC/BC7, session isolation, eight 4K panels with buttons, same-frame SRV reuse and a 520-image gallery\n";
 }
 void WindowChecks(bool demo) {
   const std::string rendererMarker="Body__EFF_PART_0123456789abcdef";
@@ -713,6 +912,120 @@ action=ActionReset
   auto toggle=window.TestRect(Action::InvokeAction,uiPackage.id,"ActionToggle"),reset=window.TestRect(Action::InvokeAction,uiPackage.id,"ActionReset");Require(toggle.right<reset.left&&toggle.top==reset.top&&reset.right<=client.right,"declarative row did not align controls within client");
   Click(reset);Require(variables.at(uiPackage.id).at("$value")==0,"row action did not edit variable");
   std::cout<<"PASS real declarative group/tabs, checkbox/slider, computed read-only field, action button and failing visible expression with balanced ImGui state\n";
+  const std::string wideSource=R"ini([ParameterWide]
+variable=$wide
+default=0
+min=-1e308
+max=1e308
+public=true
+ui.type=slider
+)ini";
+  auto wideDeclarations=EiemDirectory::ParseIni(Bytes(wideSource.begin(),wideSource.end()));
+  auto wideState=EiemAuthorControlsIni::Read(wideDeclarations,[](const auto&){return EiemAuthorControlsIni::Samples{};},[](const auto&){return EiemAuthorResourceMetadata::Effect{};});
+  Package widePackage;widePackage.id="WideRange";widePackage.root=first.root.parent_path()/widePackage.id;
+  EiemAuthorControlMetadata::Apply(wideState,widePackage);Install({widePackage});Pump();
+  Click(window.TestRect(Action::Value,widePackage.id,"$wide##number"));
+  for(wchar_t ch:std::wstring(L"1e307"))SendMessageW(window.Handle(),WM_CHAR,ch,1);
+  Pump();Pump();Require(variables.at(widePackage.id).at("$wide")==1e307,"wide slider's number field lost the authored domain");
+  std::cout<<"PASS valid wide INI range opens the panel and accepts values outside ImGui's slider range\n";
+  auto scripted=Make("ImagePanel");
+  scripted.customGui=EiemCustomGui::Declaration::Read(Settings{{"gui_script","panel.lua"}});
+  for(const char* coordinate:{"$x","$y"}) {
+    scripted.defaults[coordinate]=0;
+    scripted.controls[coordinate]={coordinate,0,4096};
+  }
+  std::filesystem::create_directories(scripted.root);
+  auto scriptPath=scripted.root/"panel.lua",imagePath=scripted.root/"card.png";
+  std::ofstream(imagePath,std::ios::binary).write(reinterpret_cast<const char*>(guiTestPng),sizeof(guiTestPng));
+  auto companion=Make("CompanionPanel");
+  companion.customGui=scripted.customGui;
+  companion.defaults["$x"]=0;companion.controls["$x"]={"x",0,4096};
+  companion.defaults["$y"]=0;companion.controls["$y"]={"y",0,4096};
+  std::filesystem::create_directories(companion.root);
+  auto companionPath=companion.root/"panel.lua";
+  std::ofstream(companionPath)<<R"lua(return function()
+    imgui.SetNextWindowPos(290,80)
+    imgui.SetNextWindowSize(245,170)
+    if imgui.Begin("Companion panel") then
+      if imgui.Button("Advance") then mod.trigger("衣装切换") end
+      local x,y = imgui.GetItemRectMin()
+      local r,b = imgui.GetItemRectMax()
+      mod.set("$x",(x+r)/2);mod.set("$y",(y+b)/2)
+      if imgui.BeginTabBar("Pages") then
+        if imgui.BeginTabItem("Controls") then imgui.EndTabItem() end
+        imgui.EndTabBar()
+      end
+    end
+    imgui.End()
+  end)lua";
+  auto writePanel=[&](const char* value){
+    std::ofstream(scriptPath)<<"return function() "
+      "imgui.SetNextWindowPos(30,80); imgui.SetNextWindowSize(230,250); "
+      "if imgui.Begin('Image panel "<<value<<"') then "
+      "if imgui.BeginTable('Columns',2) then imgui.EndTable() end "
+      "if imgui.BeginTabBar('Pages') then "
+      "if imgui.BeginTabItem('Images') then imgui.EndTabItem() end "
+      "imgui.EndTabBar() end "
+      "local expanded=imgui.BeginCombo('Options','Options'); "
+      "if expanded then imgui.Selectable('Option'); imgui.EndCombo() else "
+      "local x,y=imgui.GetItemRectMin(); local r,b=imgui.GetItemRectMax(); "
+      "mod.set('$x',(x+r)/2);mod.set('$y',(y+b)/2) end "
+      "imgui.Image('card.png',64,64); imgui.ImageButton('card','card.png',64,64); "
+      "if mod.get('$shape')~="<<value<<" then mod.set('$shape',"<<value<<") end "
+      "end imgui.End() end";
+  };
+  writePanel("0.45");
+  Install({scripted,companion});panel.open=true;
+  Require(panel.ToggleGui(*panel.Read(),companion.id),"companion author window did not open");
+  Require(panel.ToggleGui(*panel.Read(),scripted.id),"native custom window did not open");
+  Pump();Pump();
+  Require(variables.at(scripted.id).at("$shape")==.45,"native PNG decode/upload or GUI command failed");
+  EiemLuaUi labels(scripted.id);
+  const auto oldPanel=labels.WindowLabel("Image panel 0.45");
+  auto* oldWindow=ImGui::FindWindowByName(oldPanel.c_str());
+  Require(oldWindow,"author window not drawn");
+  const auto oldTable=oldWindow->GetID("Columns"),oldTabs=oldWindow->GetID("Pages");
+  Require(ImGui::TableFindByID(oldTable)&&ImGui::TabBarFindByID(oldTabs),"author GUI records not created");
+  const auto& scriptedValues=variables.at(scripted.id);
+  ClickAt(int(scriptedValues.at("$x")),int(scriptedValues.at("$y")));
+  Require(!ImGui::GetCurrentContext()->OpenPopupStack.empty(),"author combo did not open");
+  writePanel("0.65");Install({scripted,companion},true);Pump();Pump();
+  Require(variables.at(scripted.id).at("$shape")==.65,"F10 did not reload the open Lua panel");
+  Require(!ImGui::FindWindowByName(oldPanel.c_str()),"F10 retained the old author window");
+  Require(!ImGui::TableFindByID(oldTable)&&!ImGui::TabBarFindByID(oldTabs),"F10 retained the old table or tabs");
+  Require(ImGui::GetCurrentContext()->OpenPopupStack.empty(),"F10 retained an open author popup");
+  const auto companionLabel=EiemLuaUi(companion.id).WindowLabel("Companion panel");
+  auto* companionWindow=ImGui::FindWindowByName(companionLabel.c_str());
+  Require(companionWindow,"F10 did not reopen the other author panel");
+  panel.CloseGui(scripted.id);Pump();
+  Require(ImGui::FindWindowByName(companionLabel.c_str())==companionWindow,"closing one author panel replaced another");
+  Require(!ImGui::FindWindowByName(labels.WindowLabel("Image panel 0.65").c_str()),"close retained the author window");
+  const auto& companionValues=variables.at(companion.id);
+  ClickAt(int(companionValues.at("$x")),int(companionValues.at("$y")));
+  Require(variables.at(companion.id).at("$switch")==1,"closing one author panel interrupted another panel's input");
+  Click(window.TestRect(Action::Keyboard,companion.id));
+  Require(!keySwitchEnabled.at(companion.id),"closing one author panel interrupted Ins");
+
+  Require(panel.ToggleGui(*panel.Read(),scripted.id),"author panel did not reopen for saturation test");
+  unsigned queueNotices=0;
+  panel.diagnostic=[&](const std::string& message){
+    if(message.find("reason=command-queue-full")!=std::string::npos)++queueNotices;
+  };
+  panel.open=false;
+  for(int i=0;i<145;++i)window.Tick(window.Handle());
+  auto* notice=ImGui::FindWindowByName("##EFF command queue");
+  Require(queueNotices==2&&notice&&notice->LastFrameActive==ImGui::GetFrameCount(),
+    "author-only panel did not report rejected batches once per Mod");
+  panel.diagnostic={};
+  panel.CloseGui(scripted.id);
+  panel.open=false;panel.CloseGui(companion.id);Pump();
+  Require(!IsWindowVisible(window.Handle()),"closing last author panel did not hide the host");
+  Require(!ImGui::FindWindowByName(companionLabel.c_str()),"closing the last author panel retained its ImGui window");
+  std::filesystem::remove(companionPath);std::filesystem::remove(companion.root);
+  std::filesystem::remove(imagePath);std::filesystem::remove(scriptPath);std::filesystem::remove(scripted.root);
+  std::cout<<"PASS native Lua windows, image widgets, F10 and close reclaim ImGui state with other panels interactive\n";
+  std::cout<<"PASS stalled game thread surfaces rejected commands in author-only mode without log spam\n";
+  panel.open=true;Pump();
   if(demo) {auto until=GetTickCount64()+60000;while(GetTickCount64()<until && panel.open){Pump();Sleep(16);}}
   SendMessageW(window.Handle(),WM_CLOSE,0,0);Pump();
   Require(!panel.open && !IsWindowVisible(window.Handle()),"close did not hide control panel");
@@ -723,7 +1036,8 @@ action=ActionReset
 int main(int argc,char** argv) {
   using EiemDirectory::Require;
   std::cout.setf(std::ios::unitbuf);
+  _set_error_mode(_OUT_TO_STDERR);_set_abort_behavior(0,_WRITE_ABORT_MSG|_CALL_REPORTFAULT);
   if(argc==3&&std::string(argv[1])=="--animation-package")try{auto p=EiemDirectory::Load(std::filesystem::u8path(argv[2]));Require(p.shapeAnimations.size()==1,"Python animation package lost clips");const auto& clip=p.shapeAnimations.begin()->second;Require(clip.label==u8"翅膀运动"&&clip.key.vk==VK_F6&&clip.duration==1&&clip.tracks.size()==1,"Python/C++ animation fields differ");EiemOfflinePackage::Writer writer;EiemOfflinePackage::WriteAuthor(writer,p);EiemOfflinePackage::Reader reader{writer.b};auto roundtrip=EiemOfflinePackage::ReadAuthor(reader,p.root.parent_path());Require(reader.p==writer.b.size()&&roundtrip.shapeAnimations.size()==1&&roundtrip.shapeAnimations.begin()->second.tracks==clip.tracks,"compiled author animation roundtrip");std::cout<<"PASS Python/C++ animation package and offline author roundtrip\n";return 0;}catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
-  try {if(argc>1&&std::string(argv[1])=="--graphics-recovery"){TestPanel::GraphicsRecoveryChecks();return 0;}if(argc>1&&std::string(argv[1])=="--cross-thread-window"){TestPanel::CrossThreadWindowChecks();return 0;}TestPanel::InstalledAnimationKeyChecks();TestPanel::Checks();TestPanel::SavedPreferencesChecks();TestPanel::KeySettingsChecks();if(argc>1) TestPanel::WindowChecks(std::string(argv[1])=="--demo");return 0;}
+  try {if(argc>1&&std::string(argv[1])=="--graphics-recovery"){TestPanel::GraphicsRecoveryChecks();return 0;}if(argc>1&&std::string(argv[1])=="--cross-thread-window"){TestPanel::CrossThreadWindowChecks();return 0;}if(argc>1&&std::string(argv[1])=="--gui-images"){TestPanel::GuiImageChecks();return 0;}TestPanel::InstalledAnimationKeyChecks();TestPanel::Checks();TestPanel::SavedPreferencesChecks();TestPanel::KeySettingsChecks();TestPanel::CustomGuiChecks();TestPanel::GuiImageChecks();if(argc>1) TestPanel::WindowChecks(std::string(argv[1])=="--demo");return 0;}
   catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
 }

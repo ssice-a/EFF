@@ -20,25 +20,19 @@ class Inspection {
   std::map<int64_t,Asset> meshes;
   bool hasMeshSources=false;
   std::set<std::string> meshSources;
+  explicit Member(SerializedLayout source):layout(std::move(source)){
+   // An external container/preload can also name a Mesh in another member.
+   canContainTarget=std::any_of(layout.externals.begin(),layout.externals.end(),GameBundleSource)||
+     std::any_of(layout.objects.begin(),layout.objects.end(),[&](const auto& object){
+       return layout.types.at(object.second.type).classId==43;
+     });
+  }
  };
  std::map<EiemNativeRandomAccess::Reader*,std::map<size_t,Member>> layouts_;
  Member& Metadata(EiemNativeRandomAccess::Reader& reader,const EiemNativeViewWriter::Member& member){
   auto& layouts=layouts_[&reader];auto found=layouts.find(member.offset);
-  if(found==layouts.end()){
-   Member value;value.layout=reader.Layout(member);
-   // The object table can rule out this member without reading its container.
-   // An external container/preload can still name a Mesh in another member.
-   const auto& layout=value.layout;
-   value.canContainTarget=std::any_of(layout.externals.begin(),layout.externals.end(),GameBundleSource)||
-     std::any_of(layout.objects.begin(),layout.objects.end(),[&](const auto& object){
-       return layout.types.at(object.second.type).classId==43;
-     });
-   found=layouts.emplace(member.offset,std::move(value)).first;
-  }
+  if(found==layouts.end())found=layouts.try_emplace(member.offset,reader.Layout(member)).first;
   return found->second;
- }
- const SerializedLayout& Layout(EiemNativeRandomAccess::Reader& reader,const EiemNativeViewWriter::Member& member){
-  return Metadata(reader,member).layout;
  }
  const std::map<std::string,std::vector<EiemNativeRandomAccess::Reader::ContainerEntry>>& Containers(
      EiemNativeRandomAccess::Reader& reader,const EiemNativeViewWriter::Member& member){
@@ -65,6 +59,56 @@ class Inspection {
   return false;
  }
 public:
+ const SerializedLayout& Layout(EiemNativeRandomAccess::Reader& reader,const EiemNativeViewWriter::Member& member){
+  return Metadata(reader,member).layout;
+ }
+ SerializedLayout TakeLayout(EiemNativeRandomAccess::Reader& reader,const EiemNativeViewWriter::Member& member){
+  auto readers=layouts_.find(&reader);
+  if(readers!=layouts_.end()){
+   auto cached=readers->second.extract(member.offset);
+   if(cached)return std::move(cached.mapped().layout);
+  }
+  return reader.Layout(member);
+ }
+ bool MayContainMeshRoutes(EiemNativeRandomAccess::Reader& reader){
+  auto& layouts=layouts_[&reader];
+  for(const auto& member:reader.directory.members){if(!(member.flags&4))continue;
+   auto found=layouts.find(member.offset);
+   if(found==layouts.end()){
+    auto layout=reader.MeshRoutingLayout(member);
+    if(!layout)continue;
+    layouts.try_emplace(member.offset,std::move(*layout));return true;
+   }
+   const auto& layout=found->second.layout;
+   if(!layout.externals.empty()||std::any_of(layout.objects.begin(),layout.objects.end(),[&](const auto& object){
+      return layout.types.at(object.second.type).classId==43;
+   }))return true;
+  }
+  return false;
+ }
+ template<class MatchesPath>
+ bool NeedsRootMeshDiscovery(EiemNativeRandomAccess::Reader& reader,MatchesPath&& matchesPath){
+  if(!MayContainMeshRoutes(reader))return false;
+  for(const auto& member:reader.directory.members){if(!(member.flags&4))continue;
+   const auto& metadata=Metadata(reader,member);const auto& layout=metadata.layout;
+   for(const auto& row:layout.objects){
+    const auto kind=layout.types.at(row.second.type).classId;
+    if(kind==1||kind==4||kind==33||kind==43||kind==137||kind==224||kind==1001)return true;
+   }
+   if(!metadata.canContainTarget)continue;
+   const auto local=SerializedAssetCabKey(member.name);
+   for(const auto& [path,entries]:Containers(reader,member)){
+    // The exact container might publish a Mesh through its preload interval.
+    // Keep external containers too, including external Prefab roots.
+    if(matchesPath(path))return true;
+    for(const auto& entry:entries)if(entry.asset.pathId){
+     const auto cab=SerializedAssetCabKey(entry.asset.cab);
+     if(cab!=local&&GameBundleSourceKey(cab))return true;
+    }
+   }
+  }
+  return false;
+ }
  static bool GameBundleSourceKey(std::string_view key){
   // Engine built-ins are resolved by Unity, not a CAB in the game's native
   // dependency closure; they cannot own an authored assets/packages target.

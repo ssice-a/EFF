@@ -480,6 +480,7 @@ public:
   size_t OpenAnimationSamples()const{size_t count=0;for(const auto& row:animationSamples_)count+=row.second->Loaded();return count;}
   const D::Directory& Directory()const{return directory_;}
   const std::filesystem::path& Root()const{return root_;}
+  const EiemCustomGui::Declaration& CustomGui()const{return manifest_.customGui;}
   std::map<std::string,std::string> FileFingerprints()const {
     std::lock_guard<std::mutex> lock(mutex_);std::map<std::string,std::string> result;
     auto add=[&](const std::string& relative){
@@ -499,7 +500,7 @@ public:
     std::string result="EFF_RESOURCE_DECLARATIONS/1\n";
     for(const auto& section:manifest_.sections){const auto& id=section.id;
       if(id=="Constants"||Begins(id,"Hierarchy")||Begins(id,"Parameter")||Begins(id,"Action")||Begins(id,"Event")||Begins(id,"Binding")||Begins(id,"UI")||Begins(id,"Control")||Begins(id,"ShapeControl")||Begins(id,"Key")||Begins(id,"Animation")||Begins(id,"MaterialTrack"))continue;
-      result+="["+id+"]\n";for(const auto& field:section.values){if(id=="Mod"&&(field.first=="key_switch_enabled"||field.first=="controls"))continue;
+      result+="["+id+"]\n";for(const auto& field:section.values){if(id=="Mod"&&(field.first=="key_switch_enabled"||field.first=="controls"||EiemCustomGui::Declaration::Field(field.first)))continue;
         if(Begins(id,"Part")&&(field.first=="visible"||field.first=="afterimage"||Begins(field.first,"shape.")))continue;
         result+=field.first+"="+field.second+"\n";}
     }return result;

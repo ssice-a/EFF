@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <list>
+#include <optional>
 
 // No game objects, author indexes or consumer lists. A source is only the
 // file range/stream the game is actually asking to load. Untouched data blocks
@@ -342,8 +343,8 @@ public:
   void DiscardDecodedCache() {
     cache_.clear();pinned_.reset();pinnedIndex_=SIZE_MAX;stats.cacheResident=0;stats.pinnedBytes=0;
   }
-  SerializedLayout Layout(const EiemNativeViewWriter::Member& member) {
-    EiemLoadPerformance::Scope performance(EiemLoadPerformance::NativeMetadata);
+private:
+  Bytes MetadataPrefix(const EiemNativeViewWriter::Member& member) {
     Require(member.size >= 48, "native member has no serialized header");
     auto prefix = ReadAt(member.offset, 48, 48);
     EiemNativeInput::Reader h(prefix, 20, true);
@@ -353,7 +354,18 @@ public:
     if(!(metadata <= limits.metadataBytes))throw InspectionBudgetExceeded{"native inspection metadata budget exhausted"};
     prefix.resize(AddSize(48, metadata));
     ReadAt(member.offset + 48, prefix.data() + 48, metadata);
-    return ParseSerialized(prefix, member.size);
+    return prefix;
+  }
+public:
+  SerializedLayout Layout(const EiemNativeViewWriter::Member& member) {
+    EiemLoadPerformance::Scope performance(EiemLoadPerformance::NativeMetadata);
+    return ParseSerialized(MetadataPrefix(member),member.size);
+  }
+  std::optional<SerializedLayout> MeshRoutingLayout(const EiemNativeViewWriter::Member& member){
+    EiemLoadPerformance::Scope performance(EiemLoadPerformance::NativeMetadata);
+    auto prefix=MetadataPrefix(member);
+    if(!SerializedMayContainMeshRoutes(prefix,member.size))return {};
+    return ParseSerialized(prefix,member.size);
   }
   struct Cursor {
     Reader& owner; size_t position, end, base;

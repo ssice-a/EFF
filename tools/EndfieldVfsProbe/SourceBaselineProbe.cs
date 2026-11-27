@@ -76,7 +76,7 @@ internal static class SourceBaselineProbe
                 Pointer(renderer.m_GameObject, use.GetProperty("owner").GetString());
                 if (renderer is SkinnedMeshRenderer skinned)
                 {
-                    Pointer(skinned.m_Mesh, use.GetProperty("mesh"));
+                    MeshPointer(skinned.m_Mesh, skinned.assetsFile, use.GetProperty("mesh"));
                     Pointer(skinned.m_RootBone, use.GetProperty("rootBone"));
                     Pointer(skinned.m_SkinningRoot, use.GetProperty("skinningRoot"));
                     var bones = use.GetProperty("bones").EnumerateArray().ToArray();
@@ -86,7 +86,11 @@ internal static class SourceBaselineProbe
                 else
                 {
                     var filterId = use.GetProperty("meshFilter").GetString();
-                    if (filterId != null) Pointer(((MeshFilter)objects[filterId]).m_Mesh, use.GetProperty("mesh"));
+                    if (filterId != null)
+                    {
+                        var filter = (MeshFilter)objects[filterId];
+                        MeshPointer(filter.m_Mesh, filter.assetsFile, use.GetProperty("mesh"));
+                    }
                 }
                 var materials = use.GetProperty("materials").EnumerateArray().ToArray();
                 Check(renderer.m_Materials.Count == materials.Length, "Material slots");
@@ -150,6 +154,26 @@ internal static class SourceBaselineProbe
         Check(pointer != null && pointer.m_FileID == expected.GetProperty("fileId").GetInt32() &&
             pointer.m_PathID == expected.GetProperty("pathId").GetInt64(), "PPtr payload");
         Pointer(pointer, expected.GetProperty("identity").GetString());
+    }
+
+    private static void MeshPointer(PPtr<Mesh> pointer, SerializedFile owner, JsonElement expected)
+    {
+        if (pointer is { IsNull: false, m_FileID: > 0 } && pointer.m_FileID <= owner.m_Externals.Count)
+        {
+            var cab = owner.m_Externals[pointer.m_FileID - 1].fileName;
+            if (string.Equals(cab, "unity default resources", StringComparison.OrdinalIgnoreCase) && !pointer.TryGet(out _))
+            {
+                Check(!expected.GetProperty("resolved").GetBoolean() &&
+                    !expected.GetProperty("isNull").GetBoolean() &&
+                    expected.GetProperty("fileId").GetInt32() == pointer.m_FileID &&
+                    expected.GetProperty("pathId").GetInt64() == pointer.m_PathID &&
+                    expected.GetProperty("cab").GetString() == cab &&
+                    expected.GetProperty("identity").GetString() == cab.ToLowerInvariant() + ":" + pointer.m_PathID,
+                    "Unity default Mesh PPtr");
+                return;
+            }
+        }
+        Pointer(pointer, expected);
     }
     private static void Pointer<T>(PPtr<T> pointer, string identity) where T : AssetObject
     {

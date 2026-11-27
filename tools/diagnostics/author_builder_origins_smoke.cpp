@@ -41,9 +41,19 @@ void PhysicsBuilderOrigins(){
  AuthorByteSpans outputOrigins;auto output=EiemPhysicsInput::MemberBuilder(before,source.cab,package,assets,documents).Build(&sourceOrigins,&outputOrigins);
  Require(output==EiemPhysicsInput::MemberBuilder(before,source.cab,package,assets,documents).Build(),"Physics provenance changed output bytes");EiemAuthorBytes::Validate(output,outputOrigins);
  auto layout=ParseSerialized(output);size_t components=0;std::set<size_t> dampingOffsets;
+ std::set<NativeReference> fixedRoots;
  for(const auto& object:layout.objects)if(layout.types.at(object.second.type).classId==114&&object.first!=14&&object.first!=24){
   const auto& type=layout.types.at(object.second.type);bool physics=false;for(const auto& node:type.nodes)physics|=node.name=="damping";if(!physics)continue;
   auto value=ObjectValue(output,layout,object.first,&outputOrigins);const auto& damping=Child(type,value,"damping");
+  const auto& settings=Child(type,value,"serializeData");
+  const auto& roots=ConstArray(type,Child(type,settings,"rootBones")).children;
+  Require(roots.size()==1,"Physics group does not have one root Transform");
+  fixedRoots.insert(NullableReference(type,roots.front(),layout,source.cab));
+  const auto& selection=Child(type,Child(type,value,"serializeData2"),"selectionData");
+  Require(ConstArray(type,Child(type,selection,"positions")).children.empty()&&
+          ConstArray(type,Child(type,selection,"attributes")).children.empty()&&
+          Integer(Child(type,selection,"userEdit"))==0,
+          "complete root-fixed chain relies on bind-pose positions during native build");
   Require(damping.rawOrigins.size()==1&&damping.rawOrigins.front().resource=="resources/physics.bin"&&
           damping.rawOrigins.front().owned&&damping.rawOrigins.front().bytes==damping.rawOrigins.front().owned.get(),
           "Physics parameter did not bind to its retained author payload");
@@ -52,6 +62,8 @@ void PhysicsBuilderOrigins(){
   Require(encoded.size()==object.second.size,"Physics component re-encode changed extent");++components;
  }
  Require(components==2&&!dampingOffsets.empty(),"Physics fixture did not populate both independent actor roots");
+ Require(fixedRoots==std::set<NativeReference>{{source.cab,41},{source.cab,51}},
+         "Physics fixed roots did not bind to their own actor Transforms");
  auto meshOrigins=EiemAuthorBytes::Slice(outputOrigins,layout.objects.at(100).offset,layout.objects.at(100).size);Require(!meshOrigins.empty()&&meshOrigins.front().resource=="resources/source-mesh.bin","Physics compile dropped existing Mesh provenance");
  // Rebinding explicitly recorded spans after a parameter edit equals a full
  // compile; no byte search or resource-specific runtime code is needed.
@@ -99,6 +111,16 @@ void PhysicsBuilderOrigins(){
          ReadVector(proxyType,Child(proxyType,proxyValue,"m_LocalScale"))==mount.scale&&
          FloatValue(proxyType,Child(proxyType,Child(proxyType,proxyValue,"m_LocalRotation"),"y"))==1,
          "Physics collider mount lost its authored transform");
+ for(auto anchor:{11,21}){
+  auto component=RendererObjectId(source.cab,package,"physics-component",anchor,document.id+":group:ribbon-group");
+  const auto& type=result.types.at(result.objects.at(component).type);
+  auto value=ObjectValue(assembled,result,component);
+  const auto& selection=Child(type,Child(type,value,"serializeData2"),"selectionData");
+  const auto& attributes=ConstArray(type,Child(type,selection,"attributes")).children;
+  Require(attributes.size()==2&&Integer(Child(type,attributes[0],"Value"))==1&&
+          Integer(Child(type,attributes[1],"Value"))==2,
+          "partial chain must retain its explicit selection attributes");
+ }
  document.groups.front().nodes.emplace_back(mount.path,false);
  bool rejected=false;
  try{EiemPhysicsInput::MemberBuilder(variant,source.cab,package,assets,documents).Build();}

@@ -1,3 +1,13 @@
+# EFF v2.0.18
+
+- Adds a preview of Lua author panels for Format 3 mods. Authors can build tabs, custom layouts, image buttons, and backgrounds, then connect them to existing INI actions, material controls, and animation playback. Players can enable author panels and their shortcuts from Ins. See the [author guide](https://github.com/ssice-a/EFF/blob/v2.0.18/docs/custom-mod-gui.md).
+- Makes the Ins window resizable. Closing an author panel or pressing F10 releases its Lua, image, and widget state. A busy author panel leaves room for Ins and other panels to submit commands, and reports operations that need to be retried.
+- Reduces repeated mesh-route discovery and material preparation when loading modded squad members. EFF follows game requests and preserves mesh matching for story prefabs.
+- Fixes custom cloth chains that fail to move on character detail pages while preserving their behavior in the world.
+- The Blender continuous update preserves author GUI settings when re-exporting a mod and imports source packages that lack optional cloth data. AnimeStudio can export selected Endfield meshes with their source prefabs for Blender.
+
+Download `EFF_v2.0.18_dll.zip` for Windows x64. Existing Format 3 mods remain compatible.
+
 # EFF v2.0.17
 
 - The Ins panel now has an editable numeric field next to each slider. Sliders exposed from Blender use the range set by the mod author.

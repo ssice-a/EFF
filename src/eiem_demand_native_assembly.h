@@ -58,6 +58,7 @@ struct Author {
     for(const auto& rule:directory.rules){package.rules[rule.id]={rule.parts,rule.targets,rule.skip};
       for(const auto& target:rule.targets)Require(package.targetIndex.emplace(target.second,rule.id).second,"native target belongs to multiple rules");}
     EiemAuthorControlMetadata::Apply(directory.runtime,package);catalog->BindEffects(package);
+    package.customGui=catalog->CustomGui();
     catalogInstances[catalog->Root()]=package.id;
   }
   void InstallInstance(){EiemComposedPackage::AssignInstalledIdentity(package);catalogInstances[catalog->Root()]=package.id;}

@@ -352,12 +352,7 @@ inline bool SerializedHeader(const Bytes& b,size_t offset=0,size_t size=SIZE_MAX
   Reader h(b,offset+20,true,offset+48);auto metadata=h.Get(4),total=h.Get(8),data=h.Get(8);
   return total==size&&data<=size&&data>=48&&metadata<=data-48;
 }
-// A metadata prefix is sufficient to read the layout. Payload bounds are
-// checked against the independently observed native file extent, not against
-// the prefix allocation. Existing callers still require a complete file.
-inline SerializedLayout ParseSerialized(const Bytes& b, size_t nativeFileSize = SIZE_MAX) {
-  if (nativeFileSize == SIZE_MAX) nativeFileSize = b.size();
-  SerializedLayout layout;
+inline Reader ReadSerializedMetadataHeader(const Bytes& b,size_t nativeFileSize,size_t& dataOffset,size_t& metadata){
   Reader h(b, 0, true);
   Require(b.size() >= 48, "SerializedFile header truncated");
   h.Skip(8);
@@ -365,18 +360,55 @@ inline SerializedLayout ParseSerialized(const Bytes& b, size_t nativeFileSize = 
   h.Skip(4);
   Require(h.Get(1) == 0, "requires little-endian native data");
   h.Skip(3);
-  size_t metadata = (size_t)h.Get(4);
+  metadata = (size_t)h.Get(4);
   Require(h.Get(8) == nativeFileSize, "SerializedFile size mismatch");
-  size_t dataOffset = (size_t)h.Get(8);
+  dataOffset = (size_t)h.Get(8);
   Require(dataOffset <= nativeFileSize && metadata <= dataOffset &&
               metadata <= b.size() - 48 && 48 + metadata <= dataOffset,
           "SerializedFile metadata range");
-  layout.metadataSize = metadata;
-  layout.dataOffset = dataOffset;
   Reader r(b, 48, false, 48 + metadata);
   r.Z();
   r.Skip(4);
   Require(r.Get(1) == 1, "source TypeTree disabled");
+  return r;
+}
+inline std::pair<size_t,size_t> SerializedTypeTreeExtent(Reader& r){
+  const auto count=r.Count(),strings=r.Count(r.limit-r.p);
+  Require(count<=(r.limit-r.p)/32,"TypeTree range");
+  Require(strings<=r.limit-r.p-count*32,"TypeTree string range");
+  return {count,strings};
+}
+// A member without a local Mesh or external references cannot establish a
+// Mesh route. An external Mesh may be named even by a member with no Renderer.
+inline bool SerializedMayContainMeshRoutes(const Bytes& b,size_t nativeFileSize){
+  size_t dataOffset=0,metadata=0;auto r=ReadSerializedMetadataHeader(b,nativeFileSize,dataOffset,metadata);
+  const auto typeCount=r.Count();
+  Require(typeCount<=(r.limit-r.p)/35,"native type table truncated");
+  std::vector<int32_t> classes;classes.reserve(typeCount);
+  for(size_t i=0;i<typeCount;++i){
+    const auto kind=int32_t(r.Get(4));classes.push_back(kind);
+    r.Skip(kind==114?35:19);
+    const auto [nodes,strings]=SerializedTypeTreeExtent(r);
+    r.Skip(nodes*32+strings);const auto deps=r.Count((r.limit-r.p)/4);r.Skip(deps*4);
+  }
+  const auto count=r.Count();if(count)r.Align();
+  Require(count<=(r.limit-r.p)/24,"native object table truncated");
+  bool localMesh=false;
+  for(size_t i=0;i<count;++i){
+    r.Skip(8);const auto relative=r.Get(8),size=r.Get(4),type=r.Get(4);
+    Require(type<classes.size()&&relative<=nativeFileSize-dataOffset&&size<=nativeFileSize-dataOffset-relative,"invalid native object record");
+    localMesh|=classes[size_t(type)]==43;
+  }
+  const auto scripts=r.Count((r.limit-r.p)/12);r.Skip(scripts*12);
+  return r.Count()!=0||localMesh;
+}
+// A metadata prefix is sufficient to read the layout. Payload bounds are
+// checked against the independently observed native file extent.
+inline SerializedLayout ParseSerialized(const Bytes& b, size_t nativeFileSize = SIZE_MAX) {
+  if(nativeFileSize==SIZE_MAX)nativeFileSize=b.size();
+  SerializedLayout layout;
+  auto r=ReadSerializedMetadataHeader(b,nativeFileSize,layout.dataOffset,layout.metadataSize);
+  const auto dataOffset=layout.dataOffset;
   layout.typeCountOffset = r.p;
   size_t typeCount = r.Count();
   auto& types = layout.types;
@@ -391,10 +423,8 @@ inline SerializedLayout ParseSerialized(const Bytes& b, size_t nativeFileSize = 
     Require(r.limit - r.p >= 16, "native type hash truncated");
     std::copy_n(b.begin() + r.p, 16, t.hash.begin());
     r.Skip(16);
-    size_t count = r.Count(), strings = r.Count(r.limit - r.p);
-    Require(count <= (r.limit - r.p) / 32, "TypeTree range");
+    const auto [count,strings]=SerializedTypeTreeExtent(r);
     size_t start = r.p, stringBase = start + count * 32;
-    Require(strings <= r.limit - stringBase, "TypeTree string range");
     std::vector<size_t> stack;
     for (size_t j = 0; j < count; ++j) {
       Reader n(b, start + j * 32, false, start + (j + 1) * 32);

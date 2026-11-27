@@ -46,6 +46,7 @@ struct Manifest {
   std::vector<EiemMeshTargetDirectory::Target> targets;
   std::vector<Section> sections;
   bool inlineControls = true;
+  EiemCustomGui::Declaration customGui;
 };
 
 inline void ResourcePath(const std::string& value) {
@@ -126,10 +127,11 @@ inline Manifest Read(const std::filesystem::path& root,
 
   auto mod = index.find("Mod");
   Require(mod != index.end(), "format 3 Mod section absent");
-  Keys(*mod->second, {"format", "id"}, {"controls", "key_switch_enabled", "type"});
+  Keys(*mod->second, {"format", "id"}, {"controls", "key_switch_enabled", "type", "gui_script", "gui_key", "gui_enabled"});
   Require(mod->second->values.at("format") == "3", "runtime accepts format 3 Mods only");
   Require(Identifier(mod->second->values.at("id")), "invalid format 3 Mod id");
   result.id = mod->second->values.at("id");
+  result.customGui = EiemCustomGui::Declaration::Read(mod->second->values);
 
   std::string controlsPath;
   for (const auto& section : sections) {

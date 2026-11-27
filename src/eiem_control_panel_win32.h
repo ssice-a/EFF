@@ -1,5 +1,6 @@
 #pragma once
 #include "eiem_control_panel.h"
+#include "eiem_gui_images.h"
 #include "../deps/imgui/imgui.h"
 #include "../deps/imgui/imgui_impl_win32.h"
 #include "../deps/imgui/imgui_impl_dx11.h"
@@ -8,11 +9,14 @@
 #include <dcomp.h>
 #include <dwmapi.h>
 #include <wrl/client.h>
+#include <limits>
 #include <sstream>
 #if defined(EIEM_STATIC_RUNTIME)
 #pragma comment(lib,"bin/imgui-static/eiem_imgui.lib")
+#pragma comment(lib,"bin/imgui-static/eiem_lua.lib")
 #else
 #pragma comment(lib,"bin/imgui/eiem_imgui.lib")
+#pragma comment(lib,"bin/imgui/eiem_lua.lib")
 #endif
 #pragma comment(lib,"d3d11.lib")
 #pragma comment(lib,"dxgi.lib")
@@ -30,7 +34,20 @@ class Window {
   Ptr<ID3D11Device> device;Ptr<ID3D11DeviceContext> context;Ptr<IDXGISwapChain1> swap;
   Ptr<ID3D11RenderTargetView> target;Ptr<IDCompositionDevice> compositor;
   Ptr<IDCompositionTarget> compositionTarget;Ptr<IDCompositionVisual> visual;
+  bool drewIns=false;
   std::shared_ptr<const Snapshot> view;
+  EiemGuiImages customImages;
+  EiemGuiState customState;
+  struct CustomPanel {
+    EiemLuaUi script;
+    uint64_t session;
+    ULONGLONG queueNoticeUntil=0;
+    CustomPanel(const std::string& id,EiemGuiState& state,uint64_t serial):script(id,&state,serial),session(serial){}
+  };
+  std::map<std::string,CustomPanel> custom;
+  std::map<std::string,std::string> customErrors;
+  ULONGLONG insQueueNoticeUntil=0;
+  static constexpr const char* queueFullMessage=u8"操作队列已满，本次操作未提交。请稍后重试。";
   UINT width=604,height=640;
   std::exception_ptr pendingError;
   bool composition=true;
@@ -65,7 +82,28 @@ class Window {
     holdPackage.clear();holdName.clear();
   }
   bool Send(Action action,const std::string& package,const std::string& name={},double value=0) {
-    return view&&store.Submit({view->revision,view->scope,action,package,name,value});
+    if(!view)return false;
+    if(store.Submit({view->revision,view->scope,action,package,name,value}))return true;
+    QueueFull(insQueueNoticeUntil,"insMod=",package);
+    return false;
+  }
+  void QueueFull(ULONGLONG& noticeUntil,const char* source,const std::string& package) {
+    const auto now=GetTickCount64();
+    if(now>=noticeUntil)store.Report(std::string(source)+package+" reason=command-queue-full");
+    noticeUntil=now+4000;
+  }
+  void DrawQueueNotice(bool ins) {
+    const auto now=GetTickCount64();
+    if(!(ins&&now<insQueueNoticeUntil)&&std::none_of(custom.begin(),custom.end(),[&](const auto& row){
+      return now<row.second.queueNoticeUntil;
+    }))return;
+    ImGui::SetNextWindowPos({float(width)/2,12},ImGuiCond_Always,{.5f,0});
+    if(ImGui::Begin("##EFF command queue",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoInputs|
+        ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoFocusOnAppearing|ImGuiWindowFlags_AlwaysAutoResize)){
+      ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+      ImGui::TextUnformatted(queueFullMessage);
+    }
+    ImGui::End();
   }
   void Backdrop() {
     BOOL dark=TRUE;DwmSetWindowAttribute(hwnd,DWMWA_USE_IMMERSIVE_DARK_MODE,&dark,sizeof(dark));
@@ -101,7 +139,7 @@ class Window {
     }
     if(msg==WM_DESTROY)KillTimer(hwnd,resizeTimer);
     if(self->gui){ImGui::SetCurrentContext(self->gui);if(ImGui_ImplWin32_WndProcHandler(hwnd,msg,wp,lp))return 1;}
-    if(msg==WM_CLOSE){self->store.open=false;self->StopHold();self->Visible(false);return 0;}
+    if(msg==WM_CLOSE){self->store.Close();self->StopHold();self->Visible(false);return 0;}
     if(msg==WM_SIZE&&wp!=SIZE_MINIMIZED){self->width=LOWORD(lp);self->height=HIWORD(lp);return 0;}
     if(msg==WM_ERASEBKGND)return 1;
     if(msg==WM_PAINT){PAINTSTRUCT paint{};BeginPaint(hwnd,&paint);EndPaint(hwnd,&paint);return 0;}
@@ -134,6 +172,8 @@ class Window {
   }
   D3D_DRIVER_TYPE driver=D3D_DRIVER_TYPE_HARDWARE;
   void ReleaseGraphics() {
+    custom.clear();
+    customImages.Clear();
     if(gui)ImGui::SetCurrentContext(gui);
     if(rendererReady){ImGui_ImplDX11_Shutdown();rendererReady=false;}
     if(context)context->ClearState();target.Reset();visual.Reset();compositionTarget.Reset();compositor.Reset();swap.Reset();context.Reset();device.Reset();
@@ -151,15 +191,23 @@ class Window {
   bool SliderWithNumber(const char* label,double& value,double low,double high,
                         const char* format,Action action,const std::string& package,const std::string& name){
     ImGui::TextWrapped("%s",label);
-    const float width=ImGui::GetContentRegionAvail().x;
-    const float numberWidth=ImGui::CalcTextSize("-0.000000").x+2*ImGui::GetStyle().FramePadding.x;
-    const float spacing=ImGui::GetStyle().ItemSpacing.x;
-    const bool inlineNumber=width>=2*numberWidth+spacing;
-    ImGui::SetNextItemWidth(inlineNumber?width-numberWidth-spacing:-1.f);
-    bool changed=ImGui::SliderScalar("##slider",ImGuiDataType_Double,&value,&low,&high,format,ImGuiSliderFlags_NoInput);
-    Item(action,package,name);
-    if(inlineNumber)ImGui::SameLine();
-    ImGui::SetNextItemWidth(inlineNumber?numberWidth:-1.f);
+    // ImGui asserts outside this range. The numeric input still supports the
+    // author's full domain and uses the usual runtime validation.
+    constexpr double sliderLimit=std::numeric_limits<double>::max()/2.0;
+    const bool canSlide=low>=-sliderLimit&&high<=sliderLimit;
+    float inputWidth=-1.f;
+    bool changed=false;
+    if(canSlide){
+      const float width=ImGui::GetContentRegionAvail().x;
+      const float numberWidth=ImGui::CalcTextSize("-0.000000").x+2*ImGui::GetStyle().FramePadding.x;
+      const float spacing=ImGui::GetStyle().ItemSpacing.x;
+      const bool inlineNumber=width>=2*numberWidth+spacing;
+      ImGui::SetNextItemWidth(inlineNumber?width-numberWidth-spacing:-1.f);
+      changed=ImGui::SliderScalar("##slider",ImGuiDataType_Double,&value,&low,&high,format,ImGuiSliderFlags_NoInput);
+      Item(action,package,name);
+      if(inlineNumber){ImGui::SameLine();inputWidth=numberWidth;}
+    }
+    ImGui::SetNextItemWidth(inputWidth);
     const bool typed=ImGui::InputDouble("##number",&value,0,0,"%.9g");
     Item(action,package,name+"##number");
     if(ImGui::IsItemHovered())ImGui::SetTooltip(u8"直接输入数值");
@@ -205,6 +253,51 @@ class Window {
       if(program.ui.empty())for(const auto& row:program.actions)if(row.second.exposed){ImGui::PushID(row.first.c_str());if(ImGui::Button(row.second.label.c_str()))Send(Action::InvokeAction,p.id,row.first);Item(Action::InvokeAction,p.id,row.first);ImGui::PopID();}
     }catch(const std::exception& e){ImGui::TextWrapped(u8"UI 表达式错误: %s",e.what());}
   }
+  void CustomSettings(const EiemDirectory::Package& p) {
+    bool enabled=view->customGuiEnabled.at(p.id);
+    ImGui::PushID(p.id.c_str());
+    if(ImGui::Checkbox(u8"允许作者面板",&enabled))Send(Action::GuiEnabled,p.id,{},enabled?1:0);
+    ImGui::SameLine();
+    bool opened=store.GuiSession(p.id)!=0;
+    ImGui::BeginDisabled(!enabled||!p.customGui.error.empty()||!p.loadError.empty());
+    if(ImGui::Button(opened?u8"关闭作者面板":u8"打开作者面板")&&!store.ToggleGui(*view,p.id))
+      customErrors[p.id]=u8"作者面板打开数量已达上限";
+    ImGui::EndDisabled();
+    if(p.customGui.key.vk)ImGui::TextDisabled("%s",EiemFormatKeyChord(p.customGui.key).c_str());
+    if(!p.customGui.error.empty())ImGui::TextWrapped("%s",p.customGui.error.c_str());
+    if(auto failure=customErrors.find(p.id);failure!=customErrors.end())
+      ImGui::TextWrapped("%s",failure->second.c_str());
+    if(auto editor=custom.find(p.id);editor!=custom.end()&&GetTickCount64()<editor->second.queueNoticeUntil)
+      ImGui::TextWrapped("%s",queueFullMessage);
+    if(!p.program)if(auto failure=view->errors.find(p.id);failure!=view->errors.end())
+      ImGui::TextWrapped("%s",failure->second.c_str());
+    ImGui::PopID();
+  }
+  void DrawCustom(const std::map<std::string,uint64_t>& open) {
+    if(!view||!view->graph||open.empty())return;
+    for(const auto& p:*view->graph)if(open.count(p.id)) {
+      if(!view->customGuiEnabled.count(p.id)||!view->customGuiEnabled.at(p.id)||
+         !p.customGui.error.empty()||!p.loadError.empty()){store.CloseGui(p.id);continue;}
+      auto [item,created]=custom.try_emplace(p.id,p.id,customState,open.at(p.id));
+      auto& editor=item->second;
+      if(created)editor.script.LoadFile((p.root/"mod.ini").u8string(),p.customGui.script);
+      EiemLuaUi::ImageLoader images=[&](const char* path,ImVec2 sampleSize){
+        return customImages.Load(device.Get(),editor.session,p.root,path,sampleSize);
+      };
+      EiemVariables writes;
+      if(editor.script.Draw(view->effective.at(p.id),writes,p.defaults,&images,view->animations.at(p.id))) {
+        customErrors.erase(p.id);
+        auto requests=editor.script.TakeRequests();
+        if(!requests.empty()&&!store.Submit({view->revision,editor.session,Action::GuiRequests,p.id,{},0,std::move(requests)}))
+          QueueFull(editor.queueNoticeUntil,"customGui=",p.id);
+      } else {
+        customErrors[p.id]=editor.script.error;
+        store.Report("customGui="+p.id+" reason="+editor.script.error);
+        store.CloseGui(p.id);
+      }
+      if(editor.script.closeRequested)store.CloseGui(p.id);
+    }
+  }
   void Draw() {
 #ifdef EIEM_PANEL_TEST
     testItems.clear();
@@ -215,7 +308,7 @@ class Window {
     ImGui::TextUnformatted(u8"MOD 按键控制");ImGui::Spacing();
     ImGui::PushTextWrapPos(0);ImGui::TextDisabled("%s",u8"勾选响应按键的 Mod，同一个键可以同时控制多个 Mod。");ImGui::PopTextWrapPos();
     ImGui::Separator();ImGui::Spacing();
-    if(view&&view->graph)for(const auto& p:*view->graph)if((p.program&&!p.program->events.empty())||!p.bindings.empty()||std::any_of(p.shapeAnimations.begin(),p.shapeAnimations.end(),[](const auto& c){return c.second.key.vk!=0;})){
+    if(view&&view->graph)for(const auto& p:*view->graph)if(p.customGui.key.vk||(p.program&&!p.program->events.empty())||!p.bindings.empty()||std::any_of(p.shapeAnimations.begin(),p.shapeAnimations.end(),[](const auto& c){return c.second.key.vk!=0;})){
       ImGui::PushID(p.id.c_str());bool active=view->keySwitchEnabled.at(p.id);
       if(ImGui::Checkbox(Label(p).c_str(),&active))Send(Action::Keyboard,p.id,{},active?1:0);
       Item(Action::Keyboard,p.id);ImGui::PopID();
@@ -226,7 +319,7 @@ class Window {
     ImGui::TextUnformatted("Mod");ImGui::SetNextItemWidth(-1);
     bool opened=ImGui::BeginCombo("##Mod",selected?Label(*selected).c_str():u8"无可控制的 Mod");
     Item(Action::Select,"");
-    if(opened){if(view&&view->graph)for(const auto& p:*view->graph)if(p.program||!p.bindings.empty()||!p.controls.empty()||!p.shapeAnimations.empty()){
+    if(opened){if(view&&view->graph)for(const auto& p:*view->graph)if(!p.customGui.script.empty()||p.program||!p.bindings.empty()||!p.controls.empty()||!p.shapeAnimations.empty()){
       ImGui::PushID(p.id.c_str());
       if(ImGui::Selectable(Label(p).c_str(),p.id==view->selected)){StopHold();Send(Action::Select,p.id);}
       Item(Action::Select,p.id);
@@ -237,6 +330,7 @@ class Window {
     if(selected){
       const auto& p=*selected;
       if(!p.loadError.empty())ImGui::TextWrapped(u8"保留上次有效配置: %s",p.loadError.c_str());
+      if(!p.customGui.script.empty())CustomSettings(p);
       if(p.program)Program(p);
       if(!p.program||p.program->ui.empty()){
       for(const auto& b:p.bindings){
@@ -300,6 +394,7 @@ public:
   ~Window(){Visible(false);store.window=nullptr;ReleaseGraphics();if(gui){if(win32Ready)ImGui_ImplWin32_Shutdown();ImGui::DestroyContext(gui);gui=nullptr;}if(hwnd)DestroyWindow(hwnd);}
   HWND Handle()const{return hwnd;}
 #ifdef EIEM_PANEL_TEST
+  ID3D11Device* TestDevice()const{return device.Get();}
   RECT TestRect(Action action,const std::string& package,const std::string& name={})const{return testItems.at({action,package,name});}
   bool TestAcrylic()const{return acrylic;}
   std::pair<UINT,UINT> TestBufferSize()const{DXGI_SWAP_CHAIN_DESC1 desc{};if(FAILED(swap->GetDesc1(&desc)))throw std::runtime_error("test swap-chain unavailable");return {desc.Width,desc.Height};}
@@ -310,6 +405,7 @@ public:
 #endif
   unsigned Backend() const {return composition?0:driver==D3D_DRIVER_TYPE_HARDWARE?1:2;}
   bool Create(unsigned firstAttempt=0) {
+    store.Report("stage=window-create");
     WNDCLASSW wc{};wc.lpfnWndProc=Procedure;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"EFF_ResourceControls";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);
     if(!RegisterClassW(&wc)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)return false;
     RECT r{0,0,LONG(width),LONG(height)};DWORD style=WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME|WS_MAXIMIZEBOX;
@@ -318,19 +414,22 @@ public:
     // Keep the panel independent so closing it never waits for Unity's HWND.
     hwnd=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_TOPMOST,wc.lpszClassName,L"EFF Mod 按键控制",style,CW_USEDEFAULT,CW_USEDEFAULT,r.right-r.left,r.bottom-r.top,nullptr,nullptr,wc.hInstance,this);
     if(!hwnd){store.Report("stage=window-create win32="+std::to_string(GetLastError()));return false;}
+    store.Report("stage=imgui-context-create");
     IMGUI_CHECKVERSION();gui=ImGui::CreateContext();auto& io=ImGui::GetIO();io.IniFilename=nullptr;io.LogFilename=nullptr;io.ConfigFlags|=ImGuiConfigFlags_NavEnableKeyboard;
+    store.Report("stage=font-load");
     char windows[MAX_PATH]{};GetWindowsDirectoryA(windows,MAX_PATH);auto font=std::string(windows)+"/Fonts/msyh.ttc";
     if(std::filesystem::is_regular_file(std::filesystem::u8path(font)))io.Fonts->AddFontFromFileTTF(font.c_str(),17.f,nullptr,io.Fonts->GetGlyphRangesChineseFull());
     ImGui::StyleColorsDark();auto& styleSettings=ImGui::GetStyle();styleSettings.WindowPadding={18,18};styleSettings.ItemSpacing={10,10};styleSettings.FramePadding={9,6};styleSettings.FrameRounding=5;styleSettings.PopupRounding=8;styleSettings.GrabRounding=4;styleSettings.WindowBorderSize=0;
     styleSettings.Colors[ImGuiCol_WindowBg]={.045f,.055f,.075f,1.f};styleSettings.Colors[ImGuiCol_CheckMark]={.40f,.72f,1.f,1.f};
     styleSettings.Colors[ImGuiCol_Button]={.16f,.26f,.38f,.9f};styleSettings.Colors[ImGuiCol_ButtonHovered]={.22f,.37f,.54f,1.f};styleSettings.Colors[ImGuiCol_FrameBg]={.12f,.16f,.23f,.85f};
+    store.Report("stage=imgui-win32-init");
     win32Ready=ImGui_ImplWin32_Init(hwnd);if(!win32Ready)throw std::runtime_error("stage=imgui-win32");
     bool wine=GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"wine_get_version")!=nullptr;
     for(unsigned attempt=std::max(firstAttempt,wine?1u:0u);attempt<3;++attempt){
       composition=attempt==0;driver=attempt==2?D3D_DRIVER_TYPE_WARP:D3D_DRIVER_TYPE_HARDWARE;
       try{
         if(composition)Backdrop();else{acrylic=false;MARGINS margins{};DwmExtendFrameIntoClientArea(hwnd,&margins);DWM_SYSTEMBACKDROP_TYPE type=DWMSBT_NONE;DwmSetWindowAttribute(hwnd,DWMWA_SYSTEMBACKDROP_TYPE,&type,sizeof(type));}
-        Graphics();rendererReady=ImGui_ImplDX11_Init(device.Get(),context.Get());
+        Graphics();store.Report("stage=imgui-dx11-init");rendererReady=ImGui_ImplDX11_Init(device.Get(),context.Get());
         if(!rendererReady)throw std::runtime_error("stage=imgui-dx11");
         if(!ImGui_ImplDX11_CreateDeviceObjects())throw std::runtime_error("stage=imgui-device-objects");
         store.failed=false;store.window=hwnd;store.Report(std::string("stage=ready backend=")+(composition?"composition":"hwnd"));return true;
@@ -340,17 +439,50 @@ public:
   void Tick(HWND foreground=GetForegroundWindow()) {
     if(pendingError){auto error=pendingError;pendingError=nullptr;std::rethrow_exception(error);}
     HWND game=store.gameWindow.load();
-    bool wanted=store.open&&IsWindow(game)&&!IsIconic(game);
     (void)foreground;
-    auto next=store.Read();if(view&&next&&(view->scope!=next->scope||view->revision!=next->revision))StopHold();view=std::move(next);
-    Visible(wanted&&bool(view));if(!shown)return;
+    auto next=store.Read();
+    if(view&&next&&(view->scope!=next->scope||view->revision!=next->revision))StopHold();
+    if(view&&next&&view->revision!=next->revision){custom.clear();customImages.Clear();customErrors.clear();insQueueNoticeUntil=0;}
+    view=std::move(next);
+    auto open=store.OpenGuis();
+    for(auto it=open.begin();it!=open.end();){
+      if(!view||!view->customGuiEnabled.count(it->first)||!view->customGuiEnabled.at(it->first)){
+        store.CloseGui(it->first);it=open.erase(it);
+      }else ++it;
+    }
+    std::vector<uint64_t> retained;
+    for(auto it=custom.begin();it!=custom.end();) {
+      auto session=open.find(it->first);
+      if(session==open.end()||session->second!=it->second.session){
+        customImages.Release(it->second.session);
+        it=custom.erase(it);
+      }else {retained.push_back(it->second.session);++it;}
+    }
+    ImGui::SetCurrentContext(gui);
+    customState.Collect(retained);
+    bool wanted=(store.open||!open.empty())&&IsWindow(game)&&!IsIconic(game);
+    const bool visible=wanted&&bool(view);
+    const bool firstFrame=visible&&!shown;
+    if(firstFrame)store.Report("stage=window-show");
+    Visible(visible);if(!shown)return;
+    if(firstFrame)store.Report("stage=first-frame-begin");
     if(!width||!height||!RenderTarget())throw std::runtime_error("control panel graphics target unavailable");
-    ImGui::SetCurrentContext(gui);ImGui_ImplDX11_NewFrame();ImGui_ImplWin32_NewFrame();
+    ImGui_ImplDX11_NewFrame();ImGui_ImplWin32_NewFrame();
 #ifdef EIEM_PANEL_TEST
     if(!testMouse.empty()){auto& io=ImGui::GetIO();io.ConfigInputTrickleEventQueue=false;io.AddFocusEvent(true);for(const auto& event:testMouse){io.AddMousePosEvent(float(std::get<0>(event)),float(std::get<1>(event)));io.AddMouseButtonEvent(0,std::get<2>(event));}testMouse.clear();}
 #endif
-    ImGui::NewFrame();Draw();
-    if(ImGui::IsKeyPressed(ImGuiKey_Escape)){store.open=false;StopHold();}
+    ImGui::NewFrame();
+    if(firstFrame)store.Report("stage=first-frame-draw");
+    const bool ins=store.open;
+    if(ins)Draw();
+    customImages.BeginFrame(open.size());
+    DrawCustom(open);
+    customImages.EndFrame();
+    if(ins&&!drewIns&&!open.empty())ImGui::SetWindowFocus("EFF controls");
+    drewIns=ins;
+    DrawQueueNotice(ins);
+    if(ImGui::IsKeyPressed(ImGuiKey_Escape)){store.Close();StopHold();}
+    if(firstFrame)store.Report("stage=first-frame-render");
     ImGui::Render();const float clear[4]={0,0,0,0};auto rt=target.Get();context->OMSetRenderTargets(1,&rt,nullptr);context->ClearRenderTargetView(rt,clear);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 #ifdef EIEM_PANEL_TEST
@@ -364,7 +496,9 @@ public:
       testBackgroundAlpha=static_cast<const unsigned char*>(mapped.pData)[3];context->Unmap(staging.Get(),0);testCaptureBackground=false;
     }
 #endif
+    if(firstFrame)store.Report("stage=first-present");
     Check(swap->Present(1,0),"present");
+    if(firstFrame)store.Report("stage=first-present-returned");
   }
   static DWORD WINAPI Run(void* arg) {
     auto& store=*static_cast<Store*>(arg);
@@ -372,11 +506,11 @@ public:
     while(!store.stopping){
       while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){TranslateMessage(&message);DispatchMessageW(&message);}
       try{
-        if(!panel){if(!store.open||GetTickCount64()<retryAt){Sleep(60);continue;}panel=std::make_unique<Window>(store);if(!panel->Create(firstAttempt))throw std::runtime_error("stage=graphics-unavailable");}
-        panel->Tick();Sleep(store.open?8:60);
+        if(!panel){if(!store.Visible()||GetTickCount64()<retryAt){Sleep(60);continue;}panel=std::make_unique<Window>(store);if(!panel->Create(firstAttempt))throw std::runtime_error("stage=graphics-unavailable");}
+        panel->Tick();Sleep(store.Visible()?8:60);
       }catch(const std::exception& error){store.Report(std::string("retryMs=3000 ")+error.what());store.failed=true;if(panel)firstAttempt=std::min(2u,panel->Backend()+1);panel.reset();retryAt=GetTickCount64()+3000;}
     }
-    store.open=false;return 0;
+    store.Close();return 0;
   }
 };
 } // namespace EiemControlPanel
