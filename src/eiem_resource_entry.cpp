@@ -1853,6 +1853,10 @@ APPLEPIE_PLUGIN_EXPORT int AP_GetHotkeys(AP_HotkeyInfo *output, int maximum) {
   return 0;
 }
 APPLEPIE_PLUGIN_EXPORT void AP_SetLanguage(const char *) {}
+extern "C" __declspec(dllexport) unsigned EFF_ControlAbi() { return 1; }
+extern "C" __declspec(dllexport) bool EFF_InvokeModBinding(const char* mod,const char* binding,const char* root) {
+  try{return Entry::RuntimeControls::QueueExternalInvoke(mod,binding,root);}catch(...){return false;}
+}
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_DETACH) {Entry::RuntimeShapes::managedAlive=false;Entry::RuntimeControls::panel.stopping=true;}
   if (reason == DLL_PROCESS_ATTACH) {
