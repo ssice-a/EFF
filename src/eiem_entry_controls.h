@@ -39,6 +39,26 @@ std::map<std::string,std::string> effectiveErrors;
 std::map<std::string,std::string> animationErrors;
 std::map<std::string,uint64_t> stateRevisions,effectiveRevisions;
 std::map<std::string,const Package*> controlOwners;
+struct ExternalInvoke {
+  std::string mod,binding,root;
+};
+std::mutex externalInvokeMutex;
+std::deque<ExternalInvoke> externalInvokeQueue;
+bool QueueExternalInvoke(const char* mod,const char* binding,const char* root) {
+  if(!mod||!binding||!*mod||!*binding)return false;
+  size_t modLen=strnlen(mod,256),bindingLen=strnlen(binding,256),rootLen=root?strnlen(root,1024):0;
+  if(modLen>=256||bindingLen>=256||(root&&rootLen>=1024))return false;
+  std::lock_guard<std::mutex> lock(externalInvokeMutex);
+  if(externalInvokeQueue.size()>=64)return false;
+  externalInvokeQueue.push_back({mod,binding,root?root:""});
+  return true;
+}
+std::deque<ExternalInvoke> DrainExternalInvokes() {
+  std::deque<ExternalInvoke> result;
+  std::lock_guard<std::mutex> lock(externalInvokeMutex);
+  result.swap(externalInvokeQueue);
+  return result;
+}
 #if defined(EIEM_PANEL_TEST)
 std::map<std::string,size_t> effectiveEvaluations;
 #endif
@@ -413,9 +433,42 @@ void PanelCommands(bool focused,bool (*sample)(const EiemKeyChord&)=Down) {
   if(!focused || !panel.open) uiHold.clear();
   Capture(changed);if(publish || !changed.empty()) PublishPanel();
 }
+std::string NormalizeExternalRoot(const std::filesystem::path& root) {
+  std::error_code ec;auto canonical=std::filesystem::weakly_canonical(root,ec);if(ec)canonical=std::filesystem::absolute(root,ec);
+  auto value=canonical.u8string();
+  std::replace(value.begin(),value.end(),'\\','/');
+  for(auto& ch:value)if(ch>='A'&&ch<='Z')ch=char(ch-'A'+'a');
+  return value;
+}
+bool ApplyExternalInvokes(std::set<std::string>& changed) {
+  bool publish=false;
+  for(const auto& command:DrainExternalInvokes()) {
+    if(!controlGraph)continue;
+    const Package* owner=nullptr;size_t matches=0;std::string root;
+    if(!command.root.empty())root=NormalizeExternalRoot(std::filesystem::u8path(command.root));
+    for(const auto& p:*controlGraph) {
+      if(p.id!=command.mod&&DeclaredId(p)!=command.mod)continue;
+      if(!root.empty()&&NormalizeExternalRoot(p.root)!=root)continue;
+      owner=&p;++matches;
+    }
+    if(matches!=1) {
+      Log("[CONTROL-EXTERNAL-INVOKE-GAP] mod=%s binding=%s matches=%zu",command.mod.c_str(),command.binding.c_str(),matches);
+      continue;
+    }
+    auto& values=variables.at(owner->id);
+    auto binding=std::find_if(owner->bindings.begin(),owner->bindings.end(),[&](const Binding& b){return b.id==command.binding;});
+    if(binding==owner->bindings.end()||binding->type=="hold") {
+      Log("[CONTROL-EXTERNAL-INVOKE-GAP] mod=%s binding=%s reason=missing-or-hold",command.mod.c_str(),command.binding.c_str());
+      continue;
+    }
+    publish=SubmitValues(*owner,{{binding->variable,Advance(*binding,values.at(binding->variable),0)}},{},changed,binding->id)||publish;
+  }
+  return publish;
+}
 void PollControls(bool focused,double elapsed,bool (*sample)(const EiemKeyChord&)=Down) {
   Require(std::isfinite(elapsed) && elapsed>=0 && sample,"runtime input sample");
   std::set<std::string> changed;bool publish=false;
+  publish=ApplyExternalInvokes(changed)||publish;
   const bool panelVisible=panel.Visible();
   for (const auto& package:keys){
     const Package* owner=nullptr;if(controlGraph)for(const auto& p:*controlGraph)if(p.id==package.first)owner=&p;
