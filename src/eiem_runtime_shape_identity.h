@@ -40,6 +40,10 @@ inline std::string RuntimePartName(const Package& package,const std::string& par
 inline std::string LegacyRuntimePartName(const Package& package,const std::string& partId,const Identity& target) {
   return RuntimePartMarker(package,partId,LegacyRuntimeShapeName(package,partId,target));
 }
+// A Transform-only child identifies one original Renderer on its unrenamed owner.
+inline std::string OriginalRendererTag(int kind, size_t ordinal) {
+  return "__EFF_F11_ORIGINAL__" + std::to_string(kind) + "_" + std::to_string(ordinal);
+}
 inline std::string RendererPartTag(const std::string& ownerName,const std::string& marker) {
   return ownerName+"__EFF_RENDERER_PART__"+marker;
 }

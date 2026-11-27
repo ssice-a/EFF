@@ -1037,7 +1037,7 @@ RuntimeControls::State CompiledControls(const std::shared_ptr<const std::vector<
  Require(bool(graph),"offline control graph unavailable");RuntimeControls::State state;state.graph=graph;
  std::map<std::string,std::pair<const Package*,std::string>> owners;
  for(const auto& package:*graph){
-  auto validateKey=[&](const EiemKeyChord& key){Require(!key.vk||(key.vk!=config.reload.vk&&key.vk!=config.gui.vk),"Mod shortcut overlaps a global shortcut: "+package.id);};for(const auto& key:package.bindings)validateKey(key.key);for(const auto& clip:package.shapeAnimations)validateKey(clip.second.key);if(package.program)for(const auto& event:package.program->events){validateKey(event.key);state.held[package.id+"/"+event.id]=RuntimeControls::Down(event.key);}
+  auto validateKey=[&](const EiemKeyChord& key){Require(!key.vk||(key.vk!=config.reload.vk&&key.vk!=config.gui.vk&&key.vk!=config.toggleMods.vk),"Mod shortcut overlaps a global shortcut: "+package.id);};for(const auto& key:package.bindings)validateKey(key.key);for(const auto& clip:package.shapeAnimations)validateKey(clip.second.key);if(package.program)for(const auto& event:package.program->events){validateKey(event.key);state.held[package.id+"/"+event.id]=RuntimeControls::Down(event.key);}
   state.variables[package.id]=package.defaults;state.keys[package.id]=package.bindings;
   state.keySwitchEnabled[package.id]=RuntimeControls::keySettings.Preview(package);
   if(!package.customGui.script.empty())state.customGuiEnabled[package.id]=RuntimeControls::keySettings.Preview(package,true);

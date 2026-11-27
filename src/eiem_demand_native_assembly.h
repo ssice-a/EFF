@@ -131,17 +131,16 @@ inline Carrier StageCarrier(EiemNativeEditTransaction::Member& transaction,R::Re
     std::vector<uint32_t> sourceHashes;
     if(std::any_of(type.nodes[0].children.begin(),type.nodes[0].children.end(),[&](size_t n){return type.nodes[n].name=="m_BoneNameHashes";})){
       auto fields=reader.Fields(member,layout,asset.pathId,{"m_BoneNameHashes"});sourceHashes=BoneHashes(type,fields.at("m_BoneNameHashes"));}
-    bool first=true;
     for(const auto& part:rule.parts){auto mesh=author.GetMesh(part);int64_t id=0;
       {auto node=std::find_if(type.nodes[0].children.begin(),type.nodes[0].children.end(),[&](size_t n){return type.nodes[n].name=="m_Name";});Require(node!=type.nodes[0].children.end(),"current Mesh name field absent");
         auto marker=EmptyValue(type,*node);SetString(type,marker,RuntimePartName(author.package,part,target.first));
         auto payload=G::Compose(reader,memberIndex,layout,asset.pathId,mesh->object,{mesh->declaration.fields.begin(),mesh->declaration.fields.end()},{{"m_Name",std::move(marker)}});
-        id=first?asset.pathId:AllocateMeshId(member.name,author.package,target.first,part);
-        if(first)Require(changed.emplace(id,std::move(payload)).second,"native Mesh replacement aliases another target");
-        else{Require(!transaction.Layout().objects.count(id),"native Mesh added identity collides");added.push_back({id,object.type,std::move(payload)});}
+        id=AllocateMeshId(member.name,author.package,target.first,part);
+        Require(id && !transaction.Layout().objects.count(id),"native Mesh added identity collides");
+        added.push_back({id,object.type,std::move(payload)});
       }
-      if(id!=asset.pathId)expansion[{member.name,asset.pathId}].push_back({member.name,id});
-      result.parts.push_back({target.first,selected->second,part,member.name,asset.pathId,id,mesh->declaration.vertices,mesh->declaration.indices,sourceHashes});first=false;
+      expansion[{member.name,asset.pathId}].push_back({member.name,id});
+      result.parts.push_back({target.first,selected->second,part,member.name,asset.pathId,id,mesh->declaration.vertices,mesh->declaration.indices,sourceHashes});
     }
   }
   if(changed.empty()&&added.empty())return result;
@@ -207,6 +206,7 @@ inline Consumer StageConsumer(EiemNativeEditTransaction::Member& transaction,
   RendererMemberBuilder builder(transaction.Layout(),cab,author.package,targets,parts,
     [&](int64_t id,const std::set<std::string>& fields){return transaction.Project(id,fields);},
     [&](int64_t id){return transaction.Object(id);});
+  builder.KeepOriginalRenderers();
   builder.SetAuthorMetadata(author.bindings);
   builder.SetAuthorBoneSlots(authorBoneSlots);
   if(materials)builder.SetMaterialReferences(*materials);else builder.UseSourceMaterials();

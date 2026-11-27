@@ -9,6 +9,7 @@
 struct EiemGlobalConfig {
   EiemKeyChord reload{VK_F10, 0};
   EiemKeyChord gui{VK_INSERT, 0};
+  EiemKeyChord toggleMods{VK_F11, 0};
   bool disableCameraFade = true;
   bool detailedDiagnostics = false;
 };
@@ -20,6 +21,7 @@ static constexpr const char *kEiemDefaultGlobalConfig =
     "[Hotkeys]\n"
     "reload=F10\n"
     "gui=INSERT\n"
+    "toggle_mods=F11\n"
     "\n[Graphics]\n"
     "; Disable CameraMono camera fade; Mod mesh/skip state is unchanged.\n"
     "disable_camera_fade=true\n"
@@ -76,13 +78,16 @@ static bool EiemParseGlobalConfig(std::istream &input, EiemGlobalConfig *out,
     if (!EiemParseKeyChord(value, &chord)) return fail("Invalid shortcut: " + value);
     if (key == "reload") next.reload = chord;
     else if (key == "gui") next.gui = chord;
+    else if (key == "toggle_mods") next.toggleMods = chord;
     // Older configs contain effects_reload=F9. Keep parsing that field so
     // existing eff.ini files remain valid; all resource reloads now use reload.
     else if (key == "effects_reload") {}
     else return fail("Unknown setting: " + key);
   }
   if (input.bad()) return fail("Read failed");
-  if (next.reload.vk == next.gui.vk) return fail("reload and gui must use different shortcuts");
+  if (next.reload.vk == next.gui.vk || next.reload.vk == next.toggleMods.vk ||
+      next.gui.vk == next.toggleMods.vk)
+    return fail("reload, gui and toggle_mods must use different shortcuts");
   *out = next;
   return true;
 }

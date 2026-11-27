@@ -268,12 +268,12 @@ void Prepare() {
     Require(DemandLoadingProbe::InstalledGenerationFilesUnchanged(*candidate->generation),
       "Format 3 Mod files changed while F10 declarations were prepared");
     candidate->config=EiemEntrySettings::Read(gameDirectory);
-    std::set<std::string> excluded;auto expected=candidate->config.reload.vk,gui=candidate->config.gui.vk;
+    std::set<std::string> excluded;auto expected=candidate->config.reload.vk,gui=candidate->config.gui.vk,toggleMods=candidate->config.toggleMods.vk;
     for(const auto& package:*candidate->generation->packages){
       try{
-        for(const auto& key:package.bindings)Require(key.key.vk!=expected&&key.key.vk!=gui,
+        for(const auto& key:package.bindings)Require(key.key.vk!=expected&&key.key.vk!=gui&&key.key.vk!=toggleMods,
           "Mod shortcut overlaps a global shortcut: "+key.id);
-        for(const auto& animation:package.shapeAnimations)Require(animation.second.key.vk!=expected&&animation.second.key.vk!=gui,
+        for(const auto& animation:package.shapeAnimations)Require(animation.second.key.vk!=expected&&animation.second.key.vk!=gui&&animation.second.key.vk!=toggleMods,
           "Mod animation shortcut overlaps a global shortcut: "+animation.first);
       }
       catch(const std::exception& error){excluded.insert(package.id);Log("[DEMAND-F10-MOD-SKIP] mod=%s reason=%s otherModsContinue=1",package.id.c_str(),error.what());}

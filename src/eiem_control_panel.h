@@ -130,7 +130,7 @@ class GuiShortcuts {
   std::vector<Entry> entries;
   uint64_t revision=uint64_t(-1);
 public:
-  void Poll(Store& store,const EiemKeyChord& ins,const EiemKeyChord& reload,bool focused,
+  void Poll(Store& store,const EiemKeyChord& ins,const EiemKeyChord& reload,const EiemKeyChord& toggleMods,bool focused,
             bool (*sample)(const EiemKeyChord&)) {
     auto view=store.Read();
     if(!view||!view->graph)return;
@@ -142,9 +142,13 @@ public:
     for(auto& item:entries){
       bool down=sample(item.key),pressed=down&&!item.held;item.held=down;
       auto enabled=view->keySwitchEnabled.find(item.id);
-      if(pressed&&focused&&item.key.vk!=ins.vk&&item.key.vk!=reload.vk&&
+      if(pressed&&focused&&item.key.vk!=ins.vk&&item.key.vk!=reload.vk&&item.key.vk!=toggleMods.vk&&
          enabled!=view->keySwitchEnabled.end()&&enabled->second)store.ToggleGui(*view,item.id);
     }
+  }
+  void Poll(Store& store,const EiemKeyChord& ins,const EiemKeyChord& reload,bool focused,
+            bool (*sample)(const EiemKeyChord&)) {
+    Poll(store,ins,reload,EiemKeyChord{},focused,sample);
   }
 };
 } // namespace EiemControlPanel

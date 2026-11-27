@@ -199,7 +199,11 @@ void RemovedDependencyMeshGenerationRegression(bool externalMesh=false,bool fall
     SetReference(fixture.T(300),asset,{remote.cab,100},fixture.refs,fixture.cab);
    }
    fixture.SetList(300,"m_PreloadTable",{10,11,12,13,20,21,22,23,200});
-   for(auto& row:containers.children)SetInteger(fixture.T(300),Child(fixture.T(300),Child(fixture.T(300),row,"second"),"preloadSize"),9);
+   for(auto& row:containers.children){
+    SetInteger(fixture.T(300),Child(fixture.T(300),Child(fixture.T(300),row,"second"),"preloadIndex"),0);
+    SetInteger(fixture.T(300),Child(fixture.T(300),Child(fixture.T(300),row,"second"),"preloadSize"),9);
+   }
+   SetInteger(fixture.T(300),Child(fixture.T(300),Child(fixture.T(300),fixture.V(300),"m_MainAsset"),"preloadSize"),9);
    // Additional vertex streams also refer to the current remote Mesh.
    SetReference(fixture.T(13),Child(fixture.T(13),fixture.V(13),"m_AdditionalVertexStreams"),{remote.cab,100},fixture.refs,fixture.cab);
   }
@@ -348,8 +352,19 @@ void RemovedDependencyMeshGenerationRegression(bool externalMesh=false,bool fall
    EiemNativeRandomAccess::Reader reader(story.view->Size(),[view=story.view](size_t at,unsigned char* out,size_t n){
      Require(view->ReadAt(at,out,n)==n,"story PFB truncated");});
    const auto& member=reader.directory.members.at(0);auto layout=reader.Layout(member);
-   Require(Integer(reader.Fields(member,layout,13,{"m_Enabled"}).at("m_Enabled"))==0,
-     "story PFB did not apply the authored rule after logical Mesh discovery");
+   const auto& tt=layout.types.at(layout.objects.at(11).type);
+   auto ownerTransform=reader.Fields(member,layout,11,{"m_Children"});
+   const auto& children=ConstArray(tt,ownerTransform.at("m_Children"));
+   bool hasOriginalMarker=false;
+   for(const auto& pointer:children.children){
+     auto child=NullableReference(tt,pointer,layout,member.name);
+     auto childTransform=reader.Fields(member,layout,child.second,{"m_GameObject"});
+     auto go=NullableReference(tt,childTransform.at("m_GameObject"),layout,member.name);
+     auto goName=reader.Fields(member,layout,go.second,{"m_Name"}).at("m_Name").raw;
+     if(Text(goName.data(),goName.size())==EiemDirectory::OriginalRendererTag(23,0))hasOriginalMarker=true;
+   }
+   Require(hasOriginalMarker&&Integer(reader.Fields(member,layout,13,{"m_Enabled"}).at("m_Enabled"))==1,
+     "story PFB did not attach the original-visibility marker after logical Mesh discovery");
    std::cout<<"PASS story PFB late logical Mesh discovery, cross-Bundle retry and native publication\n";
   }
   if(routed){
@@ -385,7 +400,18 @@ void RemovedDependencyMeshGenerationRegression(bool externalMesh=false,bool fall
   oldShared->activeAuthorProxies.insert(oldAlias);aliases.push_back(oldAlias);
   {EiemNativeRandomAccess::Reader reader(oldInput.view->Size(),[view=oldInput.view](size_t at,unsigned char* out,size_t n){Require(view->ReadAt(at,out,n)==n,"old input truncated");});
    const auto& member=reader.directory.members.at(0);auto layout=reader.Layout(member);
-   Require(Integer(reader.Fields(member,layout,13,{"m_Enabled"}).at("m_Enabled"))==0,"initial Mod did not hide the source Renderer");}
+   const auto& tt=layout.types.at(layout.objects.at(11).type);
+   auto ownerTransform=reader.Fields(member,layout,11,{"m_Children"});
+   const auto& children=ConstArray(tt,ownerTransform.at("m_Children"));
+   bool hasOriginalMarker=false;
+   for(const auto& pointer:children.children){
+     auto child=NullableReference(tt,pointer,layout,member.name);
+     auto childTransform=reader.Fields(member,layout,child.second,{"m_GameObject"});
+     auto go=NullableReference(tt,childTransform.at("m_GameObject"),layout,member.name);
+     auto goName=reader.Fields(member,layout,go.second,{"m_Name"}).at("m_Name").raw;
+     if(Text(goName.data(),goName.size())==EiemDirectory::OriginalRendererTag(23,0))hasOriginalMarker=true;
+   }
+   Require(hasOriginalMarker&&Integer(reader.Fields(member,layout,13,{"m_Enabled"}).at("m_Enabled"))==1,"initial Mod did not gate the source Renderer with an original marker");}
   {
    auto observed=std::make_shared<D::InstalledGeneration>();observed->observedMeshTargets.insert({logical,"Static"});
    auto state=std::make_shared<D::Manifest>();state->serial=++D::serial;state->object=oldState->object;state->catalog=observed;state->unresolvedObservedMeshes=true;
@@ -428,7 +454,9 @@ void RemovedDependencyMeshGenerationRegression(bool externalMesh=false,bool fall
    EiemNativeRandomAccess::Reader reader(input.view->Size(),[view=input.view](size_t at,unsigned char* out,size_t n){Require(view->ReadAt(at,out,n)==n,"restored view truncated");});
    const auto& member=reader.directory.members.at(0);auto layout=reader.Layout(member);
    auto renderer=reader.Fields(member,layout,13,{"m_Enabled","m_Materials"});
-   Require(Integer(renderer.at("m_Enabled"))==1,"restored Renderer retained handling=skip");
+   const auto& tt=layout.types.at(layout.objects.at(11).type);
+   auto ownerTransform=reader.Fields(member,layout,11,{"m_Children"});
+   Require(Integer(renderer.at("m_Enabled"))==1&&ConstArray(tt,ownerTransform.at("m_Children")).count==0,"restored Renderer retained handling=skip marker");
    if(externalMesh){
     uint64_t remoteAlias=0;EiemDemandSharedGraph::Input carrier;std::vector<uint64_t> inherited;
     Require(shared->bundleNamespace.Alias(0xFEE203,remoteAlias)&&shared->graph.Find(remoteAlias,carrier)&&shared->graph.Native(alias,inherited)&&

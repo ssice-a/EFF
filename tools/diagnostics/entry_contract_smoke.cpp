@@ -64,22 +64,39 @@ int main() {
     Require(!std::filesystem::exists(root), "fixture directory already exists");
     gameDirectory = root;
     LoggingChecks(root/"logging");
-    Require(EiemGlobalConfig{}.reload.vk == VK_F10, "default reload shortcut regressed");
+    Require(EiemGlobalConfig{}.reload.vk == VK_F10 && EiemGlobalConfig{}.toggleMods.vk == VK_F11,
+            "default reload or toggle_mods shortcut regressed");
     EiemGlobalConfig defaultConfig;std::istringstream defaultText(kEiemDefaultGlobalConfig);std::string configError;
-    Require(EiemParseGlobalConfig(defaultText, &defaultConfig, configError) && defaultConfig.reload.vk == VK_F10,
-            "generated configuration disagrees with default reload shortcut");
+    Require(EiemParseGlobalConfig(defaultText, &defaultConfig, configError) &&
+            defaultConfig.reload.vk == VK_F10 && defaultConfig.toggleMods.vk == VK_F11,
+            "generated configuration disagrees with default reload/toggle_mods shortcuts");
     Require(std::string(kEiemDefaultGlobalConfig).find("effects_reload") == std::string::npos,
             "generated configuration still advertises a separate effects reload shortcut");
     std::istringstream legacyText("[Hotkeys]\nreload=F10\ngui=INSERT\neffects_reload=F9\n");
     EiemGlobalConfig legacyConfig;
-    Require(EiemParseGlobalConfig(legacyText,&legacyConfig,configError)&&legacyConfig.reload.vk==VK_F10,
-            "legacy effects_reload setting changed or invalidated the unified F10 binding");
+    Require(EiemParseGlobalConfig(legacyText,&legacyConfig,configError)&&legacyConfig.reload.vk==VK_F10&&
+            legacyConfig.toggleMods.vk==VK_F11,
+            "legacy effects_reload setting changed or invalidated default F10/F11 bindings");
+    std::istringstream customToggleText("[Hotkeys]\nreload=F10\ngui=INSERT\ntoggle_mods=Ctrl+F12\n");
+    EiemGlobalConfig customToggleConfig;
+    Require(EiemParseGlobalConfig(customToggleText,&customToggleConfig,configError)&&
+            customToggleConfig.toggleMods.vk==VK_F12&&customToggleConfig.toggleMods.modifiers==MOD_CONTROL,
+            "custom toggle_mods chord was not parsed");
+    for (const char* overlapText : {
+        "[Hotkeys]\nreload=F10\ngui=INSERT\ntoggle_mods=F10\n",
+        "[Hotkeys]\nreload=F10\ngui=INSERT\ntoggle_mods=INSERT\n"
+    }) {
+      std::istringstream input(overlapText);EiemGlobalConfig parsed;
+      Require(!EiemParseGlobalConfig(input,&parsed,configError),"overlapping toggle_mods shortcut accepted");
+    }
     Require(!defaultConfig.detailedDiagnostics&&!legacyConfig.detailedDiagnostics,
             "detailed native diagnostics enabled without an explicit opt-in");
     std::ifstream distributionText("config/eff.ini");EiemGlobalConfig distributionConfig;
     Require(distributionText&&EiemParseGlobalConfig(distributionText,&distributionConfig,configError)&&
             !distributionConfig.detailedDiagnostics&&distributionConfig.reload.vk==defaultConfig.reload.vk&&
-            distributionConfig.gui.vk==defaultConfig.gui.vk&&distributionConfig.disableCameraFade==defaultConfig.disableCameraFade,
+            distributionConfig.gui.vk==defaultConfig.gui.vk&&
+            distributionConfig.toggleMods==defaultConfig.toggleMods&&
+            distributionConfig.disableCameraFade==defaultConfig.disableCameraFade,
             "distributed eff.ini disagrees with generated defaults");
     for(bool enabled : {true,false}) {
       std::istringstream text(std::string("[Diagnostics]\ndetailed=")+(enabled?"true\n":"false\n"));
@@ -93,10 +110,10 @@ int main() {
       std::istringstream input(text);EiemGlobalConfig parsed;
       Require(!EiemParseGlobalConfig(input,&parsed,configError),"invalid diagnostics setting accepted");
     }
-    AP_HotkeyInfo hotkeys[3]{};
-    Require(AP_GetHotkeys(hotkeys,3)==2&&std::string(hotkeys[0].configKey)=="reload"&&
-            std::string(hotkeys[1].configKey)=="gui",
-            "plugin API still advertises a separate effects hotkey");
+    AP_HotkeyInfo hotkeys[4]{};
+    Require(AP_GetHotkeys(hotkeys,4)==3&&std::string(hotkeys[0].configKey)=="reload"&&
+            std::string(hotkeys[1].configKey)=="gui"&&std::string(hotkeys[2].configKey)=="toggle_mods",
+            "plugin API hotkey list disagrees with reload/gui/toggle_mods");
     auto mods = root / "plugin/mods";
     Require(DiscoverModRoots().empty()&&InstalledAuthorsMatch({}),"deleted/missing mods directory is not an empty set");
     std::filesystem::create_directories(mods);
