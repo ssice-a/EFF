@@ -86,7 +86,8 @@ struct Api {
   void* transformClass = nullptr;
   void *attributeCount = nullptr, *attributeDescriptor = nullptr, *bonesPerVertex = nullptr, *filterMesh = nullptr;
   void *getComponent = nullptr, *filterType = nullptr;
-  void *rendererGameObject = nullptr;
+  void *rendererGameObject = nullptr, *directComponents = nullptr;
+  void *skinType = nullptr, *staticRendererType = nullptr, *findChild = nullptr, *childCount = nullptr;
 } api;
 std::atomic<bool> enabled{false};
 std::atomic<unsigned> boundCount{0};
@@ -311,6 +312,39 @@ const Spec* Match(void* renderer,void* mesh) {
   return meshSpec;
 }
 const Spec* Match(void* mesh) {return Match(nullptr,mesh);}
+bool IsOriginalRenderer(void* renderer) {
+  if (!api.findChild || !renderer) return false;
+  auto kind = RendererKind(renderer);
+  if (!kind) return false;
+  auto transform = Ref::Make(Call(api.transform, renderer), false);
+  if (!Scalar<int>(api.childCount, transform.Get())) return false;
+  auto owner = Ref::Make(Call(api.rendererGameObject, renderer), false);
+  void* args[] = {kind == 137 ? api.skinType : api.staticRendererType};
+  auto components = Ref::Make(Call(api.directComponents, owner.Get(), args), false);
+  size_t count = 0;
+  Require(ArrayLength(components.Get(), &count), "original Renderer component list unavailable");
+  for (size_t i = 0; i < count; ++i) {
+    void* item = nullptr;
+    Require(CopyRaw((char*)components.Get()+32+i*sizeof(void*), &item, sizeof(item)), "original Renderer component list invalid");
+    if (item != renderer) continue;
+    auto tag = OriginalRendererTag(kind, i);
+    auto name = Ref::Make(il2cpp_string_new(tag.c_str()), false);
+    void* lookup[] = {name.Get()};
+    return Alive(Call(api.findChild, transform.Get(), lookup));
+  }
+  return false;
+}
+const Spec* BoundSpec(const std::string& marker) {
+  if (marker == originalRendererKey) return &OriginalRendererSpec();
+  auto found = specs.find(marker);
+  return found == specs.end() ? nullptr : &found->second;
+}
+bool VisibleOutput(const Bound& binding) {
+  return binding.nativeEnabled && binding.authorVisible && (showOriginals == (binding.marker == originalRendererKey));
+}
+bool AuthorVisible(const Spec& spec) {
+  return spec.marker == originalRendererKey || spec.visible->Evaluate(EffectiveValues(spec.package)) != 0;
+}
 void Bind(void* renderer, void* mesh, const Spec& spec) {
   auto existing = bound.find(renderer);
   if (existing != bound.end() && existing->second.renderer.Get() == renderer && existing->second.mesh.Get() == mesh) return;
@@ -684,17 +718,13 @@ void SetEnabled(void* renderer,bool nativeRequest) {
       if (it!=bound.end() && it->second.renderer.Get()==renderer && Alive(renderer) &&
           SourceMesh(renderer)==it->second.mesh.Get()) {
         auto& binding=it->second;
-        auto spec=specs.find(binding.marker);
-        if (binding.tracksNativeEnabled) binding.nativeEnabled=nativeRequest;
-        if (spec==specs.end()) {
-          // F10 may leave this model in use until its native owner can release it.
-          if (binding.tracksNativeEnabled && binding.modelReady)
-            output=nativeRequest && binding.authorVisible;
-        } else if (spec->second.visible) {
+        if (binding.tracksNativeEnabled) {
           binding.nativeEnabled=nativeRequest;
-          if (nativeRequest && binding.modelReady)
-            binding.authorVisible=spec->second.visible->Evaluate(EffectiveValues(spec->second.package))!=0;
-          output=nativeRequest && (!binding.modelReady || binding.authorVisible);
+          auto spec=BoundSpec(binding.marker);
+          if (binding.modelReady) {
+            if (nativeRequest && spec && spec->visible) binding.authorVisible=AuthorVisible(*spec);
+            output=VisibleOutput(binding);
+          }
         }
       } else {
         auto retired=retiredNativeIntents.find(renderer);
@@ -710,22 +740,27 @@ void SetEnabled(void* renderer,bool nativeRequest) {
   } catch(const std::exception& e) {Log("[CONTROL-RUNTIME-GAP] nativeEnabled=%s",e.what());}
   originalEnabledSetter(renderer,output);
 }
-void ApplyVisibility(void* renderer,Bound& binding,const Spec& spec,bool onlyIfChanged=false) {
-  if (!spec.visible || !binding.modelReady) return;
+void ApplyVisibility(void* renderer,Bound& binding,const Spec* spec,bool onlyIfChanged=false) {
+  if (!(spec ? bool(spec->visible) : binding.tracksNativeEnabled) || !binding.modelReady) return;
   if(onlyIfChanged&&binding.visibilityRevision==RuntimeControls::valueRevision)return;
-  binding.authorVisible=spec.visible->Evaluate(EffectiveValues(spec.package))!=0;
-  bool target=binding.nativeEnabled && binding.authorVisible;
+  if (spec && spec->visible) binding.authorVisible=AuthorVisible(*spec);
+  bool target=VisibleOutput(binding);
   struct Guard {bool old=visibilityWriting;Guard(){visibilityWriting=true;}~Guard(){visibilityWriting=old;}} guard;
   if (ActualEnabled(renderer)==target) {binding.visibilityRevision=RuntimeControls::valueRevision;return;}
   originalEnabledSetter(renderer,target);
   Require(ActualEnabled(renderer)==target,"runtime visibility readback mismatch");
   binding.visibilityRevision=RuntimeControls::valueRevision;
   Log("[CONTROL-RUNTIME-VISIBILITY] package=%s part=%s renderer=%p authorVisible=%d nativeEnabled=%d enabled=%d",
-      spec.package.c_str(),spec.part.c_str(),renderer,int(binding.authorVisible),int(binding.nativeEnabled),int(target));
+      spec?spec->package.c_str():"",spec?spec->part.c_str():"",renderer,int(binding.authorVisible),int(binding.nativeEnabled),int(target));
+}
+void ApplyVisibility(void* renderer,Bound& binding,const Spec& spec,bool onlyIfChanged=false) {
+  ApplyVisibility(renderer,binding,&spec,onlyIfChanged);
 }
 void RegisterRenderer(void* renderer,void* mesh,bool modelReady=true) {
   if (registrationPaused) return;
-  if (auto spec=Match(renderer,mesh)) {
+  auto spec=Match(renderer,mesh);
+  if (!spec && mesh && IsOriginalRenderer(renderer)) spec=&OriginalRendererSpec();
+  if (spec) {
     Bind(renderer,mesh,*spec);
     auto& binding=bound.at(renderer);
     if(modelReady && !binding.modelReady) {
@@ -735,7 +770,8 @@ void RegisterRenderer(void* renderer,void* mesh,bool modelReady=true) {
       binding.restoreNativeIntent=false;
       binding.modelReady=true;
     }
-    ApplyVisibility(renderer,binding,*spec);
+    ApplyVisibility(renderer,binding,spec);
+    if (spec->marker == originalRendererKey) return;
     if(modelReady&&!spec->skeleton.empty()&&!binding.bonesRegistered){
       RuntimeBones::Register(renderer,*spec);binding.bonesRegistered=true;
     }
@@ -876,6 +912,14 @@ void Update() {
   EiemLoadPerformance::Frame(elapsed);
   auto window = GetForegroundWindow(); DWORD pid=0; GetWindowThreadProcessId(window,&pid);
   bool focused = active.load() && pid == GetCurrentProcessId();
+  const auto toggleShortcut = settings.Get().toggleMods;
+  UINT activeModifiers = 0;
+  if (GetAsyncKeyState(VK_SHIFT) & 0x8000) activeModifiers |= MOD_SHIFT;
+  if (GetAsyncKeyState(VK_CONTROL) & 0x8000) activeModifiers |= MOD_CONTROL;
+  if (GetAsyncKeyState(VK_MENU) & 0x8000) activeModifiers |= MOD_ALT;
+  if ((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) activeModifiers |= MOD_WIN;
+  PollOriginalShortcut(toggleShortcut, toggleShortcut.vk && (GetAsyncKeyState(toggleShortcut.vk) & 0x8000) != 0,
+                       activeModifiers, focused && window != panel.window.load());
   {EiemLoadPerformance::Scope input(EiemLoadPerformance::ControlInput);PanelCommands(focused);PollControls(focused,elapsed);}
   RuntimeAnimations::Frame(elapsed,frame);
 }
@@ -890,9 +934,9 @@ void ApplyOutputs(int frame) {
 #endif
   EiemLoadPerformance::Scope bindings(EiemLoadPerformance::ControlBindings);
   for (auto it=bound.begin();it!=bound.end();) {
-    auto found=specs.find(it->second.marker);
-    const auto* spec=found==specs.end()?nullptr:&found->second;
-    bool visibilityDirty=spec&&spec->visible&&it->second.modelReady&&it->second.visibilityRevision!=RuntimeControls::valueRevision;
+    const auto* spec=BoundSpec(it->second.marker);
+    bool visibilityDirty=(spec ? bool(spec->visible) && it->second.visibilityRevision!=RuntimeControls::valueRevision
+                               : it->second.tracksNativeEnabled && originalToggleRevision!=0 && it->second.visibilityRevision!=originalToggleRevision)&&it->second.modelReady;
     // Shape channels can be rewritten by animation each frame. Visibility
     // already follows native setters and only needs work on author changes.
     // Spread idle weak-reference cleanup instead of polling every Renderer.
@@ -908,9 +952,20 @@ void ApplyOutputs(int frame) {
       auto key=it->first;++it;RetireRenderer(key);continue;
     }
     // The current generation may no longer define this retained Renderer.
-    // Leave its last authored output intact until the owner retires it.
-    if(!spec){++it;continue;}
-    ApplyVisibility(renderer,it->second,*spec,true);
+    // Leave its last authored output intact until the owner retires it, unless
+    // global original-visibility mode toggled.
+    if (!spec) {
+      if (it->second.tracksNativeEnabled && it->second.modelReady &&
+          originalToggleRevision != 0 &&
+          it->second.visibilityRevision != originalToggleRevision) {
+        ApplyVisibility(renderer, it->second, nullptr, true);
+        it->second.visibilityRevision = originalToggleRevision;
+      }
+      ++it;
+      continue;
+    }
+    ApplyVisibility(renderer,it->second,spec,true);
+    if(spec->marker == originalRendererKey){++it;continue;}
 #if defined(EIEM_MOD_ANIMATION_PROBE)
     auto nativeShapes=it->second.shapeCompatible&&it->second.modelReady?
       ModAnimationProbe::Apply(renderer,mesh,*spec):std::set<std::string>{};
@@ -1032,6 +1087,15 @@ void InstallOptional(void** assemblies,size_t count) {
     auto component=FindClass("UnityEngine","Component",assemblies,count);
     auto transform=FindClass("UnityEngine","Transform",assemblies,count);
     api.transformClass=transform;
+    api.findChild=Exact(transform,"Find",{"System.String"},"UnityEngine.Transform",false);
+    api.childCount=Exact(transform,"get_childCount",{},"System.Int32",false);
+    api.directComponents=Exact(FindClass("UnityEngine","GameObject",assemblies,count),"GetComponents",{"System.Type"},"UnityEngine.Component[]",false);
+    auto staticRenderer=FindClass("UnityEngine","MeshRenderer",assemblies,count);
+    Require(staticRenderer && skin, "original Renderer classes unavailable");
+    api.staticRendererType=il2cpp_type_get_object(il2cpp_class_get_type(staticRenderer));
+    api.skinType=il2cpp_type_get_object(il2cpp_class_get_type(skin));
+    Require(api.findChild && api.childCount && api.directComponents && api.staticRendererType && api.skinType && il2cpp_string_new,
+            "original Renderer marker lookup unavailable");
     api.bones=Exact(skin,"get_bones",{},"UnityEngine.Transform[]",false);
     api.rootBone=Exact(skin,"get_rootBone",{},"UnityEngine.Transform",false);
     api.skinningRoot=Exact(skin,"get_skinningRoot",{},"UnityEngine.Transform",false);

@@ -36,6 +36,7 @@ The production DLL and proxies statically link their own C/C++ runtime implement
 - One source Renderer can expand into multiple author parts. Unspecified targets retain original content. Materials and textures may use game templates or author-created data.
 - **Ins** opens independent keyboard checkboxes for each Mod, all enabled by default. Multiple Mods can respond to the same key. The dropdown selects the Mod whose buttons and sliders are shown. Key switches, shape controls and saved player values remain supported.
 - **F10** reads the full current Mod set, handles additions/removals/changes and the empty set, and reloads supported world/display owners with animation, weapon and audio rebinding. Failed preparation or submission keeps the current generation.
+- **F11** (configurable via `toggle_mods` in `plugin/eff.ini`) toggles between original game visuals and active Mods in place without reloading, preserving current part/control selections when switched back.
 - Shape Keys clips have independent playback groups and play/stop shortcuts. Ins provides pause and persistent live speed controls without resetting playback phase.
 - Effects can ship as standalone Mods or attach to a character Mesh bone. They follow the model lifecycle, can be toggled by key, reload with all Mod resources through F10, and cover all LODs.
 - Animated material parameters and effect resources use the same Mod export and reload pipeline; Mods are discovered recursively below `plugin/mods`.

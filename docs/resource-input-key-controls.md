@@ -134,9 +134,11 @@ The reload shortcut comes from game `plugin/eff.ini`. Current source defaults,
 generated configuration, project template and the 2026-10-06 v35 deployment
 use F10 (VK_F10). After editing a binding, use the old active shortcut once
 to publish the new one. Mod bindings may share keys with other Mods, but cannot
-overlap the global reload, effects-reload or GUI keys. Users control which Mods
+overlap the global reload, GUI or `toggle_mods` keys. Users control which Mods
 respond through their INI flags and panel checkboxes. `gui=INSERT` toggles
-the built-in control panel. Mods can also [declare their own Lua panel](custom-mod-gui.md).
+the built-in control panel, and `toggle_mods=F11` switches globally between
+original game renderers and active Mods without reloading. Mods can also
+[declare their own Lua panel](custom-mod-gui.md).
 
 ### Ins control panel
 

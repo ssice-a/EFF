@@ -399,6 +399,7 @@ class RendererMemberBuilder {
   NativePreloadExpansion preloadExpansion;
   const MaterialPreloadIndex* materialPreloads = nullptr;
   bool retainSourceMaterials = false;
+  bool keepOriginalRenderers = false;
   const std::map<std::string,EiemMeshBindingMetadata::Mesh>* authorMetadata = nullptr;
   const AuthorBoneSlots* authorBoneSlots = nullptr;
   const std::map<std::string,std::string>* authorMarkers = nullptr;
@@ -447,6 +448,49 @@ class RendererMemberBuilder {
   }
   void Add(int64_t id, int64_t donor, const Value& value) {
     added.push_back({id, layout.objects.at(donor).type, EncodeValue(Schema(donor), value, trackOrigins?&objectOrigins[id]:nullptr)});
+  }
+  void AddChild(int64_t owner, int64_t tid, int64_t gid, int64_t newTid,
+                const std::string& name, const std::vector<int64_t>& componentIds) {
+    const auto& goType = Schema(owner);
+    auto go = Tree(owner);
+    SetString(goType, Child(goType, go, "m_Name"),name);
+    auto& components = ArrayValue(goType, Child(goType, go, "m_Component"));
+    components.children.clear();
+    for (auto component : componentIds) {
+      auto entry = ArrayElement(goType, components);
+      SetReference(goType, Child(goType, entry, "component"), {cab, component}, layout, cab);
+      components.children.push_back(std::move(entry));
+    }
+    components.count = components.children.size();
+    Add(gid, owner, go);
+    const auto& transformType = Schema(tid);
+    auto transform = Tree(tid);
+    SetReference(transformType, Child(transformType, transform, "m_GameObject"), {cab, gid}, layout, cab);
+    SetReference(transformType, Child(transformType, transform, "m_Father"), {cab, tid}, layout, cab);
+    auto& children = ArrayValue(transformType, Child(transformType, transform, "m_Children"));
+    children.children.clear(); children.count = 0;
+    SetVector(transformType, Child(transformType, transform, "m_LocalPosition"), {0, 0, 0});
+    SetVector(transformType, Child(transformType, transform, "m_LocalScale"), {1, 1, 1});
+    auto& rotation = Child(transformType, transform, "m_LocalRotation");
+    SetVector(transformType, rotation, {0, 0, 0}); SetFloat(transformType, Child(transformType, rotation, "w"), 1);
+    auto& parentChildren = ArrayValue(transformType, Child(transformType, Tree(tid), "m_Children"));
+    for (auto& field : transform.children)
+      if (transformType.nodes[field.node].name == "m_RootOrder") SetInteger(transformType, field, parentChildren.count);
+    auto child = ArrayElement(transformType, parentChildren);
+    SetReference(transformType, child, {cab, newTid}, layout, cab);
+    parentChildren.children.push_back(std::move(child)); parentChildren.count = parentChildren.children.size();
+    changed.insert(tid); Add(newTid, tid, transform);
+  }
+  size_t RendererOrdinal(int64_t owner, int64_t rid) {
+    const auto& gt = Schema(owner);
+    const auto& components = ConstArray(gt, Child(gt, Tree(owner), "m_Component"));
+    size_t ordinal = 0;
+    for (const auto& item : components.children) {
+      auto ref = NullableReference(gt, Child(gt, item, "component"), layout, cab);
+      if (ref == NativeReference{cab, rid}) return ordinal;
+      if (ref.first == cab && layout.objects.count(ref.second) && Schema(ref.second).classId == Schema(rid).classId) ++ordinal;
+    }
+    throw std::runtime_error("original Renderer is absent from its owner");
   }
   std::vector<int64_t> ResolveBones(int64_t ownerTransform, int64_t rootBone,
       const Mesh& mesh,const std::vector<uint32_t>& sourceHashes,const std::vector<int64_t>& nativeBones,
@@ -638,7 +682,7 @@ public:
       const auto& type = Schema(rid);
       const auto original = Tree(rid);
       ++result.matches;
-      if (rule.skip) {
+      if (rule.skip && !keepOriginalRenderers) {
         SetInteger(type, Child(type, Tree(rid), "m_Enabled"), 0);
         changed.insert(rid); rendererExpansion[rid] = {}; ++result.skipped;
         continue;
@@ -646,6 +690,21 @@ public:
       auto owner = Local(type, Child(type, original, "m_GameObject"), 1);
       Require(transforms.count(owner), "Renderer owner lacks Transform");
       auto tid = transforms.at(owner);
+      std::set<NativeReference> dependencies;
+      if (keepOriginalRenderers) {
+        const auto markerGo = Allocate("original-go", rid, "");
+        const auto markerTransform = Allocate("original-transform", rid, "");
+        AddChild(owner, tid, markerGo, markerTransform,
+                 OriginalRendererTag(type.classId, RendererOrdinal(owner, rid)), {markerTransform});
+        dependencies.insert({cab, markerGo});
+        dependencies.insert({cab, markerTransform});
+        rendererExpansion[rid].push_back(rid);
+        if (rule.skip) {
+          preloadExpansion[{cab, rid}] = {dependencies.begin(), dependencies.end()};
+          ++result.skipped;
+          continue;
+        }
+      }
       const auto& ownerNameField=Child(Schema(owner),Tree(owner),"m_Name");
       const auto originalOwnerName=Text(ownerNameField.raw.data(),ownerNameField.raw.size());
       int64_t rootBone=0;
@@ -665,7 +724,6 @@ public:
         transformComponents += reference == NativeReference{cab, tid};
       }
       Require(rendererComponents == 1 && transformComponents == 1, "Renderer/GameObject component reference mismatch");
-      std::set<NativeReference> dependencies;
       for (size_t i = 0; i < rule.parts.size(); ++i) {
         const auto& pid = rule.parts[i];
         const auto& part = package.parts.at(pid);
@@ -720,44 +778,16 @@ public:
         auto bones = skinned?ResolveBones(tid, rootBone, mesh,nativeMesh->sourceBoneHashes,nativeBones,rid,pid):std::vector<int64_t>{};
         auto renderer = original;
         int64_t newRid = rid, gid = owner, newTid = tid, newFilter=matched.filter;
-        if (i) {
+        const bool childRenderer = keepOriginalRenderers || i != 0;
+        if (childRenderer) {
           newRid = Allocate("renderer", rid, pid); gid = Allocate("go", rid, pid); newTid = Allocate("transform", rid, pid);
           if(!skinned)newFilter=Allocate("filter",rid,pid);
-          auto go = Tree(owner);
-          SetString(goType, Child(goType, go, "m_Name"),RendererPartTag(originalOwnerName,rendererMarker));
-          auto& components = ArrayValue(goType, Child(goType, go, "m_Component"));
-          components.children.clear();
-          std::vector<int64_t> componentIds{newTid};if(!skinned)componentIds.push_back(newFilter);componentIds.push_back(newRid);
-          for (auto component : componentIds) {
-            auto entry = ArrayElement(goType, components);
-            SetReference(goType, Child(goType, entry, "component"), {cab, component}, layout, cab);
-            components.children.push_back(std::move(entry));
-          }
-          components.count = components.children.size();
-          Add(gid, owner, go);
-          const auto& transformType = Schema(tid);
-          auto transform = Tree(tid);
-          SetReference(transformType, Child(transformType, transform, "m_GameObject"), {cab, gid}, layout, cab);
-          SetReference(transformType, Child(transformType, transform, "m_Father"), {cab, tid}, layout, cab);
-          auto& children = ArrayValue(transformType, Child(transformType, transform, "m_Children"));
-          children.children.clear(); children.count = 0;
-          SetVector(transformType, Child(transformType, transform, "m_LocalPosition"), {0, 0, 0});
-          SetVector(transformType, Child(transformType, transform, "m_LocalScale"), {1, 1, 1});
-          auto& rotation = Child(transformType, transform, "m_LocalRotation");
-          SetVector(transformType, rotation, {0, 0, 0}); SetFloat(transformType, Child(transformType, rotation, "w"), 1);
-          auto& parentChildren = ArrayValue(transformType, Child(transformType, Tree(tid), "m_Children"));
-          for (auto& field : transform.children)
-            if (transformType.nodes[field.node].name == "m_RootOrder") SetInteger(transformType, field, parentChildren.count);
-          auto child = ArrayElement(transformType, parentChildren);
-          SetReference(transformType, child, {cab, newTid}, layout, cab);
-          parentChildren.children.push_back(std::move(child)); parentChildren.count = parentChildren.children.size();
-          changed.insert(tid); Add(newTid, tid, transform);
+          std::vector<int64_t> componentIds{newTid};
+          if (!skinned) componentIds.push_back(newFilter);
+          componentIds.push_back(newRid);
+          AddChild(owner, tid, gid, newTid, RendererPartTag(originalOwnerName,rendererMarker), componentIds);
           for (auto id : {gid, newTid, newRid}) dependencies.insert({cab, id});
           if(!skinned)dependencies.insert({cab,newFilter});
-        } else {
-          // Keep the native owner's name and hierarchy path stable. The first
-          // authored part is identified by its Mesh marker; only generated
-          // renderer owners (the i>0 branch above) need a provenance tag.
         }
         SetReference(type, Child(type, renderer, "m_GameObject"), {cab, gid}, layout, cab);
         if(skinned)SetReference(type, Child(type, renderer, "m_Mesh"), {nativeMesh->cab, nativeMesh->id}, layout, cab);
@@ -765,7 +795,7 @@ public:
           const auto& ft=Schema(matched.filter);auto filter=Tree(matched.filter);
           SetReference(ft,Child(ft,filter,"m_GameObject"),{cab,gid},layout,cab);
           SetReference(ft,Child(ft,filter,"m_Mesh"),{nativeMesh->cab,nativeMesh->id},layout,cab);
-          if(i)Add(newFilter,matched.filter,filter);else {Tree(matched.filter)=std::move(filter);changed.insert(matched.filter);}
+          if(childRenderer)Add(newFilter,matched.filter,filter);else {Tree(matched.filter)=std::move(filter);changed.insert(matched.filter);}
           // Author geometry is not part of the original static batch or donor
           // vertex stream. Let Unity render the replacement Mesh on its own.
           for(auto& field:renderer.children){auto name=type.nodes[field.node].name;
@@ -810,7 +840,7 @@ public:
         SetVector(type, Child(type, aabb, "m_Extent"), bounds.second);
         if(trackOrigins)BindBoundsOrigins(type,aabb,BoundsOriginName(rootSlot,boneToRoot,mesh.resource));
         }
-        if (i) Add(newRid, rid, renderer);
+        if (childRenderer) Add(newRid, rid, renderer);
         else { Tree(rid) = std::move(renderer); changed.insert(rid); }
         rendererExpansion[rid].push_back(newRid);
         dependencies.insert({nativeMesh->cab, nativeMesh->id});
@@ -926,6 +956,7 @@ public:
     Require(!built,"Renderer author metadata supplied after Build");
     authorMetadata=&metadata;
   }
+  void KeepOriginalRenderers() { keepOriginalRenderers = true; }
   void SetAuthorBoneSlots(const AuthorBoneSlots& slots) {authorBoneSlots=&slots;}
   void SetAuthorMarkers(const std::map<std::string,std::string>& markers) {authorMarkers=&markers;}
   void SetMaterialReferences(const RendererMaterialReferences& references) {materialReferences=&references;}

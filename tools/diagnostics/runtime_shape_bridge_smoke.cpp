@@ -401,10 +401,63 @@ int main(int argc,char** argv) {
       auto state=[&](int value,int instance) {
         RuntimeShapes::variables.at("fixture").at("$switch")=value;RuntimeControls::Changed("fixture");
         unsigned signature=0;for(int part=0;part<2;++part){auto renderer=renderers[instance][part];auto& b=RuntimeShapes::bound.at(renderer);
-          RuntimeShapes::ApplyVisibility(renderer,b,RuntimeShapes::specs.at(b.marker));
+          RuntimeShapes::ApplyVisibility(renderer,b,&RuntimeShapes::specs.at(b.marker));
           if(Test::renderEnabled.at(renderer))signature|=1u<<part;
         }return signature;
       };
+      {
+        using namespace RuntimeControls;
+        auto native=(void*)0x8f4000;auto mesh=(void*)0x8f4010;
+        auto originalRevision=valueRevision;
+        Test::MakeMesh(mesh,OriginalRendererSpec());
+        Test::renderMeshes[native]=mesh;Test::renderEnabled[native]=true;
+        RuntimeShapes::Bind(native,mesh,OriginalRendererSpec());
+        auto& binding=RuntimeShapes::bound.at(native);binding.modelReady=true;
+        auto refresh=[&]{RuntimeShapes::ApplyVisibility(native,binding,&OriginalRendererSpec(),true);};
+        refresh();Require(!Test::renderEnabled.at(native)&&RuntimeShapes::GetEnabled(native),"original not initially filtered");
+        originalShortcut={};
+        const EiemKeyChord f11{VK_F11,0};
+        PollOriginalShortcut(f11,false,0,true);
+        PollOriginalShortcut(f11,true,MOD_CONTROL,true);PollOriginalShortcut(f11,true,0,true);
+        Require(!showOriginals,"modifier release fired F11");PollOriginalShortcut(f11,false,0,true);
+        PollOriginalShortcut(f11,true,0,false);PollOriginalShortcut(f11,true,0,true);
+        Require(!showOriginals,"focus regain fired F11");PollOriginalShortcut(f11,false,0,true);
+        Require(state(1,0)==2,"authored selection missing before F11");
+        PollOriginalShortcut(f11,true,0,true);PollOriginalShortcut(f11,true,0,true);
+        refresh();Require(showOriginals&&Test::renderEnabled.at(native),"original not restored on one key edge");
+        for(int part=0;part<2;++part){auto renderer=renderers[0][part];auto& b=RuntimeShapes::bound.at(renderer);
+          RuntimeShapes::ApplyVisibility(renderer,b,RuntimeShapes::BoundSpec(b.marker),true);
+          Require(!Test::renderEnabled.at(renderer)&&RuntimeShapes::GetEnabled(renderer),"authored part still visible or native intent lost");}
+        RuntimeShapes::SetEnabled(native,false);Require(!Test::renderEnabled.at(native),"inactive LOD wrongly enabled");
+        RuntimeShapes::SetEnabled(native,true);Require(Test::renderEnabled.at(native),"active original wrongly hidden");
+        auto late=(void*)0x8f4020;Test::renderMeshes[late]=Test::renderMeshes[renderers[0][1]];Test::renderEnabled[late]=true;
+        RuntimeShapes::RegisterRenderer(late,Test::renderMeshes[late],true);
+        Require(!Test::renderEnabled.at(late),"newly spawned authored Renderer visible in original mode");
+        PollOriginalShortcut(f11,false,0,true);PollOriginalShortcut(f11,true,0,true);refresh();
+        RuntimeShapes::ApplyOutputs(21);
+        Require(!showOriginals&&!Test::renderEnabled.at(native)&&!Test::renderEnabled.at(renderers[0][0])&&
+                Test::renderEnabled.at(renderers[0][1])&&Test::renderEnabled.at(late)&&
+                RuntimeControls::variables.at("fixture").at("$switch")==1,"F11 did not restore the selected appearance");
+        // Configured modifier chords require an exact modifier match.
+        const EiemKeyChord ctrlF11{VK_F11,MOD_CONTROL};
+        PollOriginalShortcut(ctrlF11,false,0,true);
+        PollOriginalShortcut(ctrlF11,true,0,true);
+        Require(!showOriginals,"unmodified key fired Ctrl+F11 chord");
+        PollOriginalShortcut(ctrlF11,false,0,true);
+        PollOriginalShortcut(ctrlF11,true,MOD_CONTROL|MOD_SHIFT,true);
+        Require(!showOriginals,"extra modifier fired Ctrl+F11 chord");
+        PollOriginalShortcut(ctrlF11,false,0,true);
+        PollOriginalShortcut(ctrlF11,true,MOD_CONTROL,true);
+        Require(showOriginals,"configured Ctrl+F11 chord did not toggle original visibility");
+        PollOriginalShortcut(ctrlF11,false,0,true);
+        PollOriginalShortcut(ctrlF11,true,MOD_CONTROL,true);
+        Require(!showOriginals,"configured Ctrl+F11 chord did not restore authored visibility");
+        refresh();
+        RuntimeShapes::ApplyOutputs(22);
+        RuntimeShapes::RetireRenderer(late);RuntimeShapes::RetireRenderer(native);
+        valueRevision=std::max(valueRevision,originalRevision)+1;originalShortcut={};
+        std::cout<<"PASS F11 edge/focus/modifiers/chords, native visibility and new instances; restored original and previous selection without reload\n";
+      }
       Require(state(0,0)==3&&state(1,0)==2&&state(2,0)==0,"initial world switch does not have three distinct combinations");
       state(1,0);state(1,1);
       // Snapshot outside any completion callback, disable for the ultimate,
@@ -587,7 +640,7 @@ int main(int argc,char** argv) {
       for(const auto& binding:RuntimeShapes::bound){
         Require(Test::renderEnabled.at(binding.first),"material Init hid an author part before the game's initial Renderer snapshot");
         const auto& spec=RuntimeShapes::specs.at(binding.second.marker);
-        RuntimeShapes::ApplyVisibility(binding.first,RuntimeShapes::bound.at(binding.first),spec);
+        RuntimeShapes::ApplyVisibility(binding.first,RuntimeShapes::bound.at(binding.first),&spec);
         Require(Test::renderEnabled.at(binding.first),"a frame before model completion contaminated the native Renderer snapshot");
         RuntimeShapes::SetEnabled(binding.first,false);
         Require(!Test::renderEnabled.at(binding.first),"pending model lost a real native disable request");
@@ -710,13 +763,13 @@ int main(int argc,char** argv) {
       auto& mismatchBinding=RuntimeShapes::bound.at(mismatchRenderer);
       Require(mismatchBinding.modelReady&&!mismatchBinding.shapeCompatible,
               "layout mismatch was treated as a valid shape binding");
-      RuntimeShapes::ApplyVisibility(mismatchRenderer,mismatchBinding,*mismatchSpec);
+      RuntimeShapes::ApplyVisibility(mismatchRenderer,mismatchBinding,mismatchSpec);
       Require(bool(Test::renderEnabled.at(mismatchRenderer))==
               (mismatchBinding.nativeEnabled&&mismatchSpec->visible->Evaluate(RuntimeControls::variables.at(mismatchSpec->package))!=0),
               "layout mismatch did not preserve visibility evaluation");
       RuntimeShapes::bound.erase(mismatchRenderer);
       auto apply=[&] {
-        for(auto& binding:RuntimeShapes::bound) RuntimeShapes::ApplyVisibility(binding.first,binding.second,RuntimeShapes::specs.at(binding.second.marker));
+        for(auto& binding:RuntimeShapes::bound) RuntimeShapes::ApplyVisibility(binding.first,binding.second,&RuntimeShapes::specs.at(binding.second.marker));
       };
       auto verify=[&] {
         for(const auto& binding:RuntimeShapes::bound) {

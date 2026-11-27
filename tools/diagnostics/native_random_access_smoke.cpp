@@ -665,7 +665,7 @@ void NativeCatalogAssembly() {
     Require(!catalog->OpenMeshes(),"native catalog eagerly opened an authored asset");N::Author author(catalog);R::Reader current(source->size(),read);auto layout=current.Layout(current.directory.members[0]);
     AssetIndex targets;targets[{"assets/static.mesh","Static"}]={};auto& target=targets.begin()->second;target.cab=fixture.cab;target.pathId=100;target.classId=43;
     auto carrier=N::PrepareCarrier(current,0,layout,author,targets);auto prepared=S::BuildRanges(current,{carrier.plan.rewrite});auto view=prepared.Bind(read);
-    Require(carrier.parts.size()==count&&carrier.addedObjects==(count?count-1:0)&&catalog->OpenMeshes()==count,"native 0/1/N carrier resource count differs");
+    Require(carrier.parts.size()==count&&carrier.addedObjects==count&&catalog->OpenMeshes()==count,"native 0/1/N carrier resource count differs");
     if(count){auto first=catalog->GetMesh("PartP0");Require(first->metadataReadBytes<64*1024&&first->object.size>1024*1024,"native metadata read includes authored vertex payload");
       std::vector<std::thread> threads;std::atomic<bool> same{true};for(size_t i=0;i<4;++i)threads.emplace_back([&]{if(catalog->GetMesh("PartP0")!=first)same=false;});for(auto& thread:threads)thread.join();Require(same,"concurrent author asset requests duplicated a native input");}
     if(count){std::ostringstream aliases;aliases<<ini.str()<<"\n[PartAlias]\nmesh=MeshP0\nmaterial_slot=2\nvisible=1\n";
@@ -680,10 +680,10 @@ void NativeCatalogAssembly() {
     // one object table without materializing/reopening a full intermediate.
     EiemNativeEditTransaction::Member transaction(current,0,layout);
     auto stagedCarrier=N::StageCarrier(transaction,current,0,author,targets);
-    if(count){auto projected=transaction.Project(100,{"m_Name"});
+    if(count){auto projected=transaction.Project(stagedCarrier.parts.front().id,{"m_Name"});
       Require(Text(Child(mt,projected,"m_Name").raw.data(),Child(mt,projected,"m_Name").raw.size())==RuntimePartName(author.package,"PartP0",targets.begin()->first),"range overlay projection returned the old Mesh");
       auto bounded=current.limits.fieldBytes;current.limits.fieldBytes=1024;
-      Rejected([&]{transaction.Object(100);});current.limits.fieldBytes=bounded;
+      Rejected([&]{transaction.Object(stagedCarrier.parts.front().id);});current.limits.fieldBytes=bounded;
     }
     auto matches=N::MatchConsumers(transaction,author,targets);
     auto uses=EiemDemandMaterialAssembly::CollectUses(author,matches);
@@ -702,6 +702,48 @@ void NativeCatalogAssembly() {
     for(auto id:after.order){const auto& a=after.objects.at(id);const auto& c=cl.objects.at(id);
       Require(a.type==c.type&&a.size==c.size&&std::equal(actual.members[0].bytes.begin()+a.offset,actual.members[0].bytes.begin()+a.offset+a.size,combined.members[0].bytes.begin()+c.offset),"single native transaction differs from staged oracle");}
     Require(built.result.matches==2&&built.result.parts.size()==count*2,"native consumer 0/1/N did not cover both Prefab roots");
+    // Whether skipped, single or multi-part, the original Unity objects and
+    // both original donors remain byte-identical, including the native enabled flag.
+    for (int64_t id : {12,13,22,23,100,200,201}) {
+      const auto& object=after.objects.at(id);
+      auto expected=EncodeValue(fixture.T(id),fixture.V(id));
+      Require(object.size==expected.size() &&
+              std::equal(expected.begin(),expected.end(),actual.members[0].bytes.begin()+object.offset),
+              "original renderer, filter, donor material or geometry was overwritten");
+    }
+    for (int64_t base : {10,20}) {
+      const auto tid=base+1, rid=base+3;
+      auto owner=ObjectValue(actual.members[0].bytes,after,tid);
+      const auto& tt=fixture.T(tid);
+      const auto& children=ConstArray(tt,Child(tt,owner,"m_Children"));
+      size_t originals=0;
+      for (const auto& pointer:children.children) {
+        auto child=NullableReference(tt,pointer,after,fixture.cab);
+        auto transform=ObjectValue(actual.members[0].bytes,after,child.second);
+        auto go=NullableReference(tt,Child(tt,transform,"m_GameObject"),after,fixture.cab);
+        auto object=ObjectValue(actual.members[0].bytes,after,go.second);
+        const auto& name=Child(fixture.T(base),object,"m_Name").raw;
+        if (Text(name.data(),name.size())=="__EFF_F11_ORIGINAL__23_0") {
+          ++originals;
+          Require(ConstArray(fixture.T(base),Child(fixture.T(base),object,"m_Component")).count==1,
+                  "original marker contains a duplicate Renderer");
+        }
+      }
+      Require(originals==1,"original Renderer marker missing or duplicated");
+      for(const auto& part:built.result.parts)if(part.sourceRenderer==rid)
+        Require(part.renderer!=rid && part.mesh!=100 && part.owner!=base,"authored part reused an original object");
+    }
+    {
+      auto group=ObjectValue(actual.members[0].bytes,after,14);
+      const auto& gt=fixture.T(14);
+      const auto& level=ConstArray(gt,Child(gt,group,"m_LODs")).children.front();
+      auto helper=ObjectValue(actual.members[0].bytes,after,15);const auto& ht=fixture.T(15);
+      const auto& list=ConstArray(ht,Child(ht,helper,"customRenderers"));
+      const auto& levelRenderers=ConstArray(gt,Child(gt,level,"renderers"));
+      Require(levelRenderers.count==count+1 && list.count==count+1 &&
+              NullableReference(gt,Child(gt,levelRenderers.children.front(),"renderer"),after,fixture.cab).second==13 &&
+              NullableReference(ht,list.children.front(),after,fixture.cab).second==13,"original disappeared from LOD/helper");
+    }
     std::map<std::string,NativeReference> shared;
     for(const auto& part:built.result.parts){auto inserted=shared.emplace(part.part,NativeReference{part.meshCab,part.mesh});Require(inserted.second||inserted.first->second==NativeReference{part.meshCab,part.mesh},"native consumers duplicated an authored Mesh");
       const auto& type=after.types.at(after.objects.at(part.renderer).type);auto value=ObjectValue(actual.members[0].bytes,after,part.renderer);const auto& materials=ConstArray(type,Child(type,value,"m_Materials"));
@@ -731,7 +773,7 @@ void NativeCatalogAssembly() {
       auto nextView=S::BuildRanges(nextCurrent,{nextCarrier.plan.rewrite}).Bind(read);
       Require(Materialize(nextView)!=Materialize(view),"new author generation did not observe replacement Mesh");
       auto nextNative=EndfieldInput::Decode(Materialize(nextView));auto nextLayout=ParseSerialized(nextNative.members.front().bytes);
-      auto nextValue=ObjectValue(nextNative.members.front().bytes,nextLayout,100);
+      auto nextValue=ObjectValue(nextNative.members.front().bytes,nextLayout,nextCarrier.parts.front().id);
       Require(Child(nextLayout.types.at(nextLayout.objects.at(100).type),nextValue,"m_VertexData").raw==Bytes(1024*1024+37,0x5a),
         "new Mesh generation did not deserialize the replacement vertex field");
       Require(!nextCatalog->OpenTextures()&&nextCatalog->OpenMeshes()==1,"Mesh overwrite opened unrelated resources");
@@ -894,8 +936,24 @@ void InspectNativeAuthor(const std::filesystem::path& path,uint64_t offset,const
     auto elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
     auto actual=EndfieldInput::Decode(Materialize(prepared.Bind(consumerRead)));auto after=ParseSerialized(actual.members[mi].bytes);
     for(const auto& bound:built.result.parts){const auto& type=after.types.at(after.objects.at(bound.renderer).type);auto value=ObjectValue(actual.members[mi].bytes,after,bound.renderer);
-      Require(NullableReference(type,Child(type,value,"m_Mesh"),after,member.name)==NativeReference{bound.meshCab,bound.mesh},"native consumer shared Mesh reference differs");
-      Require(ConstArray(type,Child(type,value,"m_Bones")).count==author.package.meshes.at(author.package.parts.at(bound.part).mesh).bones.size(),"native consumer bone palette incomplete");
+      auto expected=NativeReference{bound.meshCab,bound.mesh};
+      if(type.classId==137) {
+        Require(NullableReference(type,Child(type,value,"m_Mesh"),after,member.name)==expected,"native consumer shared Mesh reference differs");
+        Require(ConstArray(type,Child(type,value,"m_Bones")).count==author.package.meshes.at(author.package.parts.at(bound.part).mesh).bones.size(),"native consumer bone palette incomplete");
+      } else {
+        Require(type.classId==23,"unexpected native Renderer kind");
+        const auto& gt=after.types.at(after.objects.at(bound.owner).type);
+        auto go=ObjectValue(actual.members[mi].bytes,after,bound.owner);size_t filters=0;
+        for(const auto& component:ConstArray(gt,Child(gt,go,"m_Component")).children) {
+          auto ref=NullableReference(gt,Child(gt,component,"component"),after,member.name);
+          const auto& ft=after.types.at(after.objects.at(ref.second).type);
+          if(ft.classId!=33)continue;
+          auto filter=ObjectValue(actual.members[mi].bytes,after,ref.second);
+          Require(NullableReference(ft,Child(ft,filter,"m_Mesh"),after,member.name)==expected,"static consumer MeshFilter points to wrong Mesh");
+          ++filters;
+        }
+        Require(filters==1,"static author Renderer lacks its own MeshFilter");
+      }
     }
     rendererMatches+=built.result.matches;
     std::cout<<"NATIVE-CONSUMER matches="<<built.result.matches<<" parts="<<built.result.parts.size()<<" changedObjects="<<built.result.changedObjects<<" addedObjects="<<built.result.addedObjects<<" literalBytes="<<prepared.literalBytes<<" retainedEncodedBytes="<<prepared.reusedEncoded<<" prepareMs="<<elapsed<<" vertexBoundsComputed=0 authorPayloadDecoded=0 oracleExcluded=1\n";

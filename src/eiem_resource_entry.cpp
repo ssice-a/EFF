@@ -587,7 +587,7 @@ void LoadInitialPackages() {
   auto config=EiemEntrySettings::Read(gameDirectory);
   auto next=DemandLoadingProbe::ReadInstalledPackages();
   for(const auto& p:*next) for(const auto& key:p.bindings)
-    Require(key.key.vk!=config.reload.vk && key.key.vk!=config.gui.vk,"Mod key overlaps reserved global shortcut: "+p.id+"/"+key.id);
+    Require(key.key.vk!=config.reload.vk && key.key.vk!=config.gui.vk && key.key.vk!=config.toggleMods.vk,"Mod key overlaps reserved global shortcut: "+p.id+"/"+key.id);
   settings.Publish(config);
   std::atomic_store(&published,next);
 #if defined(EIEM_DEMAND_NATIVE_ACCEPTANCE)
@@ -1729,7 +1729,7 @@ DWORD StartImpl() {
     if(!active) RuntimeControls::panel.Close();
     auto shortcut=settings.Get().reload;
     bool physical=RuntimeControls::Down(shortcut);
-    customGuiKeys.Poll(RuntimeControls::panel,gui,shortcut,active && process==GetCurrentProcessId(),RuntimeControls::Down);
+    customGuiKeys.Poll(RuntimeControls::panel,gui,shortcut,settings.Get().toggleMods,active && process==GetCurrentProcessId(),RuntimeControls::Down);
     if (reloadKey.Press(shortcut,physical,active && process==GetCurrentProcessId())) {
       reloadClock.store(NativeBundle::Clock());
       reload.store(true);
@@ -1844,11 +1844,16 @@ APPLEPIE_PLUGIN_EXPORT bool AP_ReloadConfig() {
 APPLEPIE_PLUGIN_EXPORT int AP_GetHotkeys(AP_HotkeyInfo *output, int maximum) {
   if (maximum > 0 && output) {
     output[0] = {"Reload Mod configuration", "reload", int(Entry::settings.Get().reload.vk)};
-    if(maximum>1) {
-      output[1]={"Open Mod controls", "gui", int(Entry::settings.Get().gui.vk)};
-      return 2;
+    int count = 1;
+    if (maximum > 1) {
+      output[1] = {"Open Mod controls", "gui", int(Entry::settings.Get().gui.vk)};
+      count = 2;
     }
-    return 1;
+    if (maximum > 2) {
+      output[2] = {"Toggle Mod visibility", "toggle_mods", int(Entry::settings.Get().toggleMods.vk)};
+      count = 3;
+    }
+    return count;
   }
   return 0;
 }

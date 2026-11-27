@@ -15,6 +15,20 @@ struct Spec {
   bool afterimage = true;
 };
 
+constexpr const char* originalRendererKey = "__EFF_F11_ORIGINAL__";
+const Spec& OriginalRendererSpec() {
+  static const Spec spec = [] {
+    Spec value;
+    value.marker = originalRendererKey;
+    value.visible = EiemExpression::Make();
+    value.visible->number = 1;
+    return value;
+  }();
+  return spec;
+}
+bool showOriginals = false;
+uint64_t originalToggleRevision = 0;
+EiemControlPanel::Shortcut originalShortcut;
 std::map<std::string,Spec> specs;
 std::map<std::string,EiemVariables> variables;
 std::map<std::string,std::vector<Binding>> keys;
@@ -118,6 +132,19 @@ bool Down(const EiemKeyChord& key) {
     (!(key.modifiers&MOD_CONTROL) || (GetAsyncKeyState(VK_CONTROL)&0x8000)) &&
     (!(key.modifiers&MOD_ALT) || (GetAsyncKeyState(VK_MENU)&0x8000));
 }
+// Sample the physical edge separately from extra modifiers so releasing an
+// unrelated modifier (e.g. Ctrl in Ctrl+F11 when toggle_mods=F11) never turns
+// into a plain shortcut press, while configured chords (e.g. Ctrl+F11) match
+// their exact modifier mask.
+void PollOriginalShortcut(EiemKeyChord shortcut, bool keyDown, UINT activeModifiers, bool focused) {
+  if (!shortcut.vk) return;
+  const bool exactModifiers = activeModifiers == shortcut.modifiers;
+  if (originalShortcut.Press(shortcut, keyDown, focused) && exactModifiers) {
+    showOriginals = !showOriginals;
+    originalToggleRevision = ++valueRevision;
+    Log("[GLOBAL-MOD-VISIBILITY] original=%d vk=%u modifiers=%u", int(showOriginals), shortcut.vk, shortcut.modifiers);
+  }
+}
 void PreviewPreferences(State& state) {
   auto live=controlGraph;
   for(const auto& p:*state.graph) {
@@ -136,7 +163,7 @@ State Prepare(const std::shared_ptr<const std::vector<Package>>& graph,const Eie
   Require(bool(graph),"runtime control graph unavailable");
   State state;state.graph=graph;
   for (const auto& package:*graph) {
-    auto validateKey=[&](const EiemKeyChord& key){Require(!key.vk||(key.vk!=config.reload.vk&&key.vk!=config.gui.vk),"Mod shortcut overlaps a global shortcut: "+package.id);};
+    auto validateKey=[&](const EiemKeyChord& key){Require(!key.vk||(key.vk!=config.reload.vk&&key.vk!=config.gui.vk&&key.vk!=config.toggleMods.vk),"Mod shortcut overlaps a global shortcut: "+package.id);};
     for(const auto& key:package.bindings)validateKey(key.key);
     for(const auto& clip:package.shapeAnimations)validateKey(clip.second.key);
     if(package.program)for(const auto& event:package.program->events){validateKey(event.key);state.held[package.id+"/"+event.id]=Down(event.key);}

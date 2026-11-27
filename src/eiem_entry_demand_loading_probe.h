@@ -238,8 +238,8 @@ void PrepareReplacement(uint64_t token,uint64_t scope,R::Reader& reader,const st
         NativeReference mesh{target.second.cab,target.second.pathId};std::vector<int64_t> renderers;
         for(const auto& row:consumer.result.consumers)if(CanonicalSerializedAssetReference(row.second.mesh)==CanonicalSerializedAssetReference(mesh))renderers.push_back(row.second.renderer);
         if(renderers.empty())continue;
-        Log("[DEMAND-SKIP-RENDERERS] token=%llu target=%s#%s cab=%s pathId=%lld matches=%zu disabled=%zu",token,target.first.path.c_str(),target.first.asset.c_str(),mesh.first.c_str(),mesh.second,renderers.size(),renderers.size());
-        for(auto renderer:renderers)Log("[DEMAND-SKIP-RENDERER] token=%llu target=%s#%s pfb=%s rendererPathId=%lld action=m_Enabled:0",token,target.first.path.c_str(),target.first.asset.c_str(),member.name.c_str(),renderer);
+        Log("[DEMAND-SKIP-RENDERERS] token=%llu target=%s#%s cab=%s pathId=%lld matches=%zu visibilityControlled=%zu",token,target.first.path.c_str(),target.first.asset.c_str(),mesh.first.c_str(),mesh.second,renderers.size(),renderers.size());
+        for(auto renderer:renderers)Log("[DEMAND-SKIP-RENDERER] token=%llu target=%s#%s pfb=%s rendererPathId=%lld action=original-visibility-gate",token,target.first.path.c_str(),target.first.asset.c_str(),member.name.c_str(),renderer);
         Require(consumer.result.skipped>=renderers.size(),"handling=skip disabled Renderer count differs from target consumers");
       }
       if(consumer.result.matches&&usedMods){
